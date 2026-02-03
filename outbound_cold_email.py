@@ -571,7 +571,7 @@ def format_lead_for_text(lead: dict, index: int) -> str:
         meta.append(f"Opened: {opened}")
     
     if meta:
-        parts.append(" • ".join(meta))
+        parts.append(" | ".join(meta))
     
     return f"{index}. {parts[0]}\n   {parts[1] if len(parts) > 1 else ''}"
 
@@ -594,7 +594,7 @@ def format_lead_for_html(lead: dict) -> str:
     if opened:
         meta_parts.append(f"Opened: {opened}")
     
-    meta_line = " • ".join(meta_parts)
+    meta_line = " | ".join(meta_parts)
     
     return f'''<div style="margin-bottom: 12px;">
 <div style="font-weight: 600; color: #1a1a1a;">{company}</div>
@@ -612,7 +612,7 @@ def generate_email_body(recipient: dict, sample_leads: list,
     firm = recipient.get("firm_name", "").strip() or "your firm"
     state_pref = recipient.get("state_pref", "").strip()
     
-    # Footer address (required for cold outreach - use PO Box/PMB)
+    # Footer address (required for cold outreach - physical mailing address)
     footer_address = os.getenv("MAIL_FOOTER_ADDRESS", mailing_address)
     
     # Greeting
@@ -650,7 +650,11 @@ Some OSHA matters can be time-sensitive; deadlines vary by case. We include dead
 
 If you'd like, I can send a short daily {territory} digest like this. Reply "yes" and I'll set it up.
 
-Chase
+Not affiliated with OSHA; this is an independent alert service (no legal advice).
+
+Chase Chevalier
+Micro Flow Ops - OSHA Alerts
+support@microflowops.com
 
 ---
 Micro Flow Ops
@@ -690,7 +694,15 @@ Some OSHA matters can be time-sensitive; deadlines vary by case. We include dead
 If you'd like, I can send a short daily {territory} digest like this. Reply "yes" and I'll set it up.
 </p>
 
-<p style="font-size: 14px; margin: 0 0 16px 0; color: #1a1a1a;">Chase</p>
+<p style="font-size: 13px; color: #666; line-height: 1.5; margin: 0 0 16px 0;">
+Not affiliated with OSHA; this is an independent alert service (no legal advice).
+</p>
+
+<p style="font-size: 14px; margin: 0 0 2px 0; color: #1a1a1a;">Chase Chevalier</p>
+<p style="font-size: 13px; margin: 0 0 2px 0; color: #1a1a1a;">Micro Flow Ops - OSHA Alerts</p>
+<p style="font-size: 13px; margin: 0 0 16px 0;">
+  <a href="mailto:support@microflowops.com" style="color: #1a1a1a; text-decoration: none;">support@microflowops.com</a>
+</p>
 
 </div>
 

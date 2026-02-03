@@ -18,6 +18,7 @@ import csv
 import json
 import os
 import re
+import shutil
 import smtplib
 import sys
 from datetime import datetime, timedelta
@@ -196,6 +197,21 @@ def add_to_suppression(email: str, reason: str, source: str = "inbound_triage",
         })
     print(f"    [SUPPRESSED] {email} ({reason})")
     return True
+
+
+def backup_suppression_file():
+    """Backup suppression.csv to a timestamped file."""
+    if not SUPPRESSION_PATH.exists():
+        return
+    backup_dir = OUT_DIR / "suppression_backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    backup_path = backup_dir / f"suppression_{ts}.csv"
+    try:
+        shutil.copy2(SUPPRESSION_PATH, backup_path)
+        print(f"[INFO] Suppression backup: {backup_path}")
+    except Exception as e:
+        print(f"[WARN] Suppression backup failed: {e}")
 
 
 # =============================================================================
@@ -999,6 +1015,12 @@ def main():
     if not args.dry_run:
         state["last_processed_time"] = datetime.now().isoformat()
         save_state(state)
+        
+        # Backup suppression list if it may have changed
+        if (counts.get("unsubscribe", 0) > 0 or 
+            counts.get("objection", 0) > 0 or 
+            counts.get("bounce", 0) > 0):
+            backup_suppression_file()
     
     # Summary
     print(f"\n{'='*50}")
