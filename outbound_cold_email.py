@@ -103,8 +103,12 @@ def validate_environment() -> tuple:
                 )
                 break
     
-    # REPLY_TO_EMAIL must be same domain as FROM_EMAIL
+    # REPLY_TO_EMAIL required (opt-out replies go here)
     reply_to = os.getenv("REPLY_TO_EMAIL", "")
+    if not reply_to:
+        errors.append("REPLY_TO_EMAIL is required (opt-out replies go here)")
+    
+    # REPLY_TO_EMAIL must be same domain as FROM_EMAIL
     if from_email and reply_to:
         from_domain = from_email.split("@")[-1].lower() if "@" in from_email else ""
         reply_domain = reply_to.split("@")[-1].lower() if "@" in reply_to else ""
@@ -115,12 +119,12 @@ def validate_environment() -> tuple:
                     "Set ALLOW_REPLYTO_MISMATCH=true to override."
                 )
     
-    # MAIL_FOOTER_ADDRESS required for cold outreach (use PO Box/PMB, not residential)
+    # MAIL_FOOTER_ADDRESS required for cold outreach footer (physical address)
     footer_address = os.getenv("MAIL_FOOTER_ADDRESS", "")
     if not footer_address:
         errors.append(
             "MAIL_FOOTER_ADDRESS is required for cold outreach. "
-            "Use a PO Box or PMB address (not residential) for privacy."
+            "Use a real physical mailing address."
         )
     
     return len(errors) == 0, errors
@@ -1014,6 +1018,13 @@ def main():
         else:
             print("[WARN] OUTBOUND_ENABLED=false (no live sends)")
         
+        # Suppression file presence
+        if SUPPRESSION_PATH.exists():
+            print("[OK] Suppression file present")
+        else:
+            print(f"[FAIL] Suppression file missing: {SUPPRESSION_PATH}")
+            all_pass = False
+        
         print("=" * 50)
         print(f"PREFLIGHT {'PASSED' if all_pass else 'FAILED'}")
         print("=" * 50)
@@ -1038,6 +1049,12 @@ def main():
         print("  Set OUTBOUND_ENABLED=true in .env to enable live sending.")
         print("  Use --dry-run to preview without this check.")
         sys.exit(0)
+    
+    # Require suppression file for live sends (opt-out enforcement)
+    if outbound_enabled and not args.dry_run and not SUPPRESSION_PATH.exists():
+        print(f"[ERROR] Suppression file not found: {SUPPRESSION_PATH}")
+        print("  Create out/suppression.csv before live sending.")
+        sys.exit(1)
     
     # Validate data freshness
     is_fresh, freshness_report, freshness_errors = validate_freshness()

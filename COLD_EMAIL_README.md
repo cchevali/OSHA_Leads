@@ -93,6 +93,9 @@ NOTIFY_EMAIL=cchevali@gmail.com
 # CAN-SPAM Compliance - REQUIRED, must be real address
 MAILING_ADDRESS=11539 Links Dr, Reston, VA 20190
 
+# Footer address (required for live sends)
+MAIL_FOOTER_ADDRESS=11539 Links Dr, Reston, VA 20190
+
 # Brand (no LLC unless registered)
 BRAND_NAME=MicroFlowOps
 # BRAND_LEGAL_NAME=MicroFlowOps LLC  # Only if registered
