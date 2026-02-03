@@ -499,6 +499,7 @@ class TestLocalHTTPServer(unittest.TestCase):
     def tearDownClass(cls):
         """Stop local HTTP server."""
         cls.server.shutdown()
+        cls.server.server_close()
     
     def test_fetch_from_local_server(self):
         """Test fetching and parsing from local fixture server."""

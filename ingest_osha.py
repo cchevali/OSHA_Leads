@@ -370,6 +370,11 @@ def parse_inspection_detail(html: str, url: str) -> dict:
     id_match = re.search(r"id=(\d+)", url)
     if id_match:
         data["activity_nr"] = id_match.group(1)
+    else:
+        # Some callers/tests use activity_nr= in the query string.
+        q_match = re.search(r"(?:\\?|&)activity_nr=(\\d+)", url)
+        if q_match:
+            data["activity_nr"] = q_match.group(1)
     
     # Get page text for parsing
     page_text = soup.get_text()
@@ -392,7 +397,8 @@ def parse_inspection_detail(html: str, url: str) -> dict:
     in_site_address = False
     site_lines = []
     for i, line in enumerate(page_lines):
-        if "Site Address:" in line:
+        # Some variants omit the colon (e.g., "Site Address")
+        if line.replace(":", "").strip() == "Site Address":
             in_site_address = True
             continue
         if in_site_address:
@@ -486,6 +492,11 @@ def parse_inspection_detail(html: str, url: str) -> dict:
             date_str = line.split(":", 1)[1].strip()
             data["date_opened"] = parse_date(date_str)
         
+        # Alternate label used on some pages/fixtures
+        elif line.startswith("Open Date:"):
+            date_str = line.split(":", 1)[1].strip()
+            data["date_opened"] = parse_date(date_str)
+        
         # Inspection Nr
         elif line.startswith("Inspection Nr:"):
             nr = line.split(":", 1)[1].strip()
@@ -494,9 +505,50 @@ def parse_inspection_detail(html: str, url: str) -> dict:
             if nr_match:
                 data["activity_nr"] = nr_match.group(1)
         
+        # Alternate label used on some pages/fixtures
+        elif line.startswith("Activity Nr:") and not data.get("activity_nr"):
+            nr = line.split(":", 1)[1].strip()
+            nr_match = re.search(r"(\\d+)", nr)
+            if nr_match:
+                data["activity_nr"] = nr_match.group(1)
+        
         # Report ID
         elif line.startswith("Report ID:"):
             data["report_id"] = line.split(":", 1)[1].strip()
+
+        # Establishment Name (alternate path)
+        elif line.startswith("Establishment Name:") and not data.get("establishment_name"):
+            name = line.split(":", 1)[1].strip()
+            if name and re.search(r"[A-Za-z]", name):
+                data["establishment_name"] = name
+
+        # Inspection Type (alternate path)
+        elif line.startswith("Inspection Type:") and not data.get("inspection_type"):
+            insp = line.split(":", 1)[1].strip()
+            if insp:
+                data["inspection_type"] = insp
+
+        # Scope (alternate path)
+        elif line.startswith("Scope:") and not data.get("scope"):
+            scope_val = line.split(":", 1)[1].strip()
+            if scope_val:
+                data["scope"] = scope_val
+
+        # Emphasis (alternate path)
+        elif line.startswith("Emphasis:") and not data.get("emphasis"):
+            emph = line.split(":", 1)[1].strip()
+            if emph:
+                data["emphasis"] = emph
+
+        # Total violations (alternate path)
+        elif ("violation" in line_lower) and line_lower.startswith("total"):
+            try:
+                value = line.split(":", 1)[1]
+                m = re.search(r"\\d+", value)
+                if m:
+                    data["violations_count"] = int(m.group())
+            except Exception:
+                pass
         
         # NAICS
         elif line.startswith("NAICS:"):
@@ -572,6 +624,53 @@ def parse_inspection_detail(html: str, url: str) -> dict:
                         data["serious_violations"] = int(re.search(r"\d+", value).group())
                     except (AttributeError, ValueError):
                         pass
+
+    # Generic table label/value extraction (helps with alternate OSHA layouts and local fixtures)
+    for table in tables:
+        rows = table.find_all("tr")
+        for row in rows:
+            cells = row.find_all(["td", "th"])
+            if len(cells) < 2:
+                continue
+            label = clean_text(cells[0].get_text())
+            value = clean_text(cells[1].get_text())
+            if not label or not value:
+                continue
+
+            label_norm = label.strip().rstrip(":").lower()
+            if label_norm == "activity nr" and not data.get("activity_nr"):
+                m = re.search(r"\d+", value)
+                if m:
+                    data["activity_nr"] = m.group()
+            elif label_norm in ("date opened", "open date") and not data.get("date_opened"):
+                data["date_opened"] = parse_date(value)
+            elif label_norm in ("inspection type", "type") and not data.get("inspection_type"):
+                data["inspection_type"] = value
+            elif label_norm == "scope" and not data.get("scope"):
+                data["scope"] = value
+            elif label_norm == "case status" and not data.get("case_status"):
+                data["case_status"] = value
+            elif label_norm == "emphasis" and not data.get("emphasis"):
+                data["emphasis"] = value
+            elif label_norm == "safety/health" and not data.get("safety_health"):
+                data["safety_health"] = value
+            elif label_norm == "sic" and not data.get("sic"):
+                data["sic"] = value
+            elif label_norm == "naics" and not data.get("naics"):
+                naics_match = re.match(r"(\d+)\s*[-/]?\s*(.*)", value)
+                if naics_match:
+                    data["naics"] = naics_match.group(1)
+                    if naics_match.group(2):
+                        data["naics_desc"] = naics_match.group(2).strip()
+                else:
+                    data["naics"] = value
+            elif label_norm == "establishment name" and not data.get("establishment_name"):
+                if re.search(r"[A-Za-z]", value):
+                    data["establishment_name"] = value
+            elif label_norm == "total violations" and data.get("violations_count") is None:
+                m = re.search(r"\d+", value)
+                if m:
+                    data["violations_count"] = int(m.group())
     
     return data
 
