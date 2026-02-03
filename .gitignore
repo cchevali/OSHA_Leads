@@ -1,0 +1,33 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual env
+venv/
+.venv/
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+secrets/
+
+# Output / runtime files
+out/
+*.log
+
+# Local databases & exports
+*.sqlite
+*.db
+*.csv
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Customer configs (avoid committing real recipient emails)
+customers/*.json
+!customers/*.example.json
