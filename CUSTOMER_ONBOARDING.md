@@ -1,4 +1,4 @@
-# Onboard a New Customer in 3 Minutes
+﻿# Onboard a New Customer in 3 Minutes
 
 This guide walks through adding a new customer to the OSHA Concierge system. The process is 100% config-driven — no code changes required.
 
@@ -52,7 +52,7 @@ Edit `customers/NEW_CUSTOMER.json`:
 Validate everything without sending email:
 
 ```powershell
-cd "C:\Users\lever\OneDrive\Desktop\OSHA Leads"
+cd "C:\dev\OSHA_Leads"
 .\venv\Scripts\python deliver_daily.py --customer customers/NEW_CUSTOMER.json --dry-run
 ```
 
@@ -115,7 +115,7 @@ See `TASK_SCHEDULER_RUNBOOK.md` for Windows Task Scheduler setup.
 Quick summary:
 - **Program:** `C:\...\venv\Scripts\python.exe`
 - **Arguments:** `deliver_daily.py --customer customers/NEW_CUSTOMER.json`
-- **Start in:** `C:\Users\lever\OneDrive\Desktop\OSHA Leads`
+- **Start in:** `C:\dev\OSHA_Leads`
 - **Schedule:** Daily at 6:00 AM
 
 ---
@@ -153,3 +153,4 @@ After onboarding, verify:
 | `send_digest_email.py` | Email logic (PILOT_MODE here) |
 | `out/email_log.csv` | Send history |
 | `out/run_log_*.txt` | Execution logs |
+

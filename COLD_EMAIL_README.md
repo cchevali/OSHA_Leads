@@ -1,4 +1,4 @@
-# OSHA Cold Email & Inbox Triage
+﻿# OSHA Cold Email & Inbox Triage
 
 Automated outbound cold email and inbound inbox triage for OSHA Citation Lead SaaS.
 
@@ -6,7 +6,7 @@ Automated outbound cold email and inbound inbox triage for OSHA Citation Lead Sa
 
 ```bash
 # Navigate to project
-cd /mnt/c/Users/lever/OneDrive/Desktop/OSHA_Leads
+cd /mnt/c/dev/OSHA_Leads
 
 # Install dependencies
 pip install -r requirements.txt
@@ -164,10 +164,10 @@ ln -sf daily_leads_2026-01-28.csv out/latest_leads.csv
 crontab -e
 
 # Outbound at 8am ET daily
-0 8 * * * cd /mnt/c/Users/lever/OneDrive/Desktop/OSHA_Leads && python3 outbound_cold_email.py >> out/cold_email_cron.log 2>&1
+0 8 * * * cd /mnt/c/dev/OSHA_Leads && python3 outbound_cold_email.py >> out/cold_email_cron.log 2>&1
 
 # Inbox triage every 15 min
-*/15 * * * * cd /mnt/c/Users/lever/OneDrive/Desktop/OSHA_Leads && python3 inbound_inbox_triage.py >> out/inbox_triage_cron.log 2>&1
+*/15 * * * * cd /mnt/c/dev/OSHA_Leads && python3 inbound_inbox_triage.py >> out/inbox_triage_cron.log 2>&1
 ```
 
 ## Logs
@@ -177,3 +177,4 @@ crontab -e
 - `out/inbox_state.json` - Processing cursor
 - `out/suppression.csv` - Suppression list
 - `out/eng_tickets/*.md` - Engineering tickets
+

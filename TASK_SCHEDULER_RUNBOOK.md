@@ -1,4 +1,4 @@
-# Windows Task Scheduler Runbook — OSHA Daily Delivery
+﻿# Windows Task Scheduler Runbook — OSHA Daily Delivery
 
 ## Overview
 
@@ -46,9 +46,9 @@ This document describes how to schedule automated daily OSHA lead delivery using
 | Setting | Value |
 |---------|-------|
 | Action | `Start a program` |
-| Program/script | `C:\Users\lever\OneDrive\Desktop\OSHA Leads\venv\Scripts\python.exe` |
+| Program/script | `C:\dev\OSHA_Leads\venv\Scripts\python.exe` |
 | Add arguments | `deliver_daily.py --customer customers/sunbelt_ca_pilot.json` |
-| Start in | `C:\Users\lever\OneDrive\Desktop\OSHA Leads` |
+| Start in | `C:\dev\OSHA_Leads` |
 
 ### Conditions Tab
 
@@ -85,7 +85,7 @@ Create `run_daily.bat` in project directory:
 
 ```batch
 @echo off
-cd /d C:\Users\lever\OneDrive\Desktop\OSHA Leads
+cd /d C:\dev\OSHA_Leads
 
 set SMTP_HOST=smtp.zoho.com
 set SMTP_PORT=587
@@ -114,7 +114,7 @@ Then set the Task Scheduler action to run `run_daily.bat` instead.
 ## Manual Test Run
 
 ```powershell
-cd "C:\Users\lever\OneDrive\Desktop\OSHA Leads"
+cd "C:\dev\OSHA_Leads"
 
 # Set env vars for this session
 $env:SMTP_HOST='smtp.zoho.com'
@@ -151,3 +151,4 @@ PILOT_MODE = False
 ```
 
 This allows sending to all recipients in customer config, not just the whitelist.
+

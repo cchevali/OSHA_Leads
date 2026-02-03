@@ -1,4 +1,4 @@
-# OSHA Cold Email & Inbox Triage Automation
+﻿# OSHA Cold Email & Inbox Triage Automation
 
 Two production-ready Python scripts for automated outbound cold email and inbound inbox triage for the OSHA Citation Lead SaaS.
 
@@ -138,7 +138,7 @@ GMAIL_CREDENTIALS_PATH=./credentials.json
 
 ```bash
 # In WSL2 Ubuntu
-cd /mnt/c/Users/lever/OneDrive/Desktop/OSHA_Leads
+cd /mnt/c/dev/OSHA_Leads
 
 # Test outbound
 python3 outbound_cold_email.py --dry-run
@@ -150,8 +150,9 @@ python3 inbound_inbox_triage.py --dry-run --test-classify
 ### Cron Examples (WSL2)
 ```bash
 # Daily outbound at 8am ET
-0 8 * * * cd /mnt/c/Users/lever/OneDrive/Desktop/OSHA_Leads && python3 outbound_cold_email.py >> out/cold_email_cron.log 2>&1
+0 8 * * * cd /mnt/c/dev/OSHA_Leads && python3 outbound_cold_email.py >> out/cold_email_cron.log 2>&1
 
 # Inbound polling every 15 minutes
-*/15 * * * * cd /mnt/c/Users/lever/OneDrive/Desktop/OSHA_Leads && python3 inbound_inbox_triage.py >> out/inbox_triage_cron.log 2>&1
+*/15 * * * * cd /mnt/c/dev/OSHA_Leads && python3 inbound_inbox_triage.py >> out/inbox_triage_cron.log 2>&1
 ```
+

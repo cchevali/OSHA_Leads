@@ -1,4 +1,4 @@
-# Target List Factory – Implementation Status
+﻿# Target List Factory – Implementation Status
 
 **Date:** 2026-01-13  
 **Status:** ✅ Complete  
@@ -106,4 +106,5 @@ Plus: `NOT_FIT`, `COLD`, `DO_NOT_CONTACT`
 
 ## File Locations
 
-All files created in: `c:\Users\lever\OneDrive\Desktop\OSHA Leads\`
+All files created in: `C:\dev\OSHA_Leads\`
+
