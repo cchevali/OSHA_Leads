@@ -20,7 +20,7 @@ import random
 import smtplib
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
@@ -48,10 +48,10 @@ DEFAULT_CONFIG = {
     "daily_send_limit": 25,
     "min_delay_seconds": 4,
     "max_delay_seconds": 10,
-    "sample_leads_min": 2,
+    "sample_leads_min": 1,
     "sample_leads_max": 5,
     "score_thresholds": [8, 6, 4],
-    "recency_days": 7
+    "recency_days": 14
 }
 
 # Placeholder patterns to reject
@@ -191,6 +191,7 @@ def validate_freshness() -> tuple:
     report = {
         "generated_at_age_hours": None,
         "max_first_seen_age_hours": None,
+        "max_last_seen_age_hours": None,
         "csv_mtime_age_hours": None,
         "has_run_json": False
     }
@@ -242,9 +243,24 @@ def validate_freshness() -> tuple:
         except Exception:
             errors.append("Invalid generated_at timestamp in latest_run.json")
     
-    # Check max_first_seen_at age
+    # Check max_last_seen_at age (preferred), fallback to max_first_seen_at
+    max_last_seen_str = run_meta.get("max_last_seen_at", "")
     max_first_seen_str = run_meta.get("max_first_seen_at", "")
-    if max_first_seen_str:
+    if max_last_seen_str:
+        try:
+            max_last_seen = datetime.fromisoformat(max_last_seen_str.replace("Z", "+00:00"))
+            if max_last_seen.tzinfo is None:
+                max_last_seen = max_last_seen.replace(tzinfo=timezone.utc)
+            age_hours = (now - max_last_seen).total_seconds() / 3600
+            report["max_last_seen_age_hours"] = round(age_hours, 1)
+            
+            if age_hours > max_signal_hours:
+                errors.append(
+                    f"Signal age ({age_hours:.1f}h) exceeds MAX_SIGNAL_AGE_HOURS ({max_signal_hours}h)"
+                )
+        except Exception:
+            pass  # Optional field
+    elif max_first_seen_str:
         try:
             max_first_seen = datetime.fromisoformat(max_first_seen_str.replace("Z", "+00:00"))
             if max_first_seen.tzinfo is None:
@@ -292,7 +308,8 @@ Errors:
 
 Freshness Report:
 - generated_at age: {report.get('generated_at_age_hours', 'N/A')} hours
-- max_first_seen age: {report.get('max_first_seen_age_hours', 'N/A')} hours  
+- max_last_seen age: {report.get('max_last_seen_age_hours', 'N/A')} hours
+- max_first_seen age: {report.get('max_first_seen_age_hours', 'N/A')} hours
 - CSV mtime age: {report.get('csv_mtime_age_hours', 'N/A')} hours
 - has latest_run.json: {report.get('has_run_json', False)}
 
@@ -515,14 +532,15 @@ def load_leads(leads_path: Path = None) -> list:
 
 
 def select_sample_leads(leads: list, config: dict, recipient_email: str, 
-                         campaign_id: str, state_pref: str = None) -> list:
+                         campaign_id: str, state_pref: str = None,
+                         as_of_date: date | None = None) -> list:
     """
     Select 2-5 sample leads using deterministic rules:
-    1. Prefer High/Medium priority leads when available
-    2. Only include Low priority if needed to reach minimum sample size
+    1. Prefer High/Medium priority leads
+    2. Do not include Low priority leads
     3. Use hash-based shuffle to vary selection across recipients
     """
-    today = datetime.now().date()
+    today = as_of_date or datetime.now().date()
     recency_cutoff = today - timedelta(days=config["recency_days"])
     
     # Parse date and filter by recency
@@ -564,19 +582,28 @@ def select_sample_leads(leads: list, config: dict, recipient_email: str,
     
     recent_leads.sort(key=sort_key)
     
-    # Prefer High/Medium priority leads; include Low only if needed
-    selected = []
-    high = [l for l in recent_leads if l["lead_score"] >= 8]
-    medium = [l for l in recent_leads if 6 <= l["lead_score"] < 8]
-    preferred = high + medium
-    
-    if len(preferred) >= config["sample_leads_min"]:
-        selected = preferred[:config["sample_leads_max"]]
-    else:
-        low = [l for l in recent_leads if l["lead_score"] < 6]
-        selected = (preferred + low)[:config["sample_leads_max"]]
+    # High/Medium only
+    preferred = [l for l in recent_leads if l["lead_score"] >= 6]
+    selected = preferred[:config["sample_leads_max"]]
     
     return selected
+
+
+def select_sample_leads_with_reason(
+    leads: list,
+    config: dict,
+    recipient_email: str,
+    campaign_id: str,
+    state_pref: str = None,
+    as_of_date: date | None = None,
+) -> tuple[list, str]:
+    """Return samples and a structured skip reason when empty."""
+    samples = select_sample_leads(
+        leads, config, recipient_email, campaign_id, state_pref, as_of_date=as_of_date
+    )
+    if not samples:
+        return [], "no_high_med_leads"
+    return samples, ""
 
 
 # =============================================================================
@@ -686,6 +713,8 @@ Here are a few recent signals:
 
 Priority is a heuristic based on severity/penalty/recency; not legal advice.
 
+Only the highest-priority signals are included in this sample.
+
 {leads_text}
 
 Some OSHA matters can be time-sensitive; deadlines vary by case. We include deadlines only when available.
@@ -725,6 +754,9 @@ I'm reaching out because {firm} appears active in safety/construction, and we tr
 <p style="font-size: 16px; font-weight: 600; margin: 0 0 12px 0; color: #1a1a1a;">Recent signals:</p>
 <p style="font-size: 13px; color: #666; line-height: 1.5; margin: 0 0 12px 0;">
 Priority is a heuristic based on severity/penalty/recency; not legal advice.
+</p>
+<p style="font-size: 13px; color: #666; line-height: 1.5; margin: 0 0 12px 0;">
+Only the highest-priority signals are included in this sample.
 </p>
 
 <div style="margin-bottom: 20px;">
@@ -982,6 +1014,7 @@ def main():
     if args.render_preview:
         leads_path = Path(args.leads_file) if args.leads_file else LEADS_PATH
         leads = load_leads(leads_path)
+        config = load_config()
         
         if not leads:
             print("[ERROR] No leads found for preview")
@@ -996,7 +1029,13 @@ def main():
         }
         
         mailing_address = os.getenv("MAILING_ADDRESS", "123 Main St, City, ST 12345")
-        sample_leads = leads[:5]
+        sample_leads, skip_reason = select_sample_leads_with_reason(
+            leads, config, recipient["email"], "preview",
+            recipient.get("state_pref")
+        )
+        if not sample_leads:
+            print(f"[ERROR] No high/medium leads available for preview ({skip_reason})")
+            sys.exit(1)
         unsub_token = compute_unsub_token("preview@example.com", "preview")
         
         subject = generate_email_subject(recipient, sample_leads, is_test=True)
@@ -1140,6 +1179,8 @@ def main():
         print("FRESHNESS REPORT")
         print(f"{'='*60}")
         print(f"  generated_at age:    {freshness_report.get('generated_at_age_hours', 'N/A')} hours")
+        if freshness_report.get("max_last_seen_age_hours") is not None:
+            print(f"  max_last_seen age:   {freshness_report.get('max_last_seen_age_hours', 'N/A')} hours")
         print(f"  max_first_seen age:  {freshness_report.get('max_first_seen_age_hours', 'N/A')} hours")
         print(f"  CSV mtime age:       {freshness_report.get('csv_mtime_age_hours', 'N/A')} hours")
         print(f"  has latest_run.json: {freshness_report.get('has_run_json', False)}")
@@ -1242,7 +1283,7 @@ def main():
             break
         
         # Select sample leads
-        samples = select_sample_leads(
+        samples, skip_reason = select_sample_leads_with_reason(
             leads, config, email, campaign_id, 
             recipient.get("state_pref")
         )
@@ -1250,7 +1291,7 @@ def main():
         if not samples:
             print(f"  [SKIP] No suitable leads for {email}")
             log_send(email, "", [], "", campaign_id, "skipped", 
-                     "no_suitable_leads", "")
+                     skip_reason or "no_suitable_leads", "")
             continue
         
         # Generate email (unique token per recipient+campaign)

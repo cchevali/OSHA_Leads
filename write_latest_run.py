@@ -64,6 +64,7 @@ def generate_run_metadata(csv_path: Path) -> dict:
     states = set()
     max_date_opened = None
     max_first_seen = None
+    max_last_seen = None
     records_total = 0
     
     with open(csv_path, "r", encoding="utf-8") as f:
@@ -94,6 +95,16 @@ def generate_run_metadata(csv_path: Path) -> dict:
                         first_seen_dt = first_seen_dt.replace(tzinfo=timezone.utc)
                     if max_first_seen is None or first_seen_dt > max_first_seen:
                         max_first_seen = first_seen_dt
+            
+            # Track max last_seen_at
+            last_seen = row.get("last_seen_at", "")
+            if last_seen:
+                last_seen_dt = parse_iso_datetime(last_seen)
+                if last_seen_dt:
+                    if last_seen_dt.tzinfo is None:
+                        last_seen_dt = last_seen_dt.replace(tzinfo=timezone.utc)
+                    if max_last_seen is None or last_seen_dt > max_last_seen:
+                        max_last_seen = last_seen_dt
     
     # Build metadata
     now = datetime.now(timezone.utc)
@@ -104,6 +115,7 @@ def generate_run_metadata(csv_path: Path) -> dict:
         "records_total": records_total,
         "max_date_opened": max_date_opened.strftime("%Y-%m-%d") if max_date_opened else None,
         "max_first_seen_at": max_first_seen.isoformat() if max_first_seen else None,
+        "max_last_seen_at": max_last_seen.isoformat() if max_last_seen else None,
         "csv_path": str(csv_path.relative_to(SCRIPT_DIR)) if csv_path.is_relative_to(SCRIPT_DIR) else str(csv_path),
         "schema_version": "1.0",
         "git_commit": get_git_commit() or None
@@ -146,6 +158,7 @@ def main():
         print(f"  States: {', '.join(metadata['states_included'])}")
         print(f"  Max date_opened: {metadata['max_date_opened']}")
         print(f"  Max first_seen_at: {metadata['max_first_seen_at']}")
+        print(f"  Max last_seen_at: {metadata['max_last_seen_at']}")
         
     except Exception as e:
         print(f"[ERROR] {e}")

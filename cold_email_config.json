@@ -2,12 +2,12 @@
   "daily_send_limit": 25,
   "min_delay_seconds": 4,
   "max_delay_seconds": 10,
-  "sample_leads_min": 2,
+  "sample_leads_min": 1,
   "sample_leads_max": 5,
   "score_thresholds": [
     8,
     6,
     4
   ],
-  "recency_days": 30
+  "recency_days": 14
 }

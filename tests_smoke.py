@@ -42,6 +42,9 @@ from export_daily import (
     DAILY_LEADS_COLUMNS,
 )
 
+FROZEN_TODAY = "2026-02-03"
+FROZEN_NOW = "2026-02-03T12:00:00+00:00"
+
 
 # Sample OSHA inspection detail page HTML fixture
 SAMPLE_DETAIL_HTML = """
@@ -396,18 +399,19 @@ class TestExport(unittest.TestCase):
         self.conn = sqlite3.connect(self.db_path)
         self.conn.executescript(schema)
         
-        # Insert test data with very recent first_seen_at
-        from datetime import datetime
-        now = datetime.utcnow().isoformat()
+        # Insert test data with fixed timestamps for determinism
+        now = FROZEN_NOW
         
         self.conn.execute("""
             INSERT INTO inspections (
                 activity_nr, establishment_name, site_state, site_city,
-                date_opened, inspection_type, scope, lead_score, needs_review,
+                date_opened, inspection_type, scope, case_status,
+                lead_score, needs_review,
                 first_seen_at, last_seen_at, source_url
             ) VALUES (
                 '123456789', 'Test Corp', 'VA', 'Arlington',
-                '2025-01-05', 'Complaint', 'Complete', 10, 0,
+                '2026-01-25', 'Complaint', 'Complete', 'OPEN',
+                10, 0,
                 ?, ?, 'https://example.com'
             )
         """, (now, now))
@@ -415,11 +419,11 @@ class TestExport(unittest.TestCase):
         self.conn.execute("""
             INSERT INTO inspections (
                 activity_nr, establishment_name, site_state,
-                date_opened, lead_score, needs_review,
+                date_opened, case_status, lead_score, needs_review,
                 first_seen_at, last_seen_at
             ) VALUES (
                 '987654321', 'Incomplete Corp', 'MD',
-                '2025-01-04', 5, 1,
+                '2026-01-24', 'OPEN', 5, 1,
                 ?, ?
             )
         """, (now, now))
@@ -438,8 +442,7 @@ class TestExport(unittest.TestCase):
     
     def test_get_sendable_leads(self):
         """Test fetching sendable leads."""
-        from datetime import datetime
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = FROZEN_TODAY
         
         leads = get_sendable_leads(self.conn, today)
         
@@ -448,8 +451,7 @@ class TestExport(unittest.TestCase):
     
     def test_get_needs_review_leads(self):
         """Test fetching needs-review leads."""
-        from datetime import datetime
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = FROZEN_TODAY
         
         leads = get_needs_review_leads(self.conn, today)
         
@@ -542,18 +544,18 @@ class TestEndToEnd(unittest.TestCase):
             conn.executescript(schema)
             
             # Insert a test inspection directly
-            from datetime import datetime
-            now = datetime.utcnow().isoformat()
+            now = FROZEN_NOW
             
             conn.execute("""
                 INSERT INTO inspections (
                     activity_nr, establishment_name, site_state, site_city,
-                    date_opened, inspection_type, scope, naics, violations_count,
+                    date_opened, inspection_type, scope, case_status,
+                    naics, violations_count,
                     lead_score, needs_review, first_seen_at, last_seen_at,
                     source_url
                 ) VALUES (
                     '111222333', 'Pipeline Test Corp', 'VA', 'Fairfax',
-                    '2025-01-06', 'Accident', 'Complete', '236220', 2,
+                    '2026-01-25', 'Accident', 'Complete', 'OPEN', '236220', 2,
                     16, 0, ?, ?,
                     'https://example.com/inspection'
                 )
@@ -564,7 +566,7 @@ class TestEndToEnd(unittest.TestCase):
             # Run export
             from export_daily import export_daily
             
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = FROZEN_TODAY
             stats = export_daily(db_path, out_dir, today)
             
             # Verify outputs

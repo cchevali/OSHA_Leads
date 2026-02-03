@@ -7,7 +7,7 @@ cd /d "C:\dev\OSHA_Leads"
 echo [%date% %time%] Starting OSHA daily pipeline >> out\pipeline.log
 
 REM Run ingestion
-python ingest_osha.py --db osha_leads.db --states TX --since-days 7 >> out\pipeline.log 2>&1
+python ingest_osha.py --db osha_leads.db --states TX --since-days 30 >> out\pipeline.log 2>&1
 if errorlevel 1 (
     echo [%date% %time%] ERROR: Ingestion failed >> out\pipeline.log
     exit /b 1

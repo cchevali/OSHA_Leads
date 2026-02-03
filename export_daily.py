@@ -50,6 +50,7 @@ DAILY_LEADS_COLUMNS = [
     "emphasis",
     "lead_score",
     "first_seen_at",
+    "last_seen_at",
     "source_url",
 ]
 
@@ -66,11 +67,12 @@ def get_sendable_leads(
 ) -> list[dict]:
     """
     Get leads that are sendable (meet all required field criteria).
-    Returns leads seen in last 24h sorted by score then date.
+    Returns OPEN leads opened in the last 14 days, sorted by score then date.
     """
-    # Calculate 24 hours ago from as_of_date
-    as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d")
-    cutoff = (as_of_dt - timedelta(hours=24)).isoformat()
+    # Calculate 14-day opened window based on as_of_date
+    as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+    start_date = (as_of_dt - timedelta(days=14)).isoformat()
+    end_date = as_of_dt.isoformat()
     
     query = """
         SELECT 
@@ -90,18 +92,23 @@ def get_sendable_leads(
             emphasis,
             lead_score,
             first_seen_at,
+            last_seen_at,
             source_url
         FROM inspections
         WHERE 
             needs_review = 0
-            AND first_seen_at >= ?
+            AND case_status = 'OPEN'
+            AND date_opened IS NOT NULL
+            AND date_opened != ''
+            AND date_opened >= ?
+            AND date_opened <= ?
         ORDER BY 
             lead_score DESC,
             date_opened DESC
     """
     
     cursor = conn.cursor()
-    cursor.execute(query, (cutoff,))
+    cursor.execute(query, (start_date, end_date))
     
     columns = [desc[0] for desc in cursor.description]
     results = []
@@ -143,6 +150,7 @@ def get_needs_review_leads(
             emphasis,
             lead_score,
             first_seen_at,
+            last_seen_at,
             source_url
         FROM inspections
         WHERE 
