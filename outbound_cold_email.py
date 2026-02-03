@@ -12,7 +12,6 @@ Usage:
 
 import argparse
 import csv
-import hashlib
 import html
 import json
 import os
@@ -21,10 +20,13 @@ import smtplib
 import sys
 import time
 from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
 from pathlib import Path
+
+from unsubscribe_utils import create_unsub_token
 
 # Load environment variables
 try:
@@ -173,6 +175,12 @@ def validate_environment() -> tuple:
             "MAIL_FOOTER_ADDRESS is required for cold outreach. "
             "Use a real physical mailing address."
         )
+    
+    # One-click unsubscribe requires UNSUB_SECRET when endpoint is set
+    unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
+    unsub_secret = os.getenv("UNSUB_SECRET", "").strip()
+    if unsub_endpoint and not unsub_secret:
+        errors.append("UNSUB_SECRET is required when UNSUB_ENDPOINT_BASE is set")
     
     return len(errors) == 0, errors
 
@@ -355,12 +363,52 @@ def get_campaign_id() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
-def compute_unsub_token(email: str, campaign_id: str = "", salt: str = "osha_cold_2026") -> str:
-    """Generate unique unsubscribe token per recipient+campaign for tracking."""
+def compute_unsub_token(email: str, campaign_id: str = "") -> str:
+    """Generate one-click unsubscribe token."""
     if not campaign_id:
         campaign_id = get_campaign_id()
-    data = f"{email}:{campaign_id}:{salt}"
-    return hashlib.sha256(data.encode()).hexdigest()[:16]
+    unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
+    if not unsub_endpoint:
+        return ""
+    return create_unsub_token(email, campaign_id)
+
+
+def get_last_refresh_lines() -> tuple[str, str]:
+    """Return (text_line, html_line) for last refresh stamp, or ('','') if unavailable."""
+    run_json_path = SCRIPT_DIR / "out" / "latest_run.json"
+    if not run_json_path.exists():
+        return "", ""
+    try:
+        with open(run_json_path, "r", encoding="utf-8") as f:
+            run_meta = json.load(f)
+    except Exception:
+        return "", ""
+    
+    last_seen_str = run_meta.get("max_last_seen_at", "")
+    if not last_seen_str:
+        return "", ""
+    try:
+        last_seen = datetime.fromisoformat(last_seen_str.replace("Z", "+00:00"))
+    except Exception:
+        return "", ""
+    
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=ZoneInfo("UTC"))
+    
+    try:
+        et = ZoneInfo("America/New_York")
+        last_seen_et = last_seen.astimezone(et)
+        ts_str = last_seen_et.strftime("%Y-%m-%d %I:%M %p")
+    except Exception:
+        ts_str = last_seen.strftime("%Y-%m-%d %H:%M")
+    
+    now_utc = datetime.now(ZoneInfo("UTC"))
+    within_24 = (now_utc - last_seen).total_seconds() <= 24 * 3600
+    
+    suffix = " (refreshed daily)" if within_24 else ""
+    text_line = f"Last refresh: {ts_str} ET{suffix}"
+    html_line = f'<span>Last refresh: {ts_str} ET{suffix}</span>'
+    return text_line, html_line
 
 
 # =============================================================================
@@ -697,12 +745,14 @@ def generate_email_body(recipient: dict, sample_leads: list,
     
     # Build unsubscribe link text for footer (mailto is always included)
     unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "")
-    if unsub_endpoint:
+    if unsub_endpoint and unsub_token:
         unsub_link_text = f" or click: {unsub_endpoint}?token={unsub_token}"
         unsub_link_html = f' or <a href="{unsub_endpoint}?token={unsub_token}" style="color: #888;">click here</a>'
     else:
         unsub_link_text = ""
         unsub_link_html = ""
+    
+    refresh_text, refresh_html = get_last_refresh_lines()
     
     # Build text body (no Ref line - clean for cold outreach)
     text_body = f"""{greeting}
@@ -714,6 +764,7 @@ Here are a few recent signals:
 Priority is a heuristic based on severity/penalty/recency; not legal advice.
 
 Only the highest-priority signals are included in this sample.
+{(refresh_text + chr(10)) if refresh_text else ''}
 
 {leads_text}
 
@@ -758,6 +809,7 @@ Priority is a heuristic based on severity/penalty/recency; not legal advice.
 <p style="font-size: 13px; color: #666; line-height: 1.5; margin: 0 0 12px 0;">
 Only the highest-priority signals are included in this sample.
 </p>
+{f'<p style=\"font-size: 12px; color: #888; line-height: 1.5; margin: 0 0 12px 0;\">{refresh_html}</p>' if refresh_html else ''}
 
 <div style="margin-bottom: 20px;">
 {leads_html}
@@ -851,18 +903,15 @@ def send_email(recipient_email: str, subject: str, text_body: str,
         msg["Message-ID"] = make_msgid(domain=from_email.split("@")[-1] if "@" in from_email else "microflowops.com")
         
         # Add List-Unsubscribe headers (RFC 8058 One-Click only if endpoint exists)
-        if unsub_token:
-            unsub_mailto = f"mailto:{reply_to}?subject=unsubscribe"
-            unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "")
-            
-            if unsub_endpoint:
-                # Endpoint exists: include both mailto and https, plus One-Click
-                unsub_https = f"{unsub_endpoint}?token={unsub_token}"
-                msg["List-Unsubscribe"] = f"<{unsub_mailto}>, <{unsub_https}>"
-                msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
-            else:
-                # No endpoint: mailto only, no One-Click claim
-                msg["List-Unsubscribe"] = f"<{unsub_mailto}>"
+        unsub_mailto = f"mailto:{reply_to}?subject=unsubscribe"
+        unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
+        
+        if unsub_endpoint and unsub_token:
+            unsub_https = f"{unsub_endpoint}?token={unsub_token}"
+            msg["List-Unsubscribe"] = f"<{unsub_mailto}>, <{unsub_https}>"
+            msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+        else:
+            msg["List-Unsubscribe"] = f"<{unsub_mailto}>"
         
         # Add tracking headers
         if campaign_id:
