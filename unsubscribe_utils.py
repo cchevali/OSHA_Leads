@@ -32,6 +32,16 @@ def sign_token(token_id: str, secret: str) -> str:
     mac = hmac.new(secret.encode("utf-8"), token_id.encode("utf-8"), hashlib.sha256).digest()
     return _b64url(mac)
 
+def sign_registration(token_id: str, email: str, secret: str) -> str:
+    """
+    Sign a token registration payload so only the sender can register token->email mappings.
+    Format: HMAC(secret, "{token_id}|{email_lower}").
+    """
+    email_norm = (email or "").strip().lower()
+    payload = f"{token_id}|{email_norm}"
+    mac = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+    return _b64url(mac)
+
 
 def generate_token_id() -> str:
     return secrets.token_urlsafe(24)
@@ -53,6 +63,14 @@ def create_unsub_token(email: str, campaign_id: str) -> str:
 def store_unsub_token(token_id: str, email: str, campaign_id: str) -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     exists = UNSUB_TOKEN_STORE_PATH.exists()
+
+    # Idempotent on token_id
+    if exists:
+        with open(UNSUB_TOKEN_STORE_PATH, "r", newline="", encoding="utf-8") as rf:
+            reader = csv.DictReader(rf)
+            for row in reader:
+                if (row.get("token_id") or "").strip() == token_id:
+                    return
 
     with open(UNSUB_TOKEN_STORE_PATH, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(

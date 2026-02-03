@@ -1,4 +1,6 @@
 import argparse
+import json
+import os
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -14,6 +16,8 @@ except ImportError:
 from unsubscribe_utils import (
     add_to_suppression,
     lookup_email_for_token,
+    sign_registration,
+    store_unsub_token,
     verify_unsub_token,
 )
 
@@ -93,6 +97,64 @@ class UnsubHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         self.send_response(HTTPStatus.OK)
+        self.end_headers()
+
+    def do_POST(self):
+        ip = _client_ip(self)
+        if _rate_limited(ip):
+            self.send_response(HTTPStatus.TOO_MANY_REQUESTS)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Too many requests.\n")
+            return
+
+        parsed = urlparse(self.path)
+        if parsed.path.rstrip("/") != "/unsubscribe/register":
+            self.send_response(HTTPStatus.NOT_FOUND)
+            self.end_headers()
+            return
+
+        secret = (os.getenv("UNSUB_SECRET") or "").strip()
+        if not secret:
+            self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
+            self.end_headers()
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except Exception:
+            length = 0
+        if length <= 0 or length > 10_000:
+            self.send_response(HTTPStatus.BAD_REQUEST)
+            self.end_headers()
+            return
+
+        try:
+            body = self.rfile.read(length).decode("utf-8")
+            payload = json.loads(body)
+        except Exception:
+            self.send_response(HTTPStatus.BAD_REQUEST)
+            self.end_headers()
+            return
+
+        token_id = (payload.get("token_id") or "").strip()
+        email = (payload.get("email") or "").strip().lower()
+        campaign_id = (payload.get("campaign_id") or "").strip()
+
+        if not token_id or not email or "@" not in email:
+            self.send_response(HTTPStatus.BAD_REQUEST)
+            self.end_headers()
+            return
+
+        auth = (self.headers.get("X-Unsub-Auth") or "").strip()
+        expected = sign_registration(token_id, email, secret)
+        if not auth or auth != expected:
+            self.send_response(HTTPStatus.UNAUTHORIZED)
+            self.end_headers()
+            return
+
+        store_unsub_token(token_id, email, campaign_id or "unknown")
+        self.send_response(HTTPStatus.NO_CONTENT)
         self.end_headers()
 
     def log_message(self, format, *args):

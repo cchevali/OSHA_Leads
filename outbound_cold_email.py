@@ -26,7 +26,7 @@ from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
 from pathlib import Path
 
-from unsubscribe_utils import create_unsub_token
+from unsubscribe_utils import create_unsub_token, sign_registration
 
 # Load environment variables
 try:
@@ -371,6 +371,37 @@ def compute_unsub_token(email: str, campaign_id: str = "") -> str:
     if not unsub_endpoint:
         return ""
     return create_unsub_token(email, campaign_id)
+
+
+def register_unsub_token(unsub_token: str, recipient_email: str, campaign_id: str, dry_run: bool) -> bool:
+    """
+    Register token->email mapping with the remote unsubscribe service so one-click links work.
+    If registration fails, callers should fall back to mailto-only.
+    """
+    if dry_run:
+        return True
+    unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
+    secret = os.getenv("UNSUB_SECRET", "").strip()
+    if not unsub_endpoint or not secret:
+        return False
+    if not unsub_token or "." not in unsub_token:
+        return False
+    
+    token_id = unsub_token.split(".", 1)[0]
+    register_url = unsub_endpoint.rstrip("/") + "/register"
+    auth = sign_registration(token_id, recipient_email, secret)
+    
+    try:
+        import requests
+        resp = requests.post(
+            register_url,
+            json={"token_id": token_id, "email": recipient_email, "campaign_id": campaign_id},
+            headers={"X-Unsub-Auth": auth},
+            timeout=5,
+        )
+        return resp.status_code in (200, 204)
+    except Exception:
+        return False
 
 
 def get_last_refresh_lines() -> tuple[str, str]:
@@ -1345,6 +1376,11 @@ def main():
         
         # Generate email (unique token per recipient+campaign)
         unsub_token = compute_unsub_token(email, campaign_id)
+        if unsub_token:
+            ok = register_unsub_token(unsub_token, email, campaign_id, args.dry_run)
+            if not ok:
+                print("  [WARN] One-click unsubscribe token registration failed; falling back to mailto-only")
+                unsub_token = ""
         subject = generate_email_subject(recipient, samples)
         text_body, html_body = generate_email_body(
             recipient, samples, unsub_token, mailing_address
