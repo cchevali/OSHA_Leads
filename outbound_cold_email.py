@@ -518,8 +518,8 @@ def select_sample_leads(leads: list, config: dict, recipient_email: str,
                          campaign_id: str, state_pref: str = None) -> list:
     """
     Select 2-5 sample leads using deterministic rules:
-    1. Prefer score >= 8, opened within 7 days
-    2. Fallback to >= 6, then >= 4 if insufficient
+    1. Prefer High/Medium priority leads when available
+    2. Only include Low priority if needed to reach minimum sample size
     3. Use hash-based shuffle to vary selection across recipients
     """
     today = datetime.now().date()
@@ -564,18 +564,17 @@ def select_sample_leads(leads: list, config: dict, recipient_email: str,
     
     recent_leads.sort(key=sort_key)
     
-    # Tiered selection by score (from sorted list)
+    # Prefer High/Medium priority leads; include Low only if needed
     selected = []
-    for threshold in config["score_thresholds"]:
-        candidates = [l for l in recent_leads if l["lead_score"] >= threshold]
-        if len(candidates) >= config["sample_leads_min"]:
-            # Take top N (already sorted by freshness)
-            selected = candidates[:config["sample_leads_max"]]
-            break
+    high = [l for l in recent_leads if l["lead_score"] >= 8]
+    medium = [l for l in recent_leads if 6 <= l["lead_score"] < 8]
+    preferred = high + medium
     
-    # Fallback: use any recent leads (already sorted)
-    if len(selected) < config["sample_leads_min"] and recent_leads:
-        selected = recent_leads[:config["sample_leads_max"]]
+    if len(preferred) >= config["sample_leads_min"]:
+        selected = preferred[:config["sample_leads_max"]]
+    else:
+        low = [l for l in recent_leads if l["lead_score"] < 6]
+        selected = (preferred + low)[:config["sample_leads_max"]]
     
     return selected
 
