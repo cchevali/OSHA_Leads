@@ -901,6 +901,8 @@ def main():
                         help="Test SMTP connectivity and exit")
     parser.add_argument("--to-override", type=str, default=None,
                         help="Override recipient (for testing)")
+    parser.add_argument("--force-resend", action="store_true",
+                        help="Allow sending to --to-override even if already sent today (testing only)")
     parser.add_argument("--print-config", action="store_true",
                         help="Print resolved config (FROM_EMAIL, SMTP_USER, aliases) and exit")
     parser.add_argument("--preflight", action="store_true",
@@ -1184,6 +1186,11 @@ def main():
     # Filter out already sent and suppressed
     already_sent = get_already_sent_today(campaign_id)
     print(f"[INFO] Already sent today: {len(already_sent)}")
+    
+    # Testing escape hatch: allow a second send to a specific override address.
+    if args.to_override and args.force_resend:
+        already_sent = set()
+        print("[WARN] --force-resend enabled (ignoring already-sent filter for override recipient)")
     
     eligible = []
     for r in recipients:
