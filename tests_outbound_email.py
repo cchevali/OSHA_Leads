@@ -13,6 +13,8 @@ class TestOutboundEmailContent(unittest.TestCase):
             "date_opened": "2025-01-05",
             "inspection_type": "Complaint",
             "source_url": "https://www.osha.gov/ords/imis/establishment.inspection_detail?id=123456789",
+            "lead_score": 9,
+            "first_seen_at": "2025-01-06T12:00:00+00:00",
         }
         recipient = {
             "email": "test@example.com",
@@ -29,6 +31,11 @@ class TestOutboundEmailContent(unittest.TestCase):
         # OSHA link presence
         self.assertIn("OSHA: https://www.osha.gov/ords/imis/establishment.inspection_detail?id=123456789", text_body)
         self.assertIn("https://www.osha.gov/ords/imis/establishment.inspection_detail?id=123456789", html_body)
+        
+        # Priority + observed freshness
+        self.assertIn("Priority: High", text_body)
+        self.assertIn("Observed: 2025-01-06", text_body)
+        self.assertIn("Priority: High", html_body)
 
         # Address only after footer separator
         addr = "11539 Links Dr, Reston, VA 20190"

@@ -15,6 +15,8 @@ Usage:
 import argparse
 import base64
 import csv
+import email
+import imaplib
 import json
 import os
 import re
@@ -22,7 +24,9 @@ import shutil
 import smtplib
 import sys
 from datetime import datetime, timedelta
+from email.header import decode_header
 from email.mime.text import MIMEText
+from email.utils import parseaddr
 from pathlib import Path
 
 # Load environment variables
@@ -59,6 +63,19 @@ COLD_EMAIL_LOG_PATH = OUT_DIR / "cold_email_log.csv"
 REPLY_DRAFTS_DIR = OUT_DIR / "reply_drafts"
 ENG_TICKETS_DIR = OUT_DIR / "eng_tickets"
 TRIAGE_LOG_PATH = OUT_DIR / "inbox_triage_log.csv"
+
+# Inbound backend
+INBOUND_BACKEND = os.getenv("INBOUND_BACKEND", "gmail").strip().lower()
+
+# IMAP configuration (Zoho)
+IMAP_HOST = os.getenv("IMAP_HOST", "imappro.zoho.com")
+IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+IMAP_USER = os.getenv("IMAP_USER", "")
+IMAP_PASS = os.getenv("IMAP_PASS", "")
+IMAP_FOLDER = os.getenv("IMAP_FOLDER", "INBOX")
+IMAP_FOLDER_UNSUB = os.getenv("IMAP_FOLDER_UNSUB", "Processed/Unsubscribe")
+IMAP_FOLDER_BOUNCE = os.getenv("IMAP_FOLDER_BOUNCE", "Processed/Bounce")
+SUPPORT_INBOX = os.getenv("REPLY_TO_EMAIL", "support@microflowops.com").strip().lower()
 
 # Gmail OAuth scopes
 SCOPES = [
@@ -302,6 +319,145 @@ def extract_bounce_recipient(body: str, headers: dict) -> str:
                 return email
     
     return ""
+
+
+def decode_header_value(value: str) -> str:
+    """Decode a MIME encoded header to a readable string."""
+    if not value:
+        return ""
+    parts = decode_header(value)
+    decoded = []
+    for part, enc in parts:
+        if isinstance(part, bytes):
+            try:
+                decoded.append(part.decode(enc or "utf-8", errors="replace"))
+            except Exception:
+                decoded.append(part.decode("utf-8", errors="replace"))
+        else:
+            decoded.append(part)
+    return "".join(decoded).strip()
+
+
+def extract_plain_body(msg: email.message.Message) -> str:
+    """Extract a plain text body, falling back to stripped HTML."""
+    if msg.is_multipart():
+        # Prefer text/plain
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            disp = (part.get("Content-Disposition") or "").lower()
+            if ctype == "text/plain" and "attachment" not in disp:
+                try:
+                    return part.get_content()
+                except Exception:
+                    return part.get_payload(decode=True).decode(errors="replace")
+        # Fallback to text/html
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            disp = (part.get("Content-Disposition") or "").lower()
+            if ctype == "text/html" and "attachment" not in disp:
+                try:
+                    html_body = part.get_content()
+                except Exception:
+                    html_body = part.get_payload(decode=True).decode(errors="replace")
+                # Strip tags crudely
+                return re.sub(r"<[^>]+>", " ", html_body)
+    else:
+        try:
+            return msg.get_content()
+        except Exception:
+            return msg.get_payload(decode=True).decode(errors="replace")
+    return ""
+
+
+def extract_original_sender(from_email: str, reply_to: str, body: str) -> str:
+    """
+    If the message appears forwarded from the support inbox, try to extract
+    the original sender from Reply-To or forwarded header blocks.
+    """
+    from_email = (from_email or "").strip().lower()
+    reply_to = (reply_to or "").strip()
+    reply_to_addr = parseaddr(reply_to)[1].strip().lower() if reply_to else ""
+    if reply_to_addr and reply_to_addr != SUPPORT_INBOX:
+        return reply_to_addr
+    if from_email != SUPPORT_INBOX:
+        return from_email
+    
+    # Attempt to extract from forwarded headers in body
+    patterns = [
+        r"^From:\s*(.+)$",
+        r"^Reply-To:\s*(.+)$",
+        r"^Original Sender:\s*(.+)$",
+    ]
+    for line in body.splitlines():
+        line = line.strip()
+        for pat in patterns:
+            m = re.match(pat, line, re.IGNORECASE)
+            if m:
+                candidate = m.group(1)
+                _, email_addr = parseaddr(candidate)
+                if email_addr and "@" in email_addr:
+                    return email_addr.lower()
+    return from_email
+
+
+def imap_connect() -> imaplib.IMAP4_SSL:
+    """Connect to IMAP and login."""
+    if not IMAP_USER or not IMAP_PASS:
+        print("[ERROR] IMAP_USER / IMAP_PASS not configured in .env")
+        return None
+    try:
+        conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        conn.login(IMAP_USER, IMAP_PASS)
+        return conn
+    except Exception as e:
+        print(f"[ERROR] IMAP connection failed: {e}")
+        return None
+
+
+def imap_ensure_folder(conn: imaplib.IMAP4_SSL, folder: str) -> None:
+    """Ensure a folder exists; create if missing."""
+    if not folder:
+        return
+    typ, data = conn.list()
+    if typ != "OK":
+        return
+    exists = any(f'"{folder}"' in line.decode(errors="ignore") for line in data if line)
+    if not exists:
+        conn.create(folder)
+
+
+def imap_search_unseen(conn: imaplib.IMAP4_SSL, folder: str, since_hours: int) -> list[str]:
+    """Return list of message UIDs that are UNSEEN since a given hours window."""
+    conn.select(folder)
+    since_date = (datetime.now() - timedelta(hours=since_hours)).strftime("%d-%b-%Y")
+    typ, data = conn.search(None, f'(UNSEEN SINCE "{since_date}")')
+    if typ != "OK" or not data:
+        return []
+    ids = data[0].decode().strip().split()
+    return [i for i in ids if i]
+
+
+def imap_fetch_message(conn: imaplib.IMAP4_SSL, msg_id: str) -> tuple[dict, str, email.message.Message]:
+    """Fetch a message and return headers dict, body text, and parsed message."""
+    typ, data = conn.fetch(msg_id, "(RFC822)")
+    if typ != "OK" or not data or not data[0]:
+        return {}, "", None
+    raw = data[0][1]
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    headers = {k: v for (k, v) in msg.items()}
+    body = extract_plain_body(msg)
+    return headers, body, msg
+
+
+def imap_move_message(conn: imaplib.IMAP4_SSL, msg_id: str, dest_folder: str, dry_run: bool):
+    """Move message to another folder."""
+    if dry_run:
+        return
+    if not dest_folder:
+        return
+    imap_ensure_folder(conn, dest_folder)
+    conn.copy(msg_id, dest_folder)
+    conn.store(msg_id, "+FLAGS", "\\Deleted")
 
 
 # =============================================================================
@@ -924,12 +1080,90 @@ def process_message(service, msg: dict, state: dict, label_map: dict,
     return {"category": category}
 
 
+def process_imap_message(conn: imaplib.IMAP4_SSL, msg_id: str, state: dict,
+                         dry_run: bool = False) -> dict:
+    """Process a single IMAP message. Returns stats dict."""
+    headers, body, msg = imap_fetch_message(conn, msg_id)
+    if not msg:
+        return {"category": None}
+    
+    subject = decode_header_value(msg.get("Subject", ""))
+    from_header = decode_header_value(msg.get("From", ""))
+    reply_to_header = decode_header_value(msg.get("Reply-To", ""))
+    from_email = extract_sender_email(from_header)
+    effective_from = extract_original_sender(from_email, reply_to_header, body)
+    message_id = decode_header_value(msg.get("Message-ID", "")) or f"imap:{msg_id}"
+    
+    # Skip if already processed
+    if message_id in state.get("processed_message_ids", []):
+        return {"category": None}
+    
+    print(f"  [{message_id[:8]}] {effective_from}: {subject[:40]}...")
+    
+    category = classify_email(subject, body, effective_from)
+    print(f"    -> {category}")
+    
+    action = ""
+    
+    if category == "unsubscribe":
+        add_to_suppression(effective_from, "unsubscribe", "inbound_triage", message_id, dry_run)
+        action = "suppressed"
+        imap_move_message(conn, msg_id, IMAP_FOLDER_UNSUB, dry_run)
+    
+    elif category == "objection":
+        add_to_suppression(effective_from, "not_interested", "inbound_triage", message_id, dry_run)
+        action = "suppressed"
+        imap_move_message(conn, msg_id, IMAP_FOLDER_UNSUB, dry_run)
+    
+    elif category == "bounce":
+        recipient = extract_bounce_recipient(body, headers)
+        if recipient:
+            add_to_suppression(recipient, "bounce", "inbound_triage", message_id, dry_run)
+            action = "suppressed_recipient"
+            imap_move_message(conn, msg_id, IMAP_FOLDER_BOUNCE, dry_run)
+        else:
+            print("    [WARN] Could not extract bounce recipient")
+            action = "bounce_unknown"
+    
+    elif category == "hot_interest":
+        create_reply_draft(effective_from, subject, body, category, message_id, dry_run)
+        send_immediate_notification(effective_from, subject, body, category, dry_run)
+        action = "notified+draft"
+    
+    elif category == "question":
+        create_reply_draft(effective_from, subject, body, category, message_id, dry_run)
+        send_immediate_notification(effective_from, subject, body, category, dry_run)
+        action = "notified+draft"
+    
+    elif category == "bug_feature":
+        create_eng_ticket(effective_from, subject, body, message_id, dry_run)
+        action = "ticket_created"
+    
+    elif category == "out_of_office":
+        action = "ignored"
+    
+    else:
+        action = "ignored"
+    
+    # Log triage
+    log_triage(message_id, effective_from, subject, category, action, dry_run)
+    
+    # Mark seen & record processed
+    if not dry_run:
+        conn.store(msg_id, "+FLAGS", "\\Seen")
+        state["processed_message_ids"].append(message_id)
+        if len(state["processed_message_ids"]) > 1000:
+            state["processed_message_ids"] = state["processed_message_ids"][-1000:]
+    
+    return {"category": category}
+
+
 # =============================================================================
 # MAIN
 # =============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="OSHA Inbox Triage - Gmail classification and auto-actions"
+        description="OSHA Inbox Triage - Gmail/IMAP classification and auto-actions"
     )
     parser.add_argument("--run-once", action="store_true",
                         help="Process new mail then exit")
@@ -952,7 +1186,90 @@ def main():
         generate_daily_summary(args.dry_run)
         return
     
-    # Connect to Gmail
+    # Load state
+    state = load_state()
+    
+    if INBOUND_BACKEND == "imap":
+        print("[INFO] Backend: IMAP")
+        conn = imap_connect()
+        if not conn:
+            sys.exit(1)
+        
+        # Ensure folders exist
+        imap_ensure_folder(conn, IMAP_FOLDER)
+        imap_ensure_folder(conn, IMAP_FOLDER_UNSUB)
+        imap_ensure_folder(conn, IMAP_FOLDER_BOUNCE)
+        
+        print(f"[INFO] Fetching IMAP messages (last {args.since_hours}h)...")
+        msg_ids = imap_search_unseen(conn, IMAP_FOLDER, args.since_hours)
+        if args.max_messages:
+            msg_ids = msg_ids[:args.max_messages]
+        print(f"[INFO] Found {len(msg_ids)} new messages")
+        
+        if not msg_ids:
+            print("[INFO] No new messages to process")
+            conn.logout()
+            return
+        
+        counts = {"unsubscribe": 0, "bounce": 0, "hot_interest": 0, 
+                  "question": 0, "objection": 0, "out_of_office": 0,
+                  "bug_feature": 0, "other": 0}
+        
+        for msg_id in msg_ids:
+            try:
+                result = process_imap_message(conn, msg_id, state, args.dry_run)
+                cat = result.get("category")
+                if cat:
+                    counts[cat] = counts.get(cat, 0) + 1
+            except Exception as e:
+                print(f"[ERROR] Failed to process IMAP message: {e}")
+        
+        # Expunge deleted after moves
+        if not args.dry_run:
+            try:
+                conn.expunge()
+            except Exception:
+                pass
+        conn.logout()
+        
+        # Check bounce rate
+        bounce_count = counts.get("bounce", 0)
+        sent_count = get_today_sent_count()
+        if sent_count > 0 and bounce_count > 0:
+            bounce_rate = bounce_count / sent_count
+            if bounce_rate > 0.05:
+                print(f"[WARNING] High bounce rate: {bounce_rate:.1%}")
+                send_bounce_spike_warning(bounce_count, sent_count, bounce_rate, args.dry_run)
+        
+        # Log metrics
+        log_metrics(
+            processed=len(msg_ids),
+            unsub=counts.get("unsubscribe", 0) + counts.get("objection", 0),
+            bounce=counts.get("bounce", 0),
+            hot=counts.get("hot_interest", 0),
+            action=counts.get("question", 0) + counts.get("bug_feature", 0) + counts.get("other", 0),
+            dry_run=args.dry_run
+        )
+        
+        if not args.dry_run:
+            state["last_processed_time"] = datetime.now().isoformat()
+            save_state(state)
+            
+            if (counts.get("unsubscribe", 0) > 0 or 
+                counts.get("objection", 0) > 0 or 
+                counts.get("bounce", 0) > 0):
+                backup_suppression_file()
+        
+        # Summary
+        print(f"\n{'='*50}")
+        print(f"[SUMMARY] Processed: {len(msg_ids)}")
+        for cat, count in sorted(counts.items()):
+            if count > 0:
+                print(f"  {cat}: {count}")
+        print(f"{'='*50}")
+        return
+    
+    # Default: Gmail API
     if not GMAIL_AVAILABLE:
         print("[ERROR] Gmail API not installed.")
         print("  pip install google-api-python-client google-auth-oauthlib")
@@ -961,9 +1278,6 @@ def main():
     service = get_gmail_service(args.dry_run)
     if not service:
         sys.exit(1)
-    
-    # Load state
-    state = load_state()
     
     # Ensure labels exist
     print("[INFO] Checking labels...")

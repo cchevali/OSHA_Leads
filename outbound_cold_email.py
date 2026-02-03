@@ -74,6 +74,32 @@ def get_osha_url(lead: dict) -> str:
     return ""
 
 
+def get_priority_label(score: int | str) -> str:
+    """Map lead_score to a human-friendly priority label."""
+    try:
+        score_val = int(score)
+    except (TypeError, ValueError):
+        score_val = 0
+    if score_val >= 8:
+        return "High"
+    if score_val >= 6:
+        return "Medium"
+    return "Low"
+
+
+def get_observed_date(lead: dict) -> str:
+    """Return YYYY-MM-DD for first_seen_at, falling back to date_opened."""
+    first_seen = (lead.get("first_seen_at") or "").strip()
+    if first_seen:
+        try:
+            fs_dt = datetime.fromisoformat(first_seen.replace("Z", "+00:00"))
+            return fs_dt.date().isoformat()
+        except (ValueError, TypeError):
+            pass
+    opened = (lead.get("date_opened") or "").strip()
+    return opened
+
+
 def validate_environment() -> tuple:
     """
     Validate required environment variables for compliance.
@@ -558,7 +584,7 @@ def select_sample_leads(leads: list, config: dict, recipient_email: str,
 # EMAIL GENERATION
 # =============================================================================
 def generate_email_subject(recipient: dict, sample_leads: list, is_test: bool = False) -> str:
-    """Generate polished subject line with em dash."""
+    """Generate polished subject line with dash."""
     state = recipient.get("state_pref") or (sample_leads[0]["site_state"] if sample_leads else "")
     firm = recipient.get("firm_name", "").strip()
     
@@ -566,7 +592,7 @@ def generate_email_subject(recipient: dict, sample_leads: list, is_test: bool = 
     
     if is_test or not firm:
         return f"{territory} OSHA activity signals (sample)"
-    return f"{territory} OSHA activity signals — {firm}"
+    return f"{territory} OSHA activity signals - {firm}"
 
 
 def format_lead_for_text(lead: dict, index: int) -> str:
@@ -574,26 +600,16 @@ def format_lead_for_text(lead: dict, index: int) -> str:
     company = lead.get("establishment_name", "Unknown Company")
     city = lead.get("site_city", "")
     state = lead.get("site_state", "")
-    location = f"{city}, {state}".strip(", ")
-    opened = lead.get("date_opened", "")
-    insp_type = lead.get("inspection_type", "")
+    location = f"{city}, {state}".strip(", ") or "Unknown location"
+    opened = lead.get("date_opened", "") or "Unknown"
+    observed = get_observed_date(lead) or "Unknown"
+    insp_type = lead.get("inspection_type", "") or "Inspection"
+    priority = get_priority_label(lead.get("lead_score", 0))
     
-    # Build compact line
-    parts = [company]
-    meta = []
-    if location:
-        meta.append(location)
-    if insp_type:
-        meta.append(insp_type)
-    if opened:
-        meta.append(f"Opened: {opened}")
+    line = (f"Priority: {priority} - {company} - {location} - "
+            f"{insp_type} - Opened: {opened} - Observed: {observed}")
     
-    if meta:
-        parts.append(" | ".join(meta))
-    
-    lines = [f"{index}. {parts[0]}"]
-    if len(parts) > 1:
-        lines.append(f"   {parts[1]}")
+    lines = [f"{index}. {line}"]
     
     osha_url = get_osha_url(lead)
     if osha_url:
@@ -607,30 +623,23 @@ def format_lead_for_html(lead: dict) -> str:
     company = html_escape(lead.get("establishment_name", "Unknown Company"))
     city = html_escape(lead.get("site_city", ""))
     state = html_escape(lead.get("site_state", ""))
-    location = f"{city}, {state}".strip(", ")
-    opened = html_escape(lead.get("date_opened", ""))
-    insp_type = html_escape(lead.get("inspection_type", ""))
+    location = f"{city}, {state}".strip(", ") or "Unknown location"
+    opened = html_escape(lead.get("date_opened", "") or "Unknown")
+    observed = html_escape(get_observed_date(lead) or "Unknown")
+    insp_type = html_escape(lead.get("inspection_type", "") or "Inspection")
+    priority = html_escape(get_priority_label(lead.get("lead_score", 0)))
     osha_url = html_escape(get_osha_url(lead))
-    
-    # Build meta line
-    meta_parts = []
-    if location:
-        meta_parts.append(location)
-    if insp_type:
-        meta_parts.append(insp_type)
-    if opened:
-        meta_parts.append(f"Opened: {opened}")
-    
-    meta_line = " | ".join(meta_parts)
     
     if osha_url:
         company_html = f'<a href="{osha_url}" rel="noopener noreferrer" style="color: #1a1a1a; text-decoration: underline;">{company}</a>'
     else:
         company_html = company
     
+    meta_line = (f"Priority: {priority} &mdash; {company_html} &mdash; {location} &mdash; "
+                 f"{insp_type} &mdash; Opened: {opened} &mdash; Observed: {observed}")
+    
     return f'''<div style="margin-bottom: 12px;">
-<div style="font-weight: 600; color: #1a1a1a;">{company_html}</div>
-<div style="font-size: 13px; color: #666;">{meta_line}</div>
+<div style="font-size: 13px; color: #1a1a1a;">{meta_line}</div>
 </div>'''
 
 
@@ -676,6 +685,8 @@ I'm reaching out because {firm} appears active in safety/construction, and we tr
 
 Here are a few recent signals:
 
+Priority is a heuristic based on severity/penalty/recency; not legal advice.
+
 {leads_text}
 
 Some OSHA matters can be time-sensitive; deadlines vary by case. We include deadlines only when available.
@@ -713,6 +724,9 @@ I'm reaching out because {firm} appears active in safety/construction, and we tr
 </p>
 
 <p style="font-size: 16px; font-weight: 600; margin: 0 0 12px 0; color: #1a1a1a;">Recent signals:</p>
+<p style="font-size: 13px; color: #666; line-height: 1.5; margin: 0 0 12px 0;">
+Priority is a heuristic based on severity/penalty/recency; not legal advice.
+</p>
 
 <div style="margin-bottom: 20px;">
 {leads_html}
