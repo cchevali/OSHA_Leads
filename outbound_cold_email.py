@@ -13,6 +13,7 @@ Usage:
 import argparse
 import csv
 import hashlib
+import html
 import json
 import os
 import random
@@ -56,6 +57,21 @@ DEFAULT_CONFIG = {
 # Placeholder patterns to reject
 PLACEHOLDER_PATTERNS = ["123 main street", "suite 100", "your address here", "example"]
 REQUIRED_REPLY_TO = "support@microflowops.com"
+
+
+def html_escape(s: str) -> str:
+    return html.escape(s or "", quote=True)
+
+
+def get_osha_url(lead: dict) -> str:
+    """Return a safe OSHA URL for the lead (prefers source_url)."""
+    source_url = (lead.get("source_url") or "").strip()
+    if source_url.startswith("https://www.osha.gov/"):
+        return source_url
+    activity_nr = (lead.get("activity_nr") or "").strip()
+    if activity_nr:
+        return f"https://www.osha.gov/ords/imis/establishment.inspection_detail?id={activity_nr}"
+    return ""
 
 
 def validate_environment() -> tuple:
@@ -465,7 +481,9 @@ def load_leads(leads_path: Path = None) -> list:
                 "date_opened": row.get("date_opened", ""),
                 "inspection_type": row.get("inspection_type", ""),
                 "naics_desc": row.get("naics_desc", ""),
-                "lead_score": score
+                "lead_score": score,
+                "first_seen_at": row.get("first_seen_at", ""),
+                "source_url": row.get("source_url", ""),
             })
     return leads
 
@@ -573,17 +591,26 @@ def format_lead_for_text(lead: dict, index: int) -> str:
     if meta:
         parts.append(" | ".join(meta))
     
-    return f"{index}. {parts[0]}\n   {parts[1] if len(parts) > 1 else ''}"
+    lines = [f"{index}. {parts[0]}"]
+    if len(parts) > 1:
+        lines.append(f"   {parts[1]}")
+    
+    osha_url = get_osha_url(lead)
+    if osha_url:
+        lines.append(f"   OSHA: {osha_url}")
+    
+    return "\n".join(lines)
 
 
 def format_lead_for_html(lead: dict) -> str:
     """Format a single lead as HTML mini-card."""
-    company = lead.get("establishment_name", "Unknown Company")
-    city = lead.get("site_city", "")
-    state = lead.get("site_state", "")
+    company = html_escape(lead.get("establishment_name", "Unknown Company"))
+    city = html_escape(lead.get("site_city", ""))
+    state = html_escape(lead.get("site_state", ""))
     location = f"{city}, {state}".strip(", ")
-    opened = lead.get("date_opened", "")
-    insp_type = lead.get("inspection_type", "")
+    opened = html_escape(lead.get("date_opened", ""))
+    insp_type = html_escape(lead.get("inspection_type", ""))
+    osha_url = html_escape(get_osha_url(lead))
     
     # Build meta line
     meta_parts = []
@@ -596,8 +623,13 @@ def format_lead_for_html(lead: dict) -> str:
     
     meta_line = " | ".join(meta_parts)
     
+    if osha_url:
+        company_html = f'<a href="{osha_url}" rel="noopener noreferrer" style="color: #1a1a1a; text-decoration: underline;">{company}</a>'
+    else:
+        company_html = company
+    
     return f'''<div style="margin-bottom: 12px;">
-<div style="font-weight: 600; color: #1a1a1a;">{company}</div>
+<div style="font-weight: 600; color: #1a1a1a;">{company_html}</div>
 <div style="font-size: 13px; color: #666;">{meta_line}</div>
 </div>'''
 
@@ -628,7 +660,7 @@ def generate_email_body(recipient: dict, sample_leads: list,
     # Format sample leads for HTML (mini-cards)
     leads_html = "\n".join([format_lead_for_html(l) for l in sample_leads[:5]])
     
-    # Build unsubscribe link text for footer (only if endpoint exists)
+    # Build unsubscribe link text for footer (mailto is always included)
     unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "")
     if unsub_endpoint:
         unsub_link_text = f" or click: {unsub_endpoint}?token={unsub_token}"
@@ -659,7 +691,7 @@ support@microflowops.com
 ---
 Micro Flow Ops
 {footer_address}
-Opt out: reply "unsubscribe"{unsub_link_text}
+Opt out: reply with "unsubscribe" or email {REQUIRED_REPLY_TO} (subject: unsubscribe){unsub_link_text}
 """
     
     # Build HTML body (600px centered, system-ui font stack, dark-mode safe)
@@ -709,7 +741,10 @@ Not affiliated with OSHA; this is an independent alert service (no legal advice)
 <div style="padding: 16px 24px; text-align: center;">
 <p style="font-size: 12px; color: #666; margin: 0 0 4px 0;">Micro Flow Ops</p>
 <p style="font-size: 12px; color: #666; margin: 0 0 12px 0;">{footer_address}</p>
-<p style="font-size: 12px; color: #888; margin: 0;">Opt out: reply "unsubscribe"{unsub_link_html}</p>
+<p style="font-size: 12px; color: #888; margin: 0;">
+  Opt out: reply with "unsubscribe" or
+  <a href="mailto:{REQUIRED_REPLY_TO}?subject=unsubscribe" style="color: #888;">click to unsubscribe</a>{unsub_link_html}
+</p>
 </div>
 
 </div>
