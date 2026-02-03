@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-OUT_DIR = SCRIPT_DIR / "out"
+
+DATA_DIR = os.getenv("DATA_DIR", "").strip()
+OUT_DIR = Path(DATA_DIR) if DATA_DIR else (SCRIPT_DIR / "out")
 UNSUB_TOKEN_STORE_PATH = OUT_DIR / "unsub_tokens.csv"
 SUPPRESSION_PATH = OUT_DIR / "suppression.csv"
 
@@ -49,7 +51,7 @@ def create_unsub_token(email: str, campaign_id: str) -> str:
 
 
 def store_unsub_token(token_id: str, email: str, campaign_id: str) -> None:
-    OUT_DIR.mkdir(exist_ok=True)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     exists = UNSUB_TOKEN_STORE_PATH.exists()
 
     with open(UNSUB_TOKEN_STORE_PATH, "a", newline="", encoding="utf-8") as f:
@@ -98,7 +100,7 @@ def lookup_email_for_token(token_id: str) -> str | None:
 def ensure_suppression_header() -> None:
     if SUPPRESSION_PATH.exists():
         return
-    OUT_DIR.mkdir(exist_ok=True)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     with open(SUPPRESSION_PATH, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["email", "reason", "source", "timestamp"])
         writer.writeheader()
