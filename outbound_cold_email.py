@@ -55,6 +55,7 @@ DEFAULT_CONFIG = {
 
 # Placeholder patterns to reject
 PLACEHOLDER_PATTERNS = ["123 main street", "suite 100", "your address here", "example"]
+REQUIRED_REPLY_TO = "support@microflowops.com"
 
 
 def validate_environment() -> tuple:
@@ -107,6 +108,10 @@ def validate_environment() -> tuple:
     reply_to = os.getenv("REPLY_TO_EMAIL", "")
     if not reply_to:
         errors.append("REPLY_TO_EMAIL is required (opt-out replies go here)")
+    elif reply_to.strip().lower() != REQUIRED_REPLY_TO:
+        errors.append(
+            f"REPLY_TO_EMAIL must be {REQUIRED_REPLY_TO} (role inbox required)."
+        )
     
     # REPLY_TO_EMAIL must be same domain as FROM_EMAIL
     if from_email and reply_to:
@@ -1023,6 +1028,14 @@ def main():
             print("[OK] Suppression file present")
         else:
             print(f"[FAIL] Suppression file missing: {SUPPRESSION_PATH}")
+            all_pass = False
+        
+        # Reply-to enforcement
+        reply_to = os.getenv("REPLY_TO_EMAIL", "")
+        if reply_to.strip().lower() == REQUIRED_REPLY_TO:
+            print(f"[OK] REPLY_TO_EMAIL={REQUIRED_REPLY_TO}")
+        else:
+            print(f"[FAIL] REPLY_TO_EMAIL must be {REQUIRED_REPLY_TO}")
             all_pass = False
         
         print("=" * 50)
