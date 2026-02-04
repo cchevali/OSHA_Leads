@@ -22,6 +22,7 @@ class TestOutboundSelection(unittest.TestCase):
                 "site_city": "Austin",
                 "date_opened": "2026-01-30",
                 "lead_score": 9,
+                "case_status": "OPEN",
                 "first_seen_at": "2026-02-01T08:00:00+00:00",
             },
             {
@@ -31,6 +32,7 @@ class TestOutboundSelection(unittest.TestCase):
                 "site_city": "Austin",
                 "date_opened": "2026-01-31",
                 "lead_score": 6,
+                "case_status": "OPEN",
                 "first_seen_at": "2026-02-02T08:00:00+00:00",
             },
             {
@@ -40,6 +42,7 @@ class TestOutboundSelection(unittest.TestCase):
                 "site_city": "Austin",
                 "date_opened": "2026-01-31",
                 "lead_score": 4,
+                "case_status": "OPEN",
                 "first_seen_at": "2026-02-02T12:00:00+00:00",
             },
         ]
@@ -62,6 +65,7 @@ class TestOutboundSelection(unittest.TestCase):
                 "site_city": "Austin",
                 "date_opened": "2026-01-31",
                 "lead_score": 4,
+                "case_status": "OPEN",
                 "first_seen_at": "2026-02-02T12:00:00+00:00",
             }
         ]

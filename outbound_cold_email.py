@@ -374,35 +374,51 @@ def compute_unsub_token(email: str, campaign_id: str = "") -> str:
     return create_unsub_token(email, campaign_id)
 
 
-def register_unsub_token(unsub_token: str, recipient_email: str, campaign_id: str, dry_run: bool) -> bool:
+def register_unsub_token(
+    unsub_token: str,
+    recipient_email: str,
+    campaign_id: str,
+    dry_run: bool,
+    retries: int = 2,
+    timeout: int = 5,
+) -> tuple[bool, int | None, str]:
     """
     Register token->email mapping with the remote unsubscribe service so one-click links work.
-    If registration fails, callers should fall back to mailto-only.
+    Returns (ok, http_status, error_message).
     """
     if dry_run:
-        return True
+        return True, None, ""
     unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
     secret = os.getenv("UNSUB_SECRET", "").strip()
     if not unsub_endpoint or not secret:
-        return False
+        return False, None, "missing_unsub_endpoint_or_secret"
     if not unsub_token or "." not in unsub_token:
-        return False
+        return False, None, "invalid_unsub_token"
     
     token_id = unsub_token.split(".", 1)[0]
     register_url = unsub_endpoint.rstrip("/") + "/register"
     auth = sign_registration(token_id, recipient_email, secret)
     
-    try:
-        import requests
-        resp = requests.post(
-            register_url,
-            json={"token_id": token_id, "email": recipient_email, "campaign_id": campaign_id},
-            headers={"X-Unsub-Auth": auth},
-            timeout=5,
-        )
-        return resp.status_code in (200, 204)
-    except Exception:
-        return False
+    last_error = ""
+    last_status = None
+    for attempt in range(1, retries + 2):
+        try:
+            import requests
+            resp = requests.post(
+                register_url,
+                json={"token_id": token_id, "email": recipient_email, "campaign_id": campaign_id},
+                headers={"X-Unsub-Auth": auth},
+                timeout=timeout,
+            )
+            last_status = resp.status_code
+            if resp.status_code in (200, 204):
+                return True, resp.status_code, ""
+            last_error = f"http_{resp.status_code}"
+        except Exception as e:
+            last_error = str(e)
+        if attempt <= retries:
+            time.sleep(0.5)
+    return False, last_status, last_error
 
 
 def remote_is_suppressed(recipient_email: str) -> bool:
@@ -427,6 +443,40 @@ def remote_is_suppressed(recipient_email: str) -> bool:
         return bool(data.get("suppressed"))
     except Exception:
         return False
+
+
+def preflight_one_click(recipient_email: str, campaign_id: str, dry_run: bool, require_one_click: bool) -> bool:
+    """Attempt a real one-click registration before sending any emails."""
+    unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
+    if not unsub_endpoint:
+        if require_one_click:
+            raise RuntimeError("UNSUB_ENDPOINT_BASE not set but --require-one-click was provided")
+        return False
+    if not recipient_email:
+        if require_one_click:
+            raise RuntimeError("Missing recipient email for one-click preflight")
+        return False
+    preflight_token = compute_unsub_token(recipient_email, f"{campaign_id}-preflight")
+    if not preflight_token:
+        if require_one_click:
+            raise RuntimeError("Failed to compute one-click token during preflight")
+        return False
+    ok, status, err = register_unsub_token(
+        preflight_token,
+        recipient_email,
+        f"{campaign_id}-preflight",
+        dry_run,
+        retries=2,
+        timeout=5,
+    )
+    if not ok:
+        msg = f"one-click preflight failed (status={status}, error={err})"
+        if require_one_click:
+            raise RuntimeError(msg)
+        print(f"[WARN] {msg}")
+        return False
+    print(f"[OK] One-click preflight succeeded (status={status})")
+    return True
 
 
 def get_last_refresh_lines() -> tuple[str, str]:
@@ -497,16 +547,32 @@ def is_suppressed(email: str, suppression_list: set) -> bool:
 # =============================================================================
 # RECIPIENT MANAGEMENT
 # =============================================================================
-def load_recipients() -> list:
-    """Load recipients from CSV."""
+def load_recipients(recipients_path: Path | None = None) -> list:
+    """Load recipients from CSV (supports legacy and business-contact schemas)."""
     recipients = []
-    if not RECIPIENTS_PATH.exists():
-        print(f"[ERROR] Recipients file not found: {RECIPIENTS_PATH}")
+    path = recipients_path or RECIPIENTS_PATH
+    if not path.exists():
+        print(f"[ERROR] Recipients file not found: {path}")
         return recipients
     
-    with open(RECIPIENTS_PATH, "r", newline="", encoding="utf-8") as f:
+    with open(path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            # New schema (business-contact list)
+            if row.get("contact_email") or row.get("company_name"):
+                email = (row.get("contact_email") or "").strip()
+                if email and "@" in email:
+                    recipients.append({
+                        "email": email,
+                        "first_name": (row.get("contact_name") or "").strip(),
+                        "last_name": "",
+                        "firm_name": (row.get("company_name") or "").strip(),
+                        "segment": (row.get("contact_role") or "").strip(),
+                        "state_pref": (row.get("state") or "").strip().upper()
+                    })
+                continue
+            
+            # Legacy schema
             email = (row.get("email") or "").strip()
             if email and "@" in email:
                 recipients.append({
@@ -520,8 +586,26 @@ def load_recipients() -> list:
     return recipients
 
 
+FINAL_SEND_STATUSES = {"sent", "delivered"}
+LOG_FIELDS = [
+    "timestamp",
+    "recipient_email",
+    "subject",
+    "samples_used",
+    "message_id",
+    "campaign_id",
+    "status",
+    "error",
+    "unsub_token",
+    "register_attempted",
+    "register_ok",
+    "register_http_status",
+    "register_error",
+]
+
+
 def get_already_sent_today(campaign_id: str) -> set:
-    """Get emails already sent to today. Returns set of lowercase emails."""
+    """Get emails already sent today (final statuses only). Returns set of lowercase emails."""
     sent = set()
     if LOG_PATH.exists():
         with open(LOG_PATH, "r", newline="", encoding="utf-8") as f:
@@ -529,7 +613,21 @@ def get_already_sent_today(campaign_id: str) -> set:
             for row in reader:
                 if row.get("campaign_id") == campaign_id:
                     email = row.get("recipient_email", "").strip().lower()
-                    if email and row.get("status") in ("sent", "dry_run"):
+                    if email and row.get("status") in FINAL_SEND_STATUSES:
+                        sent.add(email)
+    return sent
+
+
+def get_already_sent_all_time() -> set:
+    """Get emails already sent across all campaigns (final statuses only)."""
+    sent = set()
+    if LOG_PATH.exists():
+        with open(LOG_PATH, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get("status") in FINAL_SEND_STATUSES:
+                    email = row.get("recipient_email", "").strip().lower()
+                    if email:
                         sent.add(email)
     return sent
 
@@ -557,7 +655,7 @@ def get_throttle_stats() -> dict:
             ts = row.get("timestamp", "")
             if not ts.startswith(today_prefix):
                 continue
-            if row.get("status") not in ("sent",):
+            if row.get("status") not in FINAL_SEND_STATUSES:
                 continue
             
             stats["daily_count"] += 1
@@ -633,6 +731,7 @@ def load_leads(leads_path: Path = None) -> list:
                 "site_state": row.get("site_state", ""),
                 "date_opened": row.get("date_opened", ""),
                 "inspection_type": row.get("inspection_type", ""),
+                "case_status": row.get("case_status", ""),
                 "naics_desc": row.get("naics_desc", ""),
                 "lead_score": score,
                 "first_seen_at": row.get("first_seen_at", ""),
@@ -653,15 +752,18 @@ def select_sample_leads(leads: list, config: dict, recipient_email: str,
     today = as_of_date or datetime.now().date()
     recency_cutoff = today - timedelta(days=config["recency_days"])
     
-    # Parse date and filter by recency
-    def is_recent(lead):
+    # Parse date and filter by recency + OPEN status
+    def is_recent_open(lead):
+        status = (lead.get("case_status") or "").strip().upper()
+        if status != "OPEN":
+            return False
         try:
-            opened = datetime.strptime(lead["date_opened"], "%Y-%m-%d").date()
-            return opened >= recency_cutoff
+            opened = datetime.strptime(lead.get("date_opened", ""), "%Y-%m-%d").date()
         except (ValueError, TypeError):
             return False
+        return opened >= recency_cutoff
     
-    recent_leads = [l for l in leads if is_recent(l)]
+    recent_leads = [l for l in leads if is_recent_open(l)]
     
     # If state preference, prioritize those leads
     if state_pref:
@@ -1008,17 +1110,39 @@ def send_email(recipient_email: str, subject: str, text_body: str,
 # =============================================================================
 # LOGGING
 # =============================================================================
+def ensure_log_schema():
+    """Ensure cold_email_log.csv includes required columns."""
+    if not LOG_PATH.exists():
+        return
+    with open(LOG_PATH, "r", newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+    if not header:
+        return
+    if all(field in header for field in LOG_FIELDS):
+        return
+    # Rewrite log with updated header and existing rows
+    with open(LOG_PATH, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    with open(LOG_PATH, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=LOG_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
 def log_send(recipient_email: str, subject: str, samples_used: list,
-             message_id: str, campaign_id: str, status: str, 
-             error: str, unsub_token: str):
+             message_id: str, campaign_id: str, status: str,
+             error: str, unsub_token: str,
+             register_attempted: bool = False, register_ok: bool = False,
+             register_http_status: int | None = None, register_error: str = ""):
     """Log email send attempt to CSV."""
-    # Create log file with headers if needed
+    ensure_log_schema()
     write_header = not LOG_PATH.exists()
     
     with open(LOG_PATH, "a", newline="", encoding="utf-8") as f:
-        fieldnames = ["timestamp", "recipient_email", "subject", "samples_used",
-                      "message_id", "campaign_id", "status", "error", "unsub_token"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=LOG_FIELDS)
         
         if write_header:
             writer.writeheader()
@@ -1035,7 +1159,11 @@ def log_send(recipient_email: str, subject: str, samples_used: list,
             "campaign_id": campaign_id,
             "status": status,
             "error": error,
-            "unsub_token": unsub_token
+            "unsub_token": unsub_token,
+            "register_attempted": str(register_attempted),
+            "register_ok": str(register_ok),
+            "register_http_status": "" if register_http_status is None else str(register_http_status),
+            "register_error": register_error,
         })
 
 
@@ -1053,6 +1181,8 @@ def main():
                         help="Override daily send limit")
     parser.add_argument("--leads-file", type=str, default=None,
                         help="Override leads CSV path")
+    parser.add_argument("--recipients-file", type=str, default=None,
+                        help="Override recipients CSV path")
     parser.add_argument("--smtp-test", action="store_true",
                         help="Test SMTP connectivity and exit")
     parser.add_argument("--to-override", type=str, default=None,
@@ -1065,6 +1195,8 @@ def main():
                         help="Run all checks (env, smtp, freshness, throttle) without sending")
     parser.add_argument("--render-preview", action="store_true",
                         help="Output preview_email.html and preview_email.txt to ./out/ (no send)")
+    parser.add_argument("--require-one-click", action="store_true",
+                        help="Abort sends if one-click registration fails")
     args = parser.parse_args()
     
     # Print config mode
@@ -1320,7 +1452,10 @@ def main():
     suppression_list = load_suppression_list()
     print(f"[INFO] Suppression list: {len(suppression_list)} emails")
     
-    recipients = load_recipients()
+    recipients_path = Path(args.recipients_file) if args.recipients_file else None
+    recipients = load_recipients(recipients_path)
+    if recipients_path:
+        print(f"[INFO] Recipients file: {recipients_path}")
     
     # Override recipient for testing
     if args.to_override:
@@ -1349,19 +1484,25 @@ def main():
         sys.exit(1)
     
     # Filter out already sent and suppressed
-    already_sent = get_already_sent_today(campaign_id)
-    print(f"[INFO] Already sent today: {len(already_sent)}")
+    already_sent_today = get_already_sent_today(campaign_id)
+    already_sent_all_time = get_already_sent_all_time()
+    print(f"[INFO] Already sent today: {len(already_sent_today)}")
+    print(f"[INFO] Already sent (all time): {len(already_sent_all_time)}")
     
     # Testing escape hatch: allow a second send to a specific override address.
     if args.to_override and args.force_resend:
-        already_sent = set()
+        already_sent_today = set()
+        already_sent_all_time = set()
         print("[WARN] --force-resend enabled (ignoring already-sent filter for override recipient)")
     
     eligible = []
     for r in recipients:
         email = r["email"].lower()
-        if email in already_sent:
-            print(f"  [SKIP] Already sent: {r['email']}")
+        if email in already_sent_today:
+            print(f"  [SKIP] Already sent today: {r['email']}")
+            continue
+        if email in already_sent_all_time:
+            print(f"  [SKIP] Previously sent: {r['email']}")
             continue
         if is_suppressed(email, suppression_list):
             print(f"  [SKIP] Suppressed: {r['email']}")
@@ -1379,6 +1520,20 @@ def main():
         sys.exit(0)
     
     print(f"[INFO] Will send to {len(to_send)} recipients")
+    
+    # One-click preflight (live sends only)
+    one_click_available = True
+    if not args.dry_run:
+        try:
+            one_click_available = preflight_one_click(
+                to_send[0].get("email", ""),
+                campaign_id,
+                dry_run=False,
+                require_one_click=args.require_one_click
+            )
+        except Exception as e:
+            print(f"[ERROR] {e}")
+            sys.exit(1)
     
     # Send emails
     sent_count = 0
@@ -1406,12 +1561,35 @@ def main():
             continue
         
         # Generate email (unique token per recipient+campaign)
-        unsub_token = compute_unsub_token(email, campaign_id)
-        if unsub_token:
-            ok = register_unsub_token(unsub_token, email, campaign_id, args.dry_run)
-            if not ok:
-                print("  [WARN] One-click unsubscribe token registration failed; falling back to mailto-only")
-                unsub_token = ""
+        unsub_token = ""
+        register_attempted = False
+        register_ok = False
+        register_http_status = None
+        register_error = ""
+        
+        if one_click_available:
+            unsub_token = compute_unsub_token(email, campaign_id)
+            if not unsub_token:
+                msg = "One-click token generation failed"
+                if args.require_one_click:
+                    print(f"[ERROR] {msg}")
+                    sys.exit(1)
+                print(f"  [WARN] {msg}; falling back to mailto-only")
+            else:
+                register_attempted = True
+                ok, status, err = register_unsub_token(
+                    unsub_token, email, campaign_id, args.dry_run, retries=2, timeout=5
+                )
+                register_ok = ok
+                register_http_status = status
+                register_error = err
+                if not ok:
+                    msg = f"One-click unsubscribe token registration failed (status={status}, error={err})"
+                    if args.require_one_click:
+                        print(f"[ERROR] {msg}")
+                        sys.exit(1)
+                    print(f"  [WARN] {msg}; falling back to mailto-only")
+                    unsub_token = ""
         subject = generate_email_subject(recipient, samples)
         text_body, html_body = generate_email_body(
             recipient, samples, unsub_token, mailing_address
@@ -1428,8 +1606,12 @@ def main():
         
         # Log
         status = "dry_run" if args.dry_run else ("sent" if success else "failed")
-        log_send(email, subject, samples, message_id, campaign_id, 
-                 status, error, unsub_token)
+        log_send(email, subject, samples, message_id, campaign_id,
+                 status, error, unsub_token,
+                 register_attempted=register_attempted,
+                 register_ok=register_ok,
+                 register_http_status=register_http_status,
+                 register_error=register_error)
         
         if success:
             sent_count += 1
