@@ -26,7 +26,7 @@ from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
 from pathlib import Path
 
-from unsubscribe_utils import create_unsub_token, sign_registration
+from unsubscribe_utils import create_unsub_token, sign_check, sign_registration
 
 # Load environment variables
 try:
@@ -405,6 +405,30 @@ def register_unsub_token(unsub_token: str, recipient_email: str, campaign_id: st
         return False
 
 
+def remote_is_suppressed(recipient_email: str) -> bool:
+    """Ask the remote unsubscribe service whether a recipient is suppressed."""
+    unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
+    secret = os.getenv("UNSUB_SECRET", "").strip()
+    if not unsub_endpoint or not secret:
+        return False
+    check_url = unsub_endpoint.rstrip("/") + "/check"
+    auth = sign_check(recipient_email, secret)
+    try:
+        import requests
+        resp = requests.post(
+            check_url,
+            json={"email": recipient_email},
+            headers={"X-Unsub-Auth": auth},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            return False
+        data = resp.json()
+        return bool(data.get("suppressed"))
+    except Exception:
+        return False
+
+
 def get_last_refresh_lines() -> tuple[str, str]:
     """Return (text_line, html_line) for last refresh stamp, or ('','') if unavailable."""
     run_json_path = SCRIPT_DIR / "out" / "latest_run.json"
@@ -461,7 +485,13 @@ def load_suppression_list() -> set:
 
 def is_suppressed(email: str, suppression_list: set) -> bool:
     """Check if email is suppressed."""
-    return email.strip().lower() in suppression_list
+    email_norm = email.strip().lower()
+    if email_norm in suppression_list:
+        return True
+    # If one-click is deployed, remote suppression is the source of truth.
+    if remote_is_suppressed(email_norm):
+        return True
+    return False
 
 
 # =============================================================================

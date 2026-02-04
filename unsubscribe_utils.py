@@ -42,6 +42,13 @@ def sign_registration(token_id: str, email: str, secret: str) -> str:
     mac = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
     return _b64url(mac)
 
+def sign_check(email: str, secret: str) -> str:
+    """Sign a suppression check payload. Format: HMAC(secret, "check|{email_lower}")."""
+    email_norm = (email or "").strip().lower()
+    payload = f"check|{email_norm}"
+    mac = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+    return _b64url(mac)
+
 
 def generate_token_id() -> str:
     return secrets.token_urlsafe(24)
@@ -150,3 +157,18 @@ def add_to_suppression(email: str, reason: str, source: str) -> bool:
             }
         )
     return True
+
+
+def is_suppressed_email(email: str) -> bool:
+    """Check if email exists in suppression.csv."""
+    email_norm = (email or "").strip().lower()
+    if not email_norm or "@" not in email_norm:
+        return False
+    if not SUPPRESSION_PATH.exists():
+        return False
+    with open(SUPPRESSION_PATH, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if (row.get("email") or "").strip().lower() == email_norm:
+                return True
+    return False

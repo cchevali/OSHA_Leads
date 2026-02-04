@@ -15,7 +15,9 @@ except ImportError:
 
 from unsubscribe_utils import (
     add_to_suppression,
+    is_suppressed_email,
     lookup_email_for_token,
+    sign_check,
     sign_registration,
     store_unsub_token,
     verify_unsub_token,
@@ -109,10 +111,7 @@ class UnsubHandler(BaseHTTPRequestHandler):
             return
 
         parsed = urlparse(self.path)
-        if parsed.path.rstrip("/") != "/unsubscribe/register":
-            self.send_response(HTTPStatus.NOT_FOUND)
-            self.end_headers()
-            return
+        path = parsed.path.rstrip("/")
 
         secret = (os.getenv("UNSUB_SECRET") or "").strip()
         if not secret:
@@ -134,6 +133,32 @@ class UnsubHandler(BaseHTTPRequestHandler):
             payload = json.loads(body)
         except Exception:
             self.send_response(HTTPStatus.BAD_REQUEST)
+            self.end_headers()
+            return
+
+        if path == "/unsubscribe/check":
+            email = (payload.get("email") or "").strip().lower()
+            if not email or "@" not in email:
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.end_headers()
+                return
+            auth = (self.headers.get("X-Unsub-Auth") or "").strip()
+            expected = sign_check(email, secret)
+            if not auth or auth != expected:
+                self.send_response(HTTPStatus.UNAUTHORIZED)
+                self.end_headers()
+                return
+            suppressed = is_suppressed_email(email)
+            resp = json.dumps({"suppressed": bool(suppressed)}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
+        if path != "/unsubscribe/register":
+            self.send_response(HTTPStatus.NOT_FOUND)
             self.end_headers()
             return
 
