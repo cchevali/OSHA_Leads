@@ -13,6 +13,7 @@ DATA_DIR = os.getenv("DATA_DIR", "").strip()
 OUT_DIR = Path(DATA_DIR) if DATA_DIR else (SCRIPT_DIR / "out")
 UNSUB_TOKEN_STORE_PATH = OUT_DIR / "unsub_tokens.csv"
 SUPPRESSION_PATH = OUT_DIR / "suppression.csv"
+UNSUBSCRIBE_EVENTS_PATH = OUT_DIR / "unsubscribe_events.csv"
 
 
 def _b64url(data: bytes) -> str:
@@ -155,15 +156,42 @@ def add_to_suppression(email: str, reason: str, source: str) -> bool:
 
     with open(SUPPRESSION_PATH, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["email", "reason", "source", "timestamp"])
+        event_ts = datetime.now(timezone.utc).isoformat()
         writer.writerow(
             {
                 "email": email_norm,
                 "reason": reason,
                 "source": source,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": event_ts,
             }
         )
+
+    append_unsubscribe_event(email_norm, reason, source, event_ts)
     return True
+
+
+def append_unsubscribe_event(email: str, reason: str, source: str, timestamp: str | None = None) -> None:
+    """Append unsubscribe/suppression event log (append-only)."""
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    exists = UNSUBSCRIBE_EVENTS_PATH.exists()
+    ts = timestamp or datetime.now(timezone.utc).isoformat()
+
+    with open(UNSUBSCRIBE_EVENTS_PATH, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["timestamp", "email", "event_type", "reason", "source"],
+        )
+        if not exists:
+            writer.writeheader()
+        writer.writerow(
+            {
+                "timestamp": ts,
+                "email": email,
+                "event_type": "suppression_added",
+                "reason": reason,
+                "source": source,
+            }
+        )
 
 
 def is_suppressed_email(email: str) -> bool:

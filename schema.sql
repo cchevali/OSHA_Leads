@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS inspections (
     site_city TEXT,
     site_state TEXT,
     site_zip TEXT,
+    area_office TEXT,
     
     -- Mailing address (optional)
     mail_address1 TEXT,
@@ -97,6 +98,52 @@ CREATE TABLE IF NOT EXISTS suppression_list (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Territory definitions used by subscriber filters
+CREATE TABLE IF NOT EXISTS territories (
+    territory_code TEXT PRIMARY KEY,
+    description TEXT,
+    states_json TEXT NOT NULL,
+    office_patterns_json TEXT NOT NULL,
+    fallback_city_patterns_json TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Subscriber registry for trial and recurring delivery
+CREATE TABLE IF NOT EXISTS subscribers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subscriber_key TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    recipients_json TEXT,
+    territory_code TEXT NOT NULL,
+    content_filter TEXT NOT NULL DEFAULT 'high_medium',
+    include_low_fallback INTEGER NOT NULL DEFAULT 0,
+    trial_length_days INTEGER NOT NULL DEFAULT 14,
+    trial_started_at DATE NOT NULL,
+    trial_ends_at DATE,
+    active INTEGER NOT NULL DEFAULT 1,
+    send_time_local TEXT NOT NULL DEFAULT '08:00',
+    timezone TEXT NOT NULL DEFAULT 'America/Chicago',
+    customer_id TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (territory_code) REFERENCES territories(territory_code)
+);
+
+-- Append-only unsubscribe/suppression events
+CREATE TABLE IF NOT EXISTS unsubscribe_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    reason TEXT,
+    source TEXT NOT NULL,
+    customer_id TEXT,
+    territory_code TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Ingestion log for source tracking
 CREATE TABLE IF NOT EXISTS ingestion_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,8 +166,12 @@ CREATE INDEX IF NOT EXISTS idx_inspections_site_state ON inspections(site_state)
 CREATE INDEX IF NOT EXISTS idx_inspections_first_seen ON inspections(first_seen_at);
 CREATE INDEX IF NOT EXISTS idx_inspections_needs_review ON inspections(needs_review);
 CREATE INDEX IF NOT EXISTS idx_inspections_lead_score ON inspections(lead_score DESC);
+CREATE INDEX IF NOT EXISTS idx_inspections_area_office ON inspections(area_office);
 CREATE INDEX IF NOT EXISTS idx_citations_inspection_id ON citations(inspection_id);
 CREATE INDEX IF NOT EXISTS idx_suppression_email ON suppression_list(email_or_domain);
+CREATE INDEX IF NOT EXISTS idx_subscribers_active ON subscribers(active);
+CREATE INDEX IF NOT EXISTS idx_subscribers_send_time ON subscribers(send_time_local, timezone);
+CREATE INDEX IF NOT EXISTS idx_unsubscribe_events_email ON unsubscribe_events(email);
 
 -- Trigger to update updated_at on inspections
 CREATE TRIGGER IF NOT EXISTS update_inspections_timestamp 
@@ -134,4 +185,18 @@ CREATE TRIGGER IF NOT EXISTS update_citations_timestamp
 AFTER UPDATE ON citations
 BEGIN
     UPDATE citations SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
+-- Trigger to update updated_at on territories
+CREATE TRIGGER IF NOT EXISTS update_territories_timestamp
+AFTER UPDATE ON territories
+BEGIN
+    UPDATE territories SET updated_at = CURRENT_TIMESTAMP WHERE territory_code = NEW.territory_code;
+END;
+
+-- Trigger to update updated_at on subscribers
+CREATE TRIGGER IF NOT EXISTS update_subscribers_timestamp
+AFTER UPDATE ON subscribers
+BEGIN
+    UPDATE subscribers SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;

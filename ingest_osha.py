@@ -516,6 +516,18 @@ def parse_inspection_detail(html: str, url: str) -> dict:
         elif line.startswith("Report ID:"):
             data["report_id"] = line.split(":", 1)[1].strip()
 
+        # Area office
+        elif line.startswith("Area Office:") and not data.get("area_office"):
+            office = line.split(":", 1)[1].strip()
+            if office:
+                data["area_office"] = office
+
+        # Alternate office label used on some pages/fixtures
+        elif line.startswith("Office:") and not data.get("area_office"):
+            office = line.split(":", 1)[1].strip()
+            if office:
+                data["area_office"] = office
+
         # Establishment Name (alternate path)
         elif line.startswith("Establishment Name:") and not data.get("establishment_name"):
             name = line.split(":", 1)[1].strip()
@@ -671,6 +683,8 @@ def parse_inspection_detail(html: str, url: str) -> dict:
                 m = re.search(r"\d+", value)
                 if m:
                     data["violations_count"] = int(m.group())
+            elif label_norm in ("area office", "office", "osha office") and not data.get("area_office"):
+                data["area_office"] = value
     
     return data
 
@@ -772,7 +786,7 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
             "safety_health", "sic", "naics", "naics_desc", "violations_count",
             "serious_violations", "willful_violations", "repeat_violations", "other_violations",
             "establishment_name", "site_address1", "site_city", "site_state", "site_zip",
-            "mail_address1", "mail_city", "mail_state", "mail_zip",
+            "area_office", "mail_address1", "mail_city", "mail_state", "mail_zip",
             "report_id", "source_url", "raw_hash", "lead_score", "needs_review", "parse_invalid"
         ]:
             value = inspection.get(field)
@@ -804,7 +818,7 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
             "violations_count", "serious_violations", "willful_violations",
             "repeat_violations", "other_violations", "establishment_name",
             "site_address1", "site_city", "site_state", "site_zip",
-            "mail_address1", "mail_city", "mail_state", "mail_zip",
+            "area_office", "mail_address1", "mail_city", "mail_state", "mail_zip",
             "report_id", "source_url", "raw_hash", "lead_score", "needs_review",
             "parse_invalid", "first_seen_at", "last_seen_at"
         ]
@@ -822,6 +836,18 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
         )
         
         return True, False
+
+
+def ensure_inspection_columns(conn: sqlite3.Connection) -> None:
+    """Backfill optional columns for older databases."""
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(inspections)")
+    existing = {row[1] for row in cursor.fetchall()}
+
+    if "area_office" not in existing:
+        cursor.execute("ALTER TABLE inspections ADD COLUMN area_office TEXT")
+        conn.commit()
+        logger.info("Added missing inspections.area_office column")
 
 
 def run_ingestion(
@@ -848,6 +874,7 @@ def run_ingestion(
     # Connect to database
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+    ensure_inspection_columns(conn)
     
     # Log ingestion run
     run_started = datetime.utcnow().isoformat()

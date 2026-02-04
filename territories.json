@@ -1,0 +1,29 @@
+{
+  "TX_TRIANGLE_V1": {
+    "description": "Texas Triangle OSHA area offices: Austin, Dallas/Fort Worth, Houston, San Antonio",
+    "states": [
+      "TX"
+    ],
+    "office_patterns": [
+      "\\baustin\\b",
+      "\\bdallas\\b",
+      "\\bfort[\\s-]*worth\\b",
+      "\\bdallas[\\s/-]*fort[\\s-]*worth\\b",
+      "\\bhouston\\b",
+      "\\bsan[\\s-]*antonio\\b"
+    ],
+    "fallback_city_patterns": [
+      "\\baustin\\b",
+      "\\bdallas\\b",
+      "\\bfort[\\s-]*worth\\b",
+      "\\bhouston\\b",
+      "\\bpasadena\\b",
+      "\\bpearland\\b",
+      "\\bsugar[\\s-]*land\\b",
+      "\\bthe[\\s-]*woodlands\\b",
+      "\\bkaty\\b",
+      "\\bbaytown\\b",
+      "\\bsan[\\s-]*antonio\\b"
+    ]
+  }
+}

@@ -18,6 +18,11 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import sqlite3
+from lead_filters import (
+    apply_content_filter,
+    dedupe_by_activity_nr,
+    filter_by_territory,
+)
 
 # Logging setup
 logger = logging.getLogger(__name__)
@@ -44,6 +49,7 @@ DAILY_LEADS_COLUMNS = [
     "site_city",
     "site_state",
     "site_zip",
+    "area_office",
     "naics",
     "naics_desc",
     "violations_count",
@@ -74,7 +80,12 @@ def get_sendable_leads(
     start_date = (as_of_dt - timedelta(days=14)).isoformat()
     end_date = as_of_dt.isoformat()
     
-    query = """
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(inspections)")
+    columns = {row[1] for row in cursor.fetchall()}
+    area_office_expr = "area_office" if "area_office" in columns else "NULL AS area_office"
+
+    query = f"""
         SELECT 
             lead_id,
             activity_nr,
@@ -86,6 +97,7 @@ def get_sendable_leads(
             site_city,
             site_state,
             site_zip,
+            {area_office_expr},
             naics,
             naics_desc,
             violations_count,
@@ -106,8 +118,7 @@ def get_sendable_leads(
             lead_score DESC,
             date_opened DESC
     """
-    
-    cursor = conn.cursor()
+
     cursor.execute(query, (start_date, end_date))
     
     columns = [desc[0] for desc in cursor.description]
@@ -131,7 +142,12 @@ def get_needs_review_leads(
     as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d")
     cutoff = (as_of_dt - timedelta(hours=24)).isoformat()
     
-    query = """
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(inspections)")
+    columns = {row[1] for row in cursor.fetchall()}
+    area_office_expr = "area_office" if "area_office" in columns else "NULL AS area_office"
+
+    query = f"""
         SELECT 
             lead_id,
             activity_nr,
@@ -144,6 +160,7 @@ def get_needs_review_leads(
             site_city,
             site_state,
             site_zip,
+            {area_office_expr},
             naics,
             naics_desc,
             violations_count,
@@ -160,8 +177,7 @@ def get_needs_review_leads(
             lead_score DESC,
             date_opened DESC
     """
-    
-    cursor = conn.cursor()
+
     cursor.execute(query, (cutoff,))
     
     columns = [desc[0] for desc in cursor.description]
@@ -218,6 +234,8 @@ def export_daily(
     db_path: str,
     outdir: str,
     as_of_date: str,
+    territory_code: Optional[str] = None,
+    content_filter: str = "all",
 ) -> dict:
     """
     Main export routine.
@@ -228,6 +246,11 @@ def export_daily(
         "needs_review_leads": 0,
         "daily_leads_file": None,
         "needs_review_file": None,
+        "territory_code": territory_code,
+        "content_filter": content_filter,
+        "excluded_by_territory": 0,
+        "excluded_by_content_filter": 0,
+        "deduped_records_removed": 0,
     }
     
     # Ensure output directory exists
@@ -244,6 +267,18 @@ def export_daily(
         
         # Export sendable leads
         sendable = get_sendable_leads(conn, as_of_date)
+
+        if territory_code:
+            sendable, territory_stats = filter_by_territory(sendable, territory_code)
+            stats["excluded_by_territory"] = (
+                territory_stats["excluded_state"] + territory_stats["excluded_territory"]
+            )
+
+        sendable, excluded_content = apply_content_filter(sendable, content_filter)
+        stats["excluded_by_content_filter"] = excluded_content
+
+        sendable, deduped_removed = dedupe_by_activity_nr(sendable)
+        stats["deduped_records_removed"] = deduped_removed
         
         if sendable:
             daily_file = os.path.join(
@@ -304,6 +339,16 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level (default: INFO)"
     )
+    parser.add_argument(
+        "--territory-code",
+        default=None,
+        help="Optional territory code filter (e.g., TX_TRIANGLE_V1)"
+    )
+    parser.add_argument(
+        "--content-filter",
+        default="all",
+        help="Content filter: all, high_medium (high+medium), or high_only"
+    )
     
     args = parser.parse_args()
     
@@ -323,6 +368,8 @@ def main():
             db_path=args.db,
             outdir=args.outdir,
             as_of_date=as_of_date,
+            territory_code=args.territory_code,
+            content_filter=args.content_filter,
         )
         
         logger.info(f"Export complete: {stats}")
@@ -330,6 +377,12 @@ def main():
         print(f"  As of date:        {as_of_date}")
         print(f"  Sendable leads:    {stats['sendable_leads']}")
         print(f"  Needs review:      {stats['needs_review_leads']}")
+        if args.territory_code:
+            print(f"  Territory filter:  {args.territory_code}")
+            print(f"  Excl. territory:   {stats['excluded_by_territory']}")
+        print(f"  Content filter:    {stats['content_filter']}")
+        print(f"  Excl. by score:    {stats['excluded_by_content_filter']}")
+        print(f"  Dedupe removed:    {stats['deduped_records_removed']}")
         
         if stats["daily_leads_file"]:
             print(f"  Daily file:        {stats['daily_leads_file']}")

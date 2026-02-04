@@ -23,6 +23,12 @@ import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
+from lead_filters import normalize_content_filter
+
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    load_dotenv = None
 
 # =============================================================================
 # CONFIGURATION
@@ -38,6 +44,15 @@ REQUIRED_CONFIG_FIELDS = ["customer_id", "states", "opened_window_days", "new_on
 def get_script_dir() -> str:
     """Get the directory containing this script (repo root)."""
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def load_environment(repo_root: str) -> None:
+    """Load .env for scheduler contexts that do not inherit shell variables."""
+    if load_dotenv is None:
+        return
+    dotenv_path = Path(repo_root) / ".env"
+    if dotenv_path.exists():
+        load_dotenv(dotenv_path=dotenv_path, override=False)
 
 
 def get_last_successful_send(log_path: str) -> dict:
@@ -176,6 +191,24 @@ def validate_customer_config(config: dict, config_path: str) -> list:
             val = config[field]
             if not isinstance(val, int) or val <= 0:
                 errors.append(f"'{field}' must be a positive integer")
+
+    # Optional delivery controls
+    if "content_filter" in config:
+        try:
+            normalize_content_filter(config.get("content_filter"))
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    if "send_time_local" in config:
+        value = str(config.get("send_time_local") or "").strip()
+        if len(value) != 5 or value[2] != ":":
+            errors.append("'send_time_local' must be HH:MM format")
+
+    if "timezone" in config and not str(config.get("timezone") or "").strip():
+        errors.append("'timezone' cannot be blank when provided")
+
+    if "include_low_fallback" in config and not isinstance(config.get("include_low_fallback"), bool):
+        errors.append("'include_low_fallback' must be true or false")
     
     return errors
 
@@ -262,6 +295,7 @@ def main():
     # ==========================================================================
     repo_root = get_script_dir()
     os.chdir(repo_root)  # Always run from repo root
+    load_environment(repo_root)
     
     gen_date = datetime.now().strftime("%Y-%m-%d")
     output_dir = os.path.join(repo_root, OUTPUT_DIR)
