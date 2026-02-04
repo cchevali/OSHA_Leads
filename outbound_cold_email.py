@@ -42,7 +42,8 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 CONFIG_PATH = SCRIPT_DIR / "cold_email_config.json"
 LEADS_PATH = SCRIPT_DIR / "out" / "latest_leads.csv"
 RECIPIENTS_PATH = SCRIPT_DIR / "out" / "recipients.csv"
-SUPPRESSION_PATH = SCRIPT_DIR / "out" / "suppression.csv"
+DATA_DIR = os.getenv("DATA_DIR", "").strip()
+SUPPRESSION_PATH = (Path(DATA_DIR) / "suppression.csv") if DATA_DIR else (SCRIPT_DIR / "out" / "suppression.csv")
 LOG_PATH = SCRIPT_DIR / "out" / "cold_email_log.csv"
 
 # Default config (overridden by cold_email_config.json)
