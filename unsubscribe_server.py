@@ -19,6 +19,7 @@ from unsubscribe_utils import (
     lookup_email_for_token,
     sign_check,
     sign_registration,
+    sign_stats,
     store_unsub_token,
     verify_unsub_token,
 )
@@ -150,6 +151,50 @@ class UnsubHandler(BaseHTTPRequestHandler):
                 return
             suppressed = is_suppressed_email(email)
             resp = json.dumps({"suppressed": bool(suppressed)}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
+        if path == "/unsubscribe/stats":
+            try:
+                since_hours = int(payload.get("since_hours", 24))
+            except Exception:
+                since_hours = 24
+            auth = (self.headers.get("X-Unsub-Auth") or "").strip()
+            expected = sign_stats(since_hours, secret)
+            if not auth or auth != expected:
+                self.send_response(HTTPStatus.UNAUTHORIZED)
+                self.end_headers()
+                return
+            # Parse suppression.csv and count new unsubs in window
+            from datetime import datetime, timezone, timedelta
+            import csv
+            from pathlib import Path
+            data_dir = (os.getenv("DATA_DIR") or "").strip()
+            sup_path = Path(data_dir) / "suppression.csv" if data_dir else (Path(__file__).parent / "out" / "suppression.csv")
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+            count = 0
+            if sup_path.exists():
+                with open(sup_path, "r", newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if (row.get("reason") or "").strip().lower() != "unsubscribe":
+                            continue
+                        ts = (row.get("timestamp") or "").strip()
+                        if not ts:
+                            continue
+                        try:
+                            ts_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                            if ts_dt.tzinfo is None:
+                                ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                        except Exception:
+                            continue
+                        if ts_dt >= cutoff:
+                            count += 1
+            resp = json.dumps({"new_unsubs": count, "since_hours": since_hours}).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(resp)))

@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 
 import outbound_cold_email as oce
+from unsubscribe_utils import sign_stats
 
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -231,6 +232,34 @@ def collect_outbound_metrics(campaign_id: str, start_time: datetime, end_time: d
     return sent, skipped_no_high_med, skipped_one_click_failed
 
 
+def fetch_unsubs_last_24h() -> str | int:
+    """Fetch new unsubs in last 24h via server stats endpoint."""
+    stats_url = os.getenv("UNSUB_STATS_URL", "").strip()
+    if not stats_url:
+        base = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
+        if base:
+            stats_url = base.rstrip("/") + "/stats"
+    secret = os.getenv("UNSUB_SECRET", "").strip()
+    if not stats_url or not secret:
+        return "not_implemented"
+    try:
+        import requests
+        since_hours = 24
+        auth = sign_stats(since_hours, secret)
+        resp = requests.post(
+            stats_url,
+            json={"since_hours": since_hours},
+            headers={"X-Unsub-Auth": auth},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            return "not_implemented"
+        data = resp.json()
+        return int(data.get("new_unsubs", 0))
+    except Exception:
+        return "not_implemented"
+
+
 def append_metrics_row(
     state: str,
     intended: int,
@@ -261,7 +290,7 @@ def append_metrics_row(
         "skipped_no_high_med": skipped_no_high_med,
         "skipped_one_click_failed": skipped_one_click_failed,
         "bounces_detected": "not_implemented",
-        "unsub_count": "not_implemented",
+        "unsub_count": fetch_unsubs_last_24h(),
     }
     write_header = not METRICS_PATH.exists()
     with open(METRICS_PATH, "a", newline="", encoding="utf-8") as f:

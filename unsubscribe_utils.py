@@ -50,6 +50,13 @@ def sign_check(email: str, secret: str) -> str:
     return _b64url(mac)
 
 
+def sign_stats(since_hours: int, secret: str) -> str:
+    """Sign stats payload. Format: HMAC(secret, "stats|{since_hours}")."""
+    payload = f"stats|{int(since_hours)}"
+    mac = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+    return _b64url(mac)
+
+
 def generate_token_id() -> str:
     return secrets.token_urlsafe(24)
 
