@@ -27,6 +27,7 @@ import outbound_cold_email as oce
 SCRIPT_DIR = Path(__file__).parent.resolve()
 OUT_DIR = SCRIPT_DIR / "out"
 PIPELINE_BAT = SCRIPT_DIR / "run_daily_pipeline.bat"
+METRICS_PATH = OUT_DIR / "daily_send_metrics.csv"
 
 
 def parse_date(value: str) -> date | None:
@@ -199,6 +200,80 @@ def write_recipients_csv(recipients: list[dict], out_path: Path) -> None:
             })
 
 
+def collect_outbound_metrics(campaign_id: str, start_time: datetime, end_time: datetime) -> tuple[int, int, int]:
+    """Return (sent, skipped_no_high_med, skipped_one_click_failed) for this run."""
+    sent = 0
+    skipped_no_high_med = 0
+    skipped_one_click_failed = 0
+    log_path = oce.LOG_PATH
+    if not log_path.exists():
+        return sent, skipped_no_high_med, skipped_one_click_failed
+    with open(log_path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row.get("campaign_id") != campaign_id:
+                continue
+            ts = row.get("timestamp", "")
+            try:
+                row_time = datetime.fromisoformat(ts)
+            except Exception:
+                continue
+            if row_time < start_time or row_time > end_time:
+                continue
+            status = row.get("status", "")
+            error = row.get("error", "")
+            if status == "sent":
+                sent += 1
+            if status == "skipped" and error == "no_high_med_leads":
+                skipped_no_high_med += 1
+            if status == "failed" and error in ("one_click_failed", "one_click_preflight_failed"):
+                skipped_one_click_failed += 1
+    return sent, skipped_no_high_med, skipped_one_click_failed
+
+
+def append_metrics_row(
+    state: str,
+    intended: int,
+    sent: int,
+    skipped_suppressed: int,
+    skipped_no_high_med: int,
+    skipped_one_click_failed: int,
+) -> None:
+    """Append daily send metrics row to CSV and print summary."""
+    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fields = [
+        "date",
+        "state",
+        "intended",
+        "sent",
+        "skipped_suppressed",
+        "skipped_no_high_med",
+        "skipped_one_click_failed",
+        "bounces_detected",
+        "unsub_count",
+    ]
+    row = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "state": state,
+        "intended": intended,
+        "sent": sent,
+        "skipped_suppressed": skipped_suppressed,
+        "skipped_no_high_med": skipped_no_high_med,
+        "skipped_one_click_failed": skipped_one_click_failed,
+        "bounces_detected": "not_implemented",
+        "unsub_count": "not_implemented",
+    }
+    write_header = not METRICS_PATH.exists()
+    with open(METRICS_PATH, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+    print("\nMETRICS (daily_send_metrics.csv)")
+    for key in fields:
+        print(f"  {key}: {row[key]}")
+
+
 def render_previews(recipients: list[dict], leads: list[dict], state: str, count: int = 3) -> None:
     config = oce.load_config()
     mailing_address = os.getenv("MAILING_ADDRESS", "")
@@ -246,6 +321,7 @@ def main():
     parser.add_argument("--limit", type=int, default=3, help="Max recipients to send/dry-run (default: 3)")
     parser.add_argument("--recipients-file", type=str, default=None, help="Override recipients CSV path")
     parser.add_argument("--skip-pipeline", action="store_true", help="Skip run_daily_pipeline.bat")
+    parser.add_argument("--require-one-click", action="store_true", help="Abort live sends if one-click fails")
     args = parser.parse_args()
 
     if args.send and args.dry_run:
@@ -255,6 +331,9 @@ def main():
     dry_run = not args.send
     if args.send:
         dry_run = False
+        if not args.require_one_click:
+            print("[ERROR] --require-one-click is mandatory for live sends during ramp.")
+            sys.exit(1)
 
     if not args.skip_pipeline:
         if not PIPELINE_BAT.exists():
@@ -307,13 +386,17 @@ def main():
     sent_all_time = oce.get_already_sent_all_time()
 
     sendable = []
+    suppressed_count = 0
+    already_sent_count = 0
     for r in recipients:
         email = r.get("email", "").strip().lower()
         if not email:
             continue
-        if email in suppression:
-            continue
         if email in sent_all_time:
+            already_sent_count += 1
+            continue
+        if oce.is_suppressed(email, suppression):
+            suppressed_count += 1
             continue
         sendable.append(r)
 
@@ -350,8 +433,16 @@ def main():
     # Run outbound send/dry-run
     if not sendable:
         print("[INFO] No recipients to send.")
+        append_metrics_row(
+            state=state,
+            intended=0,
+            sent=0,
+            skipped_suppressed=suppressed_count,
+            skipped_no_high_med=0,
+            skipped_one_click_failed=0,
+        )
         sys.exit(0)
-
+    
     outbound_cmd = [
         sys.executable,
         str(SCRIPT_DIR / "outbound_cold_email.py"),
@@ -364,8 +455,28 @@ def main():
     ]
     if dry_run:
         outbound_cmd.append("--dry-run")
+    if args.require_one_click:
+        outbound_cmd.append("--require-one-click")
+
+    intended = min(args.limit, len(sendable))
+    start_time = datetime.now()
     print(f"[INFO] Running outbound: {' '.join(outbound_cmd)}")
     result = subprocess.run(outbound_cmd, cwd=SCRIPT_DIR)
+
+    end_time = datetime.now()
+    sent, skipped_no_high_med, skipped_one_click_failed = collect_outbound_metrics(
+        campaign_id=oce.get_campaign_id(),
+        start_time=start_time,
+        end_time=end_time,
+    )
+    append_metrics_row(
+        state=state,
+        intended=intended,
+        sent=sent,
+        skipped_suppressed=suppressed_count,
+        skipped_no_high_med=skipped_no_high_med,
+        skipped_one_click_failed=skipped_one_click_failed,
+    )
     sys.exit(result.returncode)
 
 

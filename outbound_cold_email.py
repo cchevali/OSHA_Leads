@@ -414,6 +414,8 @@ def register_unsub_token(
             if resp.status_code in (200, 204):
                 return True, resp.status_code, ""
             last_error = f"http_{resp.status_code}"
+            if resp.status_code == 429:
+                time.sleep(2 * attempt)
         except Exception as e:
             last_error = str(e)
         if attempt <= retries:
@@ -1533,6 +1535,21 @@ def main():
             )
         except Exception as e:
             print(f"[ERROR] {e}")
+            # Log a single failure row so metrics can capture one-click failure
+            log_send(
+                to_send[0].get("email", ""),
+                "",
+                [],
+                "",
+                campaign_id,
+                "failed",
+                "one_click_preflight_failed",
+                "",
+                register_attempted=True,
+                register_ok=False,
+                register_http_status=None,
+                register_error=str(e),
+            )
             sys.exit(1)
     
     # Send emails
@@ -1586,6 +1603,12 @@ def main():
                 if not ok:
                     msg = f"One-click unsubscribe token registration failed (status={status}, error={err})"
                     if args.require_one_click:
+                        log_send(email, "", samples, "", campaign_id,
+                                 "failed", "one_click_failed", unsub_token,
+                                 register_attempted=register_attempted,
+                                 register_ok=register_ok,
+                                 register_http_status=register_http_status,
+                                 register_error=register_error)
                         print(f"[ERROR] {msg}")
                         sys.exit(1)
                     print(f"  [WARN] {msg}; falling back to mailto-only")

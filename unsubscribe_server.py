@@ -24,7 +24,7 @@ from unsubscribe_utils import (
 )
 
 RATE_LIMIT_WINDOW_S = 60
-RATE_LIMIT_MAX_REQ = 30
+RATE_LIMIT_MAX_REQ = 120
 _rate_state = {}
 
 
