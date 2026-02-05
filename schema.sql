@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS subscribers (
     trial_started_at DATE NOT NULL,
     trial_ends_at DATE,
     active INTEGER NOT NULL DEFAULT 1,
+    send_enabled INTEGER NOT NULL DEFAULT 0,
     send_time_local TEXT NOT NULL DEFAULT '08:00',
     timezone TEXT NOT NULL DEFAULT 'America/Chicago',
     customer_id TEXT,

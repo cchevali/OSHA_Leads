@@ -64,6 +64,8 @@ def ensure_schema(db_path: str, schema_path: str) -> None:
             conn.execute("ALTER TABLE subscribers ADD COLUMN recipients_json TEXT")
         if "last_sent_at" not in subscriber_cols:
             conn.execute("ALTER TABLE subscribers ADD COLUMN last_sent_at DATETIME")
+        if "send_enabled" not in subscriber_cols:
+            conn.execute("ALTER TABLE subscribers ADD COLUMN send_enabled INTEGER NOT NULL DEFAULT 0")
 
     with open(schema_path, "r", encoding="utf-8") as f:
         conn.executescript(f.read())
@@ -108,9 +110,9 @@ def upsert_subscriber(
         """
         INSERT INTO subscribers
             (subscriber_key, display_name, email, recipients_json, territory_code, content_filter, include_low_fallback,
-             trial_length_days, trial_started_at, trial_ends_at, active,
+             trial_length_days, trial_started_at, trial_ends_at, active, send_enabled,
              send_time_local, timezone, customer_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)
         ON CONFLICT(subscriber_key) DO UPDATE SET
             display_name=excluded.display_name,
             email=excluded.email,

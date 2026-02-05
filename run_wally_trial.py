@@ -154,7 +154,7 @@ def run_preview_send(db_path: str, customer_config: str, chase_email: str) -> No
     subprocess.run(cmd, check=True)
 
 
-def run_live_send(db_path: str, customer_config: str, admin_email: str) -> None:
+def run_live_send(db_path: str, customer_config: str, admin_email: str, send_live: bool) -> None:
     cmd = [
         sys.executable,
         "deliver_daily.py",
@@ -169,6 +169,8 @@ def run_live_send(db_path: str, customer_config: str, admin_email: str) -> None:
         "--admin-email",
         admin_email,
     ]
+    if send_live:
+        cmd.append("--send-live")
     subprocess.run(cmd, check=True)
 
 
@@ -256,7 +258,7 @@ def main() -> None:
     print(f"Preview dry-run sent to Chase override: {args.chase_email}")
 
     if args.send_live:
-        run_live_send(args.db, str(customer_path), args.admin_email)
+        run_live_send(args.db, str(customer_path), args.admin_email, True)
         print("First live send triggered via deliver_daily.py")
 
     batch_path = repo_root / "run_wally_trial_daily.bat"

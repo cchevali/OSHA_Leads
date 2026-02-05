@@ -285,6 +285,8 @@ def main():
                         help="Run all steps but don't send email (validates everything)")
     parser.add_argument("--skip-ingest", action="store_true",
                         help="Skip ingestion step")
+    parser.add_argument("--send-live", action="store_true",
+                        help="Allow live send to customer recipients (requires config allow_live_send and send_enabled)")
     parser.add_argument("--admin-email", default=ADMIN_EMAIL,
                         help=f"Admin email for failure notifications (default: {ADMIN_EMAIL})")
     
@@ -384,6 +386,8 @@ def main():
             
             if args.dry_run:
                 email_cmd.append("--dry-run")
+            if args.send_live:
+                email_cmd.append("--send-live")
             
             email_exit = run_command(email_cmd, log_file, repo_root)
             if email_exit != 0:

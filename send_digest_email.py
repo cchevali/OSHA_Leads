@@ -165,6 +165,15 @@ def print_area_office_debug(conn: sqlite3.Connection) -> None:
     _print_samples("site_address1", address_counts)
 
 
+def resolve_admin_recipient(config: dict) -> str:
+    return (
+        (config.get("admin_email") or "").strip().lower()
+        or (os.getenv("CHASE_EMAIL") or "").strip().lower()
+        or (os.getenv("ADMIN_EMAIL") or "").strip().lower()
+        or "cchevali@gmail.com"
+    )
+
+
 def load_environment(repo_root: Path) -> None:
     """Load .env for scheduler contexts where env vars are not inherited."""
     if load_dotenv is None:
@@ -338,10 +347,13 @@ def _load_subscriber_profile(db_path: str, subscriber_key: str | None) -> dict:
     if not _has_column(conn, "subscribers", "last_sent_at"):
         cursor.execute("ALTER TABLE subscribers ADD COLUMN last_sent_at DATETIME")
         conn.commit()
+    if not _has_column(conn, "subscribers", "send_enabled"):
+        cursor.execute("ALTER TABLE subscribers ADD COLUMN send_enabled INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
 
     cursor.execute(
         """
-        SELECT subscriber_key, email, recipients_json, active, territory_code, content_filter, include_low_fallback, last_sent_at
+        SELECT subscriber_key, email, recipients_json, active, territory_code, content_filter, include_low_fallback, last_sent_at, send_enabled
         FROM subscribers
         WHERE subscriber_key = ?
         LIMIT 1
@@ -373,6 +385,7 @@ def _load_subscriber_profile(db_path: str, subscriber_key: str | None) -> dict:
         "content_filter": row[5],
         "include_low_fallback": bool(row[6]),
         "last_sent_at": row[7] if len(row) > 7 else None,
+        "send_enabled": bool(row[8]) if len(row) > 8 else False,
     }
 
 
@@ -991,6 +1004,11 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Generate but do not send")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument(
+        "--send-live",
+        action="store_true",
+        help="Allow live sends to customer recipients (requires allow_live_send and send_enabled)",
+    )
+    parser.add_argument(
         "--debug-area-offices",
         action="store_true",
         help="Print distinct TX area_office values seen in last 30 days and exit",
@@ -1041,6 +1059,11 @@ def main() -> None:
     )
     baseline_on_first_send = bool(config.get("baseline_on_first_send", True))
     last_sent_at = subscriber_profile.get("last_sent_at") if subscriber_profile else None
+    allow_live_send = bool(config.get("allow_live_send", False))
+    subscriber_key = config.get("subscriber_key") or ""
+    send_enabled_ok = True
+    if subscriber_key:
+        send_enabled_ok = bool(subscriber_profile.get("send_enabled"))
 
     missing = preflight_missing_vars(config, args.dry_run)
     if missing:
@@ -1048,6 +1071,17 @@ def main() -> None:
         raise SystemExit(1)
 
     recipients = collect_recipients(config, subscriber_profile, args.recipient_override)
+    intended_recipients = list(recipients)
+    live_allowed = bool(args.send_live and allow_live_send and send_enabled_ok)
+    if not live_allowed:
+        admin_recipient = resolve_admin_recipient(config)
+        if not admin_recipient:
+            raise RuntimeError("SAFE_MODE could not resolve admin recipient")
+        if recipients != [admin_recipient]:
+            print(
+                f"[SAFE_MODE] forced admin recipient: {admin_recipient} | intended: {', '.join(intended_recipients)}"
+            )
+        recipients = [admin_recipient]
 
     if not recipients:
         raise ValueError("No recipients configured (email_recipients, subscriber email, or --recipient-override).")
@@ -1301,6 +1335,7 @@ def main() -> None:
     print(f"Low fallback leads:       {len(low_fallback)}")
     print(f"Leads after filters:      {len(leads)}")
     print(f"Recipients requested:     {len(recipients)}")
+    print(f"Live enabled:             {'YES' if live_allowed else 'NO'}")
     print(f"Sent/Dry-run:             {sent_or_dry_run}")
     print(f"Suppressed:               {suppressed_count}")
     print(f"Pilot-skipped:            {pilot_skipped_count}")

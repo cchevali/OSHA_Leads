@@ -1,4 +1,5 @@
 import csv
+import csv
 import json
 import os
 import sqlite3
@@ -61,15 +62,17 @@ def write_config(path: Path, recipients: list[str]) -> None:
         "brand_name": "Acme Safety",
         "mailing_address": "123 Main St, Austin, TX 78701",
         "pilot_mode": False,
+        "allow_live_send": True,
     }
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
-def run_send(db_path: Path, config_path: Path, out_dir: Path, data_dir: Path) -> subprocess.CompletedProcess:
+def run_send(db_path: Path, config_path: Path, out_dir: Path, data_dir: Path, send_live: bool = True) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["UNSUB_ENDPOINT_BASE"] = "https://example.com/unsubscribe"
     env["UNSUB_SECRET"] = "fanout-test-secret"
     env["DATA_DIR"] = str(data_dir)
+    env["CHASE_EMAIL"] = "cchevali@gmail.com"
 
     cmd = [
         sys.executable,
@@ -83,6 +86,8 @@ def run_send(db_path: Path, config_path: Path, out_dir: Path, data_dir: Path) ->
         "--output-dir",
         str(out_dir),
     ]
+    if send_live:
+        cmd.append("--send-live")
     return subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True)
 
 
@@ -159,6 +164,45 @@ class TestRecipientFanout(unittest.TestCase):
                 unsub_events = list(csv.DictReader(f))
             self.assertEqual(len(unsub_events), 1)
             self.assertEqual(unsub_events[0]["email"], "wgs@indigocompliance.com")
+
+    def test_safe_mode_forces_admin_recipient(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "fanout.sqlite"
+            config_path = tmp_path / "customer.json"
+            out_dir = tmp_path / "out"
+            data_dir = tmp_path / "data"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            recipients = ["wgs@indigocompliance.com", "brandon@indigoenergyservices.com"]
+            init_db(db_path)
+
+            # allow_live_send omitted -> safe mode
+            config = {
+                "customer_id": "fanout_test",
+                "states": ["TX"],
+                "opened_window_days": 14,
+                "new_only_days": 1,
+                "territory_code": "TX_TRIANGLE_V1",
+                "content_filter": "high_medium",
+                "include_low_fallback": True,
+                "recipients": recipients,
+                "email_recipients": recipients,
+                "brand_name": "Acme Safety",
+                "mailing_address": "123 Main St, Austin, TX 78701",
+                "pilot_mode": False,
+            }
+            config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+            result = run_send(db_path, config_path, out_dir, data_dir, send_live=False)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertIn("[SAFE_MODE]", result.stdout)
+
+            with (out_dir / "email_log.csv").open("r", encoding="utf-8") as f:
+                email_log = list(csv.DictReader(f))
+            self.assertEqual(len(email_log), 1)
+            self.assertEqual(email_log[0]["recipient"], "cchevali@gmail.com")
 
 
 if __name__ == "__main__":
