@@ -33,6 +33,7 @@ from lead_filters import (
     apply_content_filter,
     dedupe_by_activity_nr,
     filter_by_territory,
+    load_territory_definitions,
     normalize_content_filter,
 )
 from unsubscribe_utils import create_unsub_token
@@ -45,6 +46,40 @@ PILOT_WHITELIST_DEFAULT = ["cchevali@gmail.com"]
 DEFAULT_REPLY_TO = "support@microflowops.com"
 DEFAULT_FROM_LOCAL_PART = "alerts"
 LOW_FALLBACK_LIMIT = 5
+
+
+def content_filter_label(value: str) -> str:
+    mapping = {
+        "high_medium": "High + Medium",
+        "high": "High Only",
+        "medium": "Medium Only",
+        "low": "Low Only",
+        "all": "All",
+    }
+    normalized = (value or "").strip().lower()
+    if normalized in mapping:
+        return mapping[normalized]
+    return normalized.replace("_", " ").title() if normalized else ""
+
+
+def territory_display_name(territory_code: str | None) -> str:
+    if not territory_code:
+        return ""
+    try:
+        definitions = load_territory_definitions()
+    except Exception:
+        return territory_code
+    territory = definitions.get(territory_code, {})
+    display = (territory.get("display_name") or territory.get("name") or "").strip()
+    if display:
+        return display
+    description = (territory.get("description") or "").strip()
+    if description:
+        for token in [" OSHA", " area offices"]:
+            if token in description:
+                return description.split(token, 1)[0].strip()
+        return description
+    return territory_code
 
 
 def load_environment(repo_root: Path) -> None:
@@ -453,6 +488,8 @@ def generate_digest_html(
     states = config["states"]
     top_k_overall = config.get("top_k_overall", 25)
     top_k_per_state = config.get("top_k_per_state", 10)
+    territory_label = territory_display_name(territory_code)
+    content_label = content_filter_label(content_filter)
 
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
     hi_count = sum(1 for lead in leads if int(lead.get("lead_score") or 0) >= 10)
@@ -470,23 +507,27 @@ def generate_digest_html(
 
     html.append(f"<h1 style=\"margin-top: 0; color: #1a1a2e;\">OSHA Lead Digest ({mode_label})</h1>")
     html.append(f"<p style=\"color: #555;\">{gen_date} | {'/'.join(states)}</p>")
-    if territory_code:
-        html.append(f"<p style=\"color: #555;\"><strong>Territory:</strong> {territory_code}</p>")
-    html.append(f"<p style=\"color: #555;\"><strong>Content Filter:</strong> {content_filter}</p>")
+    if territory_label:
+        html.append(f"<p style=\"color: #555;\"><strong>Territory:</strong> {territory_label}</p>")
+    html.append(f"<p style=\"color: #555;\"><strong>Content Filter:</strong> {content_label}</p>")
+    if include_low_fallback:
+        html.append(
+            f"<p style=\"color: #555;\"><strong>Fallback lows:</strong> On (max {LOW_FALLBACK_LIMIT})</p>"
+        )
 
     summary_label = "new leads today" if mode == "daily" else "leads in baseline"
     html.append('<div style="background-color: #eef5ff; padding: 14px; border-radius: 6px; margin: 16px 0;">')
     html.append(f"<p style=\"margin: 0;\"><strong>{len(leads)} {summary_label}</strong> | {hi_count} high-priority (score >= 10)</p>")
     html.append("</div>")
 
-    if len(leads) == 0 and content_filter == "high_medium":
-        html.append("<p><strong>No High/Medium today.</strong></p>")
-        if include_low_fallback:
-            if low_fallback:
-                html.append(f"<h2>Low Leads (Fallback) - Top {len(low_fallback)}</h2>")
-                html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT))
-            else:
-                html.append("<p><em>No fallback low leads available.</em></p>")
+    if len(leads) == 0 and mode == "daily":
+        territory_text = territory_label or "/".join(states)
+        html.append(
+            f"<p><strong>No new OSHA activity signals found in the last 24 hours for {territory_text}.</strong></p>"
+        )
+        if include_low_fallback and low_fallback:
+            html.append(f"<h2>Low Leads (Fallback) - Top {len(low_fallback)}</h2>")
+            html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT))
     else:
         html.append("<ul>")
         for state in states:
@@ -529,33 +570,37 @@ def generate_digest_text(
     states = config["states"]
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
     hi_count = sum(1 for lead in leads if int(lead.get("lead_score") or 0) >= 10)
+    territory_label = territory_display_name(territory_code)
+    content_label = content_filter_label(content_filter)
 
     lines = [
         f"OSHA Lead Digest ({mode_label}) - {gen_date}",
         f"Coverage: {'/'.join(states)}",
     ]
-    if territory_code:
-        lines.append(f"Territory: {territory_code}")
-    lines.append(f"Content Filter: {content_filter}")
+    if territory_label:
+        lines.append(f"Territory: {territory_label}")
+    lines.append(f"Content Filter: {content_label}")
+    if include_low_fallback:
+        lines.append(f"Fallback lows: On (max {LOW_FALLBACK_LIMIT})")
     lines.append("=" * 70)
     lines.append(f"Total Leads: {len(leads)}")
     lines.append(f"High Priority (>=10): {hi_count}")
 
-    if len(leads) == 0 and content_filter == "high_medium":
+    if len(leads) == 0 and mode == "daily":
+        territory_text = territory_label or "/".join(states)
         lines.append("")
-        lines.append("No High/Medium today.")
-        if include_low_fallback:
-            if low_fallback:
-                lines.append("")
-                lines.append("Low Leads (Fallback):")
-                for lead in low_fallback:
-                    lines.append(
-                        f"- {(lead.get('establishment_name') or 'Unknown')} | "
-                        f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
-                        f"Score {int(lead.get('lead_score') or 0)}"
-                    )
-            else:
-                lines.append("No fallback low leads available.")
+        lines.append(
+            f"No new OSHA activity signals found in the last 24 hours for {territory_text}."
+        )
+        if include_low_fallback and low_fallback:
+            lines.append("")
+            lines.append("Low Leads (Fallback):")
+            for lead in low_fallback:
+                lines.append(
+                    f"- {(lead.get('establishment_name') or 'Unknown')} | "
+                    f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
+                    f"Score {int(lead.get('lead_score') or 0)}"
+                )
     else:
         lines.append("")
         lines.append("Top Leads:")
@@ -780,12 +825,15 @@ def main() -> None:
 
     hi_count = sum(1 for lead in leads if int(lead.get("lead_score") or 0) >= 10)
     states_label = "/".join(states)
-    territory_suffix = f" | {territory_code}" if territory_code else ""
+    territory_label = territory_display_name(territory_code)
+    location_label = territory_label or states_label
 
     if args.mode == "daily":
-        subject = f"{states_label}{territory_suffix} | {gen_date} | {len(leads)} new | {hi_count} high (>=10)"
+        count_label = "No new signals" if len(leads) == 0 else f"{len(leads)} new signals"
     else:
-        subject = f"{states_label}{territory_suffix} | {gen_date} | {len(leads)} leads | {hi_count} high (>=10)"
+        count_label = "No signals" if len(leads) == 0 else f"{len(leads)} signals"
+
+    subject = f"{location_label} | {gen_date} | {count_label}"
 
     html_body = generate_digest_html(
         leads=leads,

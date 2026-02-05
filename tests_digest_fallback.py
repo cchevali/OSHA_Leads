@@ -61,13 +61,19 @@ class TestDigestFallback(unittest.TestCase):
             branding=self.branding,
         )
 
-        self.assertIn("No High/Medium today", html)
+        self.assertIn(
+            "No new OSHA activity signals found in the last 24 hours for Texas Triangle.",
+            html,
+        )
         self.assertIn("Low Leads (Fallback)", html)
         self.assertIn("Low Lead One", html)
         self.assertIn(self.branding["brand_name"], html)
         self.assertIn(self.branding["mailing_address"], html)
 
-        self.assertIn("No High/Medium today", text)
+        self.assertIn(
+            "No new OSHA activity signals found in the last 24 hours for Texas Triangle.",
+            text,
+        )
         self.assertIn("Low Leads (Fallback)", text)
         self.assertIn("Low Lead One", text)
         self.assertIn(self.branding["brand_name"], text)
@@ -109,12 +115,18 @@ class TestDigestFallback(unittest.TestCase):
             branding=self.branding,
         )
 
-        self.assertIn("No High/Medium today", html)
+        self.assertIn(
+            "No new OSHA activity signals found in the last 24 hours for Texas Triangle.",
+            html,
+        )
         self.assertNotIn("Low Leads (Fallback)", html)
         self.assertIn(self.branding["brand_name"], html)
         self.assertIn(self.branding["mailing_address"], html)
 
-        self.assertIn("No High/Medium today", text)
+        self.assertIn(
+            "No new OSHA activity signals found in the last 24 hours for Texas Triangle.",
+            text,
+        )
         self.assertNotIn("Low Leads (Fallback)", text)
         self.assertIn(self.branding["brand_name"], text)
         self.assertIn(self.branding["mailing_address"], text)
