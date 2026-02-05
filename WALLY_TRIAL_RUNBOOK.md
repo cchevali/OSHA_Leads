@@ -187,6 +187,17 @@ Open the latest logs and confirm these three lines exist:
 2. `WINDOW_CHECK ... window_ok=YES`
 3. `SEND_START mode=LIVE`
 
+### Makeup Send (Missed Daily)
+
+If the scheduled send was missed and the current time is **outside** the configured window:
+1. Temporarily widen the window by setting `send_window_minutes` to `180` in `customers\wally_trial_tx_triangle_v1.json`.
+2. Run `run_wally_trial_daily.bat` once.
+3. Verify logs show:
+   - `WINDOW_CHECK ... window_ok=YES`
+   - `SEND_START mode=LIVE`
+
+Important: `--send-live` is still required in the batch/script, so widening the window alone does **not** enable live sending.
+
 ## Troubleshooting (Common Live Failures)
 
 - `Zoho alias/from not authorized`: check SMTP/send error details in `out/email_log.csv`, full command output in `out/run_log_*.txt`, and scheduled runs in `out/wally_trial_task.log`.
