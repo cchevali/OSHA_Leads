@@ -290,12 +290,17 @@ def get_leads_for_period(
     date_opened_cutoff = (today - timedelta(days=since_days)).strftime("%Y-%m-%d")
     first_seen_cutoff = (today - timedelta(days=new_only_days)).strftime("%Y-%m-%d %H:%M:%S")
 
+    lead_id_expr = (
+        "lead_id"
+        if _has_column(conn, "inspections", "lead_id")
+        else "('osha:inspection:' || activity_nr) AS lead_id"
+    )
     area_office_expr = "area_office" if _has_column(conn, "inspections", "area_office") else "NULL AS area_office"
     placeholders = ",".join(["?" for _ in states])
 
     query = f"""
         SELECT
-            lead_id,
+            {lead_id_expr},
             activity_nr,
             date_opened,
             inspection_type,

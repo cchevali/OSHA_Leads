@@ -43,19 +43,24 @@ def ensure_schema(db_path: str, schema_path: str) -> None:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
 
+    # If this is an existing DB, apply additive migrations *before* running schema.sql,
+    # because schema.sql may create indexes that reference new columns.
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+    if "inspections" in tables:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(inspections)")}
+        if "area_office" not in cols:
+            conn.execute("ALTER TABLE inspections ADD COLUMN area_office TEXT")
+
+    if "subscribers" in tables:
+        subscriber_cols = {row[1] for row in conn.execute("PRAGMA table_info(subscribers)")}
+        if "include_low_fallback" not in subscriber_cols:
+            conn.execute("ALTER TABLE subscribers ADD COLUMN include_low_fallback INTEGER NOT NULL DEFAULT 0")
+        if "recipients_json" not in subscriber_cols:
+            conn.execute("ALTER TABLE subscribers ADD COLUMN recipients_json TEXT")
+
     with open(schema_path, "r", encoding="utf-8") as f:
         conn.executescript(f.read())
-
-    # Backfill area_office for existing databases.
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(inspections)")}
-    if "area_office" not in cols:
-        conn.execute("ALTER TABLE inspections ADD COLUMN area_office TEXT")
-
-    subscriber_cols = {row[1] for row in conn.execute("PRAGMA table_info(subscribers)")}
-    if "include_low_fallback" not in subscriber_cols:
-        conn.execute("ALTER TABLE subscribers ADD COLUMN include_low_fallback INTEGER NOT NULL DEFAULT 0")
-    if "recipients_json" not in subscriber_cols:
-        conn.execute("ALTER TABLE subscribers ADD COLUMN recipients_json TEXT")
 
     conn.commit()
     conn.close()

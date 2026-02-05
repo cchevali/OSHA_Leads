@@ -83,11 +83,16 @@ def get_sendable_leads(
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(inspections)")
     columns = {row[1] for row in cursor.fetchall()}
+    lead_id_expr = (
+        "lead_id"
+        if "lead_id" in columns
+        else "('osha:inspection:' || activity_nr) AS lead_id"
+    )
     area_office_expr = "area_office" if "area_office" in columns else "NULL AS area_office"
 
     query = f"""
         SELECT 
-            lead_id,
+            {lead_id_expr},
             activity_nr,
             date_opened,
             inspection_type,
@@ -145,11 +150,16 @@ def get_needs_review_leads(
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(inspections)")
     columns = {row[1] for row in cursor.fetchall()}
+    lead_id_expr = (
+        "lead_id"
+        if "lead_id" in columns
+        else "('osha:inspection:' || activity_nr) AS lead_id"
+    )
     area_office_expr = "area_office" if "area_office" in columns else "NULL AS area_office"
 
     query = f"""
         SELECT 
-            lead_id,
+            {lead_id_expr},
             activity_nr,
             date_opened,
             inspection_type,
