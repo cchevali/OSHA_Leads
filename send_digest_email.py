@@ -13,13 +13,16 @@ Features:
 import argparse
 import csv
 import json
+import hashlib
 import logging
 import os
 import smtplib
 import sqlite3
 import sys
 import time
-from datetime import datetime, timedelta
+from collections import Counter
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, make_msgid
@@ -48,6 +51,12 @@ PILOT_WHITELIST_DEFAULT = ["cchevali@gmail.com"]
 DEFAULT_REPLY_TO = "support@microflowops.com"
 DEFAULT_FROM_LOCAL_PART = "alerts"
 LOW_FALLBACK_LIMIT = 5
+HEALTH_MIN_SHARE_DEFAULT = 0.1
+HEALTH_MIN_TOTAL_DEFAULT = 20
+SEND_WINDOW_MINUTES_DEFAULT = 20
+HEALTH_ANCHORS_BY_TERRITORY = {
+    "TX_TRIANGLE_V1": ["Houston", "Dallas/Fort Worth", "Austin", "San Antonio"],
+}
 
 
 def content_filter_label(value: str) -> str:
@@ -104,21 +113,34 @@ def _parse_timestamp(value: str | None) -> datetime | None:
     return None
 
 
-def _format_timestamp(value: str | None) -> str:
-    dt = _parse_timestamp(value)
+def _to_naive(dt: datetime | None) -> datetime | None:
     if not dt:
-        return "-"
-    return dt.strftime("%Y-%m-%d %H:%M")
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def _observed_timestamp(lead: dict) -> str:
+def _observed_datetime(lead: dict) -> datetime | None:
     changed_dt = _parse_timestamp(lead.get("changed_at"))
     first_dt = _parse_timestamp(lead.get("first_seen_at"))
     last_dt = _parse_timestamp(lead.get("last_seen_at"))
     candidates = [dt for dt in (changed_dt, first_dt, last_dt) if dt]
     if not candidates:
+        return None
+    dt = max(candidates)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _observed_timestamp(lead: dict, tz: ZoneInfo) -> str:
+    dt = _observed_datetime(lead)
+    if not dt:
         return "-"
-    return max(candidates).strftime("%Y-%m-%d %H:%M")
+    local_dt = dt.astimezone(tz)
+    tz_label = "CT" if getattr(tz, "key", "") in {"America/Chicago", "US/Central"} else local_dt.strftime("%Z")
+    return f"{local_dt.strftime('%Y-%m-%d %H:%M')} {tz_label}"
 
 
 def _priority_label(score: int) -> str:
@@ -129,6 +151,20 @@ def _priority_label(score: int) -> str:
     return "Low"
 
 
+
+def build_coverage_line(total_counts: dict, shown_counts: dict) -> str:
+    hidden_parts: list[str] = []
+    for label, key in (("high-priority", "high"), ("medium-priority", "medium"), ("low-priority", "low")):
+        total = int(total_counts.get(key, 0))
+        shown = int(shown_counts.get(key, 0))
+        hidden = max(0, total - shown)
+        if hidden > 0:
+            suffix = "signals" if hidden != 1 else "signal"
+            hidden_parts.append(f"{hidden} {label} {suffix}")
+    if not hidden_parts:
+        return ""
+    return "Also observed (not shown): " + ", ".join(hidden_parts) + "."
+
 def _build_preheader(leads: list[dict]) -> str:
     if not leads:
         return "No new OSHA activity signals today."
@@ -138,6 +174,165 @@ def _build_preheader(leads: list[dict]) -> str:
         signal = (lead.get("inspection_type") or "Signal").strip()
         parts.append(f"{company} ({signal})")
     return "Top signals: " + " | ".join(parts)
+
+
+def compute_digest_hash(
+    leads: list[dict],
+    low_fallback: list[dict],
+    mode: str,
+    territory_code: str | None,
+    content_filter: str,
+    include_low_fallback: bool,
+) -> str:
+    """Stable digest hash over normalized lead identifiers and config flags."""
+    def _lead_id(lead: dict) -> str:
+        return str(lead.get("activity_nr") or lead.get("lead_id") or "").strip()
+
+    main_ids = sorted([_lead_id(lead) for lead in leads if _lead_id(lead)])
+    low_ids = sorted([_lead_id(lead) for lead in low_fallback if _lead_id(lead)])
+    payload = {
+        "mode": mode,
+        "territory": territory_code or "",
+        "content_filter": content_filter,
+        "include_low_fallback": bool(include_low_fallback),
+        "leads": main_ids,
+        "low_fallback": low_ids,
+    }
+    blob = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def ensure_send_log_table(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS send_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subscriber_key TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            territory_code TEXT NOT NULL,
+            territory_date TEXT NOT NULL,
+            digest_hash TEXT NOT NULL,
+            sent_at TEXT NOT NULL,
+            sent_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_send_log_unique
+        ON send_log (subscriber_key, mode, territory_code, territory_date, digest_hash)
+        """
+    )
+    conn.commit()
+
+
+def has_duplicate_send(
+    conn: sqlite3.Connection,
+    subscriber_key: str,
+    mode: str,
+    territory_code: str,
+    territory_date: str,
+    digest_hash: str,
+) -> bool:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT 1 FROM send_log
+        WHERE subscriber_key = ?
+          AND mode = ?
+          AND territory_code = ?
+          AND territory_date = ?
+          AND digest_hash = ?
+        LIMIT 1
+        """,
+        (subscriber_key, mode, territory_code, territory_date, digest_hash),
+    )
+    return cursor.fetchone() is not None
+
+
+def record_send_log(
+    conn: sqlite3.Connection,
+    subscriber_key: str,
+    mode: str,
+    territory_code: str,
+    territory_date: str,
+    digest_hash: str,
+    sent_at: str,
+    sent_count: int,
+) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO send_log
+            (subscriber_key, mode, territory_code, territory_date, digest_hash, sent_at, sent_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (subscriber_key, mode, territory_code, territory_date, digest_hash, sent_at, int(sent_count)),
+    )
+    conn.commit()
+
+
+def resolve_timezone(config: dict, territory_code: str | None) -> ZoneInfo:
+    tz_name = (config.get("timezone") or "").strip()
+    if not tz_name and territory_code:
+        try:
+            territory = load_territory_definitions().get(territory_code, {})
+            tz_name = (territory.get("timezone") or "").strip()
+        except Exception:
+            tz_name = ""
+    if not tz_name:
+        tz_name = "America/Chicago"
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return ZoneInfo("America/Chicago")
+
+
+def _parse_send_time_local(value: str | None) -> tuple[int, int] | None:
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    parts = text.split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return hour, minute
+
+
+def _coerce_send_window_minutes(value: object) -> int:
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return SEND_WINDOW_MINUTES_DEFAULT
+    if minutes <= 0:
+        return SEND_WINDOW_MINUTES_DEFAULT
+    return minutes
+
+
+def _within_send_window(
+    now_local: datetime,
+    send_time_local: str | None,
+    window_minutes: int,
+) -> tuple[bool, str, datetime | None, datetime | None]:
+    parsed = _parse_send_time_local(send_time_local)
+    if not parsed:
+        return False, "send_time_local missing/invalid", None, None
+    hour, minute = parsed
+    scheduled = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    window_start = scheduled - timedelta(minutes=window_minutes)
+    window_end = scheduled + timedelta(minutes=window_minutes)
+    if window_start <= now_local <= window_end:
+        return True, "", window_start, window_end
+    return False, "outside send window", window_start, window_end
 
 
 def update_subscriber_last_sent_at(db_path: str, subscriber_key: str, timestamp: str) -> None:
@@ -199,6 +394,230 @@ def print_area_office_debug(conn: sqlite3.Connection) -> None:
     _print_samples("site_city", site_city_counts)
     _print_samples("mail_city", mail_city_counts)
     _print_samples("site_address1", address_counts)
+
+
+
+
+def _summarize_health(leads: list[dict]) -> dict:
+    priority_counts = Counter()
+    type_counts = Counter()
+    city_counts = Counter()
+    for lead in leads:
+        score = int(lead.get("lead_score") or 0)
+        priority_counts[_priority_label(score).lower()] += 1
+        itype = (lead.get("inspection_type") or "Unknown").strip() or "Unknown"
+        type_counts[itype] += 1
+        city = (lead.get("site_city") or "").strip()
+        if city:
+            city_counts[city] += 1
+    top_cities = [{"city": city, "count": count} for city, count in city_counts.most_common(10)]
+    return {
+        "total": len(leads),
+        "priority_counts": dict(priority_counts),
+        "type_counts": dict(type_counts),
+        "top_cities": top_cities,
+    }
+
+
+def compute_territory_health(
+    conn: sqlite3.Connection,
+    territory_code: str,
+    states: list[str],
+    now_utc: datetime | None = None,
+    min_share: float = HEALTH_MIN_SHARE_DEFAULT,
+    min_total: int = HEALTH_MIN_TOTAL_DEFAULT,
+) -> dict:
+    now_utc = now_utc or datetime.now(timezone.utc)
+    anchors = HEALTH_ANCHORS_BY_TERRITORY.get(territory_code, [])
+    placeholders = ",".join(["?" for _ in states])
+    changed_at_expr = "changed_at" if _has_column(conn, "inspections", "changed_at") else "NULL AS changed_at"
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""
+        SELECT
+            activity_nr,
+            site_state,
+            site_city,
+            area_office,
+            inspection_type,
+            lead_score,
+            first_seen_at,
+            last_seen_at,
+            {changed_at_expr}
+        FROM inspections
+        WHERE site_state IN ({placeholders})
+          AND parse_invalid = 0
+        """,
+        tuple(states),
+    )
+    columns = [desc[0] for desc in cursor.description]
+    rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    window_24 = now_utc - timedelta(hours=24)
+    window_14 = now_utc - timedelta(days=14)
+    tx_24: list[dict] = []
+    tx_14: list[dict] = []
+
+    for row in rows:
+        observed_dt = _observed_datetime(row)
+        if not observed_dt:
+            continue
+        if observed_dt >= window_14:
+            tx_14.append(row)
+        if observed_dt >= window_24:
+            tx_24.append(row)
+
+    terr_24, _ = filter_by_territory(tx_24, territory_code)
+    terr_14, _ = filter_by_territory(tx_14, territory_code)
+
+    tx_summary_24 = _summarize_health(tx_24)
+    tx_summary_14 = _summarize_health(tx_14)
+    terr_summary_24 = _summarize_health(terr_24)
+    terr_summary_14 = _summarize_health(terr_14)
+    total_24 = tx_summary_24["total"]
+    total_14 = tx_summary_14["total"]
+    share_24 = (terr_summary_24["total"] / total_24) if total_24 else 0.0
+    share_14 = (terr_summary_14["total"] / total_14) if total_14 else 0.0
+
+    anchor_checks: dict[str, bool] = {}
+    if anchors:
+        anchor_leads = [
+            {"activity_nr": f"anchor_{idx}", "site_state": "TX", "site_city": anchor, "area_office": ""}
+            for idx, anchor in enumerate(anchors)
+        ]
+        matched, _ = filter_by_territory(anchor_leads, territory_code)
+        matched_set = {lead.get("site_city") for lead in matched}
+        anchor_checks = {anchor: anchor in matched_set for anchor in anchors}
+
+    alerts: list[str] = []
+    if anchors and not all(anchor_checks.values()):
+        alerts.append("anchor_mismatch")
+    if total_24 >= min_total and share_24 < min_share:
+        alerts.append("share_low_24h")
+    if total_14 >= min_total and share_14 < min_share:
+        alerts.append("share_low_14d")
+
+    return {
+        "territory_code": territory_code,
+        "run_at": now_utc.isoformat(),
+        "window_24": {
+            "tx_total": total_24,
+            "territory_total": terr_summary_24["total"],
+            "share": share_24,
+            "tx_priority_counts": tx_summary_24["priority_counts"],
+            "tx_type_counts": tx_summary_24["type_counts"],
+            "tx_top_cities": tx_summary_24["top_cities"],
+            "territory_priority_counts": terr_summary_24["priority_counts"],
+            "territory_type_counts": terr_summary_24["type_counts"],
+            "territory_top_cities": terr_summary_24["top_cities"],
+        },
+        "window_14": {
+            "tx_total": total_14,
+            "territory_total": terr_summary_14["total"],
+            "share": share_14,
+            "tx_priority_counts": tx_summary_14["priority_counts"],
+            "tx_type_counts": tx_summary_14["type_counts"],
+            "tx_top_cities": tx_summary_14["top_cities"],
+            "territory_priority_counts": terr_summary_14["priority_counts"],
+            "territory_type_counts": terr_summary_14["type_counts"],
+            "territory_top_cities": terr_summary_14["top_cities"],
+        },
+        "anchor_checks": anchor_checks,
+        "alerts": alerts,
+    }
+
+
+def store_territory_health(conn: sqlite3.Connection, health: dict) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS territory_health (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at TEXT,
+            territory_code TEXT,
+            window_hours INTEGER,
+            tx_total INTEGER,
+            territory_total INTEGER,
+            share REAL,
+            priority_counts TEXT,
+            type_counts TEXT,
+            top_cities TEXT,
+            alerts TEXT,
+            anchor_checks TEXT
+        )
+        """
+    )
+    run_at = health["run_at"]
+    territory_code = health["territory_code"]
+    alerts = json.dumps(health.get("alerts", []))
+    anchor_checks = json.dumps(health.get("anchor_checks", {}))
+    for window_hours, window in ((24, health["window_24"]), (336, health["window_14"])):
+        cursor.execute(
+            """
+            INSERT INTO territory_health (
+                run_at, territory_code, window_hours, tx_total, territory_total, share,
+                priority_counts, type_counts, top_cities, alerts, anchor_checks
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_at,
+                territory_code,
+                window_hours,
+                int(window["tx_total"]),
+                int(window["territory_total"]),
+                float(window["share"]),
+                json.dumps({"tx": window.get("tx_priority_counts", {}), "territory": window.get("territory_priority_counts", {})}),
+                json.dumps({"tx": window.get("tx_type_counts", {}), "territory": window.get("territory_type_counts", {})}),
+                json.dumps({"tx": window.get("tx_top_cities", []), "territory": window.get("territory_top_cities", [])}),
+                alerts,
+                anchor_checks,
+            ),
+        )
+    conn.commit()
+
+
+def format_territory_health_summary(health: dict) -> tuple[str, str]:
+    alerts = health.get("alerts") or []
+    alert_text = "None" if not alerts else ", ".join(alerts)
+    anchors = health.get("anchor_checks") or {}
+    anchor_lines = [f"{name}: {'OK' if ok else 'FAIL'}" for name, ok in anchors.items()]
+    anchor_text = "; ".join(anchor_lines) if anchor_lines else "No anchors configured"
+    window_24 = health["window_24"]
+    window_14 = health["window_14"]
+
+    def _top_cities(window: dict) -> str:
+        cities = window.get("territory_top_cities", [])
+        if not cities:
+            return "None"
+        return ", ".join(f"{item['city']} ({item['count']})" for item in cities[:5])
+
+    top_24 = _top_cities(window_24)
+    top_14 = _top_cities(window_14)
+
+    text = (
+        "Territory health (admin only)\n"
+        f"24h: TX total {window_24['tx_total']}, territory {window_24['territory_total']} "
+        f"(share {window_24['share']:.2%})\n"
+        f"14d: TX total {window_14['tx_total']}, territory {window_14['territory_total']} "
+        f"(share {window_14['share']:.2%})\n"
+        f"Top cities (24h territory): {top_24}\n"
+        f"Top cities (14d territory): {top_14}\n"
+        f"Anchors: {anchor_text}\n"
+        f"Alerts: {alert_text}"
+    )
+
+    html = (
+        '<h3 style="margin-top: 24px;">Territory health (admin only)</h3>'
+        f"<p>24h: TX total {window_24['tx_total']}, territory {window_24['territory_total']} "
+        f"(share {window_24['share']:.2%})<br>"
+        f"14d: TX total {window_14['tx_total']}, territory {window_14['territory_total']} "
+        f"(share {window_14['share']:.2%})<br>"
+        f"Top cities (24h territory): {top_24}<br>"
+        f"Top cities (14d territory): {top_14}<br>"
+        f"Anchors: {anchor_text}<br>"
+        f"Alerts: {alert_text}</p>"
+    )
+    return text, html
 
 
 def resolve_admin_recipient(config: dict) -> str:
@@ -464,6 +883,8 @@ def get_leads_for_period(
     today = datetime.now()
     window_cutoff = window_start or (today - timedelta(days=since_days))
     effective_new_only = new_only_cutoff or (today - timedelta(days=new_only_days))
+    window_cutoff = _to_naive(window_cutoff)
+    effective_new_only = _to_naive(effective_new_only)
 
     lead_id_expr = (
         "lead_id"
@@ -513,9 +934,9 @@ def get_leads_for_period(
     excluded_by_new_only = 0
 
     for lead in all_results:
-        first_seen_dt = _parse_timestamp(lead.get("first_seen_at"))
-        last_seen_dt = _parse_timestamp(lead.get("last_seen_at"))
-        changed_dt = _parse_timestamp(lead.get("changed_at"))
+        first_seen_dt = _to_naive(_parse_timestamp(lead.get("first_seen_at")))
+        last_seen_dt = _to_naive(_parse_timestamp(lead.get("last_seen_at")))
+        changed_dt = _to_naive(_parse_timestamp(lead.get("changed_at")))
 
         in_window = False
         if use_opened_window:
@@ -573,6 +994,18 @@ def get_leads_for_period(
         )
         low_fallback = low_candidates[:LOW_FALLBACK_LIMIT]
 
+    def _priority_counts(rows: list[dict]) -> dict:
+        counts = {"high": 0, "medium": 0, "low": 0}
+        for row in rows:
+            score = int(row.get("lead_score") or 0)
+            if score >= 10:
+                counts["high"] += 1
+            elif score >= 6:
+                counts["medium"] += 1
+            else:
+                counts["low"] += 1
+        return counts
+
     stats = {
         "total_candidates": len(all_results),
         "after_time_window": len(time_filtered),
@@ -588,6 +1021,8 @@ def get_leads_for_period(
         "excluded_by_content_filter": excluded_content,
         "dedupe_removed": dedupe_removed,
         "low_fallback_count": len(low_fallback),
+        "priority_counts": _priority_counts(territory_filtered),
+        "shown_priority_counts": _priority_counts(final_leads),
     }
 
     return final_leads, low_fallback, stats
@@ -688,7 +1123,7 @@ def build_unsubscribe_payload(
 
     return f"<{mailto}>, <{one_click_url}>", "List-Unsubscribe=One-Click", one_click_url
 
-def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool) -> str:
+def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, tz: ZoneInfo) -> str:
     if not rows:
         return "<p><em>No leads match this section.</em></p>"
 
@@ -703,7 +1138,7 @@ def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool) 
         state = lead.get("site_state") or "-"
         itype = lead.get("inspection_type") or "-"
         date_opened = lead.get("date_opened") or "-"
-        observed = _observed_timestamp(lead)
+        observed = _observed_timestamp(lead, tz)
         score = int(lead.get("lead_score") or 0)
         priority = _priority_label(score)
         url = lead.get("source_url") or "#"
@@ -734,6 +1169,9 @@ def generate_digest_html(
     report_label: str | None = None,
     footer_html: str | None = None,
     summary_label: str | None = None,
+    coverage_line: str | None = None,
+    health_summary_html: str | None = None,
+    tz: ZoneInfo | None = None,
 ) -> str:
     states = config["states"]
     top_k_overall = config.get("top_k_overall", 25)
@@ -752,6 +1190,7 @@ def generate_digest_html(
     include_area_office_all = any((lead.get("area_office") or "").strip() for lead in leads)
     summary_line = summary_label or f"{len(leads)} signals"
     preheader = _build_preheader(leads)
+    tz = tz or ZoneInfo("America/Chicago")
 
     html: list[str] = []
     html.append("<!DOCTYPE html>")
@@ -772,6 +1211,8 @@ def generate_digest_html(
     html.append('<div style="background-color: #eef5ff; padding: 14px; border-radius: 6px; margin: 16px 0;">')
     html.append(f"<p style=\"margin: 0;\"><strong>{summary_line}</strong></p>")
     html.append("</div>")
+    if coverage_line:
+        html.append(f"<p style=\"color: #555;\">{coverage_line}</p>")
 
     if len(leads) == 0 and mode == "daily":
         territory_text = territory_label or "/".join(states)
@@ -785,7 +1226,7 @@ def generate_digest_html(
             )
         if include_low_fallback and low_fallback:
             html.append(f"<h2>Low Signals (Fallback) - Top {len(low_fallback)}</h2>")
-            html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all))
+            html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all, tz))
     else:
         if len(unique_states) > 1:
             html.append("<ul>")
@@ -794,19 +1235,22 @@ def generate_digest_html(
             html.append("</ul>")
 
         html.append("<h2>Signals</h2>")
-        html.append(_lead_rows_html(main_rows, len(main_rows), include_area_office_main))
+        html.append(_lead_rows_html(main_rows, len(main_rows), include_area_office_main, tz))
 
         if len(leads) > main_limit:
             html.append(f"<h2>All Signals ({len(leads)})</h2>")
-            html.append(_lead_rows_html(leads, len(leads), include_area_office_all))
+            html.append(_lead_rows_html(leads, len(leads), include_area_office_all, tz))
 
         if include_low_fallback and low_fallback:
             html.append(f"<h2>Low Signals (Fallback) - Top {len(low_fallback)}</h2>")
-            html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all))
+            html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all, tz))
 
     html.append(
         "<p style=\"color: #555; font-size: 12px;\">Accident, Complaint, and Referral describe OSHA activity signals (not citations).</p>"
     )
+
+    if health_summary_html:
+        html.append(health_summary_html)
 
     if footer_html:
         html.append(footer_html)
@@ -828,6 +1272,9 @@ def generate_digest_text(
     report_label: str | None = None,
     footer_text: str | None = None,
     summary_label: str | None = None,
+    coverage_line: str | None = None,
+    health_summary_text: str | None = None,
+    tz: ZoneInfo | None = None,
 ) -> str:
     states = config["states"]
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
@@ -842,6 +1289,7 @@ def generate_digest_text(
     include_area_office_main = any((lead.get("area_office") or "").strip() for lead in main_rows)
     include_area_office_all = any((lead.get("area_office") or "").strip() for lead in leads)
     summary_line = summary_label or f"{len(leads)} signals"
+    tz = tz or ZoneInfo("America/Chicago")
 
     lines = [
         f"OSHA Lead Digest ({mode_label}) - {gen_date}",
@@ -853,6 +1301,8 @@ def generate_digest_text(
         lines.append(f"Territory: {territory_label}")
     lines.append("=" * 70)
     lines.append(summary_line)
+    if coverage_line:
+        lines.append(coverage_line)
 
     if len(leads) == 0 and mode == "daily":
         territory_text = territory_label or "/".join(states)
@@ -891,7 +1341,7 @@ def generate_digest_text(
                 f"  Priority: {priority} | Signal: {(lead.get('inspection_type') or '-')}"
             )
             lines.append(
-                f"  Observed: {_observed_timestamp(lead)} | Opened: {(lead.get('date_opened') or '-')}"
+                f"  Observed: {_observed_timestamp(lead, tz)} | Opened: {(lead.get('date_opened') or '-')}"
             )
             lines.append(f"  {(lead.get('source_url') or '#')}")
 
@@ -919,6 +1369,10 @@ def generate_digest_text(
 
     lines.append("")
     lines.append("Accident, Complaint, and Referral describe OSHA activity signals (not citations).")
+
+    if health_summary_text:
+        lines.append("")
+        lines.append(health_summary_text)
 
     if footer_text:
         lines.append("")
@@ -1062,6 +1516,11 @@ def main() -> None:
         help="Print distinct TX area_office values seen in last 30 days and exit",
     )
     parser.add_argument(
+        "--health-summary",
+        action="store_true",
+        help="Include admin-only territory health summary in the email (safe-mode only)",
+    )
+    parser.add_argument(
         "--recipient-override",
         default="",
         help="Comma-separated recipients to override config recipients (useful for preview sends)",
@@ -1078,8 +1537,7 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parent
     load_environment(repo_root)
 
-    gen_date = datetime.now().strftime("%Y-%m-%d")
-    timestamp = datetime.now().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
 
     if args.debug_area_offices:
         conn = sqlite3.connect(args.db)
@@ -1097,6 +1555,9 @@ def main() -> None:
         raise SystemExit(1)
 
     territory_code = subscriber_profile.get("territory_code") or config.get("territory_code")
+    tz = resolve_timezone(config, territory_code)
+    now_local = datetime.now(tz)
+    gen_date = now_local.strftime("%Y-%m-%d")
     content_filter = normalize_content_filter(
         subscriber_profile.get("content_filter") or config.get("content_filter", "high_medium")
     )
@@ -1120,7 +1581,45 @@ def main() -> None:
 
     recipients = collect_recipients(config, subscriber_profile, args.recipient_override)
     intended_recipients = list(recipients)
-    live_allowed = bool(args.send_live and allow_live_send and send_enabled_ok)
+
+    send_time_local = (config.get("send_time_local") or "").strip()
+    window_minutes = _coerce_send_window_minutes(config.get("send_window_minutes"))
+    window_ok, window_reason, window_start, window_end = _within_send_window(
+        now_local, send_time_local, window_minutes
+    )
+    window_start_text = window_start.isoformat() if window_start else "n/a"
+    window_end_text = window_end.isoformat() if window_end else "n/a"
+    send_time_text = send_time_local or "n/a"
+    print(
+        "WINDOW_CHECK "
+        f"now_local={now_local.isoformat()} "
+        f"send_time_local={send_time_text} "
+        f"window_start={window_start_text} "
+        f"window_end={window_end_text} "
+        f"window_ok={'YES' if window_ok else 'NO'}"
+    )
+
+    live_allowed = bool(args.send_live and allow_live_send and send_enabled_ok and (args.dry_run or window_ok))
+    safe_mode_reason = None
+    if not live_allowed:
+        if not args.send_live:
+            safe_mode_reason = "missing --send-live"
+        elif not allow_live_send:
+            safe_mode_reason = "allow_live_send=false"
+        elif not send_enabled_ok:
+            safe_mode_reason = "send_enabled=0"
+        elif not (args.dry_run or window_ok):
+            safe_mode_reason = window_reason or "outside send window"
+        else:
+            safe_mode_reason = "unknown"
+
+    if live_allowed:
+        print(f"SEND_START mode=LIVE intended_recipient_count={len(intended_recipients)}")
+    else:
+        print(
+            f"SEND_START mode=SAFE intended_recipient_count={len(intended_recipients)} "
+            f"gate={safe_mode_reason}"
+        )
     if not live_allowed:
         admin_recipient = resolve_admin_recipient(config)
         if not admin_recipient:
@@ -1145,6 +1644,8 @@ def main() -> None:
     )
 
     conn = sqlite3.connect(args.db)
+    ensure_send_log_table(conn)
+    tz = resolve_timezone(config, territory_code)
     snapshot_mode = args.mode == "daily" and baseline_on_first_send and not last_sent_at
     report_label = None
     summary_label = None
@@ -1186,9 +1687,58 @@ def main() -> None:
         include_changed=include_changed,
         use_opened_window=use_opened_window,
     )
+
+    health_summary_text = None
+    health_summary_html = None
+    health_alerts: list[str] = []
+    health_enabled = bool(territory_code and states)
+    if health_enabled:
+        try:
+            min_share = float(config.get("health_min_share", HEALTH_MIN_SHARE_DEFAULT))
+            min_total = int(config.get("health_min_total", HEALTH_MIN_TOTAL_DEFAULT))
+            health = compute_territory_health(
+                conn=conn,
+                territory_code=territory_code,
+                states=states,
+                min_share=min_share,
+                min_total=min_total,
+            )
+            store_territory_health(conn, health)
+            health_summary_text, health_summary_html = format_territory_health_summary(health)
+            health_alerts = list(health.get("alerts", []))
+            if health_alerts:
+                logger.warning("Territory health alerts: %s", ", ".join(health_alerts))
+            else:
+                logger.info(
+                    "Territory health OK: 24h share %.1f%%, 14d share %.1f%%",
+                    health["window_24"]["share"] * 100,
+                    health["window_14"]["share"] * 100,
+                )
+        except Exception as exc:
+            logger.warning("Territory health diagnostics failed: %s", exc)
+
     conn.close()
 
     logger.info("Leads after filters: %d", len(leads))
+    logger.info(
+        "Filter stages: total=%d time_window=%d territory=%d content=%d dedupe=%d final=%d",
+        filter_stats.get("total_candidates", 0),
+        filter_stats.get("after_time_window", 0),
+        filter_stats.get("after_territory", 0),
+        filter_stats.get("after_content_filter", 0),
+        filter_stats.get("after_dedupe", 0),
+        filter_stats.get("final_leads", 0),
+    )
+
+    coverage_line = build_coverage_line(
+        filter_stats.get("priority_counts", {}),
+        filter_stats.get("shown_priority_counts", {}),
+    )
+
+    include_health_summary = bool(args.health_summary) and not live_allowed
+    if not include_health_summary:
+        health_summary_text = None
+        health_summary_html = None
 
     if snapshot_mode:
         summary_label = f"Starter snapshot: {len(leads)} signals (last {snapshot_days} days)"
@@ -1203,15 +1753,67 @@ def main() -> None:
     location_label = territory_label or states_label
 
     if snapshot_mode:
-        subject = f"{location_label} OSHA Signals — {gen_date} (Starter snapshot, {len(leads)} signals)"
+        subject = f"{location_label} OSHA Signals - {gen_date} (Starter snapshot, {len(leads)} signals)"
     elif args.mode == "daily":
-        subject = f"{location_label} OSHA Signals — {gen_date} ({len(leads)} new)"
+        subject = f"{location_label} OSHA Signals - {gen_date} ({len(leads)} new)"
     else:
-        subject = f"{location_label} OSHA Signals — {gen_date} ({len(leads)} signals)"
+        subject = f"{location_label} OSHA Signals - {gen_date} ({len(leads)} signals)"
+
+    digest_hash = compute_digest_hash(
+        leads=leads,
+        low_fallback=low_fallback,
+        mode=args.mode,
+        territory_code=territory_code,
+        content_filter=content_filter,
+        include_low_fallback=include_low_fallback,
+    )
+    territory_date = gen_date
+    duplicate_skip = False
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     email_log_path = os.path.join(args.output_dir, "email_log.csv")
     suppression_log_path = os.path.join(args.output_dir, "suppression_log.csv")
+
+    if live_allowed and not args.dry_run:
+        try:
+            conn = sqlite3.connect(args.db)
+            ensure_send_log_table(conn)
+            key = subscriber_key or customer_id
+            if has_duplicate_send(
+                conn,
+                key,
+                args.mode,
+                territory_code or "",
+                territory_date,
+                digest_hash,
+            ):
+                duplicate_skip = True
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    if duplicate_skip:
+        print(
+            f"[SKIP_DUPLICATE] Already sent identical digest for {territory_display_name(territory_code) or territory_code or 'territory'} "
+            f"on {territory_date} (hash={digest_hash[:10]}...)"
+        )
+        for recipient in recipients:
+            log_email_attempt(
+                email_log_path,
+                {
+                    "timestamp": timestamp,
+                    "customer_id": customer_id,
+                    "mode": args.mode,
+                    "recipient": recipient,
+                    "subject": subject,
+                    "status": "skipped_duplicate",
+                    "territory_code": territory_code or "",
+                    "content_filter": content_filter,
+                },
+            )
+        raise SystemExit(0)
 
     pilot_mode = bool(config.get("pilot_mode", PILOT_MODE_DEFAULT)) and not args.disable_pilot_guard
     whitelist = [email.lower() for email in config.get("pilot_whitelist", PILOT_WHITELIST_DEFAULT)]
@@ -1315,6 +1917,9 @@ def main() -> None:
             report_label=report_label,
             footer_html=footer_html,
             summary_label=summary_label,
+            coverage_line=coverage_line,
+            health_summary_html=health_summary_html,
+            tz=tz,
         )
         text_body = generate_digest_text(
             leads=leads,
@@ -1329,6 +1934,9 @@ def main() -> None:
             report_label=report_label,
             footer_text=footer_text,
             summary_label=summary_label,
+            coverage_line=coverage_line,
+            health_summary_text=health_summary_text,
+            tz=tz,
         )
 
         success, message_id, error = send_email(
@@ -1408,6 +2016,25 @@ def main() -> None:
 
     if not args.dry_run and sent_success > 0:
         update_subscriber_last_sent_at(args.db, config.get("subscriber_key", ""), timestamp)
+        if live_allowed:
+            try:
+                conn = sqlite3.connect(args.db)
+                ensure_send_log_table(conn)
+                record_send_log(
+                    conn,
+                    subscriber_key or customer_id,
+                    args.mode,
+                    territory_code or "",
+                    territory_date,
+                    digest_hash,
+                    timestamp,
+                    sent_success,
+                )
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     if failed_sends > 0:
         raise SystemExit(1)

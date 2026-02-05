@@ -55,6 +55,21 @@ def load_environment(repo_root: str) -> None:
         load_dotenv(dotenv_path=dotenv_path, override=False)
 
 
+def log_schedule_sanity(argv: list[str]) -> None:
+    try:
+        rendered = json.dumps(argv)
+    except Exception:
+        rendered = str(argv)
+    print(f"SCHEDULE_SANITY argv={rendered}")
+    suspicious = [arg for arg in argv if arg.endswith('"') or arg.endswith("'")]
+    if suspicious:
+        try:
+            suspicious_rendered = json.dumps(suspicious)
+        except Exception:
+            suspicious_rendered = str(suspicious)
+        print(f"SCHEDULE_SANITY WARNING suspicious_trailing_quote={suspicious_rendered}")
+
+
 def get_last_successful_send(log_path: str) -> dict:
     """Get last successful send from email log. Returns dict with details."""
     result = {
@@ -149,6 +164,63 @@ This is an automated alert from OSHA Concierge.
         print(f"[INFO] Failure notification sent to {admin_email}")
     except Exception as e:
         print(f"[ERROR] Failed to send failure notification: {e}")
+
+
+def resolve_operator_email(default_admin: str) -> str:
+    return (
+        os.getenv("OPERATOR_EMAIL", "").strip()
+        or os.getenv("REPLY_TO_EMAIL", "").strip()
+        or default_admin
+    )
+
+
+def write_run_artifact(run_dir: str, filename: str, payload: dict) -> None:
+    Path(run_dir).mkdir(parents=True, exist_ok=True)
+    out_path = Path(run_dir) / filename
+    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def update_latest_pointer(output_dir: str, run_id: str, run_dir: str, status: str) -> None:
+    payload = {
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "status": status,
+        "updated_at": datetime.now().isoformat(),
+    }
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    Path(output_dir, "latest.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def send_operator_alert(subject: str, body: str, operator_email: str, dry_run: bool = False) -> None:
+    import smtplib
+    from email.mime.text import MIMEText
+
+    if dry_run:
+        print(f"[DRY-RUN] Would send operator alert to {operator_email}")
+        print(f"Subject: {subject}")
+        return
+
+    smtp_host = os.environ.get("SMTP_HOST", "smtp.zoho.com")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER", "")
+    smtp_pass = os.environ.get("SMTP_PASS", "")
+
+    if not smtp_user or not smtp_pass:
+        print("[ERROR] Cannot send operator alert - SMTP not configured")
+        return
+
+    try:
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = smtp_user
+        msg["To"] = operator_email
+
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+    except Exception as e:
+        print(f"[ERROR] Failed to send operator alert: {e}")
 
 
 def validate_customer_config(config: dict, config_path: str) -> list:
@@ -268,7 +340,149 @@ def run_command(cmd: list, log_file, cwd: str) -> int:
     return result.returncode
 
 
+def _parse_recipients(config: dict, subscriber_row: dict | None = None) -> list[str]:
+    recipients = config.get("recipients") or config.get("email_recipients") or []
+    if not isinstance(recipients, list):
+        recipients = []
+    cleaned = []
+    seen = set()
+    for rec in recipients:
+        email = str(rec or "").strip().lower()
+        if email and email not in seen:
+            seen.add(email)
+            cleaned.append(email)
+    if cleaned:
+        return cleaned
+    if subscriber_row:
+        sub_email = (subscriber_row.get("email") or "").strip().lower()
+        if sub_email:
+            return [sub_email]
+        raw = subscriber_row.get("recipients_json")
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    for rec in parsed:
+                        email = str(rec or "").strip().lower()
+                        if email and email not in seen:
+                            seen.add(email)
+                            cleaned.append(email)
+            except Exception:
+                pass
+    return cleaned
+
+
+def _preflight_checks(config: dict, db_path: str, send_live: bool, output_dir: str) -> tuple[bool, list[str], list[str]]:
+    errors: list[str] = []
+    missing_env: list[str] = []
+    subscriber_key = config.get("subscriber_key") or ""
+    allow_live_send = bool(config.get("allow_live_send", False))
+    if not allow_live_send:
+        errors.append("allow_live_send is false in customer config")
+    if not subscriber_key:
+        errors.append("subscriber_key missing in customer config")
+
+    subscriber_row = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='subscribers'")
+        if not cursor.fetchone():
+            errors.append("subscribers table missing in DB")
+        else:
+            cursor.execute(
+                "SELECT subscriber_key, email, recipients_json, send_enabled, active FROM subscribers WHERE subscriber_key = ?",
+                (subscriber_key,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                errors.append(f"subscriber_key not found in DB: {subscriber_key}")
+            else:
+                subscriber_row = {
+                    "subscriber_key": row[0],
+                    "email": row[1],
+                    "recipients_json": row[2],
+                    "send_enabled": row[3],
+                    "active": row[4],
+                }
+                if not int(row[3] or 0):
+                    errors.append("subscriber send_enabled is 0")
+                if row[4] is not None and not int(row[4] or 0):
+                    errors.append("subscriber active is 0")
+    except Exception as exc:
+        errors.append(f"DB connection failed: {exc}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if send_live:
+        def _get_env(primary: str, *aliases: str) -> str:
+            for key in (primary, *aliases):
+                value = os.getenv(key, "").strip()
+                if value:
+                    return value
+            return ""
+
+        smtp_host = _get_env("SMTP_HOST", "ZOHO_SMTP_HOST")
+        smtp_port = _get_env("SMTP_PORT", "ZOHO_SMTP_PORT")
+        smtp_user = _get_env("SMTP_USER", "ZOHO_SMTP_USER")
+        smtp_pass = _get_env("SMTP_PASS", "ZOHO_SMTP_PASS")
+        if not smtp_host:
+            missing_env.append("SMTP_HOST")
+        if not smtp_port:
+            missing_env.append("SMTP_PORT")
+        if not smtp_user:
+            missing_env.append("SMTP_USER")
+        if not smtp_pass:
+            missing_env.append("SMTP_PASS")
+
+        from_email = os.getenv("FROM_EMAIL", "").strip() or smtp_user
+        if not from_email:
+            missing_env.append("FROM_EMAIL")
+
+        reply_to = (config.get("reply_to_email") or os.getenv("REPLY_TO_EMAIL", "").strip())
+        if not reply_to:
+            missing_env.append("REPLY_TO_EMAIL")
+
+        brand_name = (config.get("brand_name") or os.getenv("BRAND_NAME", "").strip())
+        if not brand_name:
+            missing_env.append("BRAND_NAME")
+
+        mailing_address = (config.get("mailing_address") or os.getenv("MAILING_ADDRESS", "").strip())
+        if not mailing_address:
+            missing_env.append("MAILING_ADDRESS")
+
+        one_click_enabled = bool(os.getenv("UNSUB_ENDPOINT_BASE", "").strip() or config.get("one_click_enabled"))
+        if one_click_enabled:
+            if not os.getenv("UNSUB_ENDPOINT_BASE", "").strip():
+                missing_env.append("UNSUB_ENDPOINT_BASE")
+            if not os.getenv("UNSUB_SECRET", "").strip():
+                missing_env.append("UNSUB_SECRET")
+
+        suppression_log = os.path.join(output_dir, "suppression_log.csv")
+        unsubscribe_log = os.path.join(output_dir, "unsubscribe_events.csv")
+        for path in (suppression_log, unsubscribe_log):
+            if os.path.exists(path):
+                if not os.access(path, os.R_OK):
+                    errors.append(f"log file not readable: {path}")
+            else:
+                if not os.access(output_dir, os.W_OK):
+                    errors.append(f"output directory not writable for log creation: {output_dir}")
+
+    recipients = _parse_recipients(config, subscriber_row)
+    if not recipients:
+        errors.append("no recipients configured (customer config + subscriber)")
+
+    if send_live and not allow_live_send:
+        errors.append("send-live requested but allow_live_send=false")
+
+    return (len(errors) == 0 and len(missing_env) == 0), errors, missing_env
+
+
 def main():
+    log_schedule_sanity(sys.argv)
     parser = argparse.ArgumentParser(
         description="Daily OSHA delivery entrypoint",
         epilog="Example: python deliver_daily.py --customer customers/sunbelt_ca_pilot.json --dry-run"
@@ -287,10 +501,15 @@ def main():
                         help="Skip ingestion step")
     parser.add_argument("--send-live", action="store_true",
                         help="Allow live send to customer recipients (requires config allow_live_send and send_enabled)")
+    parser.add_argument("--preflight", action="store_true",
+                        help="Validate DB + subscriber gating + recipients, then exit 0/1")
     parser.add_argument("--admin-email", default=ADMIN_EMAIL,
                         help=f"Admin email for failure notifications (default: {ADMIN_EMAIL})")
     
     args = parser.parse_args()
+
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_started_at = datetime.now().isoformat()
     
     # ==========================================================================
     # SETUP: Ensure deterministic execution from repo root
@@ -302,6 +521,8 @@ def main():
     gen_date = datetime.now().strftime("%Y-%m-%d")
     output_dir = os.path.join(repo_root, OUTPUT_DIR)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    run_dir = os.path.join(output_dir, "runs", run_id)
+    update_latest_pointer(output_dir, run_id, run_dir, "started")
     
     log_path = os.path.join(output_dir, f"run_log_{gen_date}.txt")
     email_log_path = os.path.join(output_dir, "email_log.csv")
@@ -340,6 +561,49 @@ def main():
         if not suppression_check["valid"]:
             raise ValueError(f"Suppression check failed: {suppression_check['message']}")
         print(f"[OK] Suppression list accessible ({suppression_check['count']} entries)")
+
+        if args.preflight:
+            ok, errors, missing_env = _preflight_checks(config, args.db, args.send_live, output_dir)
+            preflight_payload = {
+                "run_id": run_id,
+                "customer_id": customer_id,
+                "mode": args.mode,
+                "timestamp": datetime.now().isoformat(),
+                "ok": ok,
+                "errors": errors,
+                "missing_env": sorted(set(missing_env)),
+            }
+            if ok:
+                print("[PREFLIGHT_OK] DB connectivity, subscriber gating, and recipients validated")
+                write_run_artifact(run_dir, "preflight_result.json", preflight_payload)
+                update_latest_pointer(output_dir, run_id, run_dir, "preflight_ok")
+                sys.exit(0)
+            failure_line = ""
+            if missing_env:
+                failure_line = f"[PREFLIGHT_ERROR] missing env: {', '.join(sorted(set(missing_env)))}"
+                print(failure_line)
+            for err in errors:
+                print(f"[PREFLIGHT_ERROR] {err}")
+                if not failure_line:
+                    failure_line = f"[PREFLIGHT_ERROR] {err}"
+            write_run_artifact(run_dir, "preflight_result.json", preflight_payload)
+            update_latest_pointer(output_dir, run_id, run_dir, "preflight_failed")
+            operator_email = resolve_operator_email(args.admin_email)
+            if operator_email:
+                send_operator_alert(
+                    subject=f"[OSHA Run Failed] {customer_id} preflight",
+                    body=(
+                        "Run failed.\n"
+                        f"Run ID: {run_id}\n"
+                        f"Customer: {customer_id}\n"
+                        f"Mode: {args.mode}\n"
+                        f"{failure_line}"
+                    ),
+                    operator_email=operator_email,
+                    dry_run=args.dry_run,
+                )
+            sys.exit(1)
+
         
         # ======================================================================
         # STEP 1-2: Run ingestion and email delivery
@@ -416,12 +680,20 @@ def main():
             
             # Send failure notification if any step failed
             if exit_code != 0:
-                send_failure_notification(
-                    f"Delivery pipeline returned exit code {exit_code}",
-                    "See run log for details",
-                    customer_id, args.admin_email,
-                    email_log_path, log_path, args.dry_run
-                )
+                operator_email = resolve_operator_email(args.admin_email)
+                if operator_email:
+                    send_operator_alert(
+                        subject=f"[OSHA Run Failed] {customer_id}",
+                        body=(
+                            "Run failed.\n"
+                            f"Run ID: {run_id}\n"
+                            f"Customer: {customer_id}\n"
+                            f"Mode: {args.mode}\n"
+                            f"Message: Delivery pipeline returned exit code {exit_code}"
+                        ),
+                        operator_email=operator_email,
+                        dry_run=args.dry_run,
+                    )
     
     except Exception as e:
         error_msg = str(e)
@@ -436,14 +708,39 @@ def main():
         except:
             pass
         
-        # Send failure notification
-        send_failure_notification(
-            error_msg, tb_str, customer_id, args.admin_email,
-            email_log_path, log_path, args.dry_run
-        )
+        operator_email = resolve_operator_email(args.admin_email)
+        if operator_email:
+            send_operator_alert(
+                subject=f"[OSHA Run Failed] {customer_id}",
+                body=(
+                    "Run failed.\n"
+                    f"Run ID: {run_id}\n"
+                    f"Customer: {customer_id}\n"
+                    f"Mode: {args.mode}\n"
+                    f"Exception: {error_msg}"
+                ),
+                operator_email=operator_email,
+                dry_run=args.dry_run,
+            )
         
         exit_code = 1
     
+    run_finished_at = datetime.now().isoformat()
+    status_label = "success" if exit_code == 0 else "failure"
+    send_payload = {
+        "run_id": run_id,
+        "customer_id": customer_id,
+        "mode": args.mode,
+        "status": status_label,
+        "exit_code": exit_code,
+        "started_at": run_started_at,
+        "finished_at": run_finished_at,
+        "log_path": log_path,
+        "email_log_path": email_log_path,
+    }
+    write_run_artifact(run_dir, "send_result.json", send_payload)
+    update_latest_pointer(output_dir, run_id, run_dir, status_label)
+
     # ==========================================================================
     # FINAL STATUS
     # ==========================================================================

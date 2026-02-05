@@ -154,10 +154,13 @@ Tests use local HTTP fixtures and do not make external network requests.
 
 ## Scheduling
 
-For daily automated runs, set up a cron job or Windows Task Scheduler:
+For daily automated runs, you have two options:
+
+- **Windows Task Scheduler (local PC)**: Follow `WALLY_TRIAL_RUNBOOK.md` and use `python run_wally_trial.py ... --enable-schedule` (it verifies the exact `/TR` action). The PC must be on at the scheduled time. Task Scheduler uses the host timezone. For Texas Triangle (8:00 AM CT), schedule the task for 9:00 AM ET on an Eastern-time PC (no need to change the PC timezone). Use `--check-schedule` for a quick verification without modifying the task.
+- **Cron on a server**: Runs on a server or VM and does *not* require your PC to be on. Configure the server timezone or cron time accordingly.
 
 ```bash
-# Example cron (daily at 6 AM)
+# Example cron (daily at 6 AM local server time)
 0 6 * * * cd /path/to/osha-leads && ./venv/bin/python ingest_osha.py --db osha_leads.db && ./venv/bin/python export_daily.py --db osha_leads.db
 ```
 

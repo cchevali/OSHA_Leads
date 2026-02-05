@@ -110,6 +110,9 @@ Use this exact action to avoid trailing-quote regressions:
 - Add arguments: `/c ""C:\dev\OSHA_Leads\run_wally_trial_daily.bat""`
 - Start in: `C:\dev\OSHA_Leads`
 
+Expected `/TR` string (what `--check-schedule` verifies):
+- `cmd /c ""C:\dev\OSHA_Leads\run_wally_trial_daily.bat""`
+
 
 
 ## Go-Live Minimum (Trial Scope Freeze)

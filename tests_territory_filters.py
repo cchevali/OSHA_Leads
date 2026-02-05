@@ -40,6 +40,19 @@ class TestLeadFilters(unittest.TestCase):
         self.assertEqual(stats["excluded_state"], 1)
         self.assertEqual(stats["excluded_territory"], 1)
 
+
+    def test_territory_anchor_cities(self):
+        leads = [
+            {"activity_nr": "1", "site_state": "TX", "area_office": "", "site_city": "Houston"},
+            {"activity_nr": "2", "site_state": "TX", "area_office": "", "site_city": "Dallas/Fort Worth"},
+            {"activity_nr": "3", "site_state": "TX", "area_office": "", "site_city": "Austin"},
+            {"activity_nr": "4", "site_state": "TX", "area_office": "", "site_city": "San Antonio"},
+        ]
+
+        filtered, _ = filter_by_territory(leads, "TX_TRIANGLE_V1")
+        matched = {row["site_city"] for row in filtered}
+        self.assertEqual(matched, {"Houston", "Dallas/Fort Worth", "Austin", "San Antonio"})
+
     def test_dedupe_by_activity_nr_keeps_best_score(self):
         leads = [
             {"activity_nr": "100", "lead_score": 6, "first_seen_at": "2026-02-01T08:00:00"},
