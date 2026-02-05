@@ -1,0 +1,37 @@
+{
+  "customer_id": "wally_trial_tx_triangle_v1",
+  "subscriber_key": "wally_trial",
+  "subscriber_name": "Wally",
+  "trial_length_days": 14,
+  "active": true,
+  "territory_code": "TX_TRIANGLE_V1",
+  "send_time_local": "08:00",
+  "send_window_minutes": 60,
+  "timezone": "America/Chicago",
+  "content_filter": "high_medium",
+  "include_low_fallback": true,
+  "states": [
+    "TX"
+  ],
+  "opened_window_days": 14,
+  "new_only_days": 1,
+  "top_k_overall": 30,
+  "top_k_per_state": 30,
+  "recipients": [
+    "primary@example.com",
+    "coworker@example.com"
+  ],
+  "email_recipients": [
+    "primary@example.com",
+    "coworker@example.com"
+  ],
+  "pilot_mode": true,
+  "pilot_whitelist": [
+    "admin@example.com",
+    "primary@example.com",
+    "coworker@example.com"
+  ],
+  "brand_name": "MicroFlowOps",
+  "mailing_address": "11539 Links Dr, Reston, VA 20190",
+  "allow_live_send": true
+}

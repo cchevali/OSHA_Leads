@@ -1466,6 +1466,41 @@ def send_email(
         return False, "", str(exc)
 
 
+def send_safe_mode_alert(subject: str, body: str, recipient: str) -> None:
+    smtp_host = os.environ.get("SMTP_HOST", "")
+    smtp_port_text = os.environ.get("SMTP_PORT", "")
+    smtp_user = os.environ.get("SMTP_USER", "")
+    smtp_pass = os.environ.get("SMTP_PASS", "")
+
+    if not (smtp_host and smtp_port_text and smtp_user and smtp_pass):
+        print("SAFE_MODE_ALERT_EMAIL_SKIPPED missing SMTP configuration")
+        return
+
+    try:
+        smtp_port = int(smtp_port_text)
+    except ValueError:
+        print("SAFE_MODE_ALERT_EMAIL_SKIPPED invalid SMTP_PORT")
+        return
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = smtp_user
+    msg["To"] = recipient
+
+    try:
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port) as server:
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+    except Exception as exc:
+        print(f"SAFE_MODE_ALERT_EMAIL_FAILED {exc}")
+
+
 def parse_recipients(value: str | None) -> list[str]:
     if not value:
         return []
@@ -1613,13 +1648,23 @@ def main() -> None:
         else:
             safe_mode_reason = "unknown"
 
+    run_log_path = (os.getenv("RUN_LOG_PATH") or "").strip() or "unknown"
     if live_allowed:
         print(f"SEND_START mode=LIVE intended_recipient_count={len(intended_recipients)}")
     else:
         print(
             f"SEND_START mode=SAFE intended_recipient_count={len(intended_recipients)} "
-            f"gate={safe_mode_reason}"
+            f"gate={safe_mode_reason} run_log={run_log_path}"
         )
+        if not args.dry_run:
+            subject = f"[SAFE_MODE] {customer_id} {args.mode}"
+            body = (
+                f"SAFE_MODE triggered.\n"
+                f"Gate: {safe_mode_reason}\n"
+                f"Intended recipient count: {len(intended_recipients)}\n"
+                f"Run log: {run_log_path}\n"
+            )
+            send_safe_mode_alert(subject, body, "cchevali@gmail.com")
     if not live_allowed:
         admin_recipient = resolve_admin_recipient(config)
         if not admin_recipient:

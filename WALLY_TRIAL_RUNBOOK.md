@@ -46,6 +46,11 @@ This creates/updates:
   - `recipients_json=["wgs@indigocompliance.com","brandon@indigoenergyservices.com"]`
 - `customers/wally_trial_tx_triangle_v1.json`
 
+Config hygiene:
+- Real customer configs with recipient emails must remain **untracked** (`customers/*.json` is gitignored).
+- Only sanitized `*.example.json` files are committed, e.g. `customers/wally_trial_tx_triangle_v1.example.json`.
+- Do **not** force-add real configs.
+
 ## 3) Preflight-Only Check (Required Before Live)
 
 ```powershell

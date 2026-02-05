@@ -315,7 +315,7 @@ def load_customer_config(config_path: str) -> dict:
         return json.load(f)
 
 
-def run_command(cmd: list, log_file, cwd: str) -> int:
+def run_command(cmd: list, log_file, cwd: str, env: dict | None = None) -> int:
     """Run a command and log output. Returns exit code."""
     cmd_str = " ".join(cmd)
     log_file.write(f"\n{'='*60}\n")
@@ -328,7 +328,8 @@ def run_command(cmd: list, log_file, cwd: str) -> int:
         cmd,
         capture_output=True,
         text=True,
-        cwd=cwd
+        cwd=cwd,
+        env=env,
     )
     
     log_file.write("STDOUT:\n")
@@ -653,7 +654,9 @@ def main():
             if args.send_live:
                 email_cmd.append("--send-live")
             
-            email_exit = run_command(email_cmd, log_file, repo_root)
+            email_env = os.environ.copy()
+            email_env["RUN_LOG_PATH"] = log_path
+            email_exit = run_command(email_cmd, log_file, repo_root, env=email_env)
             if email_exit != 0:
                 print(f"[ERROR] Email delivery failed with exit code {email_exit}")
                 exit_code = 1
