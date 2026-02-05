@@ -104,6 +104,42 @@ def _parse_timestamp(value: str | None) -> datetime | None:
     return None
 
 
+def _format_timestamp(value: str | None) -> str:
+    dt = _parse_timestamp(value)
+    if not dt:
+        return "-"
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _observed_timestamp(lead: dict) -> str:
+    changed_dt = _parse_timestamp(lead.get("changed_at"))
+    first_dt = _parse_timestamp(lead.get("first_seen_at"))
+    last_dt = _parse_timestamp(lead.get("last_seen_at"))
+    candidates = [dt for dt in (changed_dt, first_dt, last_dt) if dt]
+    if not candidates:
+        return "-"
+    return max(candidates).strftime("%Y-%m-%d %H:%M")
+
+
+def _priority_label(score: int) -> str:
+    if score >= 10:
+        return "High"
+    if score >= 6:
+        return "Medium"
+    return "Low"
+
+
+def _build_preheader(leads: list[dict]) -> str:
+    if not leads:
+        return "No new OSHA activity signals today."
+    parts = []
+    for lead in leads[:3]:
+        company = (lead.get("establishment_name") or "Unknown").strip()
+        signal = (lead.get("inspection_type") or "Signal").strip()
+        parts.append(f"{company} ({signal})")
+    return "Top signals: " + " | ".join(parts)
+
+
 def update_subscriber_last_sent_at(db_path: str, subscriber_key: str, timestamp: str) -> None:
     if not subscriber_key:
         return
@@ -658,25 +694,28 @@ def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool) 
 
     parts = ['<table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%;">']
     if include_area_office:
-        parts.append("<tr><th>Company</th><th>City</th><th>Area Office</th><th>Type</th><th>Date</th><th>Score</th><th>Link</th></tr>")
+        parts.append("<tr><th>Priority</th><th>Company</th><th>City</th><th>Area Office</th><th>Signal</th><th>Observed</th><th>Opened</th></tr>")
     else:
-        parts.append("<tr><th>Company</th><th>City</th><th>Type</th><th>Date</th><th>Score</th><th>Link</th></tr>")
+        parts.append("<tr><th>Priority</th><th>Company</th><th>City</th><th>Signal</th><th>Observed</th><th>Opened</th></tr>")
     for lead in rows[:max_rows]:
         company = (lead.get("establishment_name") or "Unknown")[:48]
         city = lead.get("site_city") or "-"
         state = lead.get("site_state") or "-"
         itype = lead.get("inspection_type") or "-"
         date_opened = lead.get("date_opened") or "-"
+        observed = _observed_timestamp(lead)
         score = int(lead.get("lead_score") or 0)
+        priority = _priority_label(score)
         url = lead.get("source_url") or "#"
+        company_html = f'<a href="{url}">{company}</a>' if url and url != "#" else company
         if include_area_office:
             area_office = lead.get("area_office") or ""
             parts.append(
-                f"<tr><td>{company}</td><td>{city}, {state}</td><td>{area_office}</td><td>{itype}</td><td>{date_opened}</td><td><strong>{score}</strong></td><td><a href=\"{url}\">View</a></td></tr>"
+                f"<tr><td>{priority}</td><td>{company_html}</td><td>{city}, {state}</td><td>{area_office}</td><td>{itype}</td><td>{observed}</td><td>{date_opened}</td></tr>"
             )
         else:
             parts.append(
-                f"<tr><td>{company}</td><td>{city}, {state}</td><td>{itype}</td><td>{date_opened}</td><td><strong>{score}</strong></td><td><a href=\"{url}\">View</a></td></tr>"
+                f"<tr><td>{priority}</td><td>{company_html}</td><td>{city}, {state}</td><td>{itype}</td><td>{observed}</td><td>{date_opened}</td></tr>"
             )
     parts.append("</table>")
     return "\n".join(parts)
@@ -700,7 +739,6 @@ def generate_digest_html(
     top_k_overall = config.get("top_k_overall", 25)
     top_k_per_state = config.get("top_k_per_state", 10)
     territory_label = territory_display_name(territory_code)
-    content_label = content_filter_label(content_filter)
 
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
     state_counts: dict[str, int] = {}
@@ -713,11 +751,15 @@ def generate_digest_html(
     include_area_office_main = any((lead.get("area_office") or "").strip() for lead in main_rows)
     include_area_office_all = any((lead.get("area_office") or "").strip() for lead in leads)
     summary_line = summary_label or f"{len(leads)} signals"
+    preheader = _build_preheader(leads)
 
     html: list[str] = []
     html.append("<!DOCTYPE html>")
     html.append("<html><head><meta charset=\"utf-8\"></head>")
     html.append('<body style="font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f7f9fc;">')
+    html.append(
+        f'<span style="display:none;visibility:hidden;opacity:0;color:transparent;height:0;width:0;max-height:0;max-width:0;overflow:hidden;">{preheader}</span>'
+    )
     html.append('<div style="background-color: #ffffff; padding: 24px; border-radius: 8px;">')
 
     html.append(f"<h1 style=\"margin-top: 0; color: #1a1a2e;\">OSHA Lead Digest ({mode_label})</h1>")
@@ -726,11 +768,6 @@ def generate_digest_html(
     html.append(f"<p style=\"color: #555;\">{gen_date} | {'/'.join(states)}</p>")
     if territory_label:
         html.append(f"<p style=\"color: #555;\"><strong>Territory:</strong> {territory_label}</p>")
-    html.append(f"<p style=\"color: #555;\"><strong>Content Filter:</strong> {content_label}</p>")
-    if include_low_fallback:
-        html.append(
-            f"<p style=\"color: #555;\"><strong>Fallback lows:</strong> On (max {LOW_FALLBACK_LIMIT})</p>"
-        )
 
     html.append('<div style="background-color: #eef5ff; padding: 14px; border-radius: 6px; margin: 16px 0;">')
     html.append(f"<p style=\"margin: 0;\"><strong>{summary_line}</strong></p>")
@@ -747,25 +784,29 @@ def generate_digest_html(
                 f"<p><strong>No new OSHA activity signals since last send for {territory_text}.</strong></p>"
             )
         if include_low_fallback and low_fallback:
-            html.append(f"<h2>Low Leads (Fallback) - Top {len(low_fallback)}</h2>")
+            html.append(f"<h2>Low Signals (Fallback) - Top {len(low_fallback)}</h2>")
             html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all))
     else:
         if len(unique_states) > 1:
             html.append("<ul>")
             for state in sorted(unique_states):
-                html.append(f"<li>{state}: {state_counts.get(state, 0)} leads</li>")
+                html.append(f"<li>{state}: {state_counts.get(state, 0)} signals</li>")
             html.append("</ul>")
 
-        html.append(f"<h2>Leads (showing {len(main_rows)} of {len(leads)})</h2>")
+        html.append("<h2>Signals</h2>")
         html.append(_lead_rows_html(main_rows, len(main_rows), include_area_office_main))
 
         if len(leads) > main_limit:
-            html.append(f"<h2>All Leads ({len(leads)})</h2>")
+            html.append(f"<h2>All Signals ({len(leads)})</h2>")
             html.append(_lead_rows_html(leads, len(leads), include_area_office_all))
 
         if include_low_fallback and low_fallback:
-            html.append(f"<h2>Low Leads (Fallback) - Top {len(low_fallback)}</h2>")
+            html.append(f"<h2>Low Signals (Fallback) - Top {len(low_fallback)}</h2>")
             html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all))
+
+    html.append(
+        "<p style=\"color: #555; font-size: 12px;\">Accident, Complaint, and Referral describe OSHA activity signals (not citations).</p>"
+    )
 
     if footer_html:
         html.append(footer_html)
@@ -791,7 +832,6 @@ def generate_digest_text(
     states = config["states"]
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
     territory_label = territory_display_name(territory_code)
-    content_label = content_filter_label(content_filter)
     state_counts: dict[str, int] = {}
     for lead in leads:
         st = (lead.get("site_state") or "UNK").upper()
@@ -811,9 +851,6 @@ def generate_digest_text(
         lines.append(report_label)
     if territory_label:
         lines.append(f"Territory: {territory_label}")
-    lines.append(f"Content Filter: {content_label}")
-    if include_low_fallback:
-        lines.append(f"Fallback lows: On (max {LOW_FALLBACK_LIMIT})")
     lines.append("=" * 70)
     lines.append(summary_line)
 
@@ -826,7 +863,7 @@ def generate_digest_text(
             lines.append(f"No new OSHA activity signals since last send for {territory_text}.")
         if include_low_fallback and low_fallback:
             lines.append("")
-            lines.append("Low Leads (Fallback):")
+            lines.append("Low Signals (Fallback):")
             for lead in low_fallback:
                 lines.append(
                     f"- {(lead.get('establishment_name') or 'Unknown')} | "
@@ -838,39 +875,50 @@ def generate_digest_text(
             lines.append("")
             lines.append("State breakdown:")
             for state in sorted(unique_states):
-                lines.append(f"- {state}: {state_counts.get(state, 0)} leads")
+                lines.append(f"- {state}: {state_counts.get(state, 0)} signals")
 
         lines.append("")
-        lines.append(f"Leads (showing {len(main_rows)} of {len(leads)}):")
+        lines.append("Signals:")
         for lead in main_rows:
             lines.append("")
             lines.append(f"- {(lead.get('establishment_name') or 'Unknown')}")
+            priority = _priority_label(int(lead.get("lead_score") or 0))
             location_line = f"  {(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')}"
             if include_area_office_main:
                 location_line += f" | Area Office: {(lead.get('area_office') or '-')}"
             lines.append(location_line)
             lines.append(
-                f"  {(lead.get('inspection_type') or '-')} | "
-                f"Date: {(lead.get('date_opened') or '-')} | "
-                f"Score: {int(lead.get('lead_score') or 0)}"
+                f"  Priority: {priority} | Signal: {(lead.get('inspection_type') or '-')}"
+            )
+            lines.append(
+                f"  Observed: {_observed_timestamp(lead)} | Opened: {(lead.get('date_opened') or '-')}"
             )
             lines.append(f"  {(lead.get('source_url') or '#')}")
 
         if len(leads) > main_limit:
             lines.append("")
-            lines.append(f"All leads ({len(leads)}):")
+            lines.append(f"All signals ({len(leads)}):")
             for lead in leads:
-                lines.append(f"- {(lead.get('establishment_name') or 'Unknown')} | {(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | Score {int(lead.get('lead_score') or 0)}")
-
-        if include_low_fallback and low_fallback:
-            lines.append("")
-            lines.append("Low Leads (Fallback):")
-            for lead in low_fallback:
+                priority = _priority_label(int(lead.get("lead_score") or 0))
                 lines.append(
                     f"- {(lead.get('establishment_name') or 'Unknown')} | "
                     f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
-                    f"Score {int(lead.get('lead_score') or 0)}"
+                    f"{priority}"
                 )
+
+        if include_low_fallback and low_fallback:
+            lines.append("")
+            lines.append("Low Signals (Fallback):")
+            for lead in low_fallback:
+                priority = _priority_label(int(lead.get("lead_score") or 0))
+                lines.append(
+                    f"- {(lead.get('establishment_name') or 'Unknown')} | "
+                    f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
+                    f"{priority}"
+                )
+
+    lines.append("")
+    lines.append("Accident, Complaint, and Referral describe OSHA activity signals (not citations).")
 
     if footer_text:
         lines.append("")
@@ -1143,9 +1191,9 @@ def main() -> None:
     logger.info("Leads after filters: %d", len(leads))
 
     if snapshot_mode:
-        summary_label = f"{len(leads)} signals in starter snapshot"
+        summary_label = f"Starter snapshot: {len(leads)} signals (last {snapshot_days} days)"
     elif args.mode == "daily":
-        summary_label = f"{len(leads)} new signals since last send"
+        summary_label = f"Newly observed today: {len(leads)} signals"
     else:
         summary_label = f"{len(leads)} signals"
 
@@ -1155,13 +1203,11 @@ def main() -> None:
     location_label = territory_label or states_label
 
     if snapshot_mode:
-        count_label = f"Starter snapshot (last {snapshot_days} days) | {len(leads)} signals"
+        subject = f"{location_label} OSHA Signals — {gen_date} (Starter snapshot, {len(leads)} signals)"
     elif args.mode == "daily":
-        count_label = f"New since last send | {len(leads)} signals"
+        subject = f"{location_label} OSHA Signals — {gen_date} ({len(leads)} new)"
     else:
-        count_label = f"{len(leads)} signals"
-
-    subject = f"{location_label} | {gen_date} | {count_label}"
+        subject = f"{location_label} OSHA Signals — {gen_date} ({len(leads)} signals)"
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     email_log_path = os.path.join(args.output_dir, "email_log.csv")
