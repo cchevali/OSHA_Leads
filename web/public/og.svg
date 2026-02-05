@@ -1,0 +1,26 @@
+﻿<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f6f1e7" />
+      <stop offset="100%" stop-color="#fef9ef" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0f766e" />
+      <stop offset="100%" stop-color="#f59e0b" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)" />
+  <rect x="70" y="90" width="1060" height="450" rx="40" fill="#ffffff" fill-opacity="0.9" stroke="#0f172a" stroke-opacity="0.08" />
+  <rect x="120" y="140" width="300" height="8" rx="4" fill="url(#accent)" />
+  <text x="120" y="230" fill="#0f172a" font-size="64" font-family="Space Grotesk, Arial, sans-serif" font-weight="600">
+    MicroFlowOps
+  </text>
+  <text x="120" y="295" fill="#334155" font-size="32" font-family="Source Sans 3, Arial, sans-serif">
+    OSHA Activity Signals for Texas Triangle
+  </text>
+  <text x="120" y="380" fill="#334155" font-size="24" font-family="Source Sans 3, Arial, sans-serif">
+    Daily briefings for defense attorneys and safety consultants
+  </text>
+  <circle cx="980" cy="330" r="110" fill="#0f766e" fill-opacity="0.15" />
+  <circle cx="1020" cy="300" r="70" fill="#f59e0b" fill-opacity="0.2" />
+</svg>

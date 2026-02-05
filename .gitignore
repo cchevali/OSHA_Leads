@@ -31,3 +31,9 @@ Thumbs.db
 # Customer configs (avoid committing real recipient emails)
 customers/*.json
 !customers/*.example.json
+
+# Next.js (web)
+web/node_modules/
+web/.next/
+web/.turbo/
+web/.vercel/

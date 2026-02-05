@@ -1,0 +1,66 @@
+﻿@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  background-color: #f6f1e7;
+}
+
+* {
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  @apply font-body text-ink;
+  background-image:
+    radial-gradient(circle at top right, rgba(15, 118, 110, 0.18), transparent 35%),
+    radial-gradient(circle at 20% 20%, rgba(245, 158, 11, 0.18), transparent 45%),
+    linear-gradient(180deg, #f6f1e7 0%, #fbf9f4 50%, #f6f1e7 100%);
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(15, 118, 110, 0.25);
+}
+
+@keyframes fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@layer utilities {
+  .animate-fade-up {
+    animation: fade-up 0.7s ease-out both;
+  }
+  .animate-fade-in {
+    animation: fade-in 0.6s ease-out both;
+  }
+  .bg-paper {
+    background-image:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.75) 100%),
+      repeating-linear-gradient(
+        120deg,
+        rgba(15, 23, 42, 0.035) 0px,
+        rgba(15, 23, 42, 0.035) 1px,
+        transparent 1px,
+        transparent 8px
+      );
+  }
+}

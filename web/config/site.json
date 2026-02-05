@@ -1,0 +1,11 @@
+{
+  "siteUrl": "https://microflowops.com",
+  "brandName": "MicroFlowOps",
+  "legalName": "Micro Flow Ops",
+  "mailingAddress": "11539 Links Dr, Reston, VA 20190",
+  "ctaEmail": "support@microflowops.com",
+  "ctaSampleSubject": "Requesting an OSHA Activity Signals sample",
+  "ctaSampleBody": "Hi MicroFlowOps,\n\nI would like to request a sample OSHA Activity Signals alert for my territory.\n\nFirm:\nTerritory:\nRecipients:\n\nThanks",
+  "ctaTerritorySubject": "Territory + firm name",
+  "ctaTerritoryBody": "Hi MicroFlowOps,\n\nFirm name:\nTerritory:\nRecipients:\n\nThanks"
+}
