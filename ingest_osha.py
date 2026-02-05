@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import json
 import hashlib
 import logging
 import random
@@ -66,6 +67,50 @@ def polite_delay() -> None:
 def compute_hash(text: str) -> str:
     """Compute SHA256 hash of text for change detection."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+
+
+def _normalize_record_value(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip().lower()
+    return value
+
+
+def compute_record_hash(inspection: dict) -> str:
+    """Compute stable hash of normalized inspection record content."""
+    fields = [
+        "activity_nr",
+        "date_opened",
+        "inspection_type",
+        "scope",
+        "case_status",
+        "emphasis",
+        "safety_health",
+        "sic",
+        "naics",
+        "naics_desc",
+        "violations_count",
+        "serious_violations",
+        "willful_violations",
+        "repeat_violations",
+        "other_violations",
+        "establishment_name",
+        "site_address1",
+        "site_city",
+        "site_state",
+        "site_zip",
+        "area_office",
+        "mail_address1",
+        "mail_city",
+        "mail_state",
+        "mail_zip",
+        "report_id",
+        "source_url",
+    ]
+    normalized = {field: _normalize_record_value(inspection.get(field)) for field in fields}
+    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return compute_hash(payload)
 
 
 def parse_date(date_str: Optional[str]) -> Optional[str]:
@@ -749,7 +794,7 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
     
     # Check for existing record
     cursor.execute(
-        "SELECT id, violations_count, case_status, raw_hash, parse_invalid FROM inspections WHERE activity_nr = ?",
+        "SELECT id, violations_count, case_status, raw_hash, parse_invalid, record_hash FROM inspections WHERE activity_nr = ?",
         (activity_nr,)
     )
     existing = cursor.fetchone()
@@ -759,10 +804,11 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
     inspection["needs_review"] = 1 if check_needs_review(inspection) else 0
     
     now = datetime.utcnow().isoformat()
+    inspection["record_hash"] = compute_record_hash(inspection)
     
     if existing:
         # Update existing record
-        existing_id, old_violations, old_status, old_hash, old_parse_invalid = existing
+        existing_id, old_violations, old_status, old_hash, old_parse_invalid, old_record_hash = existing
         
         # Check for material upgrade (re-alert)
         re_alert = 0
@@ -796,6 +842,12 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
         
         update_fields.append("last_seen_at = ?")
         update_values.append(now)
+
+        if old_record_hash != inspection.get("record_hash"):
+            update_fields.append("record_hash = ?")
+            update_values.append(inspection.get("record_hash"))
+            update_fields.append("changed_at = ?")
+            update_values.append(now)
         
         if re_alert:
             update_fields.append("re_alert = ?")
@@ -819,12 +871,13 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
             "repeat_violations", "other_violations", "establishment_name",
             "site_address1", "site_city", "site_state", "site_zip",
             "area_office", "mail_address1", "mail_city", "mail_state", "mail_zip",
-            "report_id", "source_url", "raw_hash", "lead_score", "needs_review",
-            "parse_invalid", "first_seen_at", "last_seen_at"
+            "report_id", "source_url", "raw_hash", "record_hash", "changed_at",
+            "lead_score", "needs_review", "parse_invalid", "first_seen_at", "last_seen_at"
         ]
         
         inspection["first_seen_at"] = now
         inspection["last_seen_at"] = now
+        inspection["changed_at"] = now
         
         values = [inspection.get(f) for f in fields]
         placeholders = ", ".join(["?" for _ in fields])
@@ -848,6 +901,14 @@ def ensure_inspection_columns(conn: sqlite3.Connection) -> None:
         cursor.execute("ALTER TABLE inspections ADD COLUMN area_office TEXT")
         conn.commit()
         logger.info("Added missing inspections.area_office column")
+    if "record_hash" not in existing:
+        cursor.execute("ALTER TABLE inspections ADD COLUMN record_hash TEXT")
+        conn.commit()
+        logger.info("Added missing inspections.record_hash column")
+    if "changed_at" not in existing:
+        cursor.execute("ALTER TABLE inspections ADD COLUMN changed_at DATETIME")
+        conn.commit()
+        logger.info("Added missing inspections.changed_at column")
 
 
 def run_ingestion(

@@ -89,6 +89,7 @@ def get_sendable_leads(
         else "('osha:inspection:' || activity_nr) AS lead_id"
     )
     area_office_expr = "area_office" if "area_office" in columns else "NULL AS area_office"
+    changed_at_expr = "changed_at" if "changed_at" in columns else "NULL AS changed_at"
 
     query = f"""
         SELECT 
@@ -110,6 +111,7 @@ def get_sendable_leads(
             lead_score,
             first_seen_at,
             last_seen_at,
+            {changed_at_expr},
             source_url
         FROM inspections
         WHERE 
@@ -117,7 +119,7 @@ def get_sendable_leads(
             AND case_status = 'OPEN'
             AND (
                 (first_seen_at IS NOT NULL AND datetime(first_seen_at) >= datetime(?) AND datetime(first_seen_at) < datetime(?))
-                OR (last_seen_at IS NOT NULL AND datetime(last_seen_at) >= datetime(?) AND datetime(last_seen_at) < datetime(?))
+                OR (changed_at IS NOT NULL AND datetime(changed_at) >= datetime(?) AND datetime(changed_at) < datetime(?))
             )
         ORDER BY 
             lead_score DESC,

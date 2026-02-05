@@ -102,28 +102,65 @@ def _parse_timestamp(value: str | None) -> datetime | None:
     return None
 
 
+def update_subscriber_last_sent_at(db_path: str, subscriber_key: str, timestamp: str) -> None:
+    if not subscriber_key:
+        return
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    if not _has_column(conn, "subscribers", "last_sent_at"):
+        cursor.execute("ALTER TABLE subscribers ADD COLUMN last_sent_at DATETIME")
+        conn.commit()
+    cursor.execute(
+        "UPDATE subscribers SET last_sent_at = ? WHERE subscriber_key = ?",
+        (timestamp, subscriber_key),
+    )
+    conn.commit()
+    conn.close()
+
+
 def print_area_office_debug(conn: sqlite3.Connection) -> None:
     cutoff = datetime.now() - timedelta(days=30)
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT area_office, first_seen_at, last_seen_at
+        SELECT area_office, site_city, mail_city, site_address1, first_seen_at, last_seen_at
         FROM inspections
         WHERE site_state = 'TX'
-          AND area_office IS NOT NULL
-          AND area_office != ''
         """
     )
-    offices = {}
-    for office, first_seen, last_seen in cursor.fetchall():
+    rows = cursor.fetchall()
+    total = 0
+    area_office_counts: dict[str, int] = {}
+    site_city_counts: dict[str, int] = {}
+    mail_city_counts: dict[str, int] = {}
+    address_counts: dict[str, int] = {}
+
+    for office, site_city, mail_city, site_address1, first_seen, last_seen in rows:
         first_dt = _parse_timestamp(first_seen)
         last_dt = _parse_timestamp(last_seen)
-        if (first_dt and first_dt >= cutoff) or (last_dt and last_dt >= cutoff):
-            offices[office] = offices.get(office, 0) + 1
+        if not ((first_dt and first_dt >= cutoff) or (last_dt and last_dt >= cutoff)):
+            continue
+        total += 1
+        if office:
+            area_office_counts[office] = area_office_counts.get(office, 0) + 1
+        if site_city:
+            site_city_counts[site_city] = site_city_counts.get(site_city, 0) + 1
+        if mail_city:
+            mail_city_counts[mail_city] = mail_city_counts.get(mail_city, 0) + 1
+        if site_address1:
+            address_counts[site_address1] = address_counts.get(site_address1, 0) + 1
 
-    print("TX area_office values seen in last 30 days:")
-    for office in sorted(offices):
-        print(f"  {office} ({offices[office]})")
+    def _print_samples(label: str, counts: dict[str, int]) -> None:
+        print(f"{label} non-null rate: {(len(counts) / total * 100) if total else 0:.1f}% ({len(counts)} distinct)")
+        for value, count in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+            print(f"  {value} ({count})")
+
+    print("TX area_office/location debug (last 30 days):")
+    print(f"Total TX records in window: {total}")
+    _print_samples("area_office", area_office_counts)
+    _print_samples("site_city", site_city_counts)
+    _print_samples("mail_city", mail_city_counts)
+    _print_samples("site_address1", address_counts)
 
 
 def load_environment(repo_root: Path) -> None:
@@ -296,10 +333,13 @@ def _load_subscriber_profile(db_path: str, subscriber_key: str | None) -> dict:
     if not _has_column(conn, "subscribers", "recipients_json"):
         cursor.execute("ALTER TABLE subscribers ADD COLUMN recipients_json TEXT")
         conn.commit()
+    if not _has_column(conn, "subscribers", "last_sent_at"):
+        cursor.execute("ALTER TABLE subscribers ADD COLUMN last_sent_at DATETIME")
+        conn.commit()
 
     cursor.execute(
         """
-        SELECT subscriber_key, email, recipients_json, active, territory_code, content_filter, include_low_fallback
+        SELECT subscriber_key, email, recipients_json, active, territory_code, content_filter, include_low_fallback, last_sent_at
         FROM subscribers
         WHERE subscriber_key = ?
         LIMIT 1
@@ -330,6 +370,7 @@ def _load_subscriber_profile(db_path: str, subscriber_key: str | None) -> dict:
         "territory_code": row[4],
         "content_filter": row[5],
         "include_low_fallback": bool(row[6]),
+        "last_sent_at": row[7] if len(row) > 7 else None,
     }
 
 
@@ -364,10 +405,14 @@ def get_leads_for_period(
     territory_code: str | None,
     content_filter: str,
     include_low_fallback: bool,
+    window_start: datetime | None = None,
+    new_only_cutoff: datetime | None = None,
+    include_changed: bool = False,
+    use_opened_window: bool = False,
 ) -> tuple[list[dict], list[dict], dict]:
     today = datetime.now()
-    window_cutoff = today - timedelta(days=since_days)
-    new_only_cutoff = today - timedelta(days=new_only_days)
+    window_cutoff = window_start or (today - timedelta(days=since_days))
+    effective_new_only = new_only_cutoff or (today - timedelta(days=new_only_days))
 
     lead_id_expr = (
         "lead_id"
@@ -375,6 +420,7 @@ def get_leads_for_period(
         else "('osha:inspection:' || activity_nr) AS lead_id"
     )
     area_office_expr = "area_office" if _has_column(conn, "inspections", "area_office") else "NULL AS area_office"
+    changed_at_expr = "changed_at" if _has_column(conn, "inspections", "changed_at") else "NULL AS changed_at"
     placeholders = ",".join(["?" for _ in states])
 
     query = f"""
@@ -397,6 +443,7 @@ def get_leads_for_period(
             lead_score,
             first_seen_at,
             last_seen_at,
+            {changed_at_expr},
             source_url
         FROM inspections
         WHERE site_state IN ({placeholders})
@@ -417,21 +464,38 @@ def get_leads_for_period(
     for lead in all_results:
         first_seen_dt = _parse_timestamp(lead.get("first_seen_at"))
         last_seen_dt = _parse_timestamp(lead.get("last_seen_at"))
+        changed_dt = _parse_timestamp(lead.get("changed_at"))
 
         in_window = False
-        if first_seen_dt and first_seen_dt >= window_cutoff:
-            in_window = True
-        if last_seen_dt and last_seen_dt >= window_cutoff:
-            in_window = True
+        if use_opened_window:
+            date_opened = lead.get("date_opened")
+            if date_opened:
+                try:
+                    opened_dt = datetime.strptime(date_opened, "%Y-%m-%d")
+                    if opened_dt >= window_cutoff:
+                        in_window = True
+                except ValueError:
+                    pass
+            if not in_window:
+                if first_seen_dt and first_seen_dt >= window_cutoff:
+                    in_window = True
+                if include_changed and changed_dt and changed_dt >= window_cutoff:
+                    in_window = True
+        else:
+            if first_seen_dt and first_seen_dt >= window_cutoff:
+                in_window = True
+            if include_changed and changed_dt and changed_dt >= window_cutoff:
+                in_window = True
+
         if not in_window:
             excluded_by_time_window += 1
             continue
 
-        if not skip_first_seen_filter:
+        if not skip_first_seen_filter and effective_new_only:
             is_recent = False
-            if first_seen_dt and first_seen_dt >= new_only_cutoff:
+            if first_seen_dt and first_seen_dt >= effective_new_only:
                 is_recent = True
-            if last_seen_dt and last_seen_dt >= new_only_cutoff:
+            if include_changed and changed_dt and changed_dt >= effective_new_only:
                 is_recent = True
             if not is_recent:
                 excluded_by_new_only += 1
@@ -546,6 +610,7 @@ def generate_digest_html(
     content_filter: str,
     include_low_fallback: bool,
     branding: dict,
+    report_label: str | None = None,
 ) -> str:
     states = config["states"]
     top_k_overall = config.get("top_k_overall", 25)
@@ -568,6 +633,8 @@ def generate_digest_html(
     html.append('<div style="background-color: #ffffff; padding: 24px; border-radius: 8px;">')
 
     html.append(f"<h1 style=\"margin-top: 0; color: #1a1a2e;\">OSHA Lead Digest ({mode_label})</h1>")
+    if report_label:
+        html.append(f"<p style=\"color: #1a1a2e;\"><strong>{report_label}</strong></p>")
     html.append(f"<p style=\"color: #555;\">{gen_date} | {'/'.join(states)}</p>")
     if territory_label:
         html.append(f"<p style=\"color: #555;\"><strong>Territory:</strong> {territory_label}</p>")
@@ -628,6 +695,7 @@ def generate_digest_text(
     content_filter: str,
     include_low_fallback: bool,
     branding: dict,
+    report_label: str | None = None,
 ) -> str:
     states = config["states"]
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
@@ -639,6 +707,8 @@ def generate_digest_text(
         f"OSHA Lead Digest ({mode_label}) - {gen_date}",
         f"Coverage: {'/'.join(states)}",
     ]
+    if report_label:
+        lines.append(report_label)
     if territory_label:
         lines.append(f"Territory: {territory_label}")
     lines.append(f"Content Filter: {content_label}")
@@ -858,6 +928,8 @@ def main() -> None:
         if subscriber_profile
         else config.get("include_low_fallback", False)
     )
+    baseline_on_first_send = bool(config.get("baseline_on_first_send", True))
+    last_sent_at = subscriber_profile.get("last_sent_at") if subscriber_profile else None
 
     missing = preflight_missing_vars(config, args.dry_run)
     if missing:
@@ -880,7 +952,30 @@ def main() -> None:
     )
 
     conn = sqlite3.connect(args.db)
+    snapshot_mode = args.mode == "daily" and baseline_on_first_send and not last_sent_at
+    report_label = None
+    window_start = None
+    new_only_cutoff = None
+    include_changed = False
+    use_opened_window = False
     skip_first_seen_filter = args.mode == "baseline"
+
+    if snapshot_mode:
+        report_label = f"Starter Snapshot (last {int(config['opened_window_days'])} days)"
+        use_opened_window = True
+        skip_first_seen_filter = True
+        window_start = None
+        new_only_cutoff = None
+    elif args.mode == "daily" and last_sent_at:
+        last_sent_dt = _parse_timestamp(str(last_sent_at))
+        if last_sent_dt:
+            window_start = last_sent_dt
+        include_changed = True
+        skip_first_seen_filter = True
+        new_only_cutoff = None
+    elif args.mode == "daily":
+        include_changed = True
+
     leads, low_fallback, filter_stats = get_leads_for_period(
         conn=conn,
         states=states,
@@ -890,6 +985,10 @@ def main() -> None:
         territory_code=territory_code,
         content_filter=content_filter,
         include_low_fallback=include_low_fallback,
+        window_start=window_start,
+        new_only_cutoff=new_only_cutoff,
+        include_changed=include_changed,
+        use_opened_window=use_opened_window,
     )
     conn.close()
 
@@ -917,6 +1016,7 @@ def main() -> None:
         content_filter=content_filter,
         include_low_fallback=include_low_fallback,
         branding=branding,
+        report_label=report_label,
     )
     text_body = generate_digest_text(
         leads=leads,
@@ -928,6 +1028,7 @@ def main() -> None:
         content_filter=content_filter,
         include_low_fallback=include_low_fallback,
         branding=branding,
+        report_label=report_label,
     )
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -938,6 +1039,7 @@ def main() -> None:
     whitelist = [email.lower() for email in config.get("pilot_whitelist", PILOT_WHITELIST_DEFAULT)]
     failed_sends = 0
     sent_or_dry_run = 0
+    sent_success = 0
     suppressed_count = 0
     pilot_skipped_count = 0
 
@@ -1014,6 +1116,8 @@ def main() -> None:
             status = "dry_run"
         if success:
             sent_or_dry_run += 1
+            if status == "sent":
+                sent_success += 1
         else:
             failed_sends += 1
 
@@ -1067,6 +1171,9 @@ def main() -> None:
     print(f"  Dedupe removed:         {filter_stats['dedupe_removed']}")
     print(f"  Fallback lows used:     {filter_stats['low_fallback_count']}")
     print("=" * 72)
+
+    if not args.dry_run and sent_success > 0:
+        update_subscriber_last_sent_at(args.db, config.get("subscriber_key", ""), timestamp)
 
     if failed_sends > 0:
         raise SystemExit(1)

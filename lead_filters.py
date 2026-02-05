@@ -151,6 +151,11 @@ def _matches_any(text: str, patterns: list[str]) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
 
+def _normalize_location_text(text: str) -> str:
+    cleaned = " ".join(str(text or "").strip().split())
+    return cleaned.upper()
+
+
 def filter_by_territory(
     leads: list[dict],
     territory_code: str | None,
@@ -198,7 +203,12 @@ def filter_by_territory(
             continue
 
         # Equivalent fallback field: city when office metadata is absent in source record.
-        city_text = str(lead.get("site_city") or "")
+        fallback_fields = [
+            lead.get("site_city"),
+            lead.get("mail_city"),
+            lead.get("site_address1"),
+        ]
+        city_text = " ".join(_normalize_location_text(value) for value in fallback_fields if value)
         if fallback_patterns and _matches_any(city_text, fallback_patterns):
             filtered.append(lead)
             stats["matched_by_fallback"] += 1

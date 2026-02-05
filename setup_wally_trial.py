@@ -51,6 +51,10 @@ def ensure_schema(db_path: str, schema_path: str) -> None:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(inspections)")}
         if "area_office" not in cols:
             conn.execute("ALTER TABLE inspections ADD COLUMN area_office TEXT")
+        if "record_hash" not in cols:
+            conn.execute("ALTER TABLE inspections ADD COLUMN record_hash TEXT")
+        if "changed_at" not in cols:
+            conn.execute("ALTER TABLE inspections ADD COLUMN changed_at DATETIME")
 
     if "subscribers" in tables:
         subscriber_cols = {row[1] for row in conn.execute("PRAGMA table_info(subscribers)")}
@@ -58,6 +62,8 @@ def ensure_schema(db_path: str, schema_path: str) -> None:
             conn.execute("ALTER TABLE subscribers ADD COLUMN include_low_fallback INTEGER NOT NULL DEFAULT 0")
         if "recipients_json" not in subscriber_cols:
             conn.execute("ALTER TABLE subscribers ADD COLUMN recipients_json TEXT")
+        if "last_sent_at" not in subscriber_cols:
+            conn.execute("ALTER TABLE subscribers ADD COLUMN last_sent_at DATETIME")
 
     with open(schema_path, "r", encoding="utf-8") as f:
         conn.executescript(f.read())

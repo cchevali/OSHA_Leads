@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS inspections (
     report_id TEXT,
     source_url TEXT,
     raw_hash TEXT,
+    record_hash TEXT,
+    changed_at DATETIME,
     
     -- Status flags
     needs_review INTEGER NOT NULL DEFAULT 0,
@@ -117,6 +119,7 @@ CREATE TABLE IF NOT EXISTS subscribers (
     display_name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
     recipients_json TEXT,
+    last_sent_at DATETIME,
     territory_code TEXT NOT NULL,
     content_filter TEXT NOT NULL DEFAULT 'high_medium',
     include_low_fallback INTEGER NOT NULL DEFAULT 0,
