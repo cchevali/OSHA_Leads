@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -181,9 +182,14 @@ def write_batch_runner(batch_path: Path, project_root: Path, customer_config: st
         "if not exist out mkdir out",
         "set RUN_TMP=out\\wally_trial_last_run.log",
         "echo [%date% %time%] Wally trial run start >> out\\wally_trial_task.log",
+        "echo [%date% %time%] === RUN HEADER === >> out\\wally_trial_task.log",
+        "echo [%date% %time%] batch=%~f0 >> out\\wally_trial_task.log",
+        "echo [%date% %time%] cwd=%cd% >> out\\wally_trial_task.log",
+        "for /f \"delims=\" %%p in ('where python 2^>nul') do echo [%date% %time%] python=%%p >> out\\wally_trial_task.log",
+        "if errorlevel 1 echo [%date% %time%] python=NOT_FOUND >> out\\wally_trial_task.log",
         (
             f"python deliver_daily.py --db \"{db_path}\" --customer \"{customer_config}\" "
-            f"--mode daily --since-days 14 --admin-email \"{admin_email}\" "
+            f"--mode daily --since-days 14 --admin-email \"{admin_email}\" --send-live "
             "> \"%RUN_TMP%\" 2>&1"
         ),
         "set RUN_EXIT=%ERRORLEVEL%",
@@ -198,6 +204,7 @@ def write_batch_runner(batch_path: Path, project_root: Path, customer_config: st
 
 
 def enable_schedule(task_name: str, batch_path: Path) -> None:
+    batch_text = _sanitize_task_path(batch_path)
     cmd = [
         "schtasks",
         "/Create",
@@ -209,9 +216,84 @@ def enable_schedule(task_name: str, batch_path: Path) -> None:
         "/TN",
         task_name,
         "/TR",
-        f'cmd /c "{batch_path}"',
+        build_task_action(batch_text),
     ]
     subprocess.run(cmd, check=True)
+
+
+def _sanitize_task_path(path: Path) -> str:
+    batch_text = str(path).strip()
+    while batch_text.endswith('"') or batch_text.endswith("'"):
+        batch_text = batch_text[:-1]
+    return batch_text.strip()
+
+
+def build_task_action(batch_text: str) -> str:
+    return f'cmd /c ""{batch_text}""'
+
+
+def _strip_quotes(value: str) -> str:
+    text = (value or "").strip()
+    if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+        text = text[1:-1]
+    return text.strip()
+
+
+def _normalize_command(command: str) -> str:
+    cleaned = _strip_quotes(command)
+    base = os.path.basename(cleaned).lower()
+    if base in ("cmd.exe", "cmd"):
+        return "cmd"
+    return cleaned
+
+
+def format_task_to_run(command: str, arguments: str | None) -> str:
+    cmd = _normalize_command(command)
+    args = (arguments or "").strip()
+    if args:
+        return f"{cmd} {args}"
+    return cmd
+
+
+def extract_exec_action(xml_text: str) -> str | None:
+    try:
+        root = ET.fromstring(xml_text.strip())
+    except Exception:
+        return None
+    namespace = ""
+    if root.tag.startswith("{"):
+        namespace = root.tag.split("}", 1)[0] + "}"
+    exec_node = root.find(f".//{namespace}Exec")
+    if exec_node is None:
+        return None
+    command = exec_node.findtext(f"{namespace}Command", default="").strip()
+    if not command:
+        return None
+    arguments = exec_node.findtext(f"{namespace}Arguments", default="").strip()
+    return format_task_to_run(command, arguments)
+
+
+def query_task_to_run(task_name: str) -> str | None:
+    cmd = ["schtasks", "/Query", "/TN", task_name, "/XML"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    return extract_exec_action(result.stdout)
+
+
+def verify_schedule_action(task_name: str, expected_action: str) -> None:
+    actual = query_task_to_run(task_name)
+    verify_schedule_action_from_actual(expected_action, actual)
+
+
+def verify_schedule_action_from_actual(expected_action: str, actual: str | None) -> None:
+    if not actual:
+        print(f"SCHEDULE_CHECK_FAILED expected={expected_action} actual=MISSING_TASK_TO_RUN")
+        raise SystemExit(1)
+    if actual != expected_action:
+        print(f"SCHEDULE_CHECK_FAILED expected={expected_action} actual={actual}")
+        raise SystemExit(1)
+    print(f"SCHEDULE_OK /TR={actual}")
 
 
 def main() -> None:
@@ -227,6 +309,7 @@ def main() -> None:
     parser.add_argument("--admin-email", default="support@microflowops.com")
     parser.add_argument("--send-live", action="store_true", help="Trigger first live send to Wally")
     parser.add_argument("--enable-schedule", action="store_true", help="Create 08:00 local scheduled task")
+    parser.add_argument("--check-schedule", action="store_true", help="Verify scheduled task action only")
     parser.add_argument("--task-name", default="OSHA Wally Trial Daily")
     parser.add_argument("--preflight-only", action="store_true", help="Check config/env and exit")
 
@@ -242,6 +325,14 @@ def main() -> None:
         ok, msg = preflight(customer_path, require_smtp=True)
         print(msg)
         raise SystemExit(0 if ok else 1)
+
+    batch_path = repo_root / "run_wally_trial_daily.bat"
+    batch_path_resolved = batch_path.resolve()
+    expected_action = build_task_action(_sanitize_task_path(batch_path_resolved))
+
+    if args.check_schedule:
+        verify_schedule_action(args.task_name, expected_action)
+        raise SystemExit(0)
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
@@ -261,7 +352,6 @@ def main() -> None:
         run_live_send(args.db, str(customer_path), args.admin_email, True)
         print("First live send triggered via deliver_daily.py")
 
-    batch_path = repo_root / "run_wally_trial_daily.bat"
     write_batch_runner(
         batch_path=batch_path,
         project_root=repo_root,
@@ -272,7 +362,8 @@ def main() -> None:
     print(f"Batch runner written: {batch_path.name}")
 
     if args.enable_schedule:
-        enable_schedule(args.task_name, batch_path.resolve())
+        enable_schedule(args.task_name, batch_path_resolved)
+        verify_schedule_action(args.task_name, expected_action)
         print(f"Scheduled task enabled: {args.task_name} at 08:00 local (set host timezone to America/Chicago)")
 
 

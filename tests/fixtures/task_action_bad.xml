@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\Windows\System32\cmd.exe</Command>
+      <Arguments>/c ""C:\dev\OSHA_Leads\run_wally_trial_daily_BAD.bat""</Arguments>
+    </Exec>
+  </Actions>
+</Task>

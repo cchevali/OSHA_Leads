@@ -91,8 +91,24 @@ python run_wally_trial.py wally_trial_tx_triangle_v1.json --enable-schedule
 
 Task name: `OSHA Wally Trial Daily`
 
+Use `--enable-schedule` as the canonical setup method. It creates/updates the task and verifies the exact `/TR` action string, failing fast if Task Scheduler drifted.
+
+Verify an existing task without changing it:
+
+```powershell
+python run_wally_trial.py wally_trial_tx_triangle_v1.json --check-schedule
+```
+
 Note: Windows Task Scheduler runs in host timezone. For an 8:00 AM CT delivery on a PC set to Eastern Time, schedule the task for 9:00 AM ET.
 Note: Task Scheduler runs on the local PC. The machine must be on at the scheduled time (9:00 AM ET for Texas Triangle).
+
+### Task Scheduler Action (Exact)
+
+Use this exact action to avoid trailing-quote regressions:
+
+- Program/script: `C:\Windows\System32\cmd.exe`
+- Add arguments: `/c ""C:\dev\OSHA_Leads\run_wally_trial_daily.bat""`
+- Start in: `C:\dev\OSHA_Leads`
 
 
 
@@ -145,6 +161,28 @@ Batch logging behavior:
 - Task log captures full stdout/stderr for each run.
 - Adds explicit `CONFIG_ERROR detected` line when preflight/config errors are found.
 - Adds explicit success/failure line per run.
+
+### Schedule + Window Invariants (Must Be Present)
+
+Use these log lines to confirm the scheduler and live-send guard are working:
+
+- `SCHEDULE_SANITY argv=...` is printed at process start in `out/wally_trial_task.log`.
+- If you see `SCHEDULE_SANITY WARNING suspicious_trailing_quote=...`, fix the Task Scheduler action so it does **not** end in a stray quote (e.g., `run_wally_trial_daily.bat"`).
+- `WINDOW_CHECK now_local=... send_time_local=... window_start=... window_end=... window_ok=YES/NO` appears in `out/run_log_YYYY-MM-DD.txt` for every send attempt (including dry-runs).
+- `SEND_START mode=LIVE intended_recipient_count=2` confirms the live path. If it says `mode=SAFE`, the gate reason is printed (e.g., `gate=missing --send-live`, `gate=send_enabled=0`, `gate=allow_live_send=false`, `gate=outside send window`).
+
+Quick validation checklist (after a scheduled run):
+1. `out/wally_trial_task.log` contains `SCHEDULE_SANITY` and no trailing-quote warning.
+2. `out/run_log_YYYY-MM-DD.txt` contains `WINDOW_CHECK ... window_ok=YES`.
+3. `out/run_log_YYYY-MM-DD.txt` contains `SEND_START mode=LIVE intended_recipient_count=2`.
+4. `out/email_log.csv` has two rows for `wgs@indigocompliance.com` and `brandon@indigoenergyservices.com`.
+
+### Daily Verify In 10 Seconds
+
+Open the latest logs and confirm these three lines exist:
+1. `SCHEDULE_SANITY`
+2. `WINDOW_CHECK ... window_ok=YES`
+3. `SEND_START mode=LIVE`
 
 ## Troubleshooting (Common Live Failures)
 
