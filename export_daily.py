@@ -75,10 +75,10 @@ def get_sendable_leads(
     Get leads that are sendable (meet all required field criteria).
     Returns OPEN leads opened in the last 14 days, sorted by score then date.
     """
-    # Calculate 14-day opened window based on as_of_date
-    as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d").date()
-    start_date = (as_of_dt - timedelta(days=14)).isoformat()
-    end_date = as_of_dt.isoformat()
+    # Calculate 14-day window based on first_seen_at/last_seen_at
+    as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d")
+    start_ts = (as_of_dt - timedelta(days=14)).strftime("%Y-%m-%d %H:%M:%S")
+    end_ts = (as_of_dt + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
     
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(inspections)")
@@ -115,16 +115,16 @@ def get_sendable_leads(
         WHERE 
             needs_review = 0
             AND case_status = 'OPEN'
-            AND date_opened IS NOT NULL
-            AND date_opened != ''
-            AND date_opened >= ?
-            AND date_opened <= ?
+            AND (
+                (first_seen_at IS NOT NULL AND datetime(first_seen_at) >= datetime(?) AND datetime(first_seen_at) < datetime(?))
+                OR (last_seen_at IS NOT NULL AND datetime(last_seen_at) >= datetime(?) AND datetime(last_seen_at) < datetime(?))
+            )
         ORDER BY 
             lead_score DESC,
             date_opened DESC
     """
 
-    cursor.execute(query, (start_date, end_date))
+    cursor.execute(query, (start_ts, end_ts, start_ts, end_ts))
     
     columns = [desc[0] for desc in cursor.description]
     results = []

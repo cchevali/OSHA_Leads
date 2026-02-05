@@ -82,6 +82,50 @@ def territory_display_name(territory_code: str | None) -> str:
     return territory_code
 
 
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1]
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def print_area_office_debug(conn: sqlite3.Connection) -> None:
+    cutoff = datetime.now() - timedelta(days=30)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT area_office, first_seen_at, last_seen_at
+        FROM inspections
+        WHERE site_state = 'TX'
+          AND area_office IS NOT NULL
+          AND area_office != ''
+        """
+    )
+    offices = {}
+    for office, first_seen, last_seen in cursor.fetchall():
+        first_dt = _parse_timestamp(first_seen)
+        last_dt = _parse_timestamp(last_seen)
+        if (first_dt and first_dt >= cutoff) or (last_dt and last_dt >= cutoff):
+            offices[office] = offices.get(office, 0) + 1
+
+    print("TX area_office values seen in last 30 days:")
+    for office in sorted(offices):
+        print(f"  {office} ({offices[office]})")
+
+
 def load_environment(repo_root: Path) -> None:
     """Load .env for scheduler contexts where env vars are not inherited."""
     if load_dotenv is None:
@@ -322,8 +366,8 @@ def get_leads_for_period(
     include_low_fallback: bool,
 ) -> tuple[list[dict], list[dict], dict]:
     today = datetime.now()
-    date_opened_cutoff = (today - timedelta(days=since_days)).strftime("%Y-%m-%d")
-    first_seen_cutoff = (today - timedelta(days=new_only_days)).strftime("%Y-%m-%d %H:%M:%S")
+    window_cutoff = today - timedelta(days=since_days)
+    new_only_cutoff = today - timedelta(days=new_only_days)
 
     lead_id_expr = (
         "lead_id"
@@ -366,35 +410,48 @@ def get_leads_for_period(
     columns = [desc[0] for desc in cursor.description]
     all_results = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
-    date_filtered = []
-    excluded_by_date_opened = 0
-    excluded_by_first_seen = 0
+    time_filtered = []
+    excluded_by_time_window = 0
+    excluded_by_new_only = 0
 
     for lead in all_results:
-        date_opened = lead.get("date_opened")
-        first_seen = lead.get("first_seen_at")
+        first_seen_dt = _parse_timestamp(lead.get("first_seen_at"))
+        last_seen_dt = _parse_timestamp(lead.get("last_seen_at"))
 
-        if date_opened and date_opened < date_opened_cutoff:
-            excluded_by_date_opened += 1
+        in_window = False
+        if first_seen_dt and first_seen_dt >= window_cutoff:
+            in_window = True
+        if last_seen_dt and last_seen_dt >= window_cutoff:
+            in_window = True
+        if not in_window:
+            excluded_by_time_window += 1
             continue
 
-        if not skip_first_seen_filter and first_seen and first_seen < first_seen_cutoff:
-            excluded_by_first_seen += 1
-            continue
+        if not skip_first_seen_filter:
+            is_recent = False
+            if first_seen_dt and first_seen_dt >= new_only_cutoff:
+                is_recent = True
+            if last_seen_dt and last_seen_dt >= new_only_cutoff:
+                is_recent = True
+            if not is_recent:
+                excluded_by_new_only += 1
+                continue
 
-        date_filtered.append(lead)
+        time_filtered.append(lead)
 
-    territory_filtered, territory_stats = filter_by_territory(date_filtered, territory_code)
-    deduped, dedupe_removed = dedupe_by_activity_nr(territory_filtered)
-    content_filtered, excluded_content = apply_content_filter(deduped, content_filter)
+    territory_filtered, territory_stats = filter_by_territory(time_filtered, territory_code)
+    content_filtered, excluded_content = apply_content_filter(territory_filtered, content_filter)
+    deduped, dedupe_removed = dedupe_by_activity_nr(content_filtered)
+    final_leads = deduped
 
     low_fallback = []
     if (
         content_filter == "high_medium"
-        and len(content_filtered) == 0
+        and len(final_leads) == 0
         and include_low_fallback
     ):
-        low_candidates = [lead for lead in deduped if int(lead.get("lead_score") or 0) < 6]
+        fallback_base, _ = dedupe_by_activity_nr(territory_filtered)
+        low_candidates = [lead for lead in fallback_base if int(lead.get("lead_score") or 0) < 6]
         low_candidates.sort(
             key=lambda lead: (int(lead.get("lead_score") or 0), lead.get("date_opened") or ""),
             reverse=True,
@@ -402,9 +459,14 @@ def get_leads_for_period(
         low_fallback = low_candidates[:LOW_FALLBACK_LIMIT]
 
     stats = {
-        "total_before_filter": len(all_results),
-        "excluded_by_date_opened": excluded_by_date_opened,
-        "excluded_by_first_seen": excluded_by_first_seen,
+        "total_candidates": len(all_results),
+        "after_time_window": len(time_filtered),
+        "after_territory": len(territory_filtered),
+        "after_content_filter": len(content_filtered),
+        "after_dedupe": len(final_leads),
+        "final_leads": len(final_leads),
+        "excluded_by_time_window": excluded_by_time_window,
+        "excluded_by_new_only": excluded_by_new_only,
         "excluded_by_territory": territory_stats["excluded_state"] + territory_stats["excluded_territory"],
         "matched_by_office": territory_stats["matched_by_office"],
         "matched_by_fallback": territory_stats["matched_by_fallback"],
@@ -413,7 +475,7 @@ def get_leads_for_period(
         "low_fallback_count": len(low_fallback),
     }
 
-    return content_filtered, low_fallback, stats
+    return final_leads, low_fallback, stats
 
 
 def resolve_branding(config: dict) -> dict:
@@ -703,7 +765,6 @@ def send_email(
                 server.starttls()
                 server.login(smtp_user, smtp_pass)
                 server.send_message(msg)
-
         return True, msg["Message-ID"], ""
     except Exception as exc:
         return False, "", str(exc)
@@ -749,6 +810,11 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Generate but do not send")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument(
+        "--debug-area-offices",
+        action="store_true",
+        help="Print distinct TX area_office values seen in last 30 days and exit",
+    )
+    parser.add_argument(
         "--recipient-override",
         default="",
         help="Comma-separated recipients to override config recipients (useful for preview sends)",
@@ -767,6 +833,12 @@ def main() -> None:
 
     gen_date = datetime.now().strftime("%Y-%m-%d")
     timestamp = datetime.now().isoformat()
+
+    if args.debug_area_offices:
+        conn = sqlite3.connect(args.db)
+        print_area_office_debug(conn)
+        conn.close()
+        raise SystemExit(0)
 
     config = load_customer_config(args.customer)
     customer_id = config["customer_id"]
@@ -966,8 +1038,8 @@ def main() -> None:
     print("=" * 72)
     print(f"Customer:                 {customer_id}")
     print(f"Mode:                     {args.mode}")
-    print(f"Territory:                {territory_code or '(none)'}")
-    print(f"Content filter:           {content_filter}")
+    print(f"Territory:                {territory_display_name(territory_code) or '(none)'}")
+    print(f"Content filter:           {content_filter_label(content_filter)}")
     print(f"Low fallback enabled:     {'YES' if include_low_fallback else 'NO'}")
     print(f"Low fallback leads:       {len(low_fallback)}")
     print(f"Leads after filters:      {len(leads)}")
@@ -980,9 +1052,14 @@ def main() -> None:
     print(f"Dry run:                  {'YES' if args.dry_run else 'NO'}")
     print("")
     print("Filter stats:")
-    print(f"  Total before filter:    {filter_stats['total_before_filter']}")
-    print(f"  Excl. date_opened:      {filter_stats['excluded_by_date_opened']}")
-    print(f"  Excl. first_seen:       {filter_stats['excluded_by_first_seen']}")
+    print(f"  Total candidates:       {filter_stats['total_candidates']}")
+    print(f"  After time-window:      {filter_stats['after_time_window']}")
+    print(f"  After territory:        {filter_stats['after_territory']}")
+    print(f"  After content filter:   {filter_stats['after_content_filter']}")
+    print(f"  After dedupe:           {filter_stats['after_dedupe']}")
+    print(f"  Final leads:            {filter_stats['final_leads']}")
+    print(f"  Excl. time-window:      {filter_stats['excluded_by_time_window']}")
+    print(f"  Excl. new-only window:  {filter_stats['excluded_by_new_only']}")
     print(f"  Excl. territory:        {filter_stats['excluded_by_territory']}")
     print(f"  Matched area_office:    {filter_stats['matched_by_office']}")
     print(f"  Matched fallback city:  {filter_stats['matched_by_fallback']}")
