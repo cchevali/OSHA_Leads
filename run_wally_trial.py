@@ -176,9 +176,10 @@ def run_live_send(db_path: str, customer_config: str, admin_email: str, send_liv
 
 
 def write_batch_runner(batch_path: Path, project_root: Path, customer_config: str, db_path: str, admin_email: str) -> None:
+    customer_rel = _relative_batch_path(project_root, customer_config)
     lines = [
         "@echo off",
-        f"cd /d \"{project_root}\"",
+        "cd /d \"%~dp0\"",
         "if not exist out mkdir out",
         "set RUN_TMP=out\\wally_trial_last_run.log",
         "echo [%date% %time%] Wally trial run start >> out\\wally_trial_task.log",
@@ -188,7 +189,7 @@ def write_batch_runner(batch_path: Path, project_root: Path, customer_config: st
         "for /f \"delims=\" %%p in ('where python 2^>nul') do echo [%date% %time%] python=%%p >> out\\wally_trial_task.log",
         "if errorlevel 1 echo [%date% %time%] python=NOT_FOUND >> out\\wally_trial_task.log",
         (
-            f"python deliver_daily.py --db \"{db_path}\" --customer \"{customer_config}\" "
+            f"python deliver_daily.py --db \"{db_path}\" --customer \"%~dp0{customer_rel}\" "
             f"--mode daily --since-days 14 --admin-email \"{admin_email}\" --send-live "
             "> \"%RUN_TMP%\" 2>&1"
         ),
@@ -226,6 +227,21 @@ def _sanitize_task_path(path: Path) -> str:
     while batch_text.endswith('"') or batch_text.endswith("'"):
         batch_text = batch_text[:-1]
     return batch_text.strip()
+
+
+def _relative_batch_path(project_root: Path, path_text: str) -> str:
+    path = Path(path_text)
+    try:
+        root = project_root.resolve()
+        if path.is_absolute():
+            rel = path.resolve().relative_to(root)
+        else:
+            rel = path
+        rel_text = str(rel)
+    except Exception:
+        rel_text = path.name
+    rel_text = rel_text.replace("/", "\\").lstrip("\\/")
+    return rel_text
 
 
 def build_task_action(batch_text: str) -> str:
@@ -287,11 +303,12 @@ def verify_schedule_action(task_name: str, expected_action: str) -> None:
 
 
 def verify_schedule_action_from_actual(expected_action: str, actual: str | None) -> None:
+    hint = "run --enable-schedule"
     if not actual:
-        print(f"SCHEDULE_CHECK_FAILED expected={expected_action} actual=MISSING_TASK_TO_RUN")
+        print(f"SCHEDULE_CHECK_FAILED expected={expected_action} actual=MISSING_TASK_TO_RUN hint={hint}")
         raise SystemExit(1)
     if actual != expected_action:
-        print(f"SCHEDULE_CHECK_FAILED expected={expected_action} actual={actual}")
+        print(f"SCHEDULE_CHECK_FAILED expected={expected_action} actual={actual} hint={hint}")
         raise SystemExit(1)
     print(f"SCHEDULE_OK /TR={actual}")
 

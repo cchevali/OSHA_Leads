@@ -34,7 +34,7 @@ class TestScheduleCheck(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 1)
         lines = buf.getvalue().strip().splitlines()
         self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0], f"SCHEDULE_CHECK_FAILED expected={expected} actual={actual}")
+        self.assertEqual(lines[0], f"SCHEDULE_CHECK_FAILED expected={expected} actual={actual} hint=run --enable-schedule")
 
 
 if __name__ == "__main__":
