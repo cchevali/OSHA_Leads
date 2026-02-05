@@ -27,6 +27,7 @@ from email.utils import formatdate, make_msgid
 from pathlib import Path
 
 from unsubscribe_utils import create_unsub_token, sign_check, sign_registration
+from email_footer import build_footer_html, build_footer_text
 
 # Load environment variables
 try:
@@ -909,17 +910,29 @@ def generate_email_body(recipient: dict, sample_leads: list,
     # Format sample leads for HTML (mini-cards)
     leads_html = "\n".join([format_lead_for_html(l) for l in sample_leads[:5]])
     
-    # Build unsubscribe link text for footer (mailto is always included)
-    unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "")
-    if unsub_endpoint and unsub_token:
-        unsub_link_text = f" or click: {unsub_endpoint}?token={unsub_token}"
-        unsub_link_html = f' or <a href="{unsub_endpoint}?token={unsub_token}" style="color: #888;">click here</a>'
-    else:
-        unsub_link_text = ""
-        unsub_link_html = ""
+    # Build one-click URL for footer if available
+    unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
+    unsub_url = f"{unsub_endpoint}?token={unsub_token}" if unsub_endpoint and unsub_token else ""
     
     refresh_text, refresh_html = get_last_refresh_lines()
     
+    footer_disclaimer = "Not affiliated with OSHA; this is an independent alert service (no legal advice)."
+    footer_text = build_footer_text(
+        brand_name="Micro Flow Ops",
+        mailing_address=footer_address,
+        disclaimer=footer_disclaimer,
+        reply_to=REQUIRED_REPLY_TO,
+        unsub_url=unsub_url or None,
+        include_separator=True,
+    )
+    footer_html = build_footer_html(
+        brand_name="Micro Flow Ops",
+        mailing_address=footer_address,
+        disclaimer=footer_disclaimer,
+        reply_to=REQUIRED_REPLY_TO,
+        unsub_url=unsub_url or None,
+    )
+
     # Build text body (no Ref line - clean for cold outreach)
     text_body = f"""{greeting}
 
@@ -944,10 +957,7 @@ Chase Chevalier
 Micro Flow Ops - OSHA Alerts
 support@microflowops.com
 
----
-Micro Flow Ops
-{footer_address}
-Opt out: reply with "unsubscribe" or email {REQUIRED_REPLY_TO} (subject: unsubscribe){unsub_link_text}
+{footer_text}
 """
     
     # Build HTML body (600px centered, system-ui font stack, dark-mode safe)
@@ -1001,14 +1011,7 @@ Not affiliated with OSHA; this is an independent alert service (no legal advice)
 
 </div>
 
-<div style="padding: 16px 24px; text-align: center;">
-<p style="font-size: 12px; color: #666; margin: 0 0 4px 0;">Micro Flow Ops</p>
-<p style="font-size: 12px; color: #666; margin: 0 0 12px 0;">{footer_address}</p>
-<p style="font-size: 12px; color: #888; margin: 0;">
-  Opt out: reply with "unsubscribe" or
-  <a href="mailto:{REQUIRED_REPLY_TO}?subject=unsubscribe" style="color: #888;">click to unsubscribe</a>{unsub_link_html}
-</p>
-</div>
+{footer_html}
 
 </div>
 </body>

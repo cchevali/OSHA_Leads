@@ -18,6 +18,7 @@ import os
 import smtplib
 import sqlite3
 import sys
+import time
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -36,7 +37,8 @@ from lead_filters import (
     load_territory_definitions,
     normalize_content_filter,
 )
-from unsubscribe_utils import create_unsub_token
+from unsubscribe_utils import create_unsub_token, sign_registration
+from email_footer import build_footer_html, build_footer_text
 
 logger = logging.getLogger(__name__)
 
@@ -562,40 +564,107 @@ def resolve_branding(config: dict) -> dict:
     }
 
 
-def build_unsubscribe_headers(
+def register_unsub_token(
+    unsub_token: str,
+    recipient_email: str,
+    campaign_id: str,
+    dry_run: bool,
+    retries: int = 2,
+    timeout: int = 5,
+) -> tuple[bool, int | None, str]:
+    if dry_run:
+        return True, None, ""
+    unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
+    secret = os.getenv("UNSUB_SECRET", "").strip()
+    if not unsub_endpoint or not secret:
+        return False, None, "missing_unsub_endpoint_or_secret"
+    if not unsub_token or "." not in unsub_token:
+        return False, None, "invalid_unsub_token"
+
+    token_id = unsub_token.split(".", 1)[0]
+    register_url = unsub_endpoint.rstrip("/") + "/register"
+    auth = sign_registration(token_id, recipient_email, secret)
+
+    last_error = ""
+    last_status = None
+    for attempt in range(1, retries + 2):
+        try:
+            import requests
+            resp = requests.post(
+                register_url,
+                json={"token_id": token_id, "email": recipient_email, "campaign_id": campaign_id},
+                headers={"X-Unsub-Auth": auth},
+                timeout=timeout,
+            )
+            last_status = resp.status_code
+            if resp.status_code in (200, 204):
+                return True, resp.status_code, ""
+            last_error = f"http_{resp.status_code}"
+            if resp.status_code == 429:
+                time.sleep(2 * attempt)
+        except Exception as e:
+            last_error = str(e)
+        if attempt <= retries:
+            time.sleep(0.5)
+    return False, last_status, last_error
+
+
+def build_unsubscribe_payload(
     recipient: str,
     campaign_id: str,
     reply_to_email: str,
-) -> tuple[str, str | None]:
+    dry_run: bool,
+) -> tuple[str, str | None, str]:
     mailto = f"mailto:{reply_to_email}?subject=unsubscribe"
     unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
 
     if not unsub_endpoint:
-        return f"<{mailto}>", None
+        return f"<{mailto}>", None, ""
 
     signed_token = create_unsub_token(recipient, campaign_id)
     sep = "&" if "?" in unsub_endpoint else "?"
     one_click_url = f"{unsub_endpoint}{sep}token={signed_token}"
-    return f"<{mailto}>, <{one_click_url}>", "List-Unsubscribe=One-Click"
 
-def _lead_rows_html(rows: list[dict], max_rows: int) -> str:
+    ok, status, err = register_unsub_token(
+        signed_token,
+        recipient,
+        campaign_id,
+        dry_run,
+        retries=2,
+        timeout=5,
+    )
+    if not ok:
+        print(f"[WARN] one-click registration failed (status={status}, error={err})")
+        return f"<{mailto}>", None, ""
+
+    return f"<{mailto}>, <{one_click_url}>", "List-Unsubscribe=One-Click", one_click_url
+
+def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool) -> str:
     if not rows:
         return "<p><em>No leads match this section.</em></p>"
 
     parts = ['<table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%;">']
-    parts.append("<tr><th>Company</th><th>City</th><th>Area Office</th><th>Type</th><th>Date</th><th>Score</th><th>Link</th></tr>")
+    if include_area_office:
+        parts.append("<tr><th>Company</th><th>City</th><th>Area Office</th><th>Type</th><th>Date</th><th>Score</th><th>Link</th></tr>")
+    else:
+        parts.append("<tr><th>Company</th><th>City</th><th>Type</th><th>Date</th><th>Score</th><th>Link</th></tr>")
     for lead in rows[:max_rows]:
         company = (lead.get("establishment_name") or "Unknown")[:48]
         city = lead.get("site_city") or "-"
         state = lead.get("site_state") or "-"
-        area_office = lead.get("area_office") or "-"
         itype = lead.get("inspection_type") or "-"
         date_opened = lead.get("date_opened") or "-"
         score = int(lead.get("lead_score") or 0)
         url = lead.get("source_url") or "#"
-        parts.append(
-            f"<tr><td>{company}</td><td>{city}, {state}</td><td>{area_office}</td><td>{itype}</td><td>{date_opened}</td><td><strong>{score}</strong></td><td><a href=\"{url}\">View</a></td></tr>"
-        )
+        if include_area_office:
+            area_office = lead.get("area_office") or ""
+            parts.append(
+                f"<tr><td>{company}</td><td>{city}, {state}</td><td>{area_office}</td><td>{itype}</td><td>{date_opened}</td><td><strong>{score}</strong></td><td><a href=\"{url}\">View</a></td></tr>"
+            )
+        else:
+            parts.append(
+                f"<tr><td>{company}</td><td>{city}, {state}</td><td>{itype}</td><td>{date_opened}</td><td><strong>{score}</strong></td><td><a href=\"{url}\">View</a></td></tr>"
+            )
     parts.append("</table>")
     return "\n".join(parts)
 
@@ -611,6 +680,8 @@ def generate_digest_html(
     include_low_fallback: bool,
     branding: dict,
     report_label: str | None = None,
+    footer_html: str | None = None,
+    summary_label: str | None = None,
 ) -> str:
     states = config["states"]
     top_k_overall = config.get("top_k_overall", 25)
@@ -619,12 +690,16 @@ def generate_digest_html(
     content_label = content_filter_label(content_filter)
 
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
-    hi_count = sum(1 for lead in leads if int(lead.get("lead_score") or 0) >= 10)
-
     state_counts: dict[str, int] = {}
     for lead in leads:
-        st = lead.get("site_state") or "UNK"
+        st = (lead.get("site_state") or "UNK").upper()
         state_counts[st] = state_counts.get(st, 0) + 1
+    unique_states = [state for state in state_counts.keys() if state]
+    main_limit = min(10, top_k_overall)
+    main_rows = leads[:main_limit]
+    include_area_office_main = any((lead.get("area_office") or "").strip() for lead in main_rows)
+    include_area_office_all = any((lead.get("area_office") or "").strip() for lead in leads)
+    summary_line = summary_label or f"{len(leads)} signals"
 
     html: list[str] = []
     html.append("<!DOCTYPE html>")
@@ -644,42 +719,43 @@ def generate_digest_html(
             f"<p style=\"color: #555;\"><strong>Fallback lows:</strong> On (max {LOW_FALLBACK_LIMIT})</p>"
         )
 
-    summary_label = "new leads today" if mode == "daily" else "leads in baseline"
     html.append('<div style="background-color: #eef5ff; padding: 14px; border-radius: 6px; margin: 16px 0;">')
-    html.append(f"<p style=\"margin: 0;\"><strong>{len(leads)} {summary_label}</strong> | {hi_count} high-priority (score >= 10)</p>")
+    html.append(f"<p style=\"margin: 0;\"><strong>{summary_line}</strong></p>")
     html.append("</div>")
 
     if len(leads) == 0 and mode == "daily":
         territory_text = territory_label or "/".join(states)
-        html.append(
-            f"<p><strong>No new OSHA activity signals found in the last 24 hours for {territory_text}.</strong></p>"
-        )
+        if report_label:
+            html.append(
+                f"<p><strong>No OSHA activity signals found in the starter snapshot window for {territory_text}.</strong></p>"
+            )
+        else:
+            html.append(
+                f"<p><strong>No new OSHA activity signals since last send for {territory_text}.</strong></p>"
+            )
         if include_low_fallback and low_fallback:
             html.append(f"<h2>Low Leads (Fallback) - Top {len(low_fallback)}</h2>")
-            html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT))
+            html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all))
     else:
-        html.append("<ul>")
-        for state in states:
-            html.append(f"<li>{state}: {state_counts.get(state, 0)} leads</li>")
-        html.append("</ul>")
+        if len(unique_states) > 1:
+            html.append("<ul>")
+            for state in sorted(unique_states):
+                html.append(f"<li>{state}: {state_counts.get(state, 0)} leads</li>")
+            html.append("</ul>")
 
-        html.append(f"<h2>Top {min(5, len(leads))} Leads</h2>")
-        html.append(_lead_rows_html(leads, 5))
+        html.append(f"<h2>Leads (showing {len(main_rows)} of {len(leads)})</h2>")
+        html.append(_lead_rows_html(main_rows, len(main_rows), include_area_office_main))
 
-        html.append(f"<h2>All {len(leads)} Leads</h2>")
-        html.append(_lead_rows_html(leads, top_k_overall))
+        if len(leads) > main_limit:
+            html.append(f"<h2>All Leads ({len(leads)})</h2>")
+            html.append(_lead_rows_html(leads, len(leads), include_area_office_all))
 
-        for state in states:
-            state_leads = [lead for lead in leads if lead.get("site_state") == state]
-            html.append(f"<h2>{state} Top {min(len(state_leads), top_k_per_state)}</h2>")
-            html.append(_lead_rows_html(state_leads, top_k_per_state))
+        if include_low_fallback and low_fallback:
+            html.append(f"<h2>Low Leads (Fallback) - Top {len(low_fallback)}</h2>")
+            html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all))
 
-    html.append('<div style="margin-top: 24px; padding-top: 12px; border-top: 1px solid #ddd; font-size: 12px; color: #666;">')
-    footer_brand = branding.get("brand_legal_name") or branding["brand_name"]
-    html.append(f"<p><strong>{footer_brand}</strong><br>{branding['mailing_address']}</p>")
-    html.append("<p>This report contains public OSHA inspection data for informational purposes only. Not legal advice.</p>")
-    html.append(f"<p>Unsubscribe: reply 'opt out' or email {branding['reply_to']}.</p>")
-    html.append("</div>")
+    if footer_html:
+        html.append(footer_html)
 
     html.append("</div></body></html>")
     return "\n".join(html)
@@ -696,12 +772,23 @@ def generate_digest_text(
     include_low_fallback: bool,
     branding: dict,
     report_label: str | None = None,
+    footer_text: str | None = None,
+    summary_label: str | None = None,
 ) -> str:
     states = config["states"]
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
-    hi_count = sum(1 for lead in leads if int(lead.get("lead_score") or 0) >= 10)
     territory_label = territory_display_name(territory_code)
     content_label = content_filter_label(content_filter)
+    state_counts: dict[str, int] = {}
+    for lead in leads:
+        st = (lead.get("site_state") or "UNK").upper()
+        state_counts[st] = state_counts.get(st, 0) + 1
+    unique_states = [state for state in state_counts.keys() if state]
+    main_limit = min(10, config.get("top_k_overall", 25))
+    main_rows = leads[:main_limit]
+    include_area_office_main = any((lead.get("area_office") or "").strip() for lead in main_rows)
+    include_area_office_all = any((lead.get("area_office") or "").strip() for lead in leads)
+    summary_line = summary_label or f"{len(leads)} signals"
 
     lines = [
         f"OSHA Lead Digest ({mode_label}) - {gen_date}",
@@ -715,15 +802,15 @@ def generate_digest_text(
     if include_low_fallback:
         lines.append(f"Fallback lows: On (max {LOW_FALLBACK_LIMIT})")
     lines.append("=" * 70)
-    lines.append(f"Total Leads: {len(leads)}")
-    lines.append(f"High Priority (>=10): {hi_count}")
+    lines.append(summary_line)
 
     if len(leads) == 0 and mode == "daily":
         territory_text = territory_label or "/".join(states)
         lines.append("")
-        lines.append(
-            f"No new OSHA activity signals found in the last 24 hours for {territory_text}."
-        )
+        if report_label:
+            lines.append(f"No OSHA activity signals found in the starter snapshot window for {territory_text}.")
+        else:
+            lines.append(f"No new OSHA activity signals since last send for {territory_text}.")
         if include_low_fallback and low_fallback:
             lines.append("")
             lines.append("Low Leads (Fallback):")
@@ -734,15 +821,21 @@ def generate_digest_text(
                     f"Score {int(lead.get('lead_score') or 0)}"
                 )
     else:
+        if len(unique_states) > 1:
+            lines.append("")
+            lines.append("State breakdown:")
+            for state in sorted(unique_states):
+                lines.append(f"- {state}: {state_counts.get(state, 0)} leads")
+
         lines.append("")
-        lines.append("Top Leads:")
-        for lead in leads[:5]:
+        lines.append(f"Leads (showing {len(main_rows)} of {len(leads)}):")
+        for lead in main_rows:
             lines.append("")
             lines.append(f"- {(lead.get('establishment_name') or 'Unknown')}")
-            lines.append(
-                f"  {(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
-                f"Area Office: {(lead.get('area_office') or '-')}"
-            )
+            location_line = f"  {(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')}"
+            if include_area_office_main:
+                location_line += f" | Area Office: {(lead.get('area_office') or '-')}"
+            lines.append(location_line)
             lines.append(
                 f"  {(lead.get('inspection_type') or '-')} | "
                 f"Date: {(lead.get('date_opened') or '-')} | "
@@ -750,12 +843,25 @@ def generate_digest_text(
             )
             lines.append(f"  {(lead.get('source_url') or '#')}")
 
-    lines.append("")
-    lines.append("-" * 70)
-    lines.append(branding.get("brand_legal_name") or branding["brand_name"])
-    lines.append(branding["mailing_address"])
-    lines.append("This report contains public OSHA inspection data for informational purposes only. Not legal advice.")
-    lines.append(f"To unsubscribe: reply 'opt out' or email {branding['reply_to']}")
+        if len(leads) > main_limit:
+            lines.append("")
+            lines.append(f"All leads ({len(leads)}):")
+            for lead in leads:
+                lines.append(f"- {(lead.get('establishment_name') or 'Unknown')} | {(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | Score {int(lead.get('lead_score') or 0)}")
+
+        if include_low_fallback and low_fallback:
+            lines.append("")
+            lines.append("Low Leads (Fallback):")
+            for lead in low_fallback:
+                lines.append(
+                    f"- {(lead.get('establishment_name') or 'Unknown')} | "
+                    f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
+                    f"Score {int(lead.get('lead_score') or 0)}"
+                )
+
+    if footer_text:
+        lines.append("")
+        lines.append(footer_text)
 
     return "\n".join(lines)
 
@@ -767,6 +873,8 @@ def build_email_message(
     customer_id: str,
     territory_code: str,
     branding: dict,
+    list_unsub: str,
+    list_unsub_post: str | None,
 ) -> MIMEMultipart:
     from_header = formataddr((branding["from_display_name"], branding["from_email"]))
     reply_to_header = formataddr((branding["from_display_name"], branding["reply_to"]))
@@ -781,7 +889,6 @@ def build_email_message(
     msg["X-Customer-ID"] = customer_id
     msg["X-Territory-Code"] = territory_code or ""
 
-    list_unsub, list_unsub_post = build_unsubscribe_headers(recipient, customer_id, branding["reply_to"])
     msg["List-Unsubscribe"] = list_unsub
     if list_unsub_post:
         msg["List-Unsubscribe-Post"] = list_unsub_post
@@ -800,6 +907,8 @@ def send_email(
     territory_code: str,
     branding: dict,
     dry_run: bool,
+    list_unsub: str,
+    list_unsub_post: str | None,
 ) -> tuple[bool, str, str]:
     smtp_host = os.environ.get("SMTP_HOST", "")
     smtp_port_text = os.environ.get("SMTP_PORT", "")
@@ -814,6 +923,8 @@ def send_email(
         customer_id=customer_id,
         territory_code=territory_code,
         branding=branding,
+        list_unsub=list_unsub,
+        list_unsub_post=list_unsub_post,
     )
 
     if dry_run:
@@ -954,6 +1065,8 @@ def main() -> None:
     conn = sqlite3.connect(args.db)
     snapshot_mode = args.mode == "daily" and baseline_on_first_send and not last_sent_at
     report_label = None
+    summary_label = None
+    snapshot_days = int(config["opened_window_days"])
     window_start = None
     new_only_cutoff = None
     include_changed = False
@@ -961,7 +1074,7 @@ def main() -> None:
     skip_first_seen_filter = args.mode == "baseline"
 
     if snapshot_mode:
-        report_label = f"Starter Snapshot (last {int(config['opened_window_days'])} days)"
+        report_label = f"Starter Snapshot (last {snapshot_days} days)"
         use_opened_window = True
         skip_first_seen_filter = True
         window_start = None
@@ -975,6 +1088,7 @@ def main() -> None:
         new_only_cutoff = None
     elif args.mode == "daily":
         include_changed = True
+    # summary_label set after leads computed
 
     leads, low_fallback, filter_stats = get_leads_for_period(
         conn=conn,
@@ -994,42 +1108,26 @@ def main() -> None:
 
     logger.info("Leads after filters: %d", len(leads))
 
+    if snapshot_mode:
+        summary_label = f"{len(leads)} signals in starter snapshot"
+    elif args.mode == "daily":
+        summary_label = f"{len(leads)} new signals since last send"
+    else:
+        summary_label = f"{len(leads)} signals"
+
     hi_count = sum(1 for lead in leads if int(lead.get("lead_score") or 0) >= 10)
     states_label = "/".join(states)
     territory_label = territory_display_name(territory_code)
     location_label = territory_label or states_label
 
-    if args.mode == "daily":
-        count_label = "No new signals" if len(leads) == 0 else f"{len(leads)} new signals"
+    if snapshot_mode:
+        count_label = f"Starter snapshot (last {snapshot_days} days) | {len(leads)} signals"
+    elif args.mode == "daily":
+        count_label = f"New since last send | {len(leads)} signals"
     else:
-        count_label = "No signals" if len(leads) == 0 else f"{len(leads)} signals"
+        count_label = f"{len(leads)} signals"
 
     subject = f"{location_label} | {gen_date} | {count_label}"
-
-    html_body = generate_digest_html(
-        leads=leads,
-        low_fallback=low_fallback,
-        config=config,
-        gen_date=gen_date,
-        mode=args.mode,
-        territory_code=territory_code,
-        content_filter=content_filter,
-        include_low_fallback=include_low_fallback,
-        branding=branding,
-        report_label=report_label,
-    )
-    text_body = generate_digest_text(
-        leads=leads,
-        low_fallback=low_fallback,
-        config=config,
-        gen_date=gen_date,
-        mode=args.mode,
-        territory_code=territory_code,
-        content_filter=content_filter,
-        include_low_fallback=include_low_fallback,
-        branding=branding,
-        report_label=report_label,
-    )
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     email_log_path = os.path.join(args.output_dir, "email_log.csv")
@@ -1100,6 +1198,59 @@ def main() -> None:
             )
             continue
 
+        list_unsub, list_unsub_post, one_click_url = build_unsubscribe_payload(
+            recipient=recipient,
+            campaign_id=customer_id,
+            reply_to_email=branding["reply_to"],
+            dry_run=args.dry_run,
+        )
+
+        footer_disclaimer = "This report contains public OSHA inspection data for informational purposes only. Not legal advice."
+        footer_text = build_footer_text(
+            brand_name=branding.get("brand_legal_name") or branding["brand_name"],
+            mailing_address=branding["mailing_address"],
+            disclaimer=footer_disclaimer,
+            reply_to=branding["reply_to"],
+            unsub_url=one_click_url or None,
+            include_separator=True,
+        )
+        footer_html = build_footer_html(
+            brand_name=branding.get("brand_legal_name") or branding["brand_name"],
+            mailing_address=branding["mailing_address"],
+            disclaimer=footer_disclaimer,
+            reply_to=branding["reply_to"],
+            unsub_url=one_click_url or None,
+        )
+
+        html_body = generate_digest_html(
+            leads=leads,
+            low_fallback=low_fallback,
+            config=config,
+            gen_date=gen_date,
+            mode=args.mode,
+            territory_code=territory_code,
+            content_filter=content_filter,
+            include_low_fallback=include_low_fallback,
+            branding=branding,
+            report_label=report_label,
+            footer_html=footer_html,
+            summary_label=summary_label,
+        )
+        text_body = generate_digest_text(
+            leads=leads,
+            low_fallback=low_fallback,
+            config=config,
+            gen_date=gen_date,
+            mode=args.mode,
+            territory_code=territory_code,
+            content_filter=content_filter,
+            include_low_fallback=include_low_fallback,
+            branding=branding,
+            report_label=report_label,
+            footer_text=footer_text,
+            summary_label=summary_label,
+        )
+
         success, message_id, error = send_email(
             recipient=recipient,
             subject=subject,
@@ -1109,6 +1260,8 @@ def main() -> None:
             territory_code=territory_code or "",
             branding=branding,
             dry_run=args.dry_run,
+            list_unsub=list_unsub,
+            list_unsub_post=list_unsub_post,
         )
 
         status = "sent" if success else "failed"

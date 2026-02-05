@@ -6,6 +6,7 @@ from send_digest_email import (
     generate_digest_html,
     generate_digest_text,
 )
+from email_footer import build_footer_html, build_footer_text
 
 
 class TestDigestFallback(unittest.TestCase):
@@ -36,6 +37,21 @@ class TestDigestFallback(unittest.TestCase):
                 "source_url": "https://example.com/1",
             }
         ]
+        self.footer_text = build_footer_text(
+            brand_name=self.branding["brand_name"],
+            mailing_address=self.branding["mailing_address"],
+            disclaimer="This report contains public OSHA inspection data for informational purposes only. Not legal advice.",
+            reply_to=self.branding["reply_to"],
+            unsub_url=None,
+            include_separator=True,
+        )
+        self.footer_html = build_footer_html(
+            brand_name=self.branding["brand_name"],
+            mailing_address=self.branding["mailing_address"],
+            disclaimer="This report contains public OSHA inspection data for informational purposes only. Not legal advice.",
+            reply_to=self.branding["reply_to"],
+            unsub_url=None,
+        )
 
     def test_empty_high_medium_with_fallback_on(self):
         html = generate_digest_html(
@@ -48,6 +64,7 @@ class TestDigestFallback(unittest.TestCase):
             content_filter="high_medium",
             include_low_fallback=True,
             branding=self.branding,
+            footer_html=self.footer_html,
         )
         text = generate_digest_text(
             leads=[],
@@ -59,21 +76,16 @@ class TestDigestFallback(unittest.TestCase):
             content_filter="high_medium",
             include_low_fallback=True,
             branding=self.branding,
+            footer_text=self.footer_text,
         )
 
-        self.assertIn(
-            "No new OSHA activity signals found in the last 24 hours for Texas Triangle.",
-            html,
-        )
+        self.assertIn("No new OSHA activity signals since last send for Texas Triangle.", html)
         self.assertIn("Low Leads (Fallback)", html)
         self.assertIn("Low Lead One", html)
         self.assertIn(self.branding["brand_name"], html)
         self.assertIn(self.branding["mailing_address"], html)
 
-        self.assertIn(
-            "No new OSHA activity signals found in the last 24 hours for Texas Triangle.",
-            text,
-        )
+        self.assertIn("No new OSHA activity signals since last send for Texas Triangle.", text)
         self.assertIn("Low Leads (Fallback)", text)
         self.assertIn("Low Lead One", text)
         self.assertIn(self.branding["brand_name"], text)
@@ -87,6 +99,8 @@ class TestDigestFallback(unittest.TestCase):
             customer_id="cust1",
             territory_code="TX_TRIANGLE_V1",
             branding=self.branding,
+            list_unsub="<mailto:support@acme.com?subject=unsubscribe>",
+            list_unsub_post=None,
         )
         self.assertIn("mailto:support@acme.com?subject=unsubscribe", msg["List-Unsubscribe"])
         self.assertIsNone(msg.get("List-Unsubscribe-Post"))
@@ -102,6 +116,7 @@ class TestDigestFallback(unittest.TestCase):
             content_filter="high_medium",
             include_low_fallback=False,
             branding=self.branding,
+            footer_html=self.footer_html,
         )
         text = generate_digest_text(
             leads=[],
@@ -113,20 +128,15 @@ class TestDigestFallback(unittest.TestCase):
             content_filter="high_medium",
             include_low_fallback=False,
             branding=self.branding,
+            footer_text=self.footer_text,
         )
 
-        self.assertIn(
-            "No new OSHA activity signals found in the last 24 hours for Texas Triangle.",
-            html,
-        )
+        self.assertIn("No new OSHA activity signals since last send for Texas Triangle.", html)
         self.assertNotIn("Low Leads (Fallback)", html)
         self.assertIn(self.branding["brand_name"], html)
         self.assertIn(self.branding["mailing_address"], html)
 
-        self.assertIn(
-            "No new OSHA activity signals found in the last 24 hours for Texas Triangle.",
-            text,
-        )
+        self.assertIn("No new OSHA activity signals since last send for Texas Triangle.", text)
         self.assertNotIn("Low Leads (Fallback)", text)
         self.assertIn(self.branding["brand_name"], text)
         self.assertIn(self.branding["mailing_address"], text)
@@ -139,6 +149,8 @@ class TestDigestFallback(unittest.TestCase):
             customer_id="cust2",
             territory_code="TX_TRIANGLE_V1",
             branding=self.branding,
+            list_unsub="<mailto:support@acme.com?subject=unsubscribe>",
+            list_unsub_post=None,
         )
         self.assertIn("mailto:support@acme.com?subject=unsubscribe", msg["List-Unsubscribe"])
         self.assertIsNone(msg.get("List-Unsubscribe-Post"))
