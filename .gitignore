@@ -16,6 +16,7 @@ secrets/
 # Output / runtime files
 out/
 *.log
+logs/
 
 # Local databases & exports
 *.sqlite

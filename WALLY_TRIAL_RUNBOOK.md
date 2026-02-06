@@ -62,6 +62,28 @@ Behavior:
 - Exit nonzero with one concise error line:
   - `CONFIG_ERROR missing variables: ...`
 
+## Reliability Sequence (Before Any Live Send)
+
+Recommended operator sequence before `--send-live` (keeps onboarding email-only and reduces surprises):
+
+```powershell
+# A) Onboarding preflight (parse/validate the YES reply block; no writes)
+python onboard_subscriber.py --db data/osha.sqlite --preflight --reply-block-file out\\yes_reply.txt
+
+# B) Onboarding dry-run (writes subscriber + customer config; no confirmation emails)
+python onboard_subscriber.py --db data/osha.sqlite --dry-run --reply-block-file out\\yes_reply.txt
+
+# C) Delivery preflight (validates DB gating + SMTP env when --send-live is included)
+python deliver_daily.py --db data/osha.sqlite --customer customers\\<subscriber_key>.json --mode daily --preflight --send-live
+
+# D) Delivery dry-run (renders digest; prints tier counts/recipients/sample leads; no emails sent)
+python deliver_daily.py --db data/osha.sqlite --customer customers\\<subscriber_key>.json --mode daily --dry-run --skip-ingest
+```
+
+Artifacts:
+- `logs/YYYY-MM-DD/onboard_subscriber_<subscriber_key>_{preflight|dry_run|live}.json`
+- `logs/YYYY-MM-DD/deliver_daily_<subscriber_key>_<mode>_{preflight|dry_run}.json`
+
 ## 4) Ingest Last 14 Days (TX)
 
 ```powershell

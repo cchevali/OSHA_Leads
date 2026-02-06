@@ -142,11 +142,20 @@ Trial counts output (when using `run_wally_trial.py` workflow modes):
 Provision a new subscriber (no manual DB edits) from a prospect's copy/paste reply block:
 
 ```powershell
-# Option A: from a file containing the KEY=VALUE block
-python onboard_subscriber.py --db data/osha.sqlite --reply-block-file out\\yes_reply.txt
+# 1) Preflight (parse/validate only; no writes)
+python onboard_subscriber.py --db data/osha.sqlite --preflight --reply-block-file out\\yes_reply.txt
 
-# Option B: from stdin (paste block, then Ctrl+Z then Enter)
-python onboard_subscriber.py --db data/osha.sqlite
+# Option A: from a file containing the KEY=VALUE block
+python onboard_subscriber.py --db data/osha.sqlite --dry-run --reply-block-file out\\yes_reply.txt
+
+# 2) Delivery preflight (validates gating + SMTP env when --send-live is included)
+python deliver_daily.py --db data/osha.sqlite --customer customers\\<subscriber_key>.json --mode daily --preflight --send-live
+
+# 3) Delivery dry-run (renders digest, prints tier counts/recipients/sample leads; no emails sent)
+python deliver_daily.py --db data/osha.sqlite --customer customers\\<subscriber_key>.json --mode daily --dry-run --skip-ingest
+
+# 4) Live send (within the configured send window)
+python deliver_daily.py --db data/osha.sqlite --customer customers\\<subscriber_key>.json --mode daily --send-live
 ```
 
 What it does:
@@ -158,6 +167,10 @@ What it does:
 
 Onboarding audit log:
 - `out/onboarding_audit_log.csv`
+
+Operator artifacts (recommended):
+- `logs/YYYY-MM-DD/onboard_subscriber_<subscriber_key>_{preflight|dry_run|live}.json`
+- `logs/YYYY-MM-DD/deliver_daily_<subscriber_key>_<mode>_{preflight|dry_run}.json`
 
 ## Suppression / Unsubscribe Enforcement
 

@@ -437,8 +437,8 @@ def _build_customer_config(req: OnboardingRequest) -> dict[str, Any]:
         "new_only_days": 1,
         "top_k_overall": 30,
         "top_k_per_state": 30,
-        # Recipients are sourced from the subscribers table; keep config recipients empty.
-        "email_recipients": [],
+        # Keep recipients in config as well so deliver_daily.py QA validation passes.
+        "email_recipients": [email.lower() for email in req.recipients],
         "pilot_mode": True,
         "pilot_whitelist": [operator_email.lower()] + [email.lower() for email in req.recipients],
         "brand_name": brand_name,
@@ -513,7 +513,19 @@ def main() -> int:
         default="",
         help="Where to write the untracked customer config JSON (default: customers/<subscriber_key>.json).",
     )
-    parser.add_argument("--no-send-confirm", action="store_true", help="Do not send confirmation email.")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Parse/validate only. No DB writes, no config writes, no audit log, no emails.",
+    )
+    mode_group.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Write DB/config/audit log but do NOT send confirmation emails.",
+    )
+    # Back-compat: prefer --dry-run (writes artifacts but does not email).
+    parser.add_argument("--no-send-confirm", action="store_true", help="Deprecated: use --dry-run.")
     parser.add_argument("--outdir", default=DEFAULT_OUTPUT_DIR, help="Output dir for audit log (default: out/)")
 
     args = parser.parse_args()
@@ -522,6 +534,9 @@ def main() -> int:
     # Most repo helpers (territories.json, schema.sql) assume repo-root relative paths.
     os.chdir(repo_root)
     _load_env(repo_root)
+
+    if args.no_send_confirm:
+        args.dry_run = True
 
     block_text = ""
     if args.reply_block_file:
@@ -534,7 +549,69 @@ def main() -> int:
     values = _parse_block(block_text)
     req = _build_request(values)
 
-    # Ensure schema exists.
+    today = date.today().isoformat()
+    logs_dir = Path("logs") / today
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    artifact_mode = "preflight" if args.preflight else ("dry_run" if args.dry_run else "live")
+    artifact_path = logs_dir / f"onboard_subscriber_{req.subscriber_key}_{artifact_mode}.json"
+
+    # Preflight: validate and print summary only.
+    if args.preflight:
+        suppressed: list[str] = []
+        db_notes: list[str] = []
+        if Path(args.db).exists():
+            conn = sqlite3.connect(args.db)
+            try:
+                for email in req.recipients:
+                    if _is_suppressed(conn, email):
+                        suppressed.append(email)
+                existing_key = _existing_subscriber_key_for_email(conn, req.recipients[0])
+                if existing_key and existing_key != req.subscriber_key:
+                    db_notes.append(f"primary_email_already_on_file subscriber_key={existing_key}")
+            finally:
+                conn.close()
+        else:
+            db_notes.append("db_missing suppression_check_skipped")
+
+        config_out = args.customer_config_out.strip() or str(Path("customers") / f"{req.subscriber_key}.json")
+        summary = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "mode": "preflight",
+            "ok": True,
+            "subscriber_key": req.subscriber_key,
+            "display_name": req.display_name,
+            "territory_tag": req.territory_tag,
+            "territory_code": req.territory_code,
+            "send_time_local": req.send_time_local,
+            "timezone": req.timezone,
+            "threshold": req.threshold,
+            "content_filter": req.content_filter,
+            "recipients": req.recipients,
+            "suppressed_recipients": suppressed,
+            "customer_config_out": config_out,
+            "db_notes": db_notes,
+            "actions": {
+                "would_upsert_subscriber": True,
+                "would_write_customer_config": True,
+                "would_write_audit_log": True,
+                "would_send_confirm_emails": True,
+            },
+        }
+        artifact_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        print("[PREFLIGHT_OK] onboard_subscriber")
+        print(f"subscriber_key={req.subscriber_key}")
+        print(f"territory={req.territory_tag} ({req.territory_code})")
+        print(f"send_time_local={req.send_time_local} timezone={req.timezone}")
+        print(f"threshold={req.threshold} content_filter={req.content_filter}")
+        print(f"recipients={', '.join(req.recipients)}")
+        if suppressed:
+            print(f"suppressed_recipients={', '.join(suppressed)}")
+        print(f"customer_config_out={config_out}")
+        print(f"artifact={artifact_path}")
+        return 0
+
+    # Ensure schema exists (writes begin here).
     _ensure_schema(args.db, args.schema)
 
     conn = sqlite3.connect(args.db)
@@ -571,13 +648,24 @@ def main() -> int:
     config_path = _write_customer_config(config_out, config_payload)
 
     confirm_result = {"sent": 0, "suppressed": 0, "errors": []}
-    if not args.no_send_confirm:
+    if not args.dry_run:
         confirm_result = _send_confirmation_emails(args.db, req)
+    suppressed_recipients: list[str] = []
+    if args.dry_run and Path(args.db).exists():
+        conn = sqlite3.connect(args.db)
+        try:
+            for email in req.recipients:
+                if _is_suppressed(conn, email):
+                    suppressed_recipients.append(email)
+        finally:
+            conn.close()
 
     ts_utc = datetime.now(timezone.utc).isoformat()
     status = f"upsert_ok;confirm_sent={confirm_result.get('sent',0)};confirm_suppressed={confirm_result.get('suppressed',0)}"
     if confirm_result.get("errors"):
         status += f";confirm_errors={len(confirm_result['errors'])}"
+    if args.dry_run:
+        status = f"dry_run_upsert_ok;confirm_skipped=1"
 
     audit_path = _append_audit_row(
         args.outdir,
@@ -594,10 +682,29 @@ def main() -> int:
         },
     )
 
+    artifact = {
+        "timestamp_utc": ts_utc,
+        "mode": "dry_run" if args.dry_run else "live",
+        "subscriber_key": req.subscriber_key,
+        "territory_code": req.territory_code,
+        "send_time_local": req.send_time_local,
+        "timezone": req.timezone,
+        "threshold": req.threshold,
+        "recipients": req.recipients,
+        "suppressed_recipients": suppressed_recipients,
+        "customer_config": config_path,
+        "audit_log": audit_path,
+        "confirm_result": confirm_result,
+    }
+    artifact_path.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
+
     # Operator-friendly output
     print(f"OK subscriber_key={req.subscriber_key}")
     print(f"OK customer_config={config_path}")
     print(f"OK audit_log={audit_path}")
+    print(f"OK artifact={artifact_path}")
+    if args.dry_run and suppressed_recipients:
+        print(f"DRYRUN_SUPPRESSED={', '.join(suppressed_recipients)}")
     if confirm_result.get("errors"):
         for err in confirm_result["errors"]:
             print(f"WARN confirm_email_failed {err}", file=sys.stderr)

@@ -180,6 +180,14 @@ def write_run_artifact(run_dir: str, filename: str, payload: dict) -> None:
     out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def write_logs_artifact(gen_date: str, filename: str, payload: dict) -> str:
+    logs_dir = Path("logs") / gen_date
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    out_path = logs_dir / filename
+    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return str(out_path)
+
+
 def update_latest_pointer(output_dir: str, run_id: str, run_dir: str, status: str) -> None:
     payload = {
         "run_id": run_id,
@@ -315,7 +323,7 @@ def load_customer_config(config_path: str) -> dict:
         return json.load(f)
 
 
-def run_command(cmd: list, log_file, cwd: str, env: dict | None = None) -> int:
+def run_command(cmd: list, log_file, cwd: str, env: dict | None = None, echo: bool = False) -> int:
     """Run a command and log output. Returns exit code."""
     cmd_str = " ".join(cmd)
     log_file.write(f"\n{'='*60}\n")
@@ -337,6 +345,14 @@ def run_command(cmd: list, log_file, cwd: str, env: dict | None = None) -> int:
     log_file.write("\nSTDERR:\n")
     log_file.write(result.stderr or "(no output)\n")
     log_file.write(f"\nExit Code: {result.returncode}\n")
+
+    # For dry-run verification, mirror child output to console so operators can see
+    # recipient lists, tier counts, and sample leads without opening log files.
+    if echo:
+        if result.stdout:
+            print(result.stdout.rstrip())
+        if result.stderr:
+            print(result.stderr.rstrip(), file=sys.stderr)
     
     return result.returncode
 
@@ -543,6 +559,7 @@ def main():
         config = load_customer_config(args.customer)
         customer_id = config.get("customer_id", "unknown")
         states = config.get("states", [])
+        subscriber_key = (config.get("subscriber_key") or "").strip() or customer_id
         
         print(f"[INFO] Customer: {customer_id}")
         print(f"[INFO] Mode: {args.mode}, Dry-run: {args.dry_run}")
@@ -569,6 +586,7 @@ def main():
                 "run_id": run_id,
                 "customer_id": customer_id,
                 "mode": args.mode,
+                "subscriber_key": subscriber_key,
                 "timestamp": datetime.now().isoformat(),
                 "ok": ok,
                 "errors": errors,
@@ -577,6 +595,7 @@ def main():
             if ok:
                 print("[PREFLIGHT_OK] DB connectivity, subscriber gating, and recipients validated")
                 write_run_artifact(run_dir, "preflight_result.json", preflight_payload)
+                write_logs_artifact(gen_date, f"deliver_daily_{subscriber_key}_{args.mode}_preflight.json", preflight_payload)
                 update_latest_pointer(output_dir, run_id, run_dir, "preflight_ok")
                 sys.exit(0)
             failure_line = ""
@@ -588,6 +607,7 @@ def main():
                 if not failure_line:
                     failure_line = f"[PREFLIGHT_ERROR] {err}"
             write_run_artifact(run_dir, "preflight_result.json", preflight_payload)
+            write_logs_artifact(gen_date, f"deliver_daily_{subscriber_key}_{args.mode}_preflight.json", preflight_payload)
             update_latest_pointer(output_dir, run_id, run_dir, "preflight_failed")
             operator_email = resolve_operator_email(args.admin_email)
             if operator_email:
@@ -656,12 +676,32 @@ def main():
             
             email_env = os.environ.copy()
             email_env["RUN_LOG_PATH"] = log_path
-            email_exit = run_command(email_cmd, log_file, repo_root, env=email_env)
+            email_exit = run_command(email_cmd, log_file, repo_root, env=email_env, echo=bool(args.dry_run))
             if email_exit != 0:
                 print(f"[ERROR] Email delivery failed with exit code {email_exit}")
                 exit_code = 1
             else:
                 print("[OK] Email delivery completed")
+
+            if args.dry_run:
+                write_logs_artifact(
+                    gen_date,
+                    f"deliver_daily_{subscriber_key}_{args.mode}_dry_run.json",
+                    {
+                        "run_id": run_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "customer_id": customer_id,
+                        "subscriber_key": subscriber_key,
+                        "mode": args.mode,
+                        "dry_run": True,
+                        "db": args.db,
+                        "customer_config": args.customer,
+                        "skip_ingest": bool(args.skip_ingest),
+                        "ingest_exit": int(ingest_exit) if "ingest_exit" in locals() else None,
+                        "email_exit": int(email_exit),
+                        "run_log": log_path,
+                    },
+                )
             
             # ======================================================================
             # STEP 3: Verify expected outputs exist

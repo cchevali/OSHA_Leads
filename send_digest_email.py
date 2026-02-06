@@ -151,6 +151,99 @@ def _priority_label(score: int) -> str:
     return "Low"
 
 
+def _tier_counts(leads: list[dict]) -> dict[str, int]:
+    counts = {"high": 0, "medium": 0, "low": 0}
+    for lead in leads:
+        score = int(lead.get("lead_score") or 0)
+        if score >= 10:
+            counts["high"] += 1
+        elif score >= 6:
+            counts["medium"] += 1
+        else:
+            counts["low"] += 1
+    return counts
+
+
+def _format_lead_row(lead: dict) -> str:
+    score = int(lead.get("lead_score") or 0)
+    activity = str(lead.get("activity_nr") or lead.get("lead_id") or "").strip()
+    opened = str(lead.get("date_opened") or "").strip()
+    itype = str(lead.get("inspection_type") or "").strip()
+    name = " ".join(str(lead.get("establishment_name") or "").strip().split())
+    city = str(lead.get("site_city") or "").strip()
+    state = str(lead.get("site_state") or "").strip()
+    loc = ", ".join([part for part in [city, state] if part])
+    parts = [
+        f"score={score}",
+        f"activity={activity}" if activity else "",
+        f"opened={opened}" if opened else "",
+        f"type={itype}" if itype else "",
+        f"name={name}" if name else "",
+        f"loc={loc}" if loc else "",
+    ]
+    return " | ".join([p for p in parts if p])
+
+
+def ensure_render_log_table(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS render_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subscriber_key TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            territory_code TEXT NOT NULL,
+            territory_date TEXT NOT NULL,
+            digest_hash TEXT NOT NULL,
+            rendered_at DATETIME NOT NULL,
+            UNIQUE (subscriber_key, mode, territory_code, territory_date, digest_hash)
+        )
+        """
+    )
+    conn.commit()
+
+
+def has_duplicate_render(
+    conn: sqlite3.Connection,
+    subscriber_key: str,
+    mode: str,
+    territory_code: str,
+    territory_date: str,
+    digest_hash: str,
+) -> bool:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT 1 FROM render_log
+        WHERE subscriber_key = ? AND mode = ? AND territory_code = ? AND territory_date = ? AND digest_hash = ?
+        LIMIT 1
+        """,
+        (subscriber_key, mode, territory_code, territory_date, digest_hash),
+    )
+    return cursor.fetchone() is not None
+
+
+def record_render_log(
+    conn: sqlite3.Connection,
+    subscriber_key: str,
+    mode: str,
+    territory_code: str,
+    territory_date: str,
+    digest_hash: str,
+    rendered_at: str,
+) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO render_log
+            (subscriber_key, mode, territory_code, territory_date, digest_hash, rendered_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (subscriber_key, mode, territory_code, territory_date, digest_hash, rendered_at),
+    )
+    conn.commit()
+
+
 
 def build_coverage_line(total_counts: dict, shown_counts: dict) -> str:
     hidden_parts: list[str] = []
@@ -1665,7 +1758,7 @@ def main() -> None:
                 f"Run log: {run_log_path}\n"
             )
             send_safe_mode_alert(subject, body, "cchevali@gmail.com")
-    if not live_allowed:
+    if not live_allowed and not args.dry_run:
         admin_recipient = resolve_admin_recipient(config)
         if not admin_recipient:
             raise RuntimeError("SAFE_MODE could not resolve admin recipient")
@@ -1814,6 +1907,7 @@ def main() -> None:
     )
     territory_date = gen_date
     duplicate_skip = False
+    duplicate_render_skip = False
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     email_log_path = os.path.join(args.output_dir, "email_log.csv")
@@ -1833,6 +1927,27 @@ def main() -> None:
                 digest_hash,
             ):
                 duplicate_skip = True
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    # Dry-run duplicate guard (does not affect live send idempotency).
+    if args.dry_run:
+        try:
+            conn = sqlite3.connect(args.db)
+            ensure_render_log_table(conn)
+            key = subscriber_key or customer_id
+            if key and has_duplicate_render(
+                conn,
+                key,
+                args.mode,
+                territory_code or "",
+                territory_date,
+                digest_hash,
+            ):
+                duplicate_render_skip = True
         finally:
             try:
                 conn.close()
@@ -1860,6 +1975,40 @@ def main() -> None:
             )
         raise SystemExit(0)
 
+    if duplicate_render_skip:
+        print(
+            f"[SKIP_DUPLICATE_DRYRUN] Already rendered identical digest for {territory_display_name(territory_code) or territory_code or 'territory'} "
+            f"on {territory_date} (hash={digest_hash[:10]}...)"
+        )
+        for recipient in recipients:
+            log_email_attempt(
+                email_log_path,
+                {
+                    "timestamp": timestamp,
+                    "customer_id": customer_id,
+                    "mode": args.mode,
+                    "recipient": recipient,
+                    "subject": subject,
+                    "status": "skipped_duplicate_dry_run",
+                    "territory_code": territory_code or "",
+                    "content_filter": content_filter,
+                },
+            )
+        raise SystemExit(0)
+
+    if args.dry_run:
+        tier = _tier_counts(leads)
+        sample_pool = leads if leads else low_fallback
+        sample_rows = sample_pool[:2]
+        print(f"DRYRUN_RECIPIENTS intended={', '.join(intended_recipients)}")
+        print(f"DRYRUN_TIER_COUNTS high={tier['high']} medium={tier['medium']} low={tier['low']}")
+        if sample_rows:
+            print("DRYRUN_SAMPLE_LEADS:")
+            for row in sample_rows:
+                print(f"  {_format_lead_row(row)}")
+        else:
+            print("DRYRUN_SAMPLE_LEADS: none")
+
     pilot_mode = bool(config.get("pilot_mode", PILOT_MODE_DEFAULT)) and not args.disable_pilot_guard
     whitelist = [email.lower() for email in config.get("pilot_whitelist", PILOT_WHITELIST_DEFAULT)]
     failed_sends = 0
@@ -1867,6 +2016,7 @@ def main() -> None:
     sent_success = 0
     suppressed_count = 0
     pilot_skipped_count = 0
+    suppressed_emails: list[str] = []
 
     for recipient in recipients:
         if pilot_mode and recipient not in whitelist:
@@ -1890,6 +2040,7 @@ def main() -> None:
         if check_suppression(args.db, recipient):
             logger.info("Suppressed recipient: %s", recipient)
             suppressed_count += 1
+            suppressed_emails.append(recipient)
             log_suppression(
                 suppression_log_path,
                 {
@@ -2041,6 +2192,8 @@ def main() -> None:
     print(f"Failed sends:             {failed_sends}")
     print(f"Pilot mode:               {'ON' if pilot_mode else 'OFF'}")
     print(f"Dry run:                  {'YES' if args.dry_run else 'NO'}")
+    if args.dry_run:
+        print(f"DRYRUN_SUPPRESSED         {', '.join(suppressed_emails) if suppressed_emails else '(none)'}")
     print("")
     print("Filter stats:")
     print(f"  Total candidates:       {filter_stats['total_candidates']}")
@@ -2058,6 +2211,26 @@ def main() -> None:
     print(f"  Dedupe removed:         {filter_stats['dedupe_removed']}")
     print(f"  Fallback lows used:     {filter_stats['low_fallback_count']}")
     print("=" * 72)
+
+    if args.dry_run:
+        try:
+            conn = sqlite3.connect(args.db)
+            ensure_render_log_table(conn)
+            key = subscriber_key or customer_id
+            record_render_log(
+                conn,
+                key,
+                args.mode,
+                territory_code or "",
+                territory_date,
+                digest_hash,
+                timestamp,
+            )
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     if not args.dry_run and sent_success > 0:
         update_subscriber_last_sent_at(args.db, config.get("subscriber_key", ""), timestamp)
