@@ -1,5 +1,6 @@
-﻿import SectionHeading from "@/components/SectionHeading";
+import SectionHeading from "@/components/SectionHeading";
 import CTAButtons from "@/components/CTAButtons";
+import CopyEmailTemplate from "@/components/CopyEmailTemplate";
 import site from "@/config/site.json";
 
 export default function ContactPage() {
@@ -34,6 +35,26 @@ export default function ContactPage() {
             </p>
             <p className="mt-4 text-sm font-semibold text-ink">{site.ctaEmail}</p>
           </div>
+        </div>
+      </section>
+
+      <section className="mx-auto w-full max-w-6xl px-6">
+        <SectionHeading
+          eyebrow="Copy/Paste"
+          title="Copy/Paste Email Template"
+          description="If you prefer, copy the exact subject/body we use in the buttons above."
+        />
+        <div className="mt-8 space-y-6">
+          <CopyEmailTemplate
+            title="Request a sample"
+            subject={site.ctaSampleSubject}
+            body={site.ctaSampleBody}
+          />
+          <CopyEmailTemplate
+            title="Reply with your territory + firm name"
+            subject={site.ctaTerritorySubject}
+            body={site.ctaTerritoryBody}
+          />
         </div>
       </section>
 

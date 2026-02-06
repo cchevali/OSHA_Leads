@@ -1,5 +1,7 @@
-﻿import SectionHeading from "@/components/SectionHeading";
+import SectionHeading from "@/components/SectionHeading";
 import CTAButtons from "@/components/CTAButtons";
+import CopyEmailTemplate from "@/components/CopyEmailTemplate";
+import site from "@/config/site.json";
 
 const plans = [
   {
@@ -58,9 +60,7 @@ export default function PricingPage() {
             <div
               key={plan.name}
               className={`rounded-3xl border p-6 shadow-soft ${
-                plan.highlight
-                  ? "border-ocean bg-white"
-                  : "border-black/10 bg-white/85"
+                plan.highlight ? "border-ocean bg-white" : "border-black/10 bg-white/85"
               }`}
             >
               <div className="space-y-2">
@@ -87,6 +87,26 @@ export default function PricingPage() {
             Need multi-state coverage, custom reporting, or CRM integration? We will build a plan
             around your footprint.
           </p>
+        </div>
+      </section>
+
+      <section className="mx-auto w-full max-w-6xl px-6">
+        <SectionHeading
+          eyebrow="Copy/Paste"
+          title="Copy/Paste Email Template"
+          description="Copy the exact subject/body used by the email buttons."
+        />
+        <div className="mt-8 space-y-6">
+          <CopyEmailTemplate
+            title="Request a sample"
+            subject={site.ctaSampleSubject}
+            body={site.ctaSampleBody}
+          />
+          <CopyEmailTemplate
+            title="Reply with your territory + firm name"
+            subject={site.ctaTerritorySubject}
+            body={site.ctaTerritoryBody}
+          />
         </div>
       </section>
 
