@@ -28,3 +28,14 @@
 2. Confirm `/sitemap.xml` and `/robots.txt` resolve.
 3. Validate the OpenGraph card with Vercel’s social preview.
 4. Update `web/config/site.json` if the brand or email address changes.
+
+## Go-Live Gate
+
+Before touching DNS, run the local readiness gate:
+
+```powershell
+cd C:\dev\OSHA_Leads
+cmd /c "cd web && npm.cmd run gate"
+```
+
+If it prints `PASS`, the remaining blocker is DNS + Vercel domain validation (use `DOMAIN_DOCTOR_RUNBOOK.md` + `domain_doctor.py`), then run `LAUNCH_CHECKLIST.md` on production.

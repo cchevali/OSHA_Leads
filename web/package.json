@@ -7,7 +7,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint . --max-warnings=0"
+    "lint": "eslint . --max-warnings=0",
+    "gate": "node scripts/go_live_gate.mjs"
   },
   "dependencies": {
     "next": "latest",

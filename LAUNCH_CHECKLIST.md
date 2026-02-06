@@ -1,5 +1,24 @@
 # Production Launch Checklist (microflowops.com)
 
+## 0) Local Go-Live Gate (Required)
+
+Run this locally before touching DNS. It enforces:
+- lint + build
+- required routes render
+- email-only copy (no Calendly/call CTAs)
+- preview noindex/nofollow
+- `www -> apex` redirect behavior
+
+PowerShell-safe command:
+
+```powershell
+cd C:\dev\OSHA_Leads
+cmd /c "cd web && npm.cmd run gate"
+```
+
+If the gate prints `PASS`, the only remaining go-live blocker should be domain wiring:
+DNS + Vercel domain validation (see `DOMAIN_DOCTOR_RUNBOOK.md` + `domain_doctor.py`), then run the checks below on production.
+
 ## 1) Vercel Project Settings
 
 1. Vercel project Root Directory: `web`
@@ -21,12 +40,10 @@ Notes:
 
 ## 3) Domain + DNS
 
-1. Add `microflowops.com` and `www.microflowops.com` in Vercel -> Domains.
-2. In DNS, set:
-3. `A` record `@` -> `76.76.21.21`
-4. `CNAME` record `www` -> `cname.vercel-dns.com`
-5. Wait for Vercel to show both domains as verified.
-6. Verify redirect: `www.microflowops.com` -> `microflowops.com` (301) and path/query preserved.
+1. Run `DOMAIN_DOCTOR_RUNBOOK.md` (uses `domain_doctor.py`) to enforce Cloudflare DNS and re-check Vercel validation.
+2. Add `microflowops.com` and `www.microflowops.com` in Vercel -> Domains (if not already present).
+3. Wait for Vercel to show both domains as verified.
+4. Verify redirect: `www.microflowops.com` -> `microflowops.com` (301) and path/query preserved.
 
 ## 4) Route Verification
 
