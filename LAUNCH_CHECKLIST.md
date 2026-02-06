@@ -40,7 +40,19 @@ Notes:
 
 ## 3) Domain + DNS
 
-1. Run `DOMAIN_DOCTOR_RUNBOOK.md` (uses `domain_doctor.py`) to enforce Cloudflare DNS and re-check Vercel validation.
+Final go-live sequence (after `npm.cmd run gate` passes):
+
+1. Run Domain Doctor to enforce DNS using Vercel's current recommended values and validate HTTP behavior:
+
+```powershell
+cd C:\dev\OSHA_Leads
+python domain_doctor.py --apply-dns --json-report out\\domain_doctor_apply.json
+```
+
+Expected:
+- apex `https://microflowops.com/` returns `200/304`
+- `https://www.microflowops.com/` redirects to apex
+
 2. Add `microflowops.com` and `www.microflowops.com` in Vercel -> Domains (if not already present).
 3. Wait for Vercel to show both domains as verified.
 4. Verify redirect: `www.microflowops.com` -> `microflowops.com` (301) and path/query preserved.

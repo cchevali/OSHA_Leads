@@ -19,14 +19,16 @@ Store tokens in local environment variables only. Do not paste tokens into commi
 2. Fetch Vercel recommended DNS targets for apex and `www` via domain configuration endpoint.
 3. Verify and enforce Cloudflare DNS:
    - remove conflicting `A/AAAA/CNAME` at apex and `www`
-   - set apex `A` to Vercel recommended IPv4
+   - set apex `A` records to Vercel recommended IPv4 targets (may be multiple)
    - set `www` `CNAME` to Vercel recommended CNAME
+   - preserve all Zoho mail records (MX/TXT/etc); only apex/www `A/AAAA/CNAME` are touched
 4. Optionally detect and remove likely Cloudflare redirect sources:
    - Page Rules forwarding URLs
    - Workers Routes matching the host
    - Redirect Rules in Rulesets entrypoint phases (disables matching rules)
 5. Re-check Vercel domain validation after DNS changes.
-6. Print a concise report and verification commands.
+6. Post-run HTTP validation (after `--apply-dns`): apex should be `200/304`; `www` should redirect to apex.
+7. Print a concise report and verification commands.
 
 ## Prereqs
 
@@ -78,6 +80,10 @@ This will delete conflicting `A/AAAA/CNAME` records at apex and `www` and then u
 ```powershell
 python domain_doctor.py --apply-dns
 ```
+
+Expected after apply:
+- the script prints an `HTTP Validation` section
+- exit code is non-zero if apex is not `200/304` or if `www` does not redirect to apex
 
 ## Optional: Remove Redirect Sources
 

@@ -36,7 +36,7 @@ class DomainDoctorError(RuntimeError):
 
 @dataclass(frozen=True)
 class VercelRecommendation:
-    apex_a: str | None
+    apex_a: list[str]
     www_cname: str | None
     apex_raw: dict[str, Any]
     www_raw: dict[str, Any]
@@ -112,24 +112,32 @@ def vercel_get_domain_config(
     return _http_json(resp)
 
 
-def _pick_recommended_ipv4(domain_config: dict[str, Any]) -> str | None:
+def _pick_recommended_ipv4s(domain_config: dict[str, Any]) -> list[str]:
     recs = domain_config.get("recommendedIPv4") or []
     if not isinstance(recs, list) or not recs:
-        return None
-    # Sort by smallest rank, then pick first value.
+        return []
+
+    # Sort by smallest rank, then keep all values (Vercel may recommend multiple A targets).
     def _rank(item: dict[str, Any]) -> int:
         try:
             return int(item.get("rank") or 999999)
         except Exception:
             return 999999
 
-    best = sorted([r for r in recs if isinstance(r, dict)], key=_rank)[0]
-    value = best.get("value")
-    if isinstance(value, list) and value:
-        return str(value[0]).strip() or None
-    if isinstance(value, str):
-        return value.strip() or None
-    return None
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in sorted([r for r in recs if isinstance(r, dict)], key=_rank):
+        value = item.get("value")
+        values: list[str] = []
+        if isinstance(value, list):
+            values = [str(v).strip() for v in value if str(v).strip()]
+        elif isinstance(value, str):
+            values = [value.strip()]
+        for v in values:
+            if v and v not in seen:
+                seen.add(v)
+                out.append(v)
+    return out
 
 
 def _pick_recommended_cname(domain_config: dict[str, Any]) -> str | None:
@@ -157,7 +165,7 @@ def get_vercel_recommendations(
     apex_cfg = vercel_get_domain_config(token, apex, project_id, team_id=team_id)
     www_cfg = vercel_get_domain_config(token, www, project_id, team_id=team_id)
     return VercelRecommendation(
-        apex_a=_pick_recommended_ipv4(apex_cfg),
+        apex_a=_pick_recommended_ipv4s(apex_cfg),
         www_cname=_pick_recommended_cname(www_cfg),
         apex_raw=apex_cfg,
         www_raw=www_cfg,
@@ -317,6 +325,96 @@ def enforce_dns_for_domain(
     return {"name": name, "before": before, "after": after, "actions": actions}
 
 
+def enforce_apex_a_records(
+    cf_token: str,
+    zone_id: str,
+    name: str,
+    desired_contents: list[str],
+    apply: bool,
+) -> dict[str, Any]:
+    """
+    Enforce apex A records to match Vercel recommended IPv4 targets.
+    Deletes conflicting A/AAAA/CNAME records at the apex name only.
+    Preserves all other record types (MX/TXT/etc) for Zoho mail and other services.
+    """
+    desired = [c.strip() for c in desired_contents if str(c).strip()]
+    desired_set = set(desired)
+    if not desired:
+        raise DomainDoctorError("No desired apex A targets provided")
+
+    before = cf_list_dns_records(cf_token, zone_id, name)
+    conflicts = [r for r in before if _is_conflicting_type(str(r.get("type") or ""))]
+
+    existing_a = [r for r in conflicts if str(r.get("type") or "") == "A"]
+    existing_cname = [r for r in conflicts if str(r.get("type") or "") == "CNAME"]
+    existing_aaaa = [r for r in conflicts if str(r.get("type") or "") == "AAAA"]
+
+    to_delete: list[dict[str, Any]] = []
+    to_delete.extend(existing_cname)
+    to_delete.extend(existing_aaaa)
+
+    # Delete A records not in desired set; also collapse duplicates by keeping one record per IP.
+    seen_a: set[str] = set()
+    for rec in existing_a:
+        content = str(rec.get("content") or "").strip()
+        if content not in desired_set:
+            to_delete.append(rec)
+            continue
+        if content in seen_a:
+            to_delete.append(rec)
+            continue
+        seen_a.add(content)
+
+    actions: list[str] = []
+    if apply:
+        for rec in to_delete:
+            actions.append(f"delete {rec.get('type')} id={rec.get('id')} content={rec.get('content')}")
+            cf_delete_dns_record(cf_token, zone_id, str(rec["id"]))
+    else:
+        for rec in to_delete:
+            actions.append(f"would_delete {rec.get('type')} id={rec.get('id')} content={rec.get('content')}")
+
+    # Refresh view for create/update decisions.
+    remaining = [r for r in before if str(r.get("id")) not in {str(d.get("id")) for d in to_delete}]
+    remaining_a = [r for r in remaining if str(r.get("type") or "") == "A"]
+
+    remaining_by_ip: dict[str, dict[str, Any]] = {}
+    for rec in remaining_a:
+        ip = str(rec.get("content") or "").strip()
+        if ip and ip not in remaining_by_ip:
+            remaining_by_ip[ip] = rec
+
+    # Ensure each desired IP exists and has proxied=false + ttl=auto.
+    for ip in desired:
+        rec = remaining_by_ip.get(ip)
+        if rec:
+            needs_update = bool(rec.get("proxied")) or int(rec.get("ttl") or DEFAULT_TTL) != DEFAULT_TTL
+            if needs_update:
+                if apply:
+                    actions.append(f"update A id={rec.get('id')} set proxied=false ttl=auto")
+                    cf_update_dns_record(
+                        cf_token,
+                        zone_id,
+                        str(rec["id"]),
+                        "A",
+                        name,
+                        ip,
+                        ttl=DEFAULT_TTL,
+                        proxied=False,
+                    )
+                else:
+                    actions.append(f"would_update A id={rec.get('id')} set proxied=false ttl=auto")
+        else:
+            if apply:
+                actions.append(f"create A {name} -> {ip} proxied=false ttl=auto")
+                cf_create_dns_record(cf_token, zone_id, "A", name, ip, ttl=DEFAULT_TTL, proxied=False)
+            else:
+                actions.append(f"would_create A {name} -> {ip} proxied=false ttl=auto")
+
+    after = cf_list_dns_records(cf_token, zone_id, name) if apply else before
+    return {"name": name, "before": before, "after": after, "actions": actions, "desired": desired}
+
+
 def cf_list_pagerules(token: str, zone_id: str) -> list[dict[str, Any]]:
     url = f"{CF_API}/zones/{zone_id}/pagerules"
     resp = requests.get(url, headers=_cf_headers(token), params={"per_page": 100}, timeout=30)
@@ -464,6 +562,37 @@ def _print_section(title: str) -> None:
     print("-" * len(title))
 
 
+def _http_validate(apex: str, www: str) -> dict[str, Any]:
+    """
+    Post-run validation: expect apex 200/304 and www redirect to apex.
+    DNS propagation can lag; caller should decide when to run.
+    """
+    session = requests.Session()
+    session.headers.update({"User-Agent": "domain-doctor/1.0"})
+
+    def _get(url: str) -> tuple[int, str]:
+        resp = session.get(url, allow_redirects=False, timeout=20)
+        return int(resp.status_code), str(resp.headers.get("location") or "")
+
+    apex_url = f"https://{apex}/"
+    www_url = f"https://{www}/"
+    apex_status, _ = _get(apex_url)
+    www_status, www_loc = _get(www_url)
+
+    apex_ok = apex_status in {200, 304}
+    www_ok = www_status in {301, 302, 307, 308} and www_loc.startswith(f"https://{apex}")
+
+    return {
+        "apex_url": apex_url,
+        "apex_status": apex_status,
+        "apex_ok": apex_ok,
+        "www_url": www_url,
+        "www_status": www_status,
+        "www_location": www_loc,
+        "www_ok": www_ok,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Domain Doctor: reconcile Cloudflare DNS with Vercel recommended values.")
     parser.add_argument("--project-id", default=_env("VERCEL_PROJECT_ID", DEFAULT_PROJECT_ID), help="Vercel project id")
@@ -499,7 +628,7 @@ def main() -> int:
         raise DomainDoctorError(f"Vercel did not return recommendedIPv4 for apex {args.apex}")
     if not rec.www_cname:
         raise DomainDoctorError(f"Vercel did not return recommendedCNAME for www {args.www}")
-    print(f"apex A target={rec.apex_a}")
+    print(f"apex A targets={', '.join(rec.apex_a)}")
     print(f"www CNAME target={rec.www_cname}")
     report["vercel_recommended"] = {"apex_a": rec.apex_a, "www_cname": rec.www_cname}
 
@@ -519,7 +648,7 @@ def main() -> int:
     report["cloudflare_zone"] = {"id": zone_id, "name": cf_zone_name}
 
     _print_section("Cloudflare DNS Plan")
-    apex_result = enforce_dns_for_domain(cf_token, zone_id, args.apex, "A", rec.apex_a, apply=args.apply_dns)
+    apex_result = enforce_apex_a_records(cf_token, zone_id, args.apex, rec.apex_a, apply=args.apply_dns)
     www_result = enforce_dns_for_domain(cf_token, zone_id, args.www, "CNAME", rec.www_cname, apply=args.apply_dns)
     report["dns"] = {"apex": apex_result, "www": www_result}
 
@@ -564,6 +693,21 @@ def main() -> int:
     print(f"apex misconfigured={apex_mis}")
     print(f"www misconfigured={www_mis}")
 
+    http_result = None
+    if args.apply_dns:
+        _print_section("HTTP Validation")
+        try:
+            http_result = _http_validate(args.apex, args.www)
+            print(f"apex {http_result['apex_url']} status={http_result['apex_status']} ok={http_result['apex_ok']}")
+            print(
+                f"www  {http_result['www_url']} status={http_result['www_status']} ok={http_result['www_ok']} "
+                f"location={http_result['www_location']}"
+            )
+        except Exception as exc:
+            http_result = {"error": str(exc), "apex_ok": False, "www_ok": False}
+            print(f"http_validate_error={exc}")
+        report["http_validation"] = http_result
+
     _print_section("Verification Commands")
     print("DNS:")
     print(f"  Resolve-DnsName {args.apex} -Type A")
@@ -581,6 +725,9 @@ def main() -> int:
 
     if apex_mis or www_mis:
         return 2
+    if args.apply_dns and http_result:
+        if not bool(http_result.get("apex_ok")) or not bool(http_result.get("www_ok")):
+            return 3
     return 0
 
 
