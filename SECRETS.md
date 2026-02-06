@@ -52,3 +52,18 @@ This script:
 - Decrypt-tests `.env.sops` in-memory (never prints decrypted env).
 - Checks that all keys in `.env.example` exist in the decrypted env (only key names are reported).
 
+## Using Multiple Machines (PC + Laptop)
+
+`.env.sops` can only be decrypted by a machine that has the matching **age private key** for one of its recipients.
+
+Options:
+1. Use the same key on both machines:
+   - Securely copy `%APPDATA%\\sops\\age\\keys.txt` from the PC to the laptop (do not print it; do not commit it).
+2. Use separate keys per machine:
+   - Generate a key on the laptop, extract its **public** recipient, then add it to `.env.sops`:
+
+```powershell
+sops --add-age <LAPTOP_AGE_RECIPIENT> --in-place .env.sops
+```
+
+
