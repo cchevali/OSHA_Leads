@@ -1,4 +1,9 @@
-﻿import SectionHeading from "@/components/SectionHeading";
+import type { Metadata } from "next";
+import SectionHeading from "@/components/SectionHeading";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/faq" }
+};
 
 const faqs = [
   {

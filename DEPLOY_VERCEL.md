@@ -12,7 +12,7 @@
 8. Environment variables (Production only):
 9. `NEXT_PUBLIC_PLAUSIBLE_ENABLED=true`
 10. `NEXT_PUBLIC_PLAUSIBLE_DOMAIN=microflowops.com`
-11. `NEXT_PUBLIC_SITE_HOST=microflowops.com,www.microflowops.com`
+11. `NEXT_PUBLIC_SITE_HOST=microflowops.com`
 
 ## DNS
 
@@ -20,6 +20,7 @@
 2. In your DNS provider, set an `A` record for `@` to `76.76.21.21`.
 3. Set a `CNAME` record for `www` to `cname.vercel-dns.com`.
 4. Wait for Vercel domain verification to complete.
+5. Confirm `www.microflowops.com` redirects (301) to `microflowops.com`.
 
 ## Post-deploy checks
 

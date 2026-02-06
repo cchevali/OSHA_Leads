@@ -1,6 +1,11 @@
-﻿import CTAButtons from "@/components/CTAButtons";
+import type { Metadata } from "next";
+import CTAButtons from "@/components/CTAButtons";
 import SectionHeading from "@/components/SectionHeading";
 import site from "@/config/site.json";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/" }
+};
 
 export default function HomePage() {
   return (

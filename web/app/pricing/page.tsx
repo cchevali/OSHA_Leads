@@ -1,7 +1,12 @@
+import type { Metadata } from "next";
 import SectionHeading from "@/components/SectionHeading";
 import CTAButtons from "@/components/CTAButtons";
 import CopyEmailTemplate from "@/components/CopyEmailTemplate";
 import site from "@/config/site.json";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/pricing" }
+};
 
 const plans = [
   {

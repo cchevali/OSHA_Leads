@@ -1,5 +1,10 @@
-﻿import SectionHeading from "@/components/SectionHeading";
+import type { Metadata } from "next";
+import SectionHeading from "@/components/SectionHeading";
 import CTAButtons from "@/components/CTAButtons";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/sample" }
+};
 
 const sampleSignals = [
   {

@@ -21,12 +21,19 @@ const body = Source_Sans_3({
 
 export const metadata: Metadata = {
   metadataBase: new URL(site.siteUrl),
+  alternates: {
+    canonical: "/"
+  },
   title: {
     default: `${site.brandName} | OSHA Activity Signals`,
     template: `%s | ${site.brandName}`
   },
   description:
     "Daily OSHA activity signals that surface new inspections before citations post. Built for OSHA defense attorneys and safety consultants across the Texas Triangle.",
+  robots:
+    process.env.VERCEL_ENV === "production" && process.env.NODE_ENV === "production"
+      ? { index: true, follow: true }
+      : { index: false, follow: false, nocache: true },
   openGraph: {
     type: "website",
     title: `${site.brandName} | OSHA Activity Signals`,

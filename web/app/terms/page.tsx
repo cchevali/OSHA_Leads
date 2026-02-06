@@ -1,5 +1,10 @@
-﻿import SectionHeading from "@/components/SectionHeading";
+import type { Metadata } from "next";
+import SectionHeading from "@/components/SectionHeading";
 import site from "@/config/site.json";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/terms" }
+};
 
 export default function TermsPage() {
   return (

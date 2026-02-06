@@ -26,6 +26,7 @@ Notes:
 3. `A` record `@` -> `76.76.21.21`
 4. `CNAME` record `www` -> `cname.vercel-dns.com`
 5. Wait for Vercel to show both domains as verified.
+6. Verify redirect: `www.microflowops.com` -> `microflowops.com` (301) and path/query preserved.
 
 ## 4) Route Verification
 
@@ -41,6 +42,11 @@ Open each route on production:
 8. `/terms`
 9. `/sitemap.xml`
 10. `/robots.txt`
+
+## 4a) Indexing Safeguards
+
+1. On a Vercel Preview deployment URL, confirm pages are `noindex, nofollow` and `robots.txt` disallows crawling.
+2. On production `microflowops.com`, confirm pages are indexable and `robots.txt` allows crawling.
 
 ## 5) CTA Mailto Verification
 
@@ -90,5 +96,5 @@ Expected event names:
 If events do not appear:
 1. Confirm you are on `microflowops.com` or `www.microflowops.com` (not a preview domain).
 2. Confirm `NEXT_PUBLIC_PLAUSIBLE_ENABLED=true` is set for Production.
-3. Confirm `NEXT_PUBLIC_SITE_HOST` includes the hostname you are testing.
-
+3. Confirm `NEXT_PUBLIC_SITE_HOST` includes `microflowops.com`.
+4. Confirm you are testing on the canonical host (`microflowops.com`), not `www` (which should redirect).
