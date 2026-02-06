@@ -137,6 +137,28 @@ Email/suppression/unsubscribe append-only logs:
 Trial counts output (when using `run_wally_trial.py` workflow modes):
 - `out/wally_trial_daily_counts_<YYYY-MM-DD>.csv`
 
+## YES Reply Onboarding (Email-Only Provisioning)
+
+Provision a new subscriber (no manual DB edits) from a prospect's copy/paste reply block:
+
+```powershell
+# Option A: from a file containing the KEY=VALUE block
+python onboard_subscriber.py --db data/osha.sqlite --reply-block-file out\\yes_reply.txt
+
+# Option B: from stdin (paste block, then Ctrl+Z then Enter)
+python onboard_subscriber.py --db data/osha.sqlite
+```
+
+What it does:
+- Validates `TIMEZONE` and `SEND_TIME_LOCAL`.
+- Validates the territory tag/code exists (and upserts it into `territories` for FK integrity).
+- Upserts the subscriber into `subscribers` with `send_enabled=1` and recipient fanout.
+- Writes an untracked customer config to `customers/<subscriber_key>.json` for use with `deliver_daily.py`.
+- Sends a confirmation email to the configured recipient(s).
+
+Onboarding audit log:
+- `out/onboarding_audit_log.csv`
+
 ## Suppression / Unsubscribe Enforcement
 
 Suppression enforcement:
@@ -167,4 +189,3 @@ After a scheduled run, verify these artifacts exist/updated:
 - `out/wally_trial_task.log`
 - `out/run_log_YYYY-MM-DD.txt`
 - `out/email_log.csv` (2 rows when live send succeeds and neither recipient is suppressed)
-

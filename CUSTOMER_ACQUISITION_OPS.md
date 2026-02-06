@@ -78,6 +78,25 @@ Collect and confirm via email (no calls):
   - confirm they can reply "unsubscribe" any time
   - ask if any additional emails/domains should be suppressed
 
+### Strict YES Reply Format (Copy/Paste Block)
+
+Ask the prospect to reply with this exact block (edit values as needed). This enables zero-touch provisioning via CLI (no manual DB edits).
+
+```text
+TERRITORY=TX_TRIANGLE
+SEND_TIME_LOCAL=08:00
+TIMEZONE=America/Chicago
+THRESHOLD=MEDIUM
+RECIPIENTS=alerts@yourfirm.com, ops@yourfirm.com
+FIRM_NAME=Your Firm Name
+NOTES=Optional notes (routing, special handling, etc.)
+```
+
+Notes:
+- `THRESHOLD` options: `MEDIUM` (lead_score >= 6) or `HIGH` (lead_score >= 10).
+- `TERRITORY` options include `TX_TRIANGLE` (alias for `TX_TRIANGLE_V1`) or any territory code present in `territories.json`.
+- `RECIPIENTS` must be a comma-separated list.
+
 Operational notes:
 - New subscriber configs live under `customers/` and are intentionally untracked when they contain real recipient emails.
 - Suppression is enforced at send-time (email + domain), and events are logged for audit.
