@@ -9,7 +9,10 @@
 5. Build Command: `npm run build`.
 6. Output Directory: leave blank (Vercel will use `.next`).
 7. Node.js version: use Vercel default (Node 18+).
-8. Environment variables: none required for the marketing site.
+8. Environment variables (Production only):
+9. `NEXT_PUBLIC_PLAUSIBLE_ENABLED=true`
+10. `NEXT_PUBLIC_PLAUSIBLE_DOMAIN=microflowops.com`
+11. `NEXT_PUBLIC_SITE_HOST=microflowops.com,www.microflowops.com`
 
 ## DNS
 

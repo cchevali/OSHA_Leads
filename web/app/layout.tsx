@@ -1,10 +1,10 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import Script from "next/script";
 import { Space_Grotesk, Source_Sans_3 } from "next/font/google";
 import Nav from "@/components/Nav";
 import Footer from "@/components/Footer";
+import PlausibleProvider from "@/components/PlausibleProvider";
 import site from "@/config/site.json";
 
 const display = Space_Grotesk({
@@ -18,8 +18,6 @@ const body = Source_Sans_3({
   variable: "--font-body",
   display: "swap"
 });
-
-const plausibleDomain = new URL(site.siteUrl).hostname;
 
 export const metadata: Metadata = {
   metadataBase: new URL(site.siteUrl),
@@ -62,12 +60,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${display.variable} ${body.variable}`}>
       <body className="antialiased">
-        <Script
-          strategy="afterInteractive"
-          defer
-          data-domain={plausibleDomain}
-          src="https://plausible.io/js/script.manual.js"
-        />
+        <PlausibleProvider />
         <Nav />
         <main>{children}</main>
         <Footer />
