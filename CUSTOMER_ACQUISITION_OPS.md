@@ -36,54 +36,66 @@ Texas Triangle coverage: Dallas-Fort Worth, Houston, Austin, San Antonio.
 
 ## Outreach Messages (Cold Tone)
 
-### Initial
+### Initial (Territory-First, Email-Only)
 
-Subject: TX OSHA activity signals (sample)
+Subject: Texas Triangle OSHA Activity Signals (7-day sample)
 
 Hi {First},
 
-I am reaching out because {Firm} supports employers on OSHA matters, and we track new OSHA activity signals across Texas.
+We send a short daily email with new OSHA activity signals filtered to the Texas Triangle (Austin, Dallas/Fort Worth, Houston, San Antonio), ranked by urgency so you can act while matters are still fresh.
 
-Here are a few recent signals (sample):
+Sample alert format: https://microflowops.com/sample
 
-1. Priority: High - Pedco Roofing, Inc. - Houston, TX - Accident - Opened: 2026-01-29 - Observed: 2026-02-03
-2. Priority: Medium - Mmm Welders and Assemblers LLC - Mansfield, TX - Referral - Opened: 2026-01-22 - Observed: 2026-01-30
-3. Priority: Medium - Pyramid Waterproofing, Inc. - Houston, TX - Complaint - Opened: 2026-01-27 - Observed: 2026-01-30
-
-Priority is a heuristic based on severity, recency, and signal type. Not legal advice.
-
-Some OSHA matters can be time sensitive; deadlines vary by case. We include deadlines only when the record supports them.
-
-If you want a short daily TX digest like this, reply "yes" and I will set it up.
-
-Not affiliated with OSHA; this is an independent alert service.
+If you want a 7-day sample, reply with your territory + firm name (e.g., "Texas Triangle + {Firm}"). No calls; onboarding is email-only.
 
 Chase Chevalier
-Micro Flow Ops - OSHA Alerts
+MicroFlowOps
 support@microflowops.com
 
----
-Micro Flow Ops
-11539 Links Dr, Reston, VA 20190
-Opt out: reply with "unsubscribe" or email support@microflowops.com (subject: unsubscribe)
+Opt out anytime: reply "unsubscribe" (we maintain a suppression list and honor it)
 
-### Follow-Up (2-3 days later)
+### Follow-Up (3-4 days later)
 
-Subject: Re: TX OSHA activity signals
+Subject: Re: Texas Triangle OSHA Activity Signals
 
 Hi {First},
 
-Quick follow-up in case you missed the note. We send a short daily Texas Triangle brief with new OSHA activity, ranked by urgency.
+Quick follow-up. If a daily Texas Triangle OSHA signal digest would help, reply with your territory + firm name and I will start a 7-day sample. Email-only; no calls.
 
-If it would help your team, I can set up a no-commitment sample alert. Reply "yes" and I will get it live.
-
-Thanks,
 Chase
 
-## New subscriber_key Onboarding Checklist
+## YES Reply Onboarding Checklist (Email-Only)
 
-- [ ] Create a new customer config in `customers/` with `subscriber_key`, `territory_code`, and recipient emails.
-- [ ] Ensure the subscriber exists in the `subscribers` table with the same `subscriber_key` and the chosen `territory_code`.
-- [ ] Flip `send_enabled` to `1` for that subscriber after preflight passes.
-- [ ] Confirm the territory selection is correct in `territories` and matches the customer config.
-- [ ] Run a preflight-only check before any live send.
+Collect and confirm via email (no calls):
+- [ ] Territory (start with Texas Triangle, or specify alternatives)
+- [ ] Firm name (as it should appear in the alert header/footer)
+- [ ] Distribution list inbox (one or more recipient emails)
+- [ ] Preferred send time + timezone (default: 08:00 America/Chicago)
+- [ ] Severity threshold:
+  - `high_medium` (lead_score >= 6) or `high_only` (lead_score >= 10)
+  - whether to include a low-signal fallback section when no high/medium items exist
+- [ ] Unsubscribe/suppression:
+  - confirm they can reply "unsubscribe" any time
+  - ask if any additional emails/domains should be suppressed
+
+Operational notes:
+- New subscriber configs live under `customers/` and are intentionally untracked when they contain real recipient emails.
+- Suppression is enforced at send-time (email + domain), and events are logged for audit.
+
+## Minimal Campaign Tracking (CSV)
+
+Purpose: avoid double-sends, record replies, and ensure unsub/suppression is enforced consistently.
+
+Committed templates (schema headers):
+- `campaign_tracking/templates/tx_triangle_sent_template.csv.example`
+- `campaign_tracking/templates/tx_triangle_replied_template.csv.example`
+- `campaign_tracking/templates/tx_triangle_unsub_template.csv.example`
+
+Where to write the working copies:
+- Create per-campaign working logs under `out/campaign_tracking/` (gitignored), for example:
+  - `out/campaign_tracking/tx_triangle_2026-02/sent.csv`
+  - `out/campaign_tracking/tx_triangle_2026-02/replied.csv`
+  - `out/campaign_tracking/tx_triangle_2026-02/unsub.csv`
+
+Dedupe rule (ops-level):
+- Before sending any cold email, check `sent.csv` for the normalized email (lowercase). If present with `status=sent`, do not send again.
