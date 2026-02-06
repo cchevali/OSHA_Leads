@@ -27,6 +27,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, make_msgid
 from pathlib import Path
+from urllib.parse import urlencode, urlparse, urlunparse
 
 try:
     from dotenv import load_dotenv
@@ -40,7 +41,7 @@ from lead_filters import (
     load_territory_definitions,
     normalize_content_filter,
 )
-from unsubscribe_utils import create_unsub_token, sign_registration
+from unsubscribe_utils import create_unsub_token, get_include_lows_pref, sign_registration
 from email_footer import build_footer_html, build_footer_text
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,9 @@ SEND_WINDOW_MINUTES_DEFAULT = 20
 HEALTH_ANCHORS_BY_TERRITORY = {
     "TX_TRIANGLE_V1": ["Houston", "Dallas/Fort Worth", "Austin", "San Antonio"],
 }
+
+LEAD_SCORE_VERSION = "lead_score_v1"
+TIER_THRESHOLDS = {"high_min": 10, "medium_min": 6}
 
 
 def content_filter_label(value: str) -> str:
@@ -1191,12 +1195,12 @@ def build_unsubscribe_payload(
     campaign_id: str,
     reply_to_email: str,
     dry_run: bool,
-) -> tuple[str, str | None, str]:
+) -> tuple[str, str | None, str, str]:
     mailto = f"mailto:{reply_to_email}?subject=unsubscribe"
     unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
 
     if not unsub_endpoint:
-        return f"<{mailto}>", None, ""
+        return f"<{mailto}>", None, "", ""
 
     signed_token = create_unsub_token(recipient, campaign_id)
     sep = "&" if "?" in unsub_endpoint else "?"
@@ -1212,9 +1216,102 @@ def build_unsubscribe_payload(
     )
     if not ok:
         print(f"[WARN] one-click registration failed (status={status}, error={err})")
-        return f"<{mailto}>", None, ""
+        return f"<{mailto}>", None, "", ""
 
-    return f"<{mailto}>, <{one_click_url}>", "List-Unsubscribe=One-Click", one_click_url
+    return f"<{mailto}>, <{one_click_url}>", "List-Unsubscribe=One-Click", one_click_url, signed_token
+
+
+def build_enable_lows_url(signed_token: str, territory_code: str) -> str | None:
+    """
+    Build a one-click preference URL on the same host as the unsubscribe endpoint.
+    Expected server endpoint: /prefs/enable_lows?TOKEN=...&territory=...
+    """
+    unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
+    if not (unsub_endpoint and signed_token and territory_code):
+        return None
+
+    try:
+        parsed = urlparse(unsub_endpoint)
+        parsed = parsed._replace(path="/prefs/enable_lows", params="", query="", fragment="")
+        base = urlunparse(parsed)
+    except Exception:
+        if unsub_endpoint.rstrip("/").endswith("/unsubscribe"):
+            base = unsub_endpoint.rstrip("/").rsplit("/", 1)[0] + "/prefs/enable_lows"
+        else:
+            base = unsub_endpoint.rstrip("/") + "/prefs/enable_lows"
+
+    qs = urlencode({"TOKEN": signed_token, "territory": territory_code})
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}{qs}"
+
+
+def write_tier_audit_artifact(
+    output_dir: str,
+    gen_date: str,
+    customer_id: str,
+    territory_code: str | None,
+    territory_label: str,
+    mode: str,
+    tier_counts: dict[str, int],
+    all_leads: list[dict],
+    window_start: datetime | None,
+) -> str:
+    """
+    Write an operator-facing daily tier audit artifact alongside run logs.
+    Intended for verifying scoring behavior and the value of "low" signals.
+    """
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _tier_for(lead: dict) -> str:
+        score = int(lead.get("lead_score") or 0)
+        return _priority_label(score).lower()
+
+    def _sample_for(tier: str, limit: int = 5) -> list[dict]:
+        samples: list[dict] = []
+        for lead in all_leads:
+            if _tier_for(lead) != tier:
+                continue
+            score = int(lead.get("lead_score") or 0)
+            samples.append(
+                {
+                    "company": (lead.get("establishment_name") or "Unknown").strip(),
+                    "signal_type": (lead.get("inspection_type") or "-").strip(),
+                    "lead_score": score,
+                    "activity_nr": (lead.get("activity_nr") or "").strip(),
+                    "why": f"lead_score={score} (high>=10, medium>=6, else low)",
+                }
+            )
+            if len(samples) >= limit:
+                break
+        return samples
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "gen_date": gen_date,
+        "customer_id": customer_id,
+        "mode": mode,
+        "territory_code": territory_code or "",
+        "territory_label": territory_label,
+        "window_start": window_start.isoformat() if window_start else None,
+        "scoring_version": LEAD_SCORE_VERSION,
+        "tier_thresholds": dict(TIER_THRESHOLDS),
+        "tier_counts": {
+            "high": int(tier_counts.get("high", 0)),
+            "medium": int(tier_counts.get("medium", 0)),
+            "low": int(tier_counts.get("low", 0)),
+        },
+        "samples": {
+            "high": _sample_for("high"),
+            "medium": _sample_for("medium"),
+            "low": _sample_for("low"),
+        },
+    }
+
+    safe_terr = (territory_code or territory_label or "territory").strip().replace(" ", "_")
+    out_path = out_dir / f"tier_audit_{gen_date}_{safe_terr}_{mode}.json"
+    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return str(out_path)
 
 def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, tz: ZoneInfo) -> str:
     if not rows:
@@ -1259,6 +1356,10 @@ def generate_digest_html(
     content_filter: str,
     include_low_fallback: bool,
     branding: dict,
+    tier_counts: dict[str, int] | None = None,
+    enable_lows_url: str | None = None,
+    include_lows: bool = False,
+    low_priority: list[dict] | None = None,
     report_label: str | None = None,
     footer_html: str | None = None,
     summary_label: str | None = None,
@@ -1284,6 +1385,7 @@ def generate_digest_html(
     summary_line = summary_label or f"{len(leads)} signals"
     preheader = _build_preheader(leads)
     tz = tz or ZoneInfo("America/Chicago")
+    low_priority = low_priority or []
 
     html: list[str] = []
     html.append("<!DOCTYPE html>")
@@ -1303,7 +1405,29 @@ def generate_digest_html(
 
     html.append('<div style="background-color: #eef5ff; padding: 14px; border-radius: 6px; margin: 16px 0;">')
     html.append(f"<p style=\"margin: 0;\"><strong>{summary_line}</strong></p>")
+    if mode == "daily" and tier_counts is not None:
+        high = int(tier_counts.get("high", 0))
+        medium = int(tier_counts.get("medium", 0))
+        low = int(tier_counts.get("low", 0))
+        html.append(
+            f"<p style=\"margin: 6px 0 0 0; color: #555; font-size: 12px;\">Tier summary: High {high}, Medium {medium}, Low {low}</p>"
+        )
     html.append("</div>")
+    if mode == "daily" and tier_counts is not None:
+        low = int(tier_counts.get("low", 0))
+        low_shown = bool(include_lows) or (content_filter in {"all", "low"})
+        if low <= 0:
+            html.append("<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals: 0.</p>")
+        elif low_shown:
+            html.append(f"<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals: {low}.</p>")
+        else:
+            if enable_lows_url:
+                html.append(
+                    f"<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals available: {low} (not shown). "
+                    f"<a href=\"{enable_lows_url}\">Enable lows</a>.</p>"
+                )
+            else:
+                html.append(f"<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals available: {low} (not shown).</p>")
     if coverage_line:
         html.append(f"<p style=\"color: #555;\">{coverage_line}</p>")
 
@@ -1320,6 +1444,10 @@ def generate_digest_html(
         if include_low_fallback and low_fallback:
             html.append(f"<h2>Low Signals (Fallback) - Top {len(low_fallback)}</h2>")
             html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all, tz))
+        if include_lows and low_priority:
+            include_area_office_low = any((lead.get("area_office") or "").strip() for lead in low_priority)
+            html.append(f"<h2>Low priority ({len(low_priority)})</h2>")
+            html.append(_lead_rows_html(low_priority, len(low_priority), include_area_office_low, tz))
     else:
         if len(unique_states) > 1:
             html.append("<ul>")
@@ -1333,6 +1461,11 @@ def generate_digest_html(
         if len(leads) > main_limit:
             html.append(f"<h2>All Signals ({len(leads)})</h2>")
             html.append(_lead_rows_html(leads, len(leads), include_area_office_all, tz))
+
+        if include_lows and low_priority:
+            include_area_office_low = any((lead.get("area_office") or "").strip() for lead in low_priority)
+            html.append(f"<h2>Low priority ({len(low_priority)})</h2>")
+            html.append(_lead_rows_html(low_priority, len(low_priority), include_area_office_low, tz))
 
         if include_low_fallback and low_fallback:
             html.append(f"<h2>Low Signals (Fallback) - Top {len(low_fallback)}</h2>")
@@ -1362,6 +1495,10 @@ def generate_digest_text(
     content_filter: str,
     include_low_fallback: bool,
     branding: dict,
+    tier_counts: dict[str, int] | None = None,
+    enable_lows_url: str | None = None,
+    include_lows: bool = False,
+    low_priority: list[dict] | None = None,
     report_label: str | None = None,
     footer_text: str | None = None,
     summary_label: str | None = None,
@@ -1383,6 +1520,7 @@ def generate_digest_text(
     include_area_office_all = any((lead.get("area_office") or "").strip() for lead in leads)
     summary_line = summary_label or f"{len(leads)} signals"
     tz = tz or ZoneInfo("America/Chicago")
+    low_priority = low_priority or []
 
     lines = [
         f"OSHA Lead Digest ({mode_label}) - {gen_date}",
@@ -1394,6 +1532,21 @@ def generate_digest_text(
         lines.append(f"Territory: {territory_label}")
     lines.append("=" * 70)
     lines.append(summary_line)
+    if mode == "daily" and tier_counts is not None:
+        high = int(tier_counts.get("high", 0))
+        medium = int(tier_counts.get("medium", 0))
+        low = int(tier_counts.get("low", 0))
+        lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low}")
+        low_shown = bool(include_lows) or (content_filter in {"all", "low"})
+        if low <= 0:
+            lines.append("Low-priority signals: 0.")
+        elif low_shown:
+            lines.append(f"Low-priority signals: {low}.")
+        else:
+            if enable_lows_url:
+                lines.append(f"Low-priority signals available: {low} (not shown). Enable lows: {enable_lows_url}")
+            else:
+                lines.append(f"Low-priority signals available: {low} (not shown).")
     if coverage_line:
         lines.append(coverage_line)
 
@@ -1408,6 +1561,15 @@ def generate_digest_text(
             lines.append("")
             lines.append("Low Signals (Fallback):")
             for lead in low_fallback:
+                lines.append(
+                    f"- {(lead.get('establishment_name') or 'Unknown')} | "
+                    f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
+                    f"Score {int(lead.get('lead_score') or 0)}"
+                )
+        if include_lows and low_priority:
+            lines.append("")
+            lines.append(f"Low priority ({len(low_priority)}):")
+            for lead in low_priority:
                 lines.append(
                     f"- {(lead.get('establishment_name') or 'Unknown')} | "
                     f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
@@ -1458,6 +1620,15 @@ def generate_digest_text(
                     f"- {(lead.get('establishment_name') or 'Unknown')} | "
                     f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
                     f"{priority}"
+                )
+        if include_lows and low_priority:
+            lines.append("")
+            lines.append(f"Low priority ({len(low_priority)}):")
+            for lead in low_priority:
+                lines.append(
+                    f"- {(lead.get('establishment_name') or 'Unknown')} | "
+                    f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
+                    f"Score {int(lead.get('lead_score') or 0)}"
                 )
 
     lines.append("")
@@ -1758,7 +1929,7 @@ def main() -> None:
                 f"Run log: {run_log_path}\n"
             )
             send_safe_mode_alert(subject, body, "cchevali@gmail.com")
-    if not live_allowed and not args.dry_run:
+    if not live_allowed:
         admin_recipient = resolve_admin_recipient(config)
         if not admin_recipient:
             raise RuntimeError("SAFE_MODE could not resolve admin recipient")
@@ -1826,6 +1997,29 @@ def main() -> None:
         use_opened_window=use_opened_window,
     )
 
+    # Tier counts must include low signals even when the default content filter hides them.
+    tier_counts = None
+    low_priority_all: list[dict] = []
+    all_leads_deduped: list[dict] = []
+    if args.mode == "daily":
+        all_leads_deduped, _, _ = get_leads_for_period(
+            conn=conn,
+            states=states,
+            since_days=int(config["opened_window_days"]),
+            new_only_days=int(config["new_only_days"]),
+            skip_first_seen_filter=skip_first_seen_filter,
+            territory_code=territory_code,
+            content_filter="all",
+            include_low_fallback=False,
+            window_start=window_start,
+            new_only_cutoff=new_only_cutoff,
+            include_changed=include_changed,
+            use_opened_window=use_opened_window,
+        )
+        tier_counts = _tier_counts(all_leads_deduped)
+        medium_min = int(TIER_THRESHOLDS.get("medium_min", 6))
+        low_priority_all = [lead for lead in all_leads_deduped if int(lead.get("lead_score") or 0) < medium_min]
+
     health_summary_text = None
     health_summary_html = None
     health_alerts: list[str] = []
@@ -1885,6 +2079,31 @@ def main() -> None:
     else:
         summary_label = f"{len(leads)} signals"
 
+    # Write daily tier audit artifact (even in dry-run / safe mode).
+    if args.mode == "daily" and tier_counts is not None:
+        try:
+            terr_label = territory_display_name(territory_code) or ("/".join(states) if states else (territory_code or ""))
+            audit_path = write_tier_audit_artifact(
+                output_dir=args.output_dir,
+                gen_date=gen_date,
+                customer_id=customer_id,
+                territory_code=territory_code,
+                territory_label=terr_label,
+                mode=args.mode,
+                tier_counts=tier_counts,
+                all_leads=all_leads_deduped,
+                window_start=window_start,
+            )
+            print(
+                "TIER_AUDIT_WRITTEN "
+                f"path={audit_path} "
+                f"high={int(tier_counts.get('high', 0))} "
+                f"medium={int(tier_counts.get('medium', 0))} "
+                f"low={int(tier_counts.get('low', 0))}"
+            )
+        except Exception as exc:
+            logger.warning("Tier audit artifact write failed: %s", exc)
+
     hi_count = sum(1 for lead in leads if int(lead.get("lead_score") or 0) >= 10)
     states_label = "/".join(states)
     territory_label = territory_display_name(territory_code)
@@ -1934,7 +2153,8 @@ def main() -> None:
                 pass
 
     # Dry-run duplicate guard (does not affect live send idempotency).
-    if args.dry_run:
+    # Only enable when --send-live is present so SAFE-mode previews don't block later live dry-runs.
+    if args.dry_run and args.send_live:
         try:
             conn = sqlite3.connect(args.db)
             ensure_render_log_table(conn)
@@ -2017,6 +2237,7 @@ def main() -> None:
     suppressed_count = 0
     pilot_skipped_count = 0
     suppressed_emails: list[str] = []
+    prefs_territory = (territory_code or "").strip() or ("/".join(states) if states else "")
 
     for recipient in recipients:
         if pilot_mode and recipient not in whitelist:
@@ -2076,12 +2297,31 @@ def main() -> None:
             )
             continue
 
-        list_unsub, list_unsub_post, one_click_url = build_unsubscribe_payload(
+        list_unsub, list_unsub_post, one_click_url, signed_token = build_unsubscribe_payload(
             recipient=recipient,
             campaign_id=customer_id,
             reply_to_email=branding["reply_to"],
             dry_run=args.dry_run,
         )
+
+        include_lows_pref = False
+        if args.mode == "daily" and prefs_territory:
+            try:
+                include_lows_pref = bool(get_include_lows_pref(recipient, prefs_territory))
+            except Exception:
+                include_lows_pref = False
+
+        enable_lows_url = None
+        if (
+            args.mode == "daily"
+            and tier_counts is not None
+            and int(tier_counts.get("low", 0)) > 0
+            and not include_lows_pref
+            and content_filter not in {"all", "low"}
+            and signed_token
+            and prefs_territory
+        ):
+            enable_lows_url = build_enable_lows_url(signed_token, prefs_territory)
 
         footer_disclaimer = "This report contains public OSHA inspection data for informational purposes only. Not legal advice."
         footer_text = build_footer_text(
@@ -2110,6 +2350,10 @@ def main() -> None:
             content_filter=content_filter,
             include_low_fallback=include_low_fallback,
             branding=branding,
+            tier_counts=tier_counts if args.mode == "daily" else None,
+            enable_lows_url=enable_lows_url,
+            include_lows=include_lows_pref,
+            low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
             report_label=report_label,
             footer_html=footer_html,
             summary_label=summary_label,
@@ -2127,6 +2371,10 @@ def main() -> None:
             content_filter=content_filter,
             include_low_fallback=include_low_fallback,
             branding=branding,
+            tier_counts=tier_counts if args.mode == "daily" else None,
+            enable_lows_url=enable_lows_url,
+            include_lows=include_lows_pref,
+            low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
             report_label=report_label,
             footer_text=footer_text,
             summary_label=summary_label,
@@ -2134,6 +2382,26 @@ def main() -> None:
             health_summary_text=health_summary_text,
             tz=tz,
         )
+
+        if args.dry_run:
+            # Smoke-test friendly output: surface the tier summary + low-priority UX lines.
+            print(f"DRYRUN_EMAIL_RECIPIENT {recipient}")
+            section_lines = text_body.splitlines()
+            low_section_idx = None
+            for idx, line in enumerate(section_lines):
+                if line.startswith("Tier summary:") or line.startswith("Low-priority signals"):
+                    print(f"DRYRUN_EMAIL_LINE {line}")
+                if line.startswith("Low priority ("):
+                    print(f"DRYRUN_EMAIL_SECTION {line}")
+                    low_section_idx = idx
+            if low_section_idx is not None:
+                shown = 0
+                for line in section_lines[low_section_idx + 1 :]:
+                    if line.startswith("- "):
+                        print(f"DRYRUN_EMAIL_ITEM {line}")
+                        shown += 1
+                    if shown >= 3:
+                        break
 
         success, message_id, error = send_email(
             recipient=recipient,
@@ -2212,7 +2480,7 @@ def main() -> None:
     print(f"  Fallback lows used:     {filter_stats['low_fallback_count']}")
     print("=" * 72)
 
-    if args.dry_run:
+    if args.dry_run and args.send_live:
         try:
             conn = sqlite3.connect(args.db)
             ensure_render_log_table(conn)

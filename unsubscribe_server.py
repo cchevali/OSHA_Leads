@@ -4,6 +4,7 @@ import os
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 # Load environment variables from .env if available
@@ -20,6 +21,7 @@ from unsubscribe_utils import (
     sign_check,
     sign_registration,
     sign_stats,
+    set_include_lows_pref,
     store_unsub_token,
     verify_unsub_token,
 )
@@ -27,6 +29,77 @@ from unsubscribe_utils import (
 RATE_LIMIT_WINDOW_S = 60
 RATE_LIMIT_MAX_REQ = 120
 _rate_state = {}
+
+_TERRITORY_INDEX = None
+
+
+def _territory_display_name(code: str, territory: dict) -> str:
+    display = (territory.get("display_name") or territory.get("name") or "").strip()
+    if display:
+        return display
+    description = (territory.get("description") or "").strip()
+    if description:
+        for token in [" OSHA", " area offices"]:
+            if token in description:
+                return description.split(token, 1)[0].strip()
+        return description
+    return code
+
+
+def _load_territory_index() -> dict:
+    """
+    Build a lookup of acceptable territory identifiers -> canonical territory_code.
+    Accepts both codes (e.g. TX_TRIANGLE_V1) and display names (e.g. Texas Triangle).
+    """
+    global _TERRITORY_INDEX
+    if _TERRITORY_INDEX is not None:
+        return _TERRITORY_INDEX
+
+    index: dict[str, str] = {}
+    try:
+        root = Path(__file__).resolve().parent
+        terr_path = root / "territories.json"
+        territories = json.loads(terr_path.read_text(encoding="utf-8"))
+        if isinstance(territories, dict):
+            for code, terr in territories.items():
+                if not isinstance(code, str) or not isinstance(terr, dict):
+                    continue
+                code_norm = code.strip().upper()
+                if code_norm:
+                    index[code_norm] = code_norm
+                display = _territory_display_name(code_norm, terr)
+                disp_norm = display.strip().upper()
+                if disp_norm:
+                    index[disp_norm] = code_norm
+    except Exception:
+        index = {}
+
+    _TERRITORY_INDEX = index
+    return index
+
+
+def _resolve_territory(raw: str | None) -> tuple[str | None, str | None]:
+    """
+    Resolve raw territory input to (territory_code, display_name).
+    Returns (None, None) if invalid/unknown.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None, None
+    key = text.upper()
+    idx = _load_territory_index()
+    code = idx.get(key)
+    if not code:
+        return None, None
+    # Re-compute a human display name from territories.json if possible.
+    try:
+        root = Path(__file__).resolve().parent
+        terr = json.loads((root / "territories.json").read_text(encoding="utf-8")).get(code, {})
+        if isinstance(terr, dict):
+            return code, _territory_display_name(code, terr)
+    except Exception:
+        pass
+    return code, code
 
 
 def _client_ip(handler: BaseHTTPRequestHandler) -> str:
@@ -61,36 +134,85 @@ class UnsubHandler(BaseHTTPRequestHandler):
             return
 
         parsed = urlparse(self.path)
-        if parsed.path.rstrip("/") != "/unsubscribe":
-            self.send_response(HTTPStatus.NOT_FOUND)
-            self.end_headers()
-            self.wfile.write(b"Not found")
-            return
+        path = parsed.path.rstrip("/")
 
         params = parse_qs(parsed.query)
-        token = (params.get("token") or [""])[0]
-        token_id = verify_unsub_token(token)
-        if not token_id:
-            self.send_response(HTTPStatus.BAD_REQUEST)
+
+        if path == "/unsubscribe":
+            token = (params.get("token") or [""])[0]
+            token_id = verify_unsub_token(token)
+            if not token_id:
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.end_headers()
+                self.wfile.write(b"Invalid unsubscribe link.")
+                return
+
+            email = lookup_email_for_token(token_id)
+            if not email:
+                self.send_response(HTTPStatus.NOT_FOUND)
+                self.end_headers()
+                self.wfile.write(b"Invalid or expired token.")
+                return
+
+            add_to_suppression(email, "unsubscribe", "one_click")
+
+            body = "You're unsubscribed."
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body.encode("utf-8"))))
             self.end_headers()
-            self.wfile.write(b"Invalid unsubscribe link.")
+            self.wfile.write(body.encode("utf-8"))
             return
 
-        email = lookup_email_for_token(token_id)
-        if not email:
-            self.send_response(HTTPStatus.NOT_FOUND)
+        if path == "/prefs/enable_lows":
+            token = (params.get("TOKEN") or params.get("token") or [""])[0]
+            raw_territory = (params.get("territory") or [""])[0]
+            token_id = verify_unsub_token(token)
+            if not token_id:
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.end_headers()
+                self.wfile.write(b"Invalid link.")
+                return
+
+            email = lookup_email_for_token(token_id)
+            if not email:
+                self.send_response(HTTPStatus.NOT_FOUND)
+                self.end_headers()
+                self.wfile.write(b"Invalid or expired token.")
+                return
+
+            territory_code, territory_display = _resolve_territory(raw_territory)
+            if not territory_code:
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.end_headers()
+                self.wfile.write(b"Invalid territory.")
+                return
+
+            set_include_lows_pref(email=email, territory=territory_code, include_lows=True, source="one_click")
+            from datetime import datetime, timezone
+            ts = datetime.now(timezone.utc).isoformat()
+            print(
+                f"[AUDIT] prefs_enable_lows email={email} territory={territory_code} source=one_click ip={ip} at={ts}"
+            )
+
+            body = (
+                "<!doctype html><html><head><meta charset=\"utf-8\">"
+                "<title>Preference updated</title></head><body style=\"font-family: Arial, sans-serif; padding: 24px;\">"
+                f"<h1 style=\"margin-top: 0;\">Preference updated</h1>"
+                f"<p>You will receive low-priority signals in future digests for <strong>{territory_display or territory_code}</strong>. You can disable at any time.</p>"
+                "</body></html>"
+            )
+            data = body.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(b"Invalid or expired token.")
+            self.wfile.write(data)
             return
 
-        add_to_suppression(email, "unsubscribe", "one_click")
-
-        body = "You're unsubscribed."
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body.encode("utf-8"))))
+        self.send_response(HTTPStatus.NOT_FOUND)
         self.end_headers()
-        self.wfile.write(body.encode("utf-8"))
+        self.wfile.write(b"Not found")
 
     def do_HEAD(self):
         # Make verification curl -I predictable.
