@@ -1,0 +1,6 @@
+# sops configuration for this repo
+# This file is safe to commit. It contains ONLY the age public recipient.
+creation_rules:
+  - path_regex: \.env(\.sops)?$
+    age: age166hs9lfppwmnq4cdvxu2jfwdjd7ddchuhyagq6k97mt9l8jxy3tqsk86nq
+
