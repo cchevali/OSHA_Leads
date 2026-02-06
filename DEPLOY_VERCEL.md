@@ -5,14 +5,16 @@
 1. Import the Git repo in Vercel and select the production branch (recommended: `main`).
 2. Framework preset: `Next.js`.
 3. Root Directory: `web`.
-4. Install Command: `npm install`.
-5. Build Command: `npm run build`.
-6. Output Directory: leave blank (Vercel will use `.next`).
-7. Node.js version: use Vercel default (Node 18+).
-8. Environment variables (Production only):
-9. `NEXT_PUBLIC_PLAUSIBLE_ENABLED=true`
-10. `NEXT_PUBLIC_PLAUSIBLE_DOMAIN=microflowops.com`
-11. `NEXT_PUBLIC_SITE_HOST=microflowops.com`
+4. Install/Build/Output: leave as Vercel defaults (no custom commands).
+5. Production Overrides: clear/remove any overrides so Production uses the same settings as the project defaults.
+6. Node.js version: use Vercel default (Node 18+).
+7. Environment variables (Production only):
+8. `NEXT_PUBLIC_PLAUSIBLE_ENABLED=true`
+9. `NEXT_PUBLIC_PLAUSIBLE_DOMAIN=microflowops.com`
+10. `NEXT_PUBLIC_SITE_HOST=microflowops.com`
+
+Verification note:
+- Successful deploy logs must show Next.js build output (routes/app output), and the Deployment URL must render `/` (not Vercel `NOT_FOUND`).
 
 ## DNS
 
