@@ -370,64 +370,91 @@ def cleanup_redirect_sources(
     apply: bool,
 ) -> dict[str, Any]:
     actions: list[str] = []
-    findings: dict[str, Any] = {"pagerules": [], "worker_routes": [], "rulesets": []}
+    findings: dict[str, Any] = {"pagerules": [], "worker_routes": [], "rulesets": [], "errors": []}
 
     # Page Rules: disable forwarding URL rules that mention the domains.
-    pagerules = cf_list_pagerules(cf_token, zone_id)
-    for rule in pagerules:
-        if not _json_contains_domain(rule, domains):
-            continue
-        has_forward = any(str(a.get("id") or "") == "forwarding_url" for a in (rule.get("actions") or []))
-        if not has_forward:
-            continue
-        findings["pagerules"].append({"id": rule.get("id"), "status": rule.get("status"), "targets": rule.get("targets"), "actions": rule.get("actions")})
-        if apply and rule.get("status") != "disabled":
-            actions.append(f"disable pagerule id={rule.get('id')}")
-            cf_disable_pagerule(cf_token, zone_id, str(rule["id"]))
-        elif not apply:
-            actions.append(f"would_disable pagerule id={rule.get('id')}")
-
-    # Workers routes: delete routes matching the domains.
-    routes = cf_list_worker_routes(cf_token, zone_id)
-    for route in routes:
-        pattern = str(route.get("pattern") or "")
-        if not any(d in pattern for d in domains):
-            continue
-        findings["worker_routes"].append({"id": route.get("id"), "pattern": pattern, "script": route.get("script")})
-        if apply:
-            actions.append(f"delete worker_route id={route.get('id')} pattern={pattern}")
-            cf_delete_worker_route(cf_token, zone_id, str(route["id"]))
-        else:
-            actions.append(f"would_delete worker_route id={route.get('id')} pattern={pattern}")
-
-    # Rulesets Redirect Rules (entrypoint): disable rules mentioning the domains.
-    for phase in ["http_request_dynamic_redirect", "http_request_redirect"]:
-        entry = cf_get_ruleset_entrypoint(cf_token, zone_id, phase)
-        if not entry:
-            continue
-        rules = list(entry.get("rules") or [])
-        changed = False
-        for rule in rules:
+    try:
+        pagerules = cf_list_pagerules(cf_token, zone_id)
+        for rule in pagerules:
             if not _json_contains_domain(rule, domains):
                 continue
-            action = str(rule.get("action") or "").lower()
-            if "redirect" not in action:
+            has_forward = any(str(a.get("id") or "") == "forwarding_url" for a in (rule.get("actions") or []))
+            if not has_forward:
                 continue
-            findings["rulesets"].append({"phase": phase, "id": entry.get("id"), "rule_id": rule.get("id"), "enabled": rule.get("enabled"), "expression": rule.get("expression"), "action": rule.get("action")})
-            if apply and rule.get("enabled") is not False:
-                rule["enabled"] = False
-                changed = True
-                actions.append(f"disable ruleset phase={phase} rule_id={rule.get('id')}")
-            elif not apply:
-                actions.append(f"would_disable ruleset phase={phase} rule_id={rule.get('id')}")
-        if apply and changed:
-            cf_update_ruleset_entrypoint(
-                cf_token,
-                zone_id,
-                phase,
-                str(entry.get("description") or ""),
-                rules,
+            findings["pagerules"].append(
+                {
+                    "id": rule.get("id"),
+                    "status": rule.get("status"),
+                    "targets": rule.get("targets"),
+                    "actions": rule.get("actions"),
+                }
             )
+            if apply and rule.get("status") != "disabled":
+                actions.append(f"disable pagerule id={rule.get('id')}")
+                cf_disable_pagerule(cf_token, zone_id, str(rule["id"]))
+            elif not apply:
+                actions.append(f"would_disable pagerule id={rule.get('id')}")
+    except Exception as exc:
+        findings["errors"].append(f"pagerules_error {exc}")
+
+    # Workers routes: delete routes matching the domains.
+    try:
+        routes = cf_list_worker_routes(cf_token, zone_id)
+        for route in routes:
+            pattern = str(route.get("pattern") or "")
+            if not any(d in pattern for d in domains):
+                continue
+            findings["worker_routes"].append(
+                {"id": route.get("id"), "pattern": pattern, "script": route.get("script")}
+            )
+            if apply:
+                actions.append(f"delete worker_route id={route.get('id')} pattern={pattern}")
+                cf_delete_worker_route(cf_token, zone_id, str(route["id"]))
+            else:
+                actions.append(f"would_delete worker_route id={route.get('id')} pattern={pattern}")
+    except Exception as exc:
+        findings["errors"].append(f"worker_routes_error {exc}")
+
+    # Rulesets Redirect Rules (entrypoint): disable rules mentioning the domains.
+    try:
+        for phase in ["http_request_dynamic_redirect", "http_request_redirect"]:
+            entry = cf_get_ruleset_entrypoint(cf_token, zone_id, phase)
+            if not entry:
+                continue
+            rules = list(entry.get("rules") or [])
+            changed = False
+            for rule in rules:
+                if not _json_contains_domain(rule, domains):
+                    continue
+                action = str(rule.get("action") or "").lower()
+                if "redirect" not in action:
+                    continue
+                findings["rulesets"].append(
+                    {
+                        "phase": phase,
+                        "id": entry.get("id"),
+                        "rule_id": rule.get("id"),
+                        "enabled": rule.get("enabled"),
+                        "expression": rule.get("expression"),
+                        "action": rule.get("action"),
+                    }
+                )
+                if apply and rule.get("enabled") is not False:
+                    rule["enabled"] = False
+                    changed = True
+                    actions.append(f"disable ruleset phase={phase} rule_id={rule.get('id')}")
+                elif not apply:
+                    actions.append(f"would_disable ruleset phase={phase} rule_id={rule.get('id')}")
+            if apply and changed:
+                cf_update_ruleset_entrypoint(
+                    cf_token,
+                    zone_id,
+                    phase,
+                    str(entry.get("description") or ""),
+                    rules,
+                )
+    except Exception as exc:
+        findings["errors"].append(f"rulesets_error {exc}")
 
     return {"actions": actions, "findings": findings}
 
@@ -563,4 +590,3 @@ if __name__ == "__main__":
     except DomainDoctorError as exc:
         print(f"DOMAIN_DOCTOR_ERROR {exc}", file=sys.stderr)
         raise SystemExit(1)
-
