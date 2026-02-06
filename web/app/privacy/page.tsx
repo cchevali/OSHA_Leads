@@ -1,4 +1,4 @@
-﻿import SectionHeading from "@/components/SectionHeading";
+import SectionHeading from "@/components/SectionHeading";
 import site from "@/config/site.json";
 
 export default function PrivacyPage() {
@@ -8,7 +8,7 @@ export default function PrivacyPage() {
         <SectionHeading
           eyebrow="Privacy"
           title="Privacy policy"
-          description="Last updated February 5, 2026."
+          description="Last updated February 6, 2026."
           align="center"
         />
       </section>
@@ -19,6 +19,7 @@ export default function PrivacyPage() {
             {site.legalName || site.brandName} (&quot;we&quot;, &quot;us&quot;) provides OSHA activity alerts for business
             users. This policy explains what we collect and how we use it.
           </p>
+
           <div className="space-y-3 text-sm text-inkMuted">
             <p className="font-semibold text-ink">Information we collect</p>
             <p>
@@ -26,6 +27,16 @@ export default function PrivacyPage() {
               alert delivery. We do not collect sensitive personal data.
             </p>
           </div>
+
+          <div className="space-y-3 text-sm text-inkMuted">
+            <p className="font-semibold text-ink">Analytics</p>
+            <p>
+              We use Plausible Analytics to understand basic site usage and measure conversion-intent
+              actions (for example: clicking the mailto CTAs and using the copy buttons). This
+              analytics is intended to be privacy-friendly and does not use advertising profiles.
+            </p>
+          </div>
+
           <div className="space-y-3 text-sm text-inkMuted">
             <p className="font-semibold text-ink">How we use data</p>
             <p>
@@ -33,6 +44,7 @@ export default function PrivacyPage() {
               We do not sell personal data.
             </p>
           </div>
+
           <div className="space-y-3 text-sm text-inkMuted">
             <p className="font-semibold text-ink">Unsubscribe and suppression</p>
             <p>
@@ -40,6 +52,7 @@ export default function PrivacyPage() {
               suppressed from future sends.
             </p>
           </div>
+
           <div className="space-y-3 text-sm text-inkMuted">
             <p className="font-semibold text-ink">Contact</p>
             <p>

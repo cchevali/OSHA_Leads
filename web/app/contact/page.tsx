@@ -49,11 +49,15 @@ export default function ContactPage() {
             title="Request a sample"
             subject={site.ctaSampleSubject}
             body={site.ctaSampleBody}
+            subjectEventName="copy_subject_request_sample"
+            bodyEventName="copy_body_request_sample"
           />
           <CopyEmailTemplate
             title="Reply with your territory + firm name"
             subject={site.ctaTerritorySubject}
             body={site.ctaTerritoryBody}
+            subjectEventName="copy_subject_territory_firm"
+            bodyEventName="copy_body_territory_firm"
           />
         </div>
       </section>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { trackEvent } from "@/lib/analytics";
 
 async function copyToClipboard(text: string): Promise<boolean> {
   try {
@@ -30,27 +31,33 @@ interface CopyEmailTemplateProps {
   title: string;
   subject: string;
   body: string;
+  subjectEventName: string;
+  bodyEventName: string;
 }
 
 export default function CopyEmailTemplate({
   title,
   subject,
-  body
+  body,
+  subjectEventName,
+  bodyEventName
 }: CopyEmailTemplateProps) {
   const [subjectStatus, setSubjectStatus] = useState<string>("");
   const [bodyStatus, setBodyStatus] = useState<string>("");
 
   const handleCopySubject = useCallback(async () => {
+    trackEvent(subjectEventName);
     const ok = await copyToClipboard(subject);
     setSubjectStatus(ok ? "Copied" : "Copy failed");
     window.setTimeout(() => setSubjectStatus(""), 1800);
-  }, [subject]);
+  }, [subject, subjectEventName]);
 
   const handleCopyBody = useCallback(async () => {
+    trackEvent(bodyEventName);
     const ok = await copyToClipboard(body);
     setBodyStatus(ok ? "Copied" : "Copy failed");
     window.setTimeout(() => setBodyStatus(""), 1800);
-  }, [body]);
+  }, [body, bodyEventName]);
 
   return (
     <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
@@ -113,4 +120,3 @@ export default function CopyEmailTemplate({
     </div>
   );
 }
-
