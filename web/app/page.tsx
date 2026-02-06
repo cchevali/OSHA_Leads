@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import CTAButtons from "@/components/CTAButtons";
 import SectionHeading from "@/components/SectionHeading";
 import site from "@/config/site.json";
+// chore: trigger vercel rebuild (no functional change)
 
 export const metadata: Metadata = {
   alternates: { canonical: "/" }
