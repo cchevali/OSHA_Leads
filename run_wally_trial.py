@@ -189,6 +189,8 @@ def write_batch_runner(batch_path: Path, project_root: Path, customer_config: st
         "for /f \"delims=\" %%p in ('where python 2^>nul') do echo [%date% %time%] python=%%p >> out\\wally_trial_task.log",
         "if errorlevel 1 echo [%date% %time%] python=NOT_FOUND >> out\\wally_trial_task.log",
         (
+            "powershell -NoProfile -ExecutionPolicy Bypass "
+            f"-File \"%~dp0scripts\\run_with_secrets.ps1\" "
             f"python deliver_daily.py --db \"{db_path}\" --customer \"%~dp0{customer_rel}\" "
             f"--mode daily --since-days 14 --admin-email \"{admin_email}\" --send-live "
             "> \"%RUN_TMP%\" 2>&1"

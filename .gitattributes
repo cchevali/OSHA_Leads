@@ -1,0 +1,4 @@
+# Keep sops dotenv files LF-only. CRLF can break sops metadata parsing on Windows.
+.env.sops text eol=lf
+.sops.yaml text eol=lf
+

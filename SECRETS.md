@@ -46,6 +46,21 @@ Run:
 powershell -ExecutionPolicy Bypass -File scripts\\verify_secrets.ps1
 ```
 
+Non-sensitive diagnostics printed by the verifier:
+- Resolved `sops.exe` absolute path
+- Resolved `age.exe` absolute path
+- `keys.txt` existence check (no contents)
+- Final `PASS:` / `FAIL:` line (never prints decrypted env)
+
+Example output (paths will vary):
+
+```text
+DIAG: sops_exe=C:\Users\you\AppData\Local\Microsoft\WinGet\Packages\...\sops.exe
+DIAG: age_exe=C:\Users\you\AppData\Local\Microsoft\WinGet\Packages\...\age.exe
+DIAG: age_keys_exists=True
+PASS: decrypt OK; keys.txt present; env keys=23
+```
+
 This script:
 - Verifies `sops` and `age` are present.
 - Verifies `%APPDATA%\\sops\\age\\keys.txt` exists (without printing it).
