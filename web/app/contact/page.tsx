@@ -23,10 +23,10 @@ export default function ContactPage() {
       <section className="mx-auto w-full max-w-5xl px-6">
         <div className="grid gap-6 md:grid-cols-2">
           <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
-            <h3 className="font-display text-2xl text-ink">Request a sample</h3>
+            <h3 className="font-display text-2xl text-ink">Request a trial feed</h3>
             <p className="mt-3 text-inkMuted">
-              Tell us your firm name and territory. We will send a sample alert and recommended
-              setup.
+              Tell us your organization and territory. We will send a sample alert and start a short
+              trial feed.
             </p>
             <div className="mt-4">
               <CTAButtons />
@@ -51,14 +51,14 @@ export default function ContactPage() {
         />
         <div className="mt-8 space-y-6">
           <CopyEmailTemplate
-            title="Request a sample"
+            title="Request a trial feed"
             subject={site.ctaSampleSubject}
             body={site.ctaSampleBody}
             subjectEventName="copy_subject_request_sample"
             bodyEventName="copy_body_request_sample"
           />
           <CopyEmailTemplate
-            title="Reply with your territory + firm name"
+            title="Reply with territory details"
             subject={site.ctaTerritorySubject}
             body={site.ctaTerritoryBody}
             subjectEventName="copy_subject_territory_firm"

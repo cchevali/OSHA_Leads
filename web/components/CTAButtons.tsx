@@ -28,14 +28,14 @@ export default function CTAButtons({ variant = "light" }: CTAButtonsProps) {
         onClick={() => trackEvent("cta_mailto_request_sample")}
         className="inline-flex items-center justify-center rounded-full bg-ocean px-4 py-2 text-sm font-semibold text-white shadow-glow transition hover:bg-oceanDark"
       >
-        Request a sample
+        Request a trial feed
       </a>
       <a
         href={buildMailto(site.ctaTerritorySubject, site.ctaTerritoryBody)}
         onClick={() => trackEvent("cta_mailto_territory_firm")}
         className={`inline-flex items-center justify-center rounded-full border px-4 py-2 text-sm font-semibold transition ${secondaryClasses}`}
       >
-        Reply with your territory + firm name
+        Send territory details
       </a>
     </div>
   );

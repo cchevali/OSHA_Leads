@@ -29,7 +29,7 @@ export const metadata: Metadata = {
     template: `%s | ${site.brandName}`
   },
   description:
-    "Daily OSHA activity signals that surface new inspections before citations post. Built for OSHA defense attorneys and safety consultants across the Texas Triangle.",
+    "Nationwide, territory-based OSHA enforcement signal alerts that surface new inspections before citations post. Built for employer-side defense and safety teams.",
   robots:
     process.env.VERCEL_ENV === "production" && process.env.NODE_ENV === "production"
       ? { index: true, follow: true }
@@ -38,7 +38,7 @@ export const metadata: Metadata = {
     type: "website",
     title: `${site.brandName} | OSHA Activity Signals`,
     description:
-      "Daily OSHA activity signals that surface new inspections before citations post. Built for OSHA defense attorneys and safety consultants across the Texas Triangle.",
+      "Nationwide, territory-based OSHA enforcement signal alerts that surface new inspections before citations post. Built for employer-side defense and safety teams.",
     url: site.siteUrl,
     siteName: site.brandName,
     images: [
@@ -54,7 +54,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: `${site.brandName} | OSHA Activity Signals`,
     description:
-      "Daily OSHA activity signals that surface new inspections before citations post. Built for OSHA defense attorneys and safety consultants across the Texas Triangle.",
+      "Nationwide, territory-based OSHA enforcement signal alerts that surface new inspections before citations post. Built for employer-side defense and safety teams.",
     images: ["/og.svg"]
   }
 };

@@ -4,8 +4,8 @@
   "legalName": "Micro Flow Ops",
   "mailingAddress": "11539 Links Dr, Reston, VA 20190",
   "ctaEmail": "support@microflowops.com",
-  "ctaSampleSubject": "Requesting an OSHA Activity Signals sample",
-  "ctaSampleBody": "Hi MicroFlowOps,\n\nI would like to request a sample OSHA Activity Signals alert for my territory.\n\nFirm:\nTerritory:\nRecipients:\n\nThanks",
-  "ctaTerritorySubject": "Territory + firm name",
-  "ctaTerritoryBody": "Hi MicroFlowOps,\n\nFirm name:\nTerritory:\nRecipients:\n\nThanks"
+  "ctaSampleSubject": "Requesting a trial feed (OSHA Activity Signals)",
+  "ctaSampleBody": "Hi MicroFlowOps,\n\nI would like to request a trial feed for my territory.\n\nOrganization:\nTerritory (states / metros / OSHA area offices):\nRecipients:\nPreferred delivery time (optional):\n\nThanks",
+  "ctaTerritorySubject": "Territory details",
+  "ctaTerritoryBody": "Hi MicroFlowOps,\n\nOrganization:\nTerritory (states / metros / OSHA area offices):\nRecipients:\nPreferred delivery time (optional):\n\nThanks"
 }

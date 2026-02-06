@@ -9,40 +9,79 @@ export const metadata: Metadata = {
 };
 
 export default function HomePage() {
+  const sampleSignals = [
+    {
+      severityTier: "High",
+      signalType: "Accident",
+      location: "Example City, ST",
+      naics: "236220",
+      penaltyRange: "$15k-$55k",
+      observedDate: "2026-02-03",
+      postedDate: "2026-02-05"
+    },
+    {
+      severityTier: "Medium",
+      signalType: "Complaint",
+      location: "Example City, ST",
+      naics: "238990",
+      penaltyRange: "$5k-$25k",
+      observedDate: "2026-02-01",
+      postedDate: "2026-02-04"
+    },
+    {
+      severityTier: "Medium",
+      signalType: "Referral",
+      location: "Example City, ST",
+      naics: "332322",
+      penaltyRange: "$0-$15k",
+      observedDate: "2026-01-30",
+      postedDate: "2026-02-02"
+    }
+  ];
+
   return (
     <div className="space-y-20 pb-24 pt-12">
       <section className="mx-auto w-full max-w-6xl px-6">
         <div className="grid gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
           <div className="space-y-6">
             <p className="inline-flex items-center rounded-full border border-black/10 bg-white/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
-              OSHA activity intelligence
+              Nationwide, territory-based OSHA enforcement alerts
             </p>
             <h1 className="font-display text-4xl text-ink md:text-5xl lg:text-6xl">
-              Daily OSHA activity signals that surface new inspections before citations post.
+              Daily OSHA enforcement signals that surface new inspections before citations post.
             </h1>
             <p className="text-lg text-inkMuted md:text-xl">
-              {site.brandName} delivers early, territory-specific signals to help OSHA defense
-              teams and safety consultants prioritize outreach while the window is still open.
+              {site.brandName} delivers nationwide, territory-based OSHA enforcement signal alerts to help
+              employer-side attorneys and safety consultants prioritize outreach while the window is still open.
             </p>
             <CTAButtons />
             <p className="text-sm text-inkMuted">
-              Built for the Texas Triangle. Expand to new territories in days, not weeks.
+              Define territories by state, metro area, or OSHA area office. Expand coverage in days,
+              not weeks.
             </p>
           </div>
           <div className="bg-paper rounded-3xl border border-black/10 p-6 shadow-soft">
             <div className="space-y-4">
               <div className="flex items-center justify-between text-xs font-semibold text-inkMuted">
-                <span>OSHA Activity Signals - Texas Triangle</span>
-                <span>Daily 7:00 AM CT</span>
+                <span>OSHA Activity Signals - Example Territory</span>
+                <span>Daily morning brief</span>
               </div>
               <div className="space-y-3 rounded-2xl bg-white/80 p-4">
                 <p className="text-sm font-semibold text-ink">
                   Priority signals (sample)
                 </p>
-                <div className="space-y-2 text-sm text-inkMuted">
-                  <p>High - Accident - Houston, TX - Opened: 2026-01-29</p>
-                  <p>Medium - Complaint - Dallas, TX - Opened: 2026-01-27</p>
-                  <p>Medium - Referral - Austin, TX - Opened: 2026-01-26</p>
+                <div className="space-y-3 text-sm text-inkMuted">
+                  {sampleSignals.map((signal) => (
+                    <div key={`${signal.signalType}-${signal.observedDate}`}>
+                      <p className="text-sm font-semibold text-ink">
+                        {signal.severityTier} - {signal.signalType}
+                      </p>
+                      <p className="mt-1 text-sm text-inkMuted">
+                        {signal.location} - NAICS {signal.naics} - Penalty {signal.penaltyRange} - Observed:{" "}
+                        {signal.observedDate} - Posted: {signal.postedDate}
+                      </p>
+                    </div>
+                  ))}
                 </div>
               </div>
               <div className="rounded-2xl border border-dashed border-black/20 bg-white/60 p-5 text-sm text-inkMuted">
@@ -95,7 +134,7 @@ export default function HomePage() {
             },
             {
               title: "Territory fit",
-              body: "Signals are filtered by your states and metro areas, not national firehoses."
+              body: "Signals are filtered to your territory, not a national firehose."
             }
           ].map((item, index) => (
             <div
@@ -154,13 +193,14 @@ export default function HomePage() {
         <SectionHeading
           eyebrow="Territories"
           title="Subscribe by territory, scale by intent."
-          description="Start with the Texas Triangle and add new territories as your coverage grows."
+          description="Start with one territory and add more as your coverage grows."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-2">
           <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
-            <h3 className="font-display text-xl text-ink">Texas Triangle</h3>
+            <h3 className="font-display text-xl text-ink">Example Territory</h3>
             <p className="mt-3 text-inkMuted">
-              Dallas-Fort Worth, Houston, Austin, and San Antonio. Daily signals at 7:00 AM CT.
+              Define your territory as a set of states, metro areas, or OSHA area offices. Daily
+              morning delivery.
             </p>
           </div>
           <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
@@ -180,12 +220,13 @@ export default function HomePage() {
           description="We keep the service useful without crossing legal or privacy lines."
         />
         <div className="mt-8 rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
-          <ul className="space-y-3 text-sm text-inkMuted">
+          <p className="text-sm font-semibold text-ink">Disclaimer</p>
+          <ul className="mt-3 space-y-3 text-sm text-inkMuted">
+            <li>Not affiliated with OSHA.</li>
+            <li>Uses public enforcement data; freshness varies.</li>
+            <li>Business contact only; opt-out honored.</li>
             <li>No legal advice. Alerts are informational signals only.</li>
             <li>Deadlines are included only when the public record supports them.</li>
-            <li>Business contact data only. No personal contact scraping.</li>
-            <li>Unsubscribe requests are honored immediately.</li>
-            <li>Not affiliated with OSHA or any government agency.</li>
           </ul>
         </div>
       </section>
@@ -197,9 +238,10 @@ export default function HomePage() {
               <p className="text-xs font-semibold uppercase tracking-[0.3em] text-white/70">
                 Ready to see signals
               </p>
-              <h2 className="mt-3 font-display text-3xl">Let us set up your territory.</h2>
+              <h2 className="mt-3 font-display text-3xl">Request a trial feed for your territory.</h2>
               <p className="mt-3 text-white/70">
-                We will send a sample alert and configure your subscriber key in under 48 hours.
+                We will send a sample alert and set up a short trial feed so you can evaluate signal
+                quality.
               </p>
             </div>
             <CTAButtons variant="dark" />

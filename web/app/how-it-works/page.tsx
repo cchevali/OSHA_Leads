@@ -63,7 +63,7 @@ export default function HowItWorksPage() {
         />
         <div className="mt-8 rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
           <ul className="space-y-3 text-sm text-inkMuted">
-            <li>Typical delivery: 7:00 AM CT for Texas Triangle coverage.</li>
+            <li>Typical delivery: daily morning brief (timezone and cadence are configurable).</li>
             <li>Daily or weekly summaries supported.</li>
             <li>SMS available for urgent, high-severity signals.</li>
           </ul>

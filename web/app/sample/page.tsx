@@ -8,36 +8,48 @@ export const metadata: Metadata = {
 
 const sampleSignals = [
   {
-    priority: "High",
-    company: "Pedco Roofing, Inc.",
-    city: "Houston, TX",
-    type: "Accident",
-    opened: "2026-01-29",
-    observed: "2026-02-03"
+    severityTier: "High",
+    company: "Northstar Scaffolding Co.",
+    location: "Example City, ST",
+    industry: "Construction",
+    naics: "238990",
+    penaltyRange: "$15k-$55k",
+    signalType: "Accident",
+    observedDate: "2026-02-03",
+    postedDate: "2026-02-05"
   },
   {
-    priority: "Medium",
-    company: "Mmm Welders and Assemblers LLC",
-    city: "Mansfield, TX",
-    type: "Referral",
-    opened: "2026-01-22",
-    observed: "2026-01-30"
+    severityTier: "Medium",
+    company: "Riverbend Metal Fab LLC",
+    location: "Example City, ST",
+    industry: "Fabricated Metal Products",
+    naics: "332322",
+    penaltyRange: "$5k-$25k",
+    signalType: "Complaint",
+    observedDate: "2026-02-01",
+    postedDate: "2026-02-04"
   },
   {
-    priority: "Medium",
-    company: "Pyramid Waterproofing, Inc.",
-    city: "Houston, TX",
-    type: "Complaint",
-    opened: "2026-01-27",
-    observed: "2026-01-30"
+    severityTier: "Low",
+    company: "Clearview Logistics Inc.",
+    location: "Example City, ST",
+    industry: "General Freight Trucking",
+    naics: "484110",
+    penaltyRange: "$0-$15k",
+    signalType: "Referral",
+    observedDate: "2026-01-30",
+    postedDate: "2026-02-02"
   },
   {
-    priority: "High",
-    company: "STI LLC",
-    city: "Tilden, TX",
-    type: "Accident",
-    opened: "2026-01-26",
-    observed: "2026-01-30"
+    severityTier: "High",
+    company: "Summit Cold Storage Partners",
+    location: "Example City, ST",
+    industry: "Refrigerated Warehousing",
+    naics: "493120",
+    penaltyRange: "$25k-$110k",
+    signalType: "Accident",
+    observedDate: "2026-01-29",
+    postedDate: "2026-02-01"
   }
 ];
 
@@ -60,30 +72,41 @@ export default function SamplePage() {
               <p className="text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
                 OSHA Activity Signals
               </p>
-              <h3 className="font-display text-2xl text-ink">Texas Triangle - Daily Brief</h3>
+              <h3 className="font-display text-2xl text-ink">Example Territory - Daily Brief</h3>
             </div>
-            <p className="text-sm text-inkMuted">Delivered 7:00 AM CT</p>
+            <p className="text-sm text-inkMuted">Delivered each morning</p>
           </div>
           <div className="mt-6 space-y-4">
             <p className="text-sm text-inkMuted">
-              Priority is a heuristic based on severity, recency, and signal type. This is not legal
-              advice.
+              Severity tier is a heuristic based on severity, recency, and signal type. This is not legal advice.
             </p>
             <div className="space-y-4">
               {sampleSignals.map((signal) => (
-                <div key={signal.company} className="rounded-2xl border border-black/10 bg-white/80 p-4">
+                <div
+                  key={signal.company}
+                  className="rounded-2xl border border-black/10 bg-white/80 p-4"
+                >
                   <p className="text-sm font-semibold text-ink">
-                    {signal.priority} priority - {signal.company}
+                    {signal.severityTier} severity - {signal.company}
                   </p>
                   <p className="mt-2 text-sm text-inkMuted">
-                    {signal.type} - {signal.city} - Opened: {signal.opened} - Observed: {signal.observed}
+                    {signal.signalType} - {signal.location} - {signal.industry} (NAICS {signal.naics}) - Penalty{" "}
+                    {signal.penaltyRange}
+                  </p>
+                  <p className="mt-2 text-sm text-inkMuted">
+                    Observed: {signal.observedDate} - Posted: {signal.postedDate}
                   </p>
                 </div>
               ))}
             </div>
-            <p className="text-xs text-inkMuted">
-              Deadlines are included only when the public record supports them. Unsubscribe honored.
-            </p>
+            <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">Disclaimer</p>
+              <ul className="mt-2 space-y-2 text-xs text-inkMuted">
+                <li>Not affiliated with OSHA.</li>
+                <li>Uses public enforcement data; freshness varies.</li>
+                <li>Business contact only; opt-out honored.</li>
+              </ul>
+            </div>
           </div>
         </div>
       </section>
@@ -100,7 +123,7 @@ export default function SamplePage() {
             <div>
               <h2 className="font-display text-3xl">Want this in your inbox?</h2>
               <p className="mt-3 text-white/70">
-                We can tailor the signals to your territory and send a sample alert today.
+                We can tailor the signals to your territory and start a trial feed.
               </p>
             </div>
             <CTAButtons variant="dark" />

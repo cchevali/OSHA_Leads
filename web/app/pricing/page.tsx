@@ -15,7 +15,7 @@ const plans = [
     note: "14 days",
     highlight: false,
     features: [
-      "One territory (Texas Triangle)",
+      "One territory (your choice)",
       "Daily email brief",
       "Priority scoring",
       "Sample alert preview"
@@ -103,14 +103,14 @@ export default function PricingPage() {
         />
         <div className="mt-8 space-y-6">
           <CopyEmailTemplate
-            title="Request a sample"
+            title="Request a trial feed"
             subject={site.ctaSampleSubject}
             body={site.ctaSampleBody}
             subjectEventName="copy_subject_request_sample"
             bodyEventName="copy_body_request_sample"
           />
           <CopyEmailTemplate
-            title="Reply with your territory + firm name"
+            title="Reply with territory details"
             subject={site.ctaTerritorySubject}
             body={site.ctaTerritoryBody}
             subjectEventName="copy_subject_territory_firm"
@@ -123,9 +123,9 @@ export default function PricingPage() {
         <div className="rounded-3xl bg-ink px-8 py-10 text-white shadow-soft">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="font-display text-3xl">Want a sample alert first?</h2>
+              <h2 className="font-display text-3xl">Want a trial feed first?</h2>
               <p className="mt-3 text-white/70">
-                We will send a no-commitment preview so you can see the signal quality.
+                We will send a no-commitment sample alert and trial feed so you can evaluate the signal quality.
               </p>
             </div>
             <CTAButtons variant="dark" />
