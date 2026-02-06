@@ -11,6 +11,7 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.domain_doctor.example
 secrets/
 
 # Output / runtime files
