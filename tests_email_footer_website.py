@@ -4,6 +4,31 @@ from email_footer import build_footer_html, build_footer_text
 
 
 class TestEmailFooterWebsite(unittest.TestCase):
+    def test_footer_standardizes_microflowops_brand_text(self):
+        text = build_footer_text(
+            brand_name="Micro Flow Ops",
+            mailing_address="11539 Links Dr, Reston, VA 20190",
+            disclaimer="Informational only. Not legal advice.",
+            reply_to="support@microflowops.com",
+            unsub_url=None,
+            include_separator=True,
+        )
+
+        self.assertIn("\nMicroFlowOps\n", "\n" + text + "\n")
+        self.assertNotIn("\nMicro Flow Ops\n", "\n" + text + "\n")
+
+    def test_footer_standardizes_microflowops_brand_html(self):
+        html = build_footer_html(
+            brand_name="Micro Flow Ops",
+            mailing_address="11539 Links Dr, Reston, VA 20190",
+            disclaimer="Informational only. Not legal advice.",
+            reply_to="support@microflowops.com",
+            unsub_url=None,
+        )
+
+        self.assertIn(">MicroFlowOps<", html)
+        self.assertNotIn(">Micro Flow Ops<", html)
+
     def test_footer_text_includes_website_without_unsub_url(self):
         text = build_footer_text(
             brand_name="Acme Safety",

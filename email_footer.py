@@ -3,6 +3,18 @@ from __future__ import annotations
 from html import escape
 
 
+def _canonicalize_brand_name(brand_name: str) -> str:
+    """
+    Keep customer branding intact except for our own brand variants, which we
+    standardize to a single canonical spelling.
+    """
+    raw = (brand_name or "").strip()
+    key = " ".join(raw.split()).lower()
+    if key in {"microflowops", "micro flow ops", "micro flowops", "microflow ops"}:
+        return "MicroFlowOps"
+    return raw
+
+
 def build_footer_text(
     brand_name: str,
     mailing_address: str,
@@ -15,7 +27,7 @@ def build_footer_text(
     if include_separator:
         lines.append("---")
     if brand_name:
-        lines.append(brand_name)
+        lines.append(_canonicalize_brand_name(brand_name))
     if mailing_address:
         lines.append(mailing_address)
     if disclaimer:
@@ -40,7 +52,7 @@ def build_footer_html(
     reply_to: str,
     unsub_url: str | None = None,
 ) -> str:
-    brand_html = escape(brand_name or "")
+    brand_html = escape(_canonicalize_brand_name(brand_name or ""))
     address_html = escape(mailing_address or "")
     disclaimer_html = escape(disclaimer or "")
     reply_to_html = escape(reply_to or "")
