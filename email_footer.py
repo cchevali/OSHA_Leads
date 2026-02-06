@@ -20,6 +20,7 @@ def build_footer_text(
         lines.append(mailing_address)
     if disclaimer:
         lines.append(disclaimer)
+    lines.append("More: https://microflowops.com")
 
     if unsub_url:
         lines.append('Opt out: reply with "unsubscribe" or click here to unsubscribe.')
@@ -51,6 +52,9 @@ def build_footer_html(
         parts.append(f"<p><strong>{brand_html}</strong><br>{address_html}</p>")
     if disclaimer_html:
         parts.append(f"<p>{disclaimer_html}</p>")
+    parts.append(
+        '<p><a href="https://microflowops.com" style="color: #888;">microflowops.com</a></p>'
+    )
 
     if unsub_url:
         unsub_html = escape(unsub_url)
