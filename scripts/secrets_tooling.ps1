@@ -191,7 +191,7 @@ function Decrypt-DotenvSopsFile {
     $msg = ''
     if ($stderr) { $msg = $stderr.Trim() }
     if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) + '...' }
-    $msg = ($msg -replace '[\\r\\n]+',' ').Trim()
+    $msg = ($msg -replace '[\r\n]+',' ').Trim()
     if (-not $msg) { $msg = 'unknown error' }
     throw ("sops decrypt failed: " + $msg)
   }

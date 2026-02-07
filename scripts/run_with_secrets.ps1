@@ -12,17 +12,27 @@ function Fail([string]$Message) {
 
 try {
   $Diagnostics = $false
+  $CheckDecrypt = $false
   $Command = @($args)
 
   # Avoid PowerShell parameter-binding collisions with child command flags (e.g. python -c, deliver_daily.py --db).
-  # Opt into diagnostics via a literal sentinel arg.
-  if ($Command.Count -ge 1 -and $Command[0] -eq '--diagnostics') {
-    $Diagnostics = $true
-    if ($Command.Count -ge 2) {
-      $Command = $Command[1..($Command.Count - 1)]
-    } else {
-      $Command = @()
+  # Opt into diagnostics behavior via literal sentinel args. These must precede any child command.
+  while ($Command.Count -ge 1) {
+    if ($Command[0] -eq '--diagnostics') {
+      $Diagnostics = $true
+      if ($Command.Count -ge 2) { $Command = $Command[1..($Command.Count - 1)] } else { $Command = @() }
+      continue
     }
+    if ($Command[0] -eq '--check-decrypt') {
+      $CheckDecrypt = $true
+      if ($Command.Count -ge 2) { $Command = $Command[1..($Command.Count - 1)] } else { $Command = @() }
+      continue
+    }
+    break
+  }
+
+  if ($CheckDecrypt -and (-not $Diagnostics)) {
+    Fail "--check-decrypt requires --diagnostics"
   }
 
   $repoRoot = Resolve-RepoRoot
@@ -45,7 +55,32 @@ try {
     $envSopsExists = Test-Path $envSopsPath
     if (-not $envSopsExists) { Fail "Missing repo .env.sops" }
 
-    Write-Output ("PASS: sops_exe=" + $sopsExe + "; age_exe=" + $ageExe + "; keys_exists=True; env_sops_exists=True")
+    if ($CheckDecrypt) {
+      # Sanity check: ensure this machine can decrypt .env.sops (discard plaintext; no temp files).
+      $cmdLine = '"' + $sopsExe + '" --decrypt --input-type dotenv --output-type dotenv "' + $envSopsPath + '" 1>nul'
+      $prevEap = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      $err = & cmd /c $cmdLine 2>&1
+      $code = $LASTEXITCODE
+      $ErrorActionPreference = $prevEap
+      if ($code -ne 0) {
+        $errText = ''
+        if ($err -is [string]) {
+          $errText = $err
+        } else {
+          $errText = (($err | ForEach-Object { $_.ToString() }) -join ' ')
+        }
+
+        $msg = $errText.Trim()
+        $msg = ($msg -replace '[\r\n]+', ' ').Trim()
+        if ($msg.Length -gt 220) { $msg = $msg.Substring(0, 220) + '...' }
+        if (-not $msg) { $msg = 'unknown error' }
+        Fail ("sops decrypt sanity check failed: " + $msg)
+      }
+    }
+
+    $decryptBit = if ($CheckDecrypt) { '; decrypt_ok=True' } else { '' }
+    Write-Output ("PASS: sops_exe=" + $sopsExe + "; age_exe=" + $ageExe + "; keys_exists=True; env_sops_exists=True" + $decryptBit)
     exit 0
   }
 
