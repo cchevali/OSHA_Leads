@@ -29,6 +29,9 @@ try {
   $envSopsPath = Join-Path $repoRoot '.env.sops'
   $ageKeysPath = Get-AgeKeyFilePath
 
+  # Make behavior independent of the caller's current working directory (Task Scheduler often starts in System32).
+  Push-Location $repoRoot
+
   # Diagnostics-only mode: check wiring prerequisites without decrypting or running anything.
   # Output MUST be a single PASS/FAIL line (no secrets).
   if ($Diagnostics -and ($Command.Count -lt 1)) {
@@ -83,4 +86,6 @@ try {
   exit $LASTEXITCODE
 } catch {
   Fail $_.Exception.Message
+} finally {
+  try { Pop-Location } catch {}
 }

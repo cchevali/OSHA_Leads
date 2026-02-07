@@ -35,8 +35,10 @@ Write-Output ("DIAG: sops_exe=" + $sopsExe)
 Write-Output ("DIAG: age_exe=" + $ageExe)
 Write-Output ("DIAG: age_keys_exists=" + (Test-Path $ageKeysPath))
 
-if ($NonSecret -and (-not (Test-Path $ageKeysPath))) {
-  Write-Output "PASS: non-secret mode; keys missing; decrypt skipped"
+# Non-secret mode is intended for CI and other contexts where we cannot (or should not) decrypt.
+# It validates that the repo wiring is present without printing secrets.
+if ($NonSecret) {
+  Write-Output "PASS: non-secret mode; decrypt skipped"
   exit 0
 }
 

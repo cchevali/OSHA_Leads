@@ -169,10 +169,33 @@ function Decrypt-DotenvSopsFile {
   )
 
   # Important: never print plaintext to the console; return it to caller only.
-  $plain = (& $SopsExe --decrypt --input-type dotenv --output-type dotenv $EnvSopsPath 2>$null) -join "`n"
-  if ($LASTEXITCODE -ne 0) {
-    throw "sops decrypt failed"
+  # Also capture stderr separately so failures can be reported without leaking decrypted values.
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $SopsExe
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+
+  $quotedPath = '"' + ($EnvSopsPath -replace '"', '""') + '"'
+  $psi.Arguments = "--decrypt --input-type dotenv --output-type dotenv $quotedPath"
+
+  $p = New-Object System.Diagnostics.Process
+  $p.StartInfo = $psi
+  [void]$p.Start()
+  $stdout = $p.StandardOutput.ReadToEnd()
+  $stderr = $p.StandardError.ReadToEnd()
+  $p.WaitForExit()
+
+  if ($p.ExitCode -ne 0) {
+    $msg = ''
+    if ($stderr) { $msg = $stderr.Trim() }
+    if ($msg.Length -gt 300) { $msg = $msg.Substring(0, 300) + '...' }
+    $msg = ($msg -replace '[\\r\\n]+',' ').Trim()
+    if (-not $msg) { $msg = 'unknown error' }
+    throw ("sops decrypt failed: " + $msg)
   }
-  return $plain
+
+  return $stdout.TrimEnd("`r", "`n")
 }
 
