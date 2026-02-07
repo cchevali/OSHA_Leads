@@ -25,13 +25,30 @@ try {
     }
   }
 
-  if (-not $Command -or $Command.Count -lt 1) {
-    Fail "No command provided. Usage: scripts\\run_with_secrets.ps1 [--diagnostics] <cmd> [args...]"
-  }
-
   $repoRoot = Resolve-RepoRoot
   $envSopsPath = Join-Path $repoRoot '.env.sops'
   $ageKeysPath = Get-AgeKeyFilePath
+
+  # Diagnostics-only mode: check wiring prerequisites without decrypting or running anything.
+  # Output MUST be a single PASS/FAIL line (no secrets).
+  if ($Diagnostics -and ($Command.Count -lt 1)) {
+    $sopsExe = Resolve-SopsExe
+    if (-not $sopsExe) { Fail "sops not found (install: winget install --id Mozilla.SOPS -e)" }
+    $ageExe = Resolve-AgeExe
+    if (-not $ageExe) { Fail "age not found (install: winget install --id FiloSottile.age -e)" }
+
+    $keysExists = Test-Path $ageKeysPath
+    if (-not $keysExists) { Fail "Missing age key file at %APPDATA%\\sops\\age\\keys.txt" }
+    $envSopsExists = Test-Path $envSopsPath
+    if (-not $envSopsExists) { Fail "Missing repo .env.sops" }
+
+    Write-Output ("PASS: sops_exe=" + $sopsExe + "; age_exe=" + $ageExe + "; keys_exists=True; env_sops_exists=True")
+    exit 0
+  }
+
+  if (-not $Command -or $Command.Count -lt 1) {
+    Fail "No command provided. Usage: scripts\\run_with_secrets.ps1 [--diagnostics] <cmd> [args...]"
+  }
 
   if (-not (Test-Path $envSopsPath)) { Fail "Missing repo .env.sops at $envSopsPath" }
   if (-not (Test-Path $ageKeysPath)) { Fail "Missing age key file at %APPDATA%\\sops\\age\\keys.txt" }

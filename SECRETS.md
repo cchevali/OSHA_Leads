@@ -46,6 +46,12 @@ Run:
 powershell -ExecutionPolicy Bypass -File scripts\\verify_secrets.ps1
 ```
 
+CI / non-secret mode (skips decrypt if `%APPDATA%\\sops\\age\\keys.txt` is missing):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\\verify_secrets.ps1 -NonSecret
+```
+
 Non-sensitive diagnostics printed by the verifier:
 - Resolved `sops.exe` absolute path
 - Resolved `age.exe` absolute path
@@ -66,6 +72,16 @@ This script:
 - Verifies `%APPDATA%\\sops\\age\\keys.txt` exists (without printing it).
 - Decrypt-tests `.env.sops` in-memory (never prints decrypted env).
 - Checks that all keys in `.env.example` exist in the decrypted env (only key names are reported).
+
+## Scheduler Doctor
+
+This asserts:
+- `run_wally_trial_daily.bat` goes through `scripts\\run_with_secrets.ps1`
+- `scripts\\run_with_secrets.ps1 --diagnostics` can resolve `sops.exe`/`age.exe` and sees `keys.txt` (existence only)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\\doctor_scheduler_secrets.ps1
+```
 
 ## Using Multiple Machines (PC + Laptop)
 

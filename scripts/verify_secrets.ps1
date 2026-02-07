@@ -11,6 +11,11 @@ function Fail([string]$Message) {
   exit 1
 }
 
+$NonSecret = $false
+if ($args -contains '-NonSecret' -or $args -contains '--non-secret' -or $args -contains '--nonsecret') {
+  $NonSecret = $true
+}
+
 $repoRoot = Resolve-RepoRoot
 $envSopsPath = Join-Path $repoRoot '.env.sops'
 $sopsYamlPath = Join-Path $repoRoot '.sops.yaml'
@@ -23,13 +28,19 @@ if (-not $sopsExe) { Fail "sops not found (install: winget install --id Mozilla.
 $ageExe = Resolve-AgeExe
 if (-not $ageExe) { Fail "age not found (install: winget install --id FiloSottile.age -e)" }
 
-if (-not (Test-Path $ageKeysPath)) { Fail "Missing age key file at %APPDATA%\\sops\\age\\keys.txt" }
 if (-not (Test-Path $sopsYamlPath)) { Fail "Missing repo .sops.yaml" }
 if (-not (Test-Path $envSopsPath)) { Fail "Missing repo .env.sops" }
 
 Write-Output ("DIAG: sops_exe=" + $sopsExe)
 Write-Output ("DIAG: age_exe=" + $ageExe)
-Write-Output ("DIAG: age_keys_exists=True")
+Write-Output ("DIAG: age_keys_exists=" + (Test-Path $ageKeysPath))
+
+if ($NonSecret -and (-not (Test-Path $ageKeysPath))) {
+  Write-Output "PASS: non-secret mode; keys missing; decrypt skipped"
+  exit 0
+}
+
+if (-not (Test-Path $ageKeysPath)) { Fail "Missing age key file at %APPDATA%\\sops\\age\\keys.txt" }
 
 # Decrypt-test without ever printing plaintext to the console.
 try {
