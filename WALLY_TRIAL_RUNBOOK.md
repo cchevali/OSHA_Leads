@@ -1,6 +1,6 @@
 ﻿# Wally Trial Runbook
 
-Do NOT click Task Scheduler "Run" - it will email Wally. Use `--preflight` for checks.
+Do NOT click Task Scheduler "Run" - it will email Wally. Use `--doctor` or `--preflight-only` for checks.
 
 ## Supported Production Setup
 
@@ -62,6 +62,17 @@ Behavior:
 - Exit nonzero with one concise error line:
   - `CONFIG_ERROR missing variables: ...`
 
+## 3b) Doctor (Non-Sending Health Check)
+
+```powershell
+python run_wally_trial.py wally_trial_tx_triangle_v1.json --doctor
+```
+
+Behavior:
+- Prints `DOCTOR_OK` (exit `0`) when config/env checks pass.
+- Prints `DOCTOR_FAIL ...` (exit `1`) when a required check fails.
+- Best-effort Task Scheduler check prints `DOCTOR_NOTE scheduler_check=SKIPPED ...` if the task is missing or `schtasks` is unavailable.
+- Best-effort Task Scheduler check fails (`DOCTOR_FAIL scheduler_check=BAD ...`) if a task exists but its `/TR` action does not match the expected `run_wally_trial_daily.bat` action string.
 ## Reliability Sequence (Before Any Live Send)
 
 Recommended operator sequence before `--send-live` (keeps onboarding email-only and reduces surprises):
