@@ -101,6 +101,22 @@ function Resolve-AgeKeygenExe {
 }
 
 function Get-AgeKeyFilePath {
+  # Prefer explicit configuration first.
+  $p = $env:SOPS_AGE_KEY_FILE
+  if ($p -and $p.Trim().Length -gt 0) {
+    return $p
+  }
+
+  # Repo-standard location (when keys are managed alongside the repo).
+  $repoRoot = Resolve-RepoRoot
+  $repoKeys = Join-Path $repoRoot 'keys\age\keys.txt'
+  if (Test-Path -LiteralPath $repoKeys) {
+    # Make sops behavior deterministic for the remainder of this session/process.
+    $env:SOPS_AGE_KEY_FILE = $repoKeys
+    return $repoKeys
+  }
+
+  # Default SOPS age key location on Windows.
   return (Join-Path (Join-Path $env:APPDATA 'sops\age') 'keys.txt')
 }
 

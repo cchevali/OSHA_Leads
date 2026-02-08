@@ -51,7 +51,7 @@ try {
     if (-not $ageExe) { Fail "age not found (install: winget install --id FiloSottile.age -e)" }
 
     $keysExists = Test-Path $ageKeysPath
-    if (-not $keysExists) { Fail "Missing age key file at %APPDATA%\\sops\\age\\keys.txt" }
+    if (-not $keysExists) { Fail ("Missing age key file at " + $ageKeysPath) }
     $envSopsExists = Test-Path $envSopsPath
     if (-not $envSopsExists) { Fail "Missing repo .env.sops" }
 
@@ -89,7 +89,7 @@ try {
   }
 
   if (-not (Test-Path $envSopsPath)) { Fail "Missing repo .env.sops at $envSopsPath" }
-  if (-not (Test-Path $ageKeysPath)) { Fail "Missing age key file at %APPDATA%\\sops\\age\\keys.txt" }
+  if (-not (Test-Path $ageKeysPath)) { Fail ("Missing age key file at " + $ageKeysPath) }
 
   $sopsExe = Resolve-SopsExe
   if (-not $sopsExe) { Fail "sops not found (install: winget install --id Mozilla.SOPS -e)" }
