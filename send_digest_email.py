@@ -252,7 +252,7 @@ def record_render_log(
 def build_coverage_line(total_counts: dict, shown_counts: dict) -> str:
     # Coverage lines were previously appended as a second "not shown" sentence.
     # That duplicated the low-priority CTA.
-    # Keep lows mentioned once via the "Low-priority signals available... Enable lows" line.
+    # Keep lows mentioned once via the "Low-priority signals available... Manage preferences" line.
     return ""
 
 def _build_preheader(leads: list[dict]) -> str:
@@ -1216,24 +1216,27 @@ def build_unsubscribe_payload(
 
 def build_enable_lows_url(signed_token: str, territory_code: str) -> str | None:
     """
-    Build a one-click preference URL on the same host as the unsubscribe endpoint.
-    Expected server endpoint: /prefs/enable_lows?TOKEN=...&territory=...
+    Build a one-click preference URL.
+    Expected server endpoint: /prefs/enable_lows?TOKEN=...&territory=...&enable_lows=1
     """
+    prefs_endpoint = os.getenv("PREFS_ENDPOINT_BASE", "").strip()
     unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
-    if not (unsub_endpoint and signed_token and territory_code):
+    base_endpoint = prefs_endpoint or unsub_endpoint
+    if not (base_endpoint and signed_token and territory_code):
         return None
 
     try:
-        parsed = urlparse(unsub_endpoint)
+        parsed = urlparse(base_endpoint)
         parsed = parsed._replace(path="/prefs/enable_lows", params="", query="", fragment="")
         base = urlunparse(parsed)
     except Exception:
-        if unsub_endpoint.rstrip("/").endswith("/unsubscribe"):
-            base = unsub_endpoint.rstrip("/").rsplit("/", 1)[0] + "/prefs/enable_lows"
+        endpoint = base_endpoint.rstrip("/")
+        if endpoint.endswith("/unsubscribe"):
+            base = endpoint.rsplit("/", 1)[0] + "/prefs/enable_lows"
         else:
-            base = unsub_endpoint.rstrip("/") + "/prefs/enable_lows"
+            base = endpoint + "/prefs/enable_lows"
 
-    qs = urlencode({"TOKEN": signed_token, "territory": territory_code})
+    qs = urlencode({"TOKEN": signed_token, "territory": territory_code, "enable_lows": "1"})
     sep = "&" if "?" in base else "?"
     return f"{base}{sep}{qs}"
 
@@ -1339,6 +1342,14 @@ def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, 
     return "\n".join(parts)
 
 
+EMAIL_HTML_TARGET_BYTES = 80 * 1024
+EMAIL_HTML_HARD_CAP_BYTES = 95 * 1024
+
+
+def _html_bytes(html: str) -> int:
+    return len((html or "").encode("utf-8"))
+
+
 def generate_digest_html(
     leads: list[dict],
     low_fallback: list[dict],
@@ -1353,11 +1364,18 @@ def generate_digest_html(
     enable_lows_url: str | None = None,
     include_lows: bool = False,
     low_priority: list[dict] | None = None,
+    signals_limit: int | None = None,
     report_label: str | None = None,
     footer_html: str | None = None,
     summary_label: str | None = None,
     coverage_line: str | None = None,
     health_summary_html: str | None = None,
+    snapshot_label: str | None = None,
+    snapshot_days: int | None = None,
+    snapshot_tier_counts: dict[str, int] | None = None,
+    snapshot_enable_lows_url: str | None = None,
+    snapshot_rows: list[dict] | None = None,
+    snapshot_total: int | None = None,
     tz: ZoneInfo | None = None,
 ) -> str:
     states = config["states"]
@@ -1379,6 +1397,9 @@ def generate_digest_html(
     preheader = _build_preheader(leads)
     tz = tz or ZoneInfo("America/Chicago")
     low_priority = low_priority or []
+    if not include_lows:
+        # Ensure low-priority rows are never present in the HTML unless the preference is enabled.
+        low_priority = []
 
     html: list[str] = []
     html.append("<!DOCTYPE html>")
@@ -1410,17 +1431,21 @@ def generate_digest_html(
         low = int(tier_counts.get("low", 0))
         low_shown = bool(include_lows) or (content_filter in {"all", "low"})
         if low <= 0:
-            html.append("<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals: 0.</p>")
+            pass
         elif low_shown:
             html.append(f"<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals: {low}.</p>")
         else:
             if enable_lows_url:
                 html.append(
-                    f"<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals available: {low} (not shown). "
-                    f"<a href=\"{enable_lows_url}\">Enable lows</a>.</p>"
+                    "<p style=\"color: #555; margin: 6px 0 0 0;\">"
+                    f"Low-priority signals available: {low} (not shown). "
+                    f"<a href=\"{enable_lows_url}\">Enable lows.</a>"
+                    "</p>"
                 )
             else:
-                html.append(f"<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals available: {low} (not shown).</p>")
+                html.append(
+                    f"<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals available: {low} (not shown). Enable lows.</p>"
+                )
     if coverage_line:
         html.append(f"<p style=\"color: #555;\">{coverage_line}</p>")
 
@@ -1449,11 +1474,16 @@ def generate_digest_html(
             html.append("</ul>")
 
         html.append("<h2>Signals</h2>")
-        html.append(_lead_rows_html(main_rows, len(main_rows), include_area_office_main, tz))
-
-        if len(leads) > main_limit:
-            html.append(f"<h2>All Signals ({len(leads)})</h2>")
-            html.append(_lead_rows_html(leads, len(leads), include_area_office_all, tz))
+        show_limit = len(leads) if signals_limit is None else max(0, int(signals_limit))
+        shown = leads[:show_limit]
+        html.append(_lead_rows_html(shown, len(shown), include_area_office_main, tz))
+        if len(shown) < len(leads):
+            html.append(
+                "<p style=\"margin: 14px 0 0 0; color: #555; font-size: 12px;\">"
+                "More signals available. Some were omitted to keep this email under Gmail clipping limits. "
+                "Manage preferences in the digest header, or reply to adjust."
+                "</p>"
+            )
 
         if include_lows and low_priority:
             include_area_office_low = any((lead.get("area_office") or "").strip() for lead in low_priority)
@@ -1470,6 +1500,37 @@ def generate_digest_html(
 
     if health_summary_html:
         html.append(health_summary_html)
+
+    if snapshot_label and snapshot_tier_counts is not None and snapshot_rows is not None:
+        html.append('<hr style="border:none;border-top:1px solid #e5e7eb;margin:18px 0;">')
+        html.append(f"<h2 style=\"margin: 0 0 6px 0; color: #1a1a2e;\">{snapshot_label}</h2>")
+        if snapshot_days:
+            html.append(f"<p style=\"margin: 0 0 10px 0; color: #555;\">Window: last {int(snapshot_days)} days</p>")
+        sh = int(snapshot_tier_counts.get("high", 0))
+        sm = int(snapshot_tier_counts.get("medium", 0))
+        sl = int(snapshot_tier_counts.get("low", 0))
+        html.append(
+            f"<p style=\"margin: 0; color: #555; font-size: 12px;\">Tier summary (not new): High {sh}, Medium {sm}, Low {sl}</p>"
+        )
+        if sl > 0 and snapshot_enable_lows_url:
+            html.append(
+                "<p style=\"color: #555; margin: 6px 0 0 0;\">"
+                f"Low-priority signals available: {sl} (not shown). "
+                f"<a href=\"{snapshot_enable_lows_url}\">Enable lows.</a>"
+                "</p>"
+            )
+        # Snapshot rows should already be filtered to priority only (no low DOM when lows disabled).
+        if snapshot_rows:
+            include_area_office_snapshot = any((lead.get("area_office") or "").strip() for lead in snapshot_rows)
+            html.append("<p style=\"margin: 10px 0 8px 0; color: #555;\">Most recent priority signals (not new):</p>")
+            html.append(_lead_rows_html(snapshot_rows, len(snapshot_rows), include_area_office_snapshot, tz))
+            if snapshot_total is not None and int(snapshot_total) > len(snapshot_rows):
+                html.append(
+                    f"<p style=\"margin: 8px 0 0 0; color: #555; font-size: 12px;\">"
+                    f"More available: showing {len(snapshot_rows)} of {int(snapshot_total)}.</p>"
+                )
+        else:
+            html.append("<p style=\"margin: 10px 0 0 0; color: #555;\"><em>No priority signals in the last 14 days.</em></p>")
 
     if footer_html:
         html.append(footer_html)
@@ -1492,11 +1553,18 @@ def generate_digest_text(
     enable_lows_url: str | None = None,
     include_lows: bool = False,
     low_priority: list[dict] | None = None,
+    signals_limit: int | None = None,
     report_label: str | None = None,
     footer_text: str | None = None,
     summary_label: str | None = None,
     coverage_line: str | None = None,
     health_summary_text: str | None = None,
+    snapshot_label: str | None = None,
+    snapshot_days: int | None = None,
+    snapshot_tier_counts: dict[str, int] | None = None,
+    snapshot_enable_lows_url: str | None = None,
+    snapshot_rows: list[dict] | None = None,
+    snapshot_total: int | None = None,
     tz: ZoneInfo | None = None,
 ) -> str:
     states = config["states"]
@@ -1514,6 +1582,8 @@ def generate_digest_text(
     summary_line = summary_label or f"{len(leads)} signals"
     tz = tz or ZoneInfo("America/Chicago")
     low_priority = low_priority or []
+    if not include_lows:
+        low_priority = []
 
     lines = [
         f"OSHA Lead Digest ({mode_label}) - {gen_date}",
@@ -1532,14 +1602,17 @@ def generate_digest_text(
         lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low}")
         low_shown = bool(include_lows) or (content_filter in {"all", "low"})
         if low <= 0:
-            lines.append("Low-priority signals: 0.")
+            pass
         elif low_shown:
             lines.append(f"Low-priority signals: {low}.")
         else:
             if enable_lows_url:
-                lines.append(f"Low-priority signals available: {low} (not shown). Enable lows: {enable_lows_url}")
+                lines.append(
+                    "Low-priority signals available: "
+                    f"{low} (not shown). Enable lows: {enable_lows_url}"
+                )
             else:
-                lines.append(f"Low-priority signals available: {low} (not shown).")
+                lines.append(f"Low-priority signals available: {low} (not shown). Enable lows.")
     if coverage_line:
         lines.append(coverage_line)
 
@@ -1568,6 +1641,35 @@ def generate_digest_text(
                     f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
                     f"Score {int(lead.get('lead_score') or 0)}"
                 )
+
+        if snapshot_label and snapshot_tier_counts is not None and snapshot_rows is not None:
+            lines.append("")
+            lines.append("-" * 70)
+            lines.append(snapshot_label)
+            if snapshot_days:
+                lines.append(f"Window: last {int(snapshot_days)} days")
+            sh = int(snapshot_tier_counts.get("high", 0))
+            sm = int(snapshot_tier_counts.get("medium", 0))
+            sl = int(snapshot_tier_counts.get("low", 0))
+            lines.append(f"Tier summary (not new): High {sh}, Medium {sm}, Low {sl}")
+            if sl > 0 and snapshot_enable_lows_url:
+                lines.append(
+                    f"Low-priority signals available: {sl} (not shown). Enable lows: {snapshot_enable_lows_url}"
+                )
+            if snapshot_rows:
+                lines.append("")
+                lines.append("Most recent priority signals (not new):")
+                for lead in snapshot_rows:
+                    lines.append(
+                        f"- {(lead.get('establishment_name') or 'Unknown')} | "
+                        f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
+                        f"Score {int(lead.get('lead_score') or 0)}"
+                    )
+                if snapshot_total is not None and int(snapshot_total) > len(snapshot_rows):
+                    lines.append(f"More available: showing {len(snapshot_rows)} of {int(snapshot_total)}.")
+            else:
+                lines.append("")
+                lines.append("No priority signals in the last 14 days.")
     else:
         if len(unique_states) > 1:
             lines.append("")
@@ -1593,16 +1695,13 @@ def generate_digest_text(
             )
             lines.append(f"  {(lead.get('source_url') or '#')}")
 
-        if len(leads) > main_limit:
+        show_limit = len(leads) if signals_limit is None else max(0, int(signals_limit))
+        if show_limit < len(leads):
             lines.append("")
-            lines.append(f"All signals ({len(leads)}):")
-            for lead in leads:
-                priority = _priority_label(int(lead.get("lead_score") or 0))
-                lines.append(
-                    f"- {(lead.get('establishment_name') or 'Unknown')} | "
-                    f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
-                    f"{priority}"
-                )
+            lines.append(
+                "More signals available. Some were omitted to keep this email short. "
+                "Manage preferences in the digest header, or reply to adjust."
+            )
 
         if include_low_fallback and low_fallback:
             lines.append("")
@@ -1798,6 +1897,16 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Generate but do not send")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument(
+        "--force-starter-snapshot",
+        action="store_true",
+        help="Force the 'Starter Snapshot' daily email (ignores last_sent_at gating; does not imply live send).",
+    )
+    parser.add_argument(
+        "--no-state-mutation",
+        action="store_true",
+        help="Avoid mutating send state (do not update subscriber last_sent_at or write send_log). Intended for test-only sends.",
+    )
+    parser.add_argument(
         "--send-live",
         action="store_true",
         help="Allow live sends to customer recipients (requires allow_live_send and send_enabled)",
@@ -1821,6 +1930,11 @@ def main() -> None:
         "--disable-pilot-guard",
         action="store_true",
         help="Disable pilot whitelist recipient guard",
+    )
+    parser.add_argument(
+        "--smoke-cchevali",
+        action="store_true",
+        help="Laptop-safe smoke: force a single send to cchevali@gmail.com (non-live/admin-only) and print a compact quality summary.",
     )
 
     args = parser.parse_args()
@@ -1874,66 +1988,92 @@ def main() -> None:
     recipients = collect_recipients(config, subscriber_profile, args.recipient_override)
     intended_recipients = list(recipients)
 
-    send_time_local = (config.get("send_time_local") or "").strip()
-    window_minutes = _coerce_send_window_minutes(config.get("send_window_minutes"))
-    window_ok, window_reason, window_start, window_end = _within_send_window(
-        now_local, send_time_local, window_minutes
-    )
-    window_start_text = window_start.isoformat() if window_start else "n/a"
-    window_end_text = window_end.isoformat() if window_end else "n/a"
-    send_time_text = send_time_local or "n/a"
-    print(
-        "WINDOW_CHECK "
-        f"now_local={now_local.isoformat()} "
-        f"send_time_local={send_time_text} "
-        f"window_start={window_start_text} "
-        f"window_end={window_end_text} "
-        f"window_ok={'YES' if window_ok else 'NO'}"
-    )
+    smoke_recipient = "cchevali@gmail.com"
+    if args.smoke_cchevali:
+        # Hard guard: this entrypoint must only ever send to Chase.
+        override_raw = (args.recipient_override or "").strip()
+        if override_raw:
+            override_list = [r.strip().lower() for r in override_raw.split(",") if r.strip()]
+            if override_list != [smoke_recipient]:
+                print(
+                    f"CONFIG_ERROR --smoke-cchevali forbids recipient_override={override_raw!r}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+        if args.send_live:
+            print("CONFIG_ERROR --smoke-cchevali forbids --send-live", file=sys.stderr)
+            raise SystemExit(1)
+        recipients = [smoke_recipient]
+        intended_recipients = [smoke_recipient]
 
-    live_allowed = bool(args.send_live and allow_live_send and send_enabled_ok and (args.dry_run or window_ok))
+    live_allowed = False
     safe_mode_reason = None
-    if not live_allowed:
-        if not args.send_live:
-            safe_mode_reason = "missing --send-live"
-        elif not allow_live_send:
-            safe_mode_reason = "allow_live_send=false"
-        elif not send_enabled_ok:
-            safe_mode_reason = "send_enabled=0"
-        elif not (args.dry_run or window_ok):
-            safe_mode_reason = window_reason or "outside send window"
-        else:
-            safe_mode_reason = "unknown"
-
-    run_log_path = (os.getenv("RUN_LOG_PATH") or "").strip() or "unknown"
-    if live_allowed:
-        print(f"SEND_START mode=LIVE intended_recipient_count={len(intended_recipients)}")
-    else:
-        print(
-            f"SEND_START mode=SAFE intended_recipient_count={len(intended_recipients)} "
-            f"gate={safe_mode_reason} run_log={run_log_path}"
+    if not args.smoke_cchevali:
+        send_time_local = (config.get("send_time_local") or "").strip()
+        window_minutes = _coerce_send_window_minutes(config.get("send_window_minutes"))
+        window_ok, window_reason, window_start, window_end = _within_send_window(
+            now_local, send_time_local, window_minutes
         )
-        if not args.dry_run:
-            subject = f"[SAFE_MODE] {customer_id} {args.mode}"
-            body = (
-                f"SAFE_MODE triggered.\n"
-                f"Gate: {safe_mode_reason}\n"
-                f"Intended recipient count: {len(intended_recipients)}\n"
-                f"Run log: {run_log_path}\n"
-            )
-            send_safe_mode_alert(subject, body, "cchevali@gmail.com")
-    if not live_allowed:
-        admin_recipient = resolve_admin_recipient(config)
-        if not admin_recipient:
-            raise RuntimeError("SAFE_MODE could not resolve admin recipient")
-        if recipients != [admin_recipient]:
+        window_start_text = window_start.isoformat() if window_start else "n/a"
+        window_end_text = window_end.isoformat() if window_end else "n/a"
+        send_time_text = send_time_local or "n/a"
+        print(
+            "WINDOW_CHECK "
+            f"now_local={now_local.isoformat()} "
+            f"send_time_local={send_time_text} "
+            f"window_start={window_start_text} "
+            f"window_end={window_end_text} "
+            f"window_ok={'YES' if window_ok else 'NO'}"
+        )
+
+        live_allowed = bool(args.send_live and allow_live_send and send_enabled_ok and (args.dry_run or window_ok))
+        safe_mode_reason = None
+        if not live_allowed:
+            if not args.send_live:
+                safe_mode_reason = "missing --send-live"
+            elif not allow_live_send:
+                safe_mode_reason = "allow_live_send=false"
+            elif not send_enabled_ok:
+                safe_mode_reason = "send_enabled=0"
+            elif not (args.dry_run or window_ok):
+                safe_mode_reason = window_reason or "outside send window"
+            else:
+                safe_mode_reason = "unknown"
+
+        run_log_path = (os.getenv("RUN_LOG_PATH") or "").strip() or "unknown"
+        if live_allowed:
+            print(f"SEND_START mode=LIVE intended_recipient_count={len(intended_recipients)}")
+        else:
             print(
-                f"[SAFE_MODE] forced admin recipient: {admin_recipient} | intended: {', '.join(intended_recipients)}"
+                f"SEND_START mode=SAFE intended_recipient_count={len(intended_recipients)} "
+                f"gate={safe_mode_reason} run_log={run_log_path}"
             )
-        recipients = [admin_recipient]
+            if not args.dry_run:
+                subject = f"[SAFE_MODE] {customer_id} {args.mode}"
+                body = (
+                    f"SAFE_MODE triggered.\n"
+                    f"Gate: {safe_mode_reason}\n"
+                    f"Intended recipient count: {len(intended_recipients)}\n"
+                    f"Run log: {run_log_path}\n"
+                )
+                send_safe_mode_alert(subject, body, "cchevali@gmail.com")
+        if not live_allowed:
+            admin_recipient = resolve_admin_recipient(config)
+            if not admin_recipient:
+                raise RuntimeError("SAFE_MODE could not resolve admin recipient")
+            if recipients != [admin_recipient]:
+                print(
+                    f"[SAFE_MODE] forced admin recipient: {admin_recipient} | intended: {', '.join(intended_recipients)}"
+                )
+            recipients = [admin_recipient]
+    else:
+        safe_mode_reason = "smoke_cchevali"
 
     if not recipients:
         raise ValueError("No recipients configured (email_recipients, subscriber email, or --recipient-override).")
+    if args.smoke_cchevali and recipients != [smoke_recipient]:
+        print(f"CONFIG_ERROR --smoke-cchevali recipient_mismatch recipients={recipients}", file=sys.stderr)
+        raise SystemExit(1)
 
     branding = resolve_branding(config)
 
@@ -1946,9 +2086,10 @@ def main() -> None:
     )
 
     conn = sqlite3.connect(args.db)
-    ensure_send_log_table(conn)
+    if not args.no_state_mutation:
+        ensure_send_log_table(conn)
     tz = resolve_timezone(config, territory_code)
-    snapshot_mode = args.mode == "daily" and baseline_on_first_send and not last_sent_at
+    snapshot_mode = args.mode == "daily" and (args.force_starter_snapshot or (baseline_on_first_send and not last_sent_at))
     report_label = None
     summary_label = None
     snapshot_days = int(config["opened_window_days"])
@@ -1994,6 +2135,11 @@ def main() -> None:
     tier_counts = None
     low_priority_all: list[dict] = []
     all_leads_deduped: list[dict] = []
+    snapshot_label = None
+    snapshot_days = None
+    snapshot_tier_counts = None
+    snapshot_rows: list[dict] | None = None
+    snapshot_total = None
     if args.mode == "daily":
         all_leads_deduped, _, _ = get_leads_for_period(
             conn=conn,
@@ -2013,6 +2159,43 @@ def main() -> None:
         medium_min = int(TIER_THRESHOLDS.get("medium_min", 6))
         low_priority_all = [lead for lead in all_leads_deduped if int(lead.get("lead_score") or 0) < medium_min]
 
+        # Trial-only enhancement: when there are 0 new signals, optionally append a 14-day snapshot (not new).
+        snapshot_when_0_new = bool(config.get("snapshot_when_0_new", False))
+        if snapshot_when_0_new and not snapshot_mode and len(leads) == 0:
+            snapshot_label = "Last 14 days snapshot (not new)"
+            snapshot_days = 14
+            snapshot_all, _, _ = get_leads_for_period(
+                conn=conn,
+                states=states,
+                since_days=snapshot_days,
+                new_only_days=int(config["new_only_days"]),
+                skip_first_seen_filter=True,
+                territory_code=territory_code,
+                content_filter="all",
+                include_low_fallback=False,
+                window_start=None,
+                new_only_cutoff=None,
+                include_changed=False,
+                use_opened_window=True,
+            )
+            snapshot_tier_counts = _tier_counts(snapshot_all)
+
+            # Snapshot rows: only priority rows (no low DOM when lows disabled).
+            priority_rows = [lead for lead in snapshot_all if int(lead.get("lead_score") or 0) >= medium_min]
+            snapshot_total = len(priority_rows)
+            try:
+                snapshot_limit = int(config.get("snapshot_recent_limit", 8))
+            except Exception:
+                snapshot_limit = 8
+            snapshot_limit = max(0, min(25, snapshot_limit))
+            priority_rows.sort(
+                key=lambda lead: str(
+                    (lead.get("last_seen_at") or lead.get("first_seen_at") or lead.get("date_opened") or "")
+                ),
+                reverse=True,
+            )
+            snapshot_rows = priority_rows[:snapshot_limit]
+
     health_summary_text = None
     health_summary_html = None
     health_alerts: list[str] = []
@@ -2028,7 +2211,8 @@ def main() -> None:
                 min_share=min_share,
                 min_total=min_total,
             )
-            store_territory_health(conn, health)
+            if not args.no_state_mutation:
+                store_territory_health(conn, health)
             health_summary_text, health_summary_html = format_territory_health_summary(health)
             health_alerts = list(health.get("alerts", []))
             if health_alerts:
@@ -2073,7 +2257,7 @@ def main() -> None:
         summary_label = f"{len(leads)} signals"
 
     # Write daily tier audit artifact (even in dry-run / safe mode).
-    if args.mode == "daily" and tier_counts is not None:
+    if args.mode == "daily" and tier_counts is not None and not args.smoke_cchevali:
         try:
             terr_label = territory_display_name(territory_code) or ("/".join(states) if states else (territory_code or ""))
             audit_path = write_tier_audit_artifact(
@@ -2222,7 +2406,7 @@ def main() -> None:
         else:
             print("DRYRUN_SAMPLE_LEADS: none")
 
-    pilot_mode = bool(config.get("pilot_mode", PILOT_MODE_DEFAULT)) and not args.disable_pilot_guard
+    pilot_mode = bool(config.get("pilot_mode", PILOT_MODE_DEFAULT)) and not args.disable_pilot_guard and not args.smoke_cchevali
     whitelist = [email.lower() for email in config.get("pilot_whitelist", PILOT_WHITELIST_DEFAULT)]
     failed_sends = 0
     sent_or_dry_run = 0
@@ -2251,7 +2435,7 @@ def main() -> None:
             )
             continue
 
-        if check_suppression(args.db, recipient):
+        if not args.smoke_cchevali and check_suppression(args.db, recipient):
             logger.info("Suppressed recipient: %s", recipient)
             suppressed_count += 1
             suppressed_emails.append(recipient)
@@ -2298,7 +2482,7 @@ def main() -> None:
         )
 
         include_lows_pref = False
-        if args.mode == "daily" and prefs_territory:
+        if args.mode == "daily" and prefs_territory and not args.smoke_cchevali:
             try:
                 include_lows_pref = bool(get_include_lows_pref(recipient, prefs_territory))
             except Exception:
@@ -2315,6 +2499,18 @@ def main() -> None:
             and prefs_territory
         ):
             enable_lows_url = build_enable_lows_url(signed_token, prefs_territory)
+
+        snapshot_enable_lows_url = None
+        if (
+            snapshot_label
+            and snapshot_tier_counts is not None
+            and int(snapshot_tier_counts.get("low", 0)) > 0
+            and not include_lows_pref
+            and content_filter not in {"all", "low"}
+            and signed_token
+            and prefs_territory
+        ):
+            snapshot_enable_lows_url = build_enable_lows_url(signed_token, prefs_territory)
 
         footer_disclaimer = "This report contains public OSHA inspection data for informational purposes only. Not legal advice."
         footer_text = build_footer_text(
@@ -2333,6 +2529,16 @@ def main() -> None:
             unsub_url=one_click_url or None,
         )
 
+        # Initial signals display cap for HTML (guardrailed below by EMAIL_HTML_TARGET_BYTES/HARD_CAP).
+        signals_limit = None
+        if leads:
+            try:
+                cap = int(config.get("top_k_overall", 25))
+            except Exception:
+                cap = 25
+            cap = max(1, cap)
+            signals_limit = min(len(leads), cap)
+
         html_body = generate_digest_html(
             leads=leads,
             low_fallback=low_fallback,
@@ -2347,13 +2553,147 @@ def main() -> None:
             enable_lows_url=enable_lows_url,
             include_lows=include_lows_pref,
             low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
+            signals_limit=signals_limit,
             report_label=report_label,
             footer_html=footer_html,
             summary_label=summary_label,
             coverage_line=coverage_line,
             health_summary_html=health_summary_html,
+            snapshot_label=snapshot_label,
+            snapshot_days=snapshot_days,
+            snapshot_tier_counts=snapshot_tier_counts,
+            snapshot_enable_lows_url=snapshot_enable_lows_url,
+            snapshot_rows=snapshot_rows,
+            snapshot_total=snapshot_total,
             tz=tz,
         )
+
+        # Measure and guardrail HTML size to avoid Gmail clipping (~102KB).
+        html_bytes = _html_bytes(html_body)
+        print(f"EMAIL_HTML_BYTES recipient={recipient} bytes={html_bytes}")
+        if leads and signals_limit and html_bytes > EMAIL_HTML_TARGET_BYTES and signals_limit > 1:
+            lo = 1
+            hi = signals_limit
+            best_limit = None
+            best_html = None
+            best_bytes = None
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                candidate = generate_digest_html(
+                    leads=leads,
+                    low_fallback=low_fallback,
+                    config=config,
+                    gen_date=gen_date,
+                    mode=args.mode,
+                    territory_code=territory_code,
+                    content_filter=content_filter,
+                    include_low_fallback=include_low_fallback,
+                    branding=branding,
+                    tier_counts=tier_counts if args.mode == "daily" else None,
+                    enable_lows_url=enable_lows_url,
+                    include_lows=include_lows_pref,
+                    low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
+                    signals_limit=mid,
+                    report_label=report_label,
+                    footer_html=footer_html,
+                    summary_label=summary_label,
+                    coverage_line=coverage_line,
+                    health_summary_html=health_summary_html,
+                    snapshot_label=snapshot_label,
+                    snapshot_days=snapshot_days,
+                    snapshot_tier_counts=snapshot_tier_counts,
+                    snapshot_enable_lows_url=snapshot_enable_lows_url,
+                    snapshot_rows=snapshot_rows,
+                    snapshot_total=snapshot_total,
+                    tz=tz,
+                )
+                b = _html_bytes(candidate)
+                if b <= EMAIL_HTML_TARGET_BYTES:
+                    best_limit = mid
+                    best_html = candidate
+                    best_bytes = b
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+
+            if best_limit is None:
+                best_limit = 1
+                best_html = generate_digest_html(
+                    leads=leads,
+                    low_fallback=low_fallback,
+                    config=config,
+                    gen_date=gen_date,
+                    mode=args.mode,
+                    territory_code=territory_code,
+                    content_filter=content_filter,
+                    include_low_fallback=include_low_fallback,
+                    branding=branding,
+                    tier_counts=tier_counts if args.mode == "daily" else None,
+                    enable_lows_url=enable_lows_url,
+                    include_lows=include_lows_pref,
+                    low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
+                    signals_limit=best_limit,
+                    report_label=report_label,
+                    footer_html=footer_html,
+                    summary_label=summary_label,
+                    coverage_line=coverage_line,
+                    health_summary_html=health_summary_html,
+                    snapshot_label=snapshot_label,
+                    snapshot_days=snapshot_days,
+                    snapshot_tier_counts=snapshot_tier_counts,
+                    snapshot_enable_lows_url=snapshot_enable_lows_url,
+                    snapshot_rows=snapshot_rows,
+                    snapshot_total=snapshot_total,
+                    tz=tz,
+                )
+                best_bytes = _html_bytes(best_html)
+
+            html_body = best_html
+            html_bytes = int(best_bytes or 0)
+            signals_limit = int(best_limit)
+            print(
+                "EMAIL_HTML_TRUNCATED "
+                f"recipient={recipient} shown={best_limit} total={len(leads)} bytes={html_bytes} "
+                f"target={EMAIL_HTML_TARGET_BYTES} hard_cap={EMAIL_HTML_HARD_CAP_BYTES}"
+            )
+
+        if leads and signals_limit and html_bytes > EMAIL_HTML_HARD_CAP_BYTES:
+            # Hard cap fallback: decrement rows until under cap.
+            limit = int(signals_limit)
+            while limit > 1 and html_bytes > EMAIL_HTML_HARD_CAP_BYTES:
+                limit -= 1
+                html_body = generate_digest_html(
+                    leads=leads,
+                    low_fallback=low_fallback,
+                    config=config,
+                    gen_date=gen_date,
+                    mode=args.mode,
+                    territory_code=territory_code,
+                    content_filter=content_filter,
+                    include_low_fallback=include_low_fallback,
+                    branding=branding,
+                    tier_counts=tier_counts if args.mode == "daily" else None,
+                    enable_lows_url=enable_lows_url,
+                    include_lows=include_lows_pref,
+                    low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
+                    signals_limit=limit,
+                    report_label=report_label,
+                    footer_html=footer_html,
+                    summary_label=summary_label,
+                    coverage_line=coverage_line,
+                    health_summary_html=health_summary_html,
+                    snapshot_label=snapshot_label,
+                    snapshot_days=snapshot_days,
+                    snapshot_tier_counts=snapshot_tier_counts,
+                    snapshot_enable_lows_url=snapshot_enable_lows_url,
+                    snapshot_rows=snapshot_rows,
+                    snapshot_total=snapshot_total,
+                    tz=tz,
+                )
+                html_bytes = _html_bytes(html_body)
+            signals_limit = int(limit)
+            if html_bytes > EMAIL_HTML_HARD_CAP_BYTES:
+                logger.warning("EMAIL_HTML_HARD_CAP_EXCEEDED bytes=%d recipient=%s", html_bytes, recipient)
         text_body = generate_digest_text(
             leads=leads,
             low_fallback=low_fallback,
@@ -2368,13 +2708,84 @@ def main() -> None:
             enable_lows_url=enable_lows_url,
             include_lows=include_lows_pref,
             low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
+            signals_limit=signals_limit,
             report_label=report_label,
             footer_text=footer_text,
             summary_label=summary_label,
             coverage_line=coverage_line,
             health_summary_text=health_summary_text,
+            snapshot_label=snapshot_label,
+            snapshot_days=snapshot_days,
+            snapshot_tier_counts=snapshot_tier_counts,
+            snapshot_enable_lows_url=snapshot_enable_lows_url,
+            snapshot_rows=snapshot_rows,
+            snapshot_total=snapshot_total,
             tz=tz,
         )
+
+        # Smoke-mode content assertions (fail fast before sending).
+        if args.smoke_cchevali:
+            if "Also observed (not shown)" in html_body or "Also observed (not shown)" in text_body:
+                raise SystemExit("SMOKE_ASSERT_FAIL found 'Also observed (not shown)' in rendered email")
+            # When low signals exist and lows are disabled, require exactly one CTA mention + prefs link.
+            lows_available = int(tier_counts.get("low", 0)) if (tier_counts and args.mode == "daily") else 0
+            lows_available_snapshot = (
+                int(snapshot_tier_counts.get("low", 0)) if (snapshot_tier_counts and snapshot_label) else 0
+            )
+            expect_cta = bool(args.mode == "daily" and lows_available > 0 and content_filter not in {"all", "low"})
+            expect_cta_snapshot = bool(
+                args.mode == "daily"
+                and snapshot_label
+                and lows_available_snapshot > 0
+                and content_filter not in {"all", "low"}
+            )
+            if expect_cta:
+                if not enable_lows_url:
+                    raise SystemExit("SMOKE_ASSERT_FAIL enable_lows_url missing (need PREFS_ENDPOINT_BASE or UNSUB_ENDPOINT_BASE)")
+                if html_body.count("Low-priority signals available:") != 1:
+                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Low-priority signals available' in HTML")
+                if html_body.count("Enable lows.") != 1:
+                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows.' CTA label in HTML")
+                if "prefs/enable_lows" not in html_body:
+                    raise SystemExit("SMOKE_ASSERT_FAIL prefs link path missing in HTML")
+                if text_body.count("Low-priority signals available:") != 1:
+                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Low-priority signals available' in text")
+                if text_body.count("Enable lows:") != 1:
+                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows:' CTA label in text")
+            if expect_cta_snapshot:
+                if not snapshot_enable_lows_url:
+                    raise SystemExit("SMOKE_ASSERT_FAIL snapshot_enable_lows_url missing (need PREFS_ENDPOINT_BASE or UNSUB_ENDPOINT_BASE)")
+                if html_body.count("Low-priority signals available:") != 1:
+                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Low-priority signals available' in HTML (snapshot)")
+                if html_body.count("Enable lows.") != 1:
+                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows.' CTA label in HTML (snapshot)")
+                if text_body.count("Low-priority signals available:") != 1:
+                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Low-priority signals available' in text (snapshot)")
+                if text_body.count("Enable lows:") != 1:
+                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows:' CTA label in text (snapshot)")
+
+            # Print compact quality summary.
+            terr_label = territory_display_name(territory_code) or (territory_code or "")
+            tier_high = int(tier_counts.get("high", 0)) if tier_counts else 0
+            tier_med = int(tier_counts.get("medium", 0)) if tier_counts else 0
+            tier_low = int(tier_counts.get("low", 0)) if tier_counts else 0
+            html_bytes_now = _html_bytes(html_body)
+            variant = "baseline" if args.mode == "baseline" else ("starter_snapshot" if snapshot_mode else "daily_new_since_last_send")
+            new_count = int(len(leads))
+            print(
+                "QUALITY_SUMMARY "
+                f"variant={variant} "
+                f"subject={subject!r} "
+                f"territory={terr_label!r} "
+                f"gen_date={gen_date} "
+                f"new_count={new_count} "
+                f"tiers=high={tier_high},medium={tier_med},low={tier_low} "
+                f"lows_available={tier_low} "
+                f"snapshot_when_0_new={'YES' if bool(snapshot_label) else 'NO'} "
+                f"snapshot_rows={(len(snapshot_rows) if snapshot_rows else 0)} "
+                f"EMAIL_HTML_BYTES={html_bytes_now} "
+                f"recipients={','.join(recipients)}"
+            )
 
         if args.dry_run:
             # Smoke-test friendly output: surface the tier summary + low-priority UX lines.
@@ -2408,10 +2819,18 @@ def main() -> None:
             list_unsub=list_unsub,
             list_unsub_post=list_unsub_post,
         )
+        if args.smoke_cchevali and not args.dry_run:
+            if not success:
+                raise SystemExit(f"SMOKE_SEND_FAIL {error}")
+            print(f"QUALITY_SEND_OK recipient={recipient} message_id={message_id}")
 
         status = "sent" if success else "failed"
         if args.dry_run and success:
             status = "dry_run"
+        if args.no_state_mutation and status == "sent":
+            status = "test_sent"
+        if args.no_state_mutation and status == "failed":
+            status = "test_failed"
         if success:
             sent_or_dry_run += 1
             if status == "sent":
@@ -2435,43 +2854,44 @@ def main() -> None:
             },
         )
 
-    print("\n" + "=" * 72)
-    print("EMAIL DIGEST SUMMARY")
-    print("=" * 72)
-    print(f"Customer:                 {customer_id}")
-    print(f"Mode:                     {args.mode}")
-    print(f"Territory:                {territory_display_name(territory_code) or '(none)'}")
-    print(f"Content filter:           {content_filter_label(content_filter)}")
-    print(f"Low fallback enabled:     {'YES' if include_low_fallback else 'NO'}")
-    print(f"Low fallback leads:       {len(low_fallback)}")
-    print(f"Leads after filters:      {len(leads)}")
-    print(f"Recipients requested:     {len(recipients)}")
-    print(f"Live enabled:             {'YES' if live_allowed else 'NO'}")
-    print(f"Sent/Dry-run:             {sent_or_dry_run}")
-    print(f"Suppressed:               {suppressed_count}")
-    print(f"Pilot-skipped:            {pilot_skipped_count}")
-    print(f"Failed sends:             {failed_sends}")
-    print(f"Pilot mode:               {'ON' if pilot_mode else 'OFF'}")
-    print(f"Dry run:                  {'YES' if args.dry_run else 'NO'}")
-    if args.dry_run:
-        print(f"DRYRUN_SUPPRESSED         {', '.join(suppressed_emails) if suppressed_emails else '(none)'}")
-    print("")
-    print("Filter stats:")
-    print(f"  Total candidates:       {filter_stats['total_candidates']}")
-    print(f"  After time-window:      {filter_stats['after_time_window']}")
-    print(f"  After territory:        {filter_stats['after_territory']}")
-    print(f"  After content filter:   {filter_stats['after_content_filter']}")
-    print(f"  After dedupe:           {filter_stats['after_dedupe']}")
-    print(f"  Final leads:            {filter_stats['final_leads']}")
-    print(f"  Excl. time-window:      {filter_stats['excluded_by_time_window']}")
-    print(f"  Excl. new-only window:  {filter_stats['excluded_by_new_only']}")
-    print(f"  Excl. territory:        {filter_stats['excluded_by_territory']}")
-    print(f"  Matched area_office:    {filter_stats['matched_by_office']}")
-    print(f"  Matched fallback city:  {filter_stats['matched_by_fallback']}")
-    print(f"  Excl. content filter:   {filter_stats['excluded_by_content_filter']}")
-    print(f"  Dedupe removed:         {filter_stats['dedupe_removed']}")
-    print(f"  Fallback lows used:     {filter_stats['low_fallback_count']}")
-    print("=" * 72)
+    if not args.smoke_cchevali:
+        print("\n" + "=" * 72)
+        print("EMAIL DIGEST SUMMARY")
+        print("=" * 72)
+        print(f"Customer:                 {customer_id}")
+        print(f"Mode:                     {args.mode}")
+        print(f"Territory:                {territory_display_name(territory_code) or '(none)'}")
+        print(f"Content filter:           {content_filter_label(content_filter)}")
+        print(f"Low fallback enabled:     {'YES' if include_low_fallback else 'NO'}")
+        print(f"Low fallback leads:       {len(low_fallback)}")
+        print(f"Leads after filters:      {len(leads)}")
+        print(f"Recipients requested:     {len(recipients)}")
+        print(f"Live enabled:             {'YES' if live_allowed else 'NO'}")
+        print(f"Sent/Dry-run:             {sent_or_dry_run}")
+        print(f"Suppressed:               {suppressed_count}")
+        print(f"Pilot-skipped:            {pilot_skipped_count}")
+        print(f"Failed sends:             {failed_sends}")
+        print(f"Pilot mode:               {'ON' if pilot_mode else 'OFF'}")
+        print(f"Dry run:                  {'YES' if args.dry_run else 'NO'}")
+        if args.dry_run:
+            print(f"DRYRUN_SUPPRESSED         {', '.join(suppressed_emails) if suppressed_emails else '(none)'}")
+        print("")
+        print("Filter stats:")
+        print(f"  Total candidates:       {filter_stats['total_candidates']}")
+        print(f"  After time-window:      {filter_stats['after_time_window']}")
+        print(f"  After territory:        {filter_stats['after_territory']}")
+        print(f"  After content filter:   {filter_stats['after_content_filter']}")
+        print(f"  After dedupe:           {filter_stats['after_dedupe']}")
+        print(f"  Final leads:            {filter_stats['final_leads']}")
+        print(f"  Excl. time-window:      {filter_stats['excluded_by_time_window']}")
+        print(f"  Excl. new-only window:  {filter_stats['excluded_by_new_only']}")
+        print(f"  Excl. territory:        {filter_stats['excluded_by_territory']}")
+        print(f"  Matched area_office:    {filter_stats['matched_by_office']}")
+        print(f"  Matched fallback city:  {filter_stats['matched_by_fallback']}")
+        print(f"  Excl. content filter:   {filter_stats['excluded_by_content_filter']}")
+        print(f"  Dedupe removed:         {filter_stats['dedupe_removed']}")
+        print(f"  Fallback lows used:     {filter_stats['low_fallback_count']}")
+        print("=" * 72)
 
     if args.dry_run and args.send_live:
         try:
@@ -2493,7 +2913,7 @@ def main() -> None:
             except Exception:
                 pass
 
-    if not args.dry_run and sent_success > 0:
+    if not args.dry_run and sent_success > 0 and not args.no_state_mutation:
         update_subscriber_last_sent_at(args.db, config.get("subscriber_key", ""), timestamp)
         if live_allowed:
             try:

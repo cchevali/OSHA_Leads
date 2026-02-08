@@ -15,6 +15,8 @@
   ],
   "opened_window_days": 14,
   "new_only_days": 1,
+  "snapshot_when_0_new": true,
+  "snapshot_recent_limit": 8,
   "top_k_overall": 30,
   "top_k_per_state": 30,
   "recipients": [

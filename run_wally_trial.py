@@ -175,6 +175,109 @@ def run_live_send(db_path: str, customer_config: str, admin_email: str, send_liv
     subprocess.run(cmd, check=True)
 
 
+def _load_subscriber_last_sent_at(db_path: str, subscriber_key: str) -> str | None:
+    if not subscriber_key:
+        return None
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT last_sent_at FROM subscribers WHERE subscriber_key = ? LIMIT 1", (subscriber_key,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return row[0]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def run_test_send(db_path: str, customer_config: str) -> None:
+    # Test-only laptop entrypoint: force snapshot send to Chase, without mutating send state.
+    chase_email = "cchevali@gmail.com"
+    print(f"TEST_SEND variant=starter_snapshot recipient={chase_email} state_mutation=NO", flush=True)
+
+    with open(customer_config, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    subscriber_key = (cfg.get("subscriber_key") or "").strip()
+    last_sent_before = _load_subscriber_last_sent_at(db_path, subscriber_key)
+
+    cmd = [
+        sys.executable,
+        "send_digest_email.py",
+        "--db",
+        db_path,
+        "--customer",
+        customer_config,
+        "--mode",
+        "daily",
+        "--smoke-cchevali",
+        "--force-starter-snapshot",
+        "--no-state-mutation",
+        "--log-level",
+        "ERROR",
+    ]
+    subprocess.run(cmd, check=True)
+
+    last_sent_after = _load_subscriber_last_sent_at(db_path, subscriber_key)
+    if last_sent_after != last_sent_before:
+        raise SystemExit(
+            f"TEST_SEND_STATE_MUTATION last_sent_at_before={last_sent_before!r} last_sent_at_after={last_sent_after!r}"
+        )
+
+
+def run_test_send_daily(db_path: str, customer_config: str) -> None:
+    # Test-only laptop entrypoint: render the daily "new since last send" variant to Chase,
+    # without mutating send state.
+    chase_email = "cchevali@gmail.com"
+    print(f"TEST_SEND variant=daily_new_since_last_send recipient={chase_email} state_mutation=NO", flush=True)
+
+    with open(customer_config, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    subscriber_key = (cfg.get("subscriber_key") or "").strip()
+    last_sent_before = _load_subscriber_last_sent_at(db_path, subscriber_key)
+
+    # Resilience: the real PC config is git-ignored; default snapshot_when_0_new to YES for the Wally trial
+    # when the key is missing, without mutating the source file.
+    cfg_for_send = cfg
+    is_wally_trial = (cfg.get("customer_id") == "wally_trial_tx_triangle_v1") or (subscriber_key == "wally_trial")
+    if is_wally_trial and "snapshot_when_0_new" not in cfg:
+        print("TRIAL_DEFAULT snapshot_when_0_new=YES (config_missing)")
+        cfg_for_send = dict(cfg)
+        cfg_for_send["snapshot_when_0_new"] = True
+        cfg_for_send.setdefault("snapshot_recent_limit", 8)
+
+        tmp_path = Path("out") / "wally_trial_test_send_daily.customer.json"
+        tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_text(json.dumps(cfg_for_send, indent=2) + "\n", encoding="utf-8")
+        customer_config = str(tmp_path)
+
+    cmd = [
+        sys.executable,
+        "send_digest_email.py",
+        "--db",
+        db_path,
+        "--customer",
+        customer_config,
+        "--mode",
+        "daily",
+        "--smoke-cchevali",
+        "--no-state-mutation",
+        "--log-level",
+        "ERROR",
+    ]
+    subprocess.run(cmd, check=True)
+
+    last_sent_after = _load_subscriber_last_sent_at(db_path, subscriber_key)
+    if last_sent_after != last_sent_before:
+        raise SystemExit(
+            f"TEST_SEND_STATE_MUTATION last_sent_at_before={last_sent_before!r} last_sent_at_after={last_sent_after!r}"
+        )
+
+
 def write_batch_runner(batch_path: Path, project_root: Path, customer_config: str, db_path: str, admin_email: str) -> None:
     customer_rel = _relative_batch_path(project_root, customer_config)
     lines = [
@@ -362,6 +465,16 @@ def main() -> None:
     parser.add_argument("--chase-email", default="cchevali@gmail.com")
     parser.add_argument("--admin-email", default="support@microflowops.com")
     parser.add_argument("--send-live", action="store_true", help="Trigger first live send to Wally")
+    parser.add_argument(
+        "--test-send",
+        action="store_true",
+        help="Laptop-safe: force a Starter Snapshot send to cchevali@gmail.com without mutating send state",
+    )
+    parser.add_argument(
+        "--test-send-daily",
+        action="store_true",
+        help="Laptop-safe: send the daily 'new since last send' variant to cchevali@gmail.com without mutating send state",
+    )
     parser.add_argument("--enable-schedule", action="store_true", help="Create 08:00 local scheduled task")
     parser.add_argument("--check-schedule", action="store_true", help="Verify scheduled task action only")
     parser.add_argument("--task-name", default="OSHA Wally Trial Daily")
@@ -384,6 +497,24 @@ def main() -> None:
 
     customer_arg = args.customer_path if args.customer_path else args.customer
     customer_path = resolve_customer_path(customer_arg, repo_root)
+
+    if args.test_send_daily:
+        # Allow a single "night-before" command: scheduler verification (PC-only) + non-mutating daily test send.
+        if args.doctor_check_scheduler:
+            code = run_doctor(
+                customer_path=customer_path,
+                repo_root=repo_root,
+                task_name=args.task_name,
+                check_scheduler=True,
+            )
+            if code != 0:
+                raise SystemExit(code)
+        run_test_send_daily(db_path=args.db, customer_config=str(customer_path))
+        raise SystemExit(0)
+
+    if args.test_send:
+        run_test_send(db_path=args.db, customer_config=str(customer_path))
+        raise SystemExit(0)
 
     if args.doctor:
         raise SystemExit(

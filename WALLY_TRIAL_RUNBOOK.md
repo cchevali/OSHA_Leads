@@ -16,6 +16,18 @@ py -3 run_wally_trial.py --doctor
 # success markers: DOCTOR_OK and scheduler_check=SKIPPED
 ```
 
+## Night-Before PC Check (Trial Daily)
+
+Run this on the PC that hosts Task Scheduler (PC-only check), and also send a **non-mutating** daily preview to Chase only:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --doctor-check-scheduler
+# success markers:
+# - DOCTOR_OK (and scheduler_check=OK)
+# - TEST_SEND ... state_mutation=NO
+# - QUALITY_SUMMARY variant=daily_new_since_last_send ...
+```
+
 ## Supported Production Setup
 
 Only one production setup is supported:

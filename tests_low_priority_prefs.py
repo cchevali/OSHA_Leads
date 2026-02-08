@@ -39,7 +39,7 @@ class TestLowPriorityPrefs(unittest.TestCase):
 
     def test_low_count_line_renders_when_high_medium_zero(self):
         tier_counts = {"high": 0, "medium": 0, "low": 3}
-        enable_url = "https://example.com/prefs/enable_lows?TOKEN=abc&territory=TX_TRIANGLE_V1"
+        enable_url = "https://example.com/prefs/enable_lows?TOKEN=abc&territory=TX_TRIANGLE_V1&enable_lows=1"
 
         html = generate_digest_html(
             leads=[],
@@ -78,13 +78,19 @@ class TestLowPriorityPrefs(unittest.TestCase):
 
         self.assertIn("Tier summary: High 0, Medium 0, Low 3", html)
         self.assertIn("Low-priority signals available: 3 (not shown).", html)
-        self.assertIn("Enable lows", html)
+        self.assertEqual(1, html.count("Low-priority signals available:"))
+        self.assertIn("Enable lows.", html)
+        self.assertEqual(1, html.count("Enable lows."))
         self.assertIn(enable_url, html)
+        self.assertNotIn("Also observed (not shown)", html)
 
         self.assertIn("Tier summary: High 0, Medium 0, Low 3", text)
         self.assertIn("Low-priority signals available: 3 (not shown).", text)
+        self.assertEqual(1, text.count("Low-priority signals available:"))
         self.assertIn("Enable lows:", text)
+        self.assertEqual(1, text.count("Enable lows:"))
         self.assertIn(enable_url, text)
+        self.assertNotIn("Also observed (not shown)", text)
 
     def test_enable_lows_link_absent_when_no_low_signals(self):
         tier_counts = {"high": 0, "medium": 0, "low": 0}
@@ -105,8 +111,30 @@ class TestLowPriorityPrefs(unittest.TestCase):
             footer_html=self.footer_html,
             summary_label="Newly observed today: 0 signals",
         )
-        self.assertIn("Low-priority signals: 0.", html)
+        self.assertNotIn("Low-priority signals: 0.", html)
         self.assertNotIn("Enable lows", html)
+        self.assertNotIn("Also observed (not shown)", html)
+
+        text = generate_digest_text(
+            leads=[],
+            low_fallback=[],
+            config=self.config,
+            gen_date="2026-02-06",
+            mode="daily",
+            territory_code="TX_TRIANGLE_V1",
+            content_filter="high_medium",
+            include_low_fallback=False,
+            branding=self.branding,
+            tier_counts=tier_counts,
+            enable_lows_url="https://example.com/should_not_render",
+            include_lows=False,
+            low_priority=[],
+            footer_text=self.footer_text,
+            summary_label="Newly observed today: 0 signals",
+        )
+        self.assertNotIn("Low-priority signals: 0.", text)
+        self.assertNotIn("Enable lows", text)
+        self.assertNotIn("Also observed (not shown)", text)
 
     def test_include_lows_preference_changes_rendering(self):
         with tempfile.TemporaryDirectory() as td:
