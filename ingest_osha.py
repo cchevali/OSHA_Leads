@@ -18,7 +18,7 @@ import re
 import sqlite3
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urljoin, urlencode, urlparse
 
@@ -803,7 +803,7 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
     inspection["lead_score"] = calculate_lead_score(inspection)
     inspection["needs_review"] = 1 if check_needs_review(inspection) else 0
     
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     inspection["record_hash"] = compute_record_hash(inspection)
     
     if existing:
@@ -938,7 +938,7 @@ def run_ingestion(
     ensure_inspection_columns(conn)
     
     # Log ingestion run
-    run_started = datetime.utcnow().isoformat()
+    run_started = datetime.now(timezone.utc).isoformat()
     cursor.execute(
         "INSERT INTO ingestion_log (run_started_at, states_queried, since_days, status) VALUES (?, ?, ?, ?)",
         (run_started, ",".join(states), since_days, "running")
@@ -1020,7 +1020,7 @@ def run_ingestion(
                 rows_inserted = ?, rows_updated = ?, errors_count = ?, status = ?
             WHERE id = ?""",
             (
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 stats["results_found"],
                 stats["details_fetched"],
                 stats["rows_inserted"],
