@@ -71,8 +71,12 @@ python run_wally_trial.py wally_trial_tx_triangle_v1.json --doctor
 Behavior:
 - Prints `DOCTOR_OK` (exit `0`) when config/env checks pass.
 - Prints `DOCTOR_FAIL ...` (exit `1`) when a required check fails.
-- Best-effort Task Scheduler check prints `DOCTOR_NOTE scheduler_check=SKIPPED ...` if the task is missing or `schtasks` is unavailable.
-- Best-effort Task Scheduler check fails (`DOCTOR_FAIL scheduler_check=BAD ...`) if a task exists but its `/TR` action does not match the expected `run_wally_trial_daily.bat` action string.
+- Scheduler verification is PC-only (Task Scheduler state lives on the local machine).
+- By default, `--doctor` skips scheduler verification and prints: `DOCTOR_NOTE scheduler_check=SKIPPED (opt-in)`.
+- Opt-in scheduler verification:
+  - `python run_wally_trial.py wally_trial_tx_triangle_v1.json --doctor --doctor-check-scheduler`
+  - Prints `DOCTOR_NOTE scheduler_check=SKIPPED ...` if the task is missing or `schtasks` is unavailable.
+  - Fails (`DOCTOR_FAIL scheduler_check=BAD ...`) if a task exists but its `/TR` action does not match the expected `run_wally_trial_daily.bat` action string.
 ## Reliability Sequence (Before Any Live Send)
 
 Recommended operator sequence before `--send-live` (keeps onboarding email-only and reduces surprises):
@@ -249,4 +253,3 @@ Last verification: 2026-02-05 | python -m unittest -v (OK)
 - Territory health diagnostics (admin-only).
 - Extended analytics or dashboards.
 - Additional gating or volume controls beyond the minimum safeguards above.
-

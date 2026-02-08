@@ -315,7 +315,7 @@ def verify_schedule_action_from_actual(expected_action: str, actual: str | None)
     print(f"SCHEDULE_OK /TR={actual}")
 
 
-def run_doctor(customer_path: Path, repo_root: Path, task_name: str) -> int:
+def run_doctor(customer_path: Path, repo_root: Path, task_name: str, check_scheduler: bool) -> int:
     # Non-sending health check: validate config/env (including SMTP vars) and, if available,
     # verify the Task Scheduler action matches the repo's expected batch runner.
     ok, msg = preflight(customer_path, require_smtp=True)
@@ -323,23 +323,28 @@ def run_doctor(customer_path: Path, repo_root: Path, task_name: str) -> int:
         print(f"DOCTOR_FAIL preflight={msg}")
         return 1
 
-    # Task Scheduler verification (best-effort): do not attempt to create/modify tasks.
-    if "query_task_to_run" in globals() and "build_task_action" in globals():
-        try:
-            batch_path = (repo_root / "run_wally_trial_daily.bat").resolve()
-            expected_action = build_task_action(_sanitize_task_path(batch_path))
-            actual = query_task_to_run(task_name)
-            if not actual:
-                print("DOCTOR_NOTE scheduler_check=SKIPPED (task missing or schtasks unavailable)")
-            elif actual != expected_action:
-                print(f"DOCTOR_FAIL scheduler_check=BAD expected={expected_action} actual={actual}")
-                return 1
-            else:
-                print(f"DOCTOR_NOTE scheduler_check=OK /TR={actual}")
-        except Exception as e:
-            print(f"DOCTOR_NOTE scheduler_check=SKIPPED error={type(e).__name__}")
+    # Scheduler verification runs only on the operator PC (Task Scheduler is local-machine state).
+    # Default: skip so --doctor never calls schtasks unless explicitly opted in.
+    if not check_scheduler:
+        print("DOCTOR_NOTE scheduler_check=SKIPPED (opt-in)")
     else:
-        print("DOCTOR_NOTE scheduler_check=SKIPPED (not implemented)")
+        # Task Scheduler verification (best-effort): do not attempt to create/modify tasks.
+        if "query_task_to_run" in globals() and "build_task_action" in globals():
+            try:
+                batch_path = (repo_root / "run_wally_trial_daily.bat").resolve()
+                expected_action = build_task_action(_sanitize_task_path(batch_path))
+                actual = query_task_to_run(task_name)
+                if not actual:
+                    print("DOCTOR_NOTE scheduler_check=SKIPPED (task missing or schtasks unavailable)")
+                elif actual != expected_action:
+                    print(f"DOCTOR_FAIL scheduler_check=BAD expected={expected_action} actual={actual}")
+                    return 1
+                else:
+                    print(f"DOCTOR_NOTE scheduler_check=OK /TR={actual}")
+            except Exception as e:
+                print(f"DOCTOR_NOTE scheduler_check=SKIPPED error={type(e).__name__}")
+        else:
+            print("DOCTOR_NOTE scheduler_check=SKIPPED (not implemented)")
 
     print("DOCTOR_OK")
     return 0
@@ -364,7 +369,12 @@ def main() -> None:
     parser.add_argument(
         "--doctor",
         action="store_true",
-        help="Non-sending health check (same validations as --preflight-only + scheduler action if present)",
+        help="Non-sending health check (same validations as --preflight-only; scheduler check is opt-in)",
+    )
+    parser.add_argument(
+        "--doctor-check-scheduler",
+        action="store_true",
+        help="When used with --doctor: verify Task Scheduler /TR action via schtasks (operator PC only)",
     )
 
     args = parser.parse_args()
@@ -376,7 +386,14 @@ def main() -> None:
     customer_path = resolve_customer_path(customer_arg, repo_root)
 
     if args.doctor:
-        raise SystemExit(run_doctor(customer_path=customer_path, repo_root=repo_root, task_name=args.task_name))
+        raise SystemExit(
+            run_doctor(
+                customer_path=customer_path,
+                repo_root=repo_root,
+                task_name=args.task_name,
+                check_scheduler=bool(args.doctor_check_scheduler),
+            )
+        )
 
     if args.preflight_only:
         ok, msg = preflight(customer_path, require_smtp=True)

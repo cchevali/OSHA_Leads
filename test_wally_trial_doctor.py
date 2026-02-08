@@ -43,8 +43,10 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 AssertionError("run_live_send should not be called in --doctor mode")
             )
 
-            # Avoid hitting schtasks during test; doctor should treat this as a best-effort skip.
-            run_wally_trial.query_task_to_run = lambda _task_name: None  # type: ignore[assignment]
+            # Plain --doctor must never call schtasks.
+            run_wally_trial.query_task_to_run = lambda _task_name: (_ for _ in ()).throw(  # type: ignore[assignment]
+                AssertionError("query_task_to_run should not be called without --doctor-check-scheduler")
+            )
 
             try:
                 buf = io.StringIO()
@@ -57,6 +59,69 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 out = buf.getvalue()
                 self.assertIn("DOCTOR_OK", out)
                 self.assertNotIn("DOCTOR_FAIL", out)
+                self.assertIn("DOCTOR_NOTE scheduler_check=SKIPPED (opt-in)", out)
+            finally:
+                for k, v in old_vals.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+                run_wally_trial.run_preview_send = orig_preview  # type: ignore[assignment]
+                run_wally_trial.run_live_send = orig_live  # type: ignore[assignment]
+                run_wally_trial.query_task_to_run = orig_query  # type: ignore[assignment]
+                sys.argv = argv0
+
+    def test_doctor_calls_schtasks_only_with_opt_in_flag(self) -> None:
+        cfg = {
+            "brand_name": "Test Brand",
+            "mailing_address": "123 Test St, Test City, TS",
+            "recipients": ["test@example.com"],
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "customer.json"
+            cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+            keys = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS"]
+            old_vals = {k: os.environ.get(k) for k in keys}
+            os.environ["SMTP_HOST"] = "smtp.example.com"
+            os.environ["SMTP_PORT"] = "587"
+            os.environ["SMTP_USER"] = "user"
+            os.environ["SMTP_PASS"] = "pass"
+
+            orig_preview = run_wally_trial.run_preview_send
+            orig_live = run_wally_trial.run_live_send
+            orig_query = run_wally_trial.query_task_to_run
+
+            run_wally_trial.run_preview_send = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[assignment]
+                AssertionError("run_preview_send should not be called in --doctor mode")
+            )
+            run_wally_trial.run_live_send = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[assignment]
+                AssertionError("run_live_send should not be called in --doctor mode")
+            )
+
+            called = {"n": 0}
+            batch_path = (Path(run_wally_trial.__file__).resolve().parent / "run_wally_trial_daily.bat").resolve()
+            expected = run_wally_trial.build_task_action(run_wally_trial._sanitize_task_path(batch_path))
+
+            def _fake_query(task_name: str) -> str | None:
+                called["n"] += 1
+                return expected
+
+            run_wally_trial.query_task_to_run = _fake_query  # type: ignore[assignment]
+
+            try:
+                buf = io.StringIO()
+                argv0 = sys.argv[:]
+                sys.argv = ["run_wally_trial.py", str(cfg_path), "--doctor", "--doctor-check-scheduler"]
+                with redirect_stdout(buf):
+                    with self.assertRaises(SystemExit) as cm:
+                        run_wally_trial.main()
+                self.assertEqual(cm.exception.code, 0)
+                self.assertEqual(called["n"], 1)
+                out = buf.getvalue()
+                self.assertIn("DOCTOR_OK", out)
+                self.assertIn("DOCTOR_NOTE scheduler_check=OK", out)
             finally:
                 for k, v in old_vals.items():
                     if v is None:
