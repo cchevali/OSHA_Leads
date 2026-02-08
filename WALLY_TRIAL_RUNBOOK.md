@@ -2,6 +2,20 @@
 
 Do NOT click Task Scheduler "Run" - it will email Wally. Use `--doctor` or `--preflight-only` for checks.
 
+## Laptop Readiness (No Scheduling)
+
+The laptop is for testing/dev only. Task Scheduler runs on the PC (local machine) that will do the live send.
+
+Canonical readiness sequence (from repo root):
+
+```powershell
+.\run_with_secrets.ps1 --diagnostics --check-decrypt
+# success marker: decrypt_ok=True
+
+py -3 run_wally_trial.py --doctor
+# success markers: DOCTOR_OK and scheduler_check=SKIPPED
+```
+
 ## Supported Production Setup
 
 Only one production setup is supported:
