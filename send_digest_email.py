@@ -250,17 +250,10 @@ def record_render_log(
 
 
 def build_coverage_line(total_counts: dict, shown_counts: dict) -> str:
-    hidden_parts: list[str] = []
-    for label, key in (("high-priority", "high"), ("medium-priority", "medium"), ("low-priority", "low")):
-        total = int(total_counts.get(key, 0))
-        shown = int(shown_counts.get(key, 0))
-        hidden = max(0, total - shown)
-        if hidden > 0:
-            suffix = "signals" if hidden != 1 else "signal"
-            hidden_parts.append(f"{hidden} {label} {suffix}")
-    if not hidden_parts:
-        return ""
-    return "Also observed (not shown): " + ", ".join(hidden_parts) + "."
+    # Coverage lines were previously appended as a second "not shown" sentence.
+    # That duplicated the low-priority CTA.
+    # Keep lows mentioned once via the "Low-priority signals available... Enable lows" line.
+    return ""
 
 def _build_preheader(leads: list[dict]) -> str:
     if not leads:
