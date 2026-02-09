@@ -10,6 +10,7 @@ import sys
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 try:
     from dotenv import load_dotenv
@@ -85,7 +86,75 @@ def preflight(customer_path: Path, require_smtp: bool = True) -> tuple[bool, str
 
     if missing:
         return False, f"CONFIG_ERROR missing variables: {', '.join(missing)}"
+
+    # Best-effort prefs endpoint reachability check. Do not fail preflight; just warn so operators
+    # can see broken prefs endpoints before a run. The digest sender independently disables links
+    # when endpoints are unavailable.
+    prefs_ok, prefs_detail = _prefs_links_reachable(timeout_s=2.0)
+    if not prefs_ok and prefs_detail not in {"env_disabled"}:
+        print(f"PREFS_LINKS_DISABLED detail={prefs_detail}", flush=True)
     return True, "PREFLIGHT_OK"
+
+
+def _prefs_links_reachable(timeout_s: float = 2.0) -> tuple[bool, str]:
+    """
+    Detect whether the unsub prefs endpoints exist and are reachable.
+
+    When disabled/missing/unreachable, callers should set PREFS_LINKS_DISABLED to avoid shipping broken links.
+    """
+    # Unit tests should be deterministic and offline-safe.
+    if "unittest" in sys.modules:
+        return True, "skipped_unittest"
+
+    if os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
+        return False, "env_disabled"
+
+    base_endpoint = (os.getenv("PREFS_ENDPOINT_BASE", "") or "https://unsub.microflowops.com").strip()
+    if not base_endpoint:
+        return False, "missing_base"
+
+    try:
+        parsed = urlparse(base_endpoint)
+        base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
+    except Exception:
+        base = base_endpoint.rstrip("/")
+
+    url = f"{base}/prefs/enable_lows?t=invalid.invalid"
+
+    # Prefer requests (nicer TLS + redirects), fall back to stdlib urllib.
+    try:
+        import requests  # type: ignore
+
+        resp = requests.get(url, timeout=timeout_s, allow_redirects=False)
+        if resp.status_code == 404:
+            return False, "http_404"
+        if resp.status_code >= 500:
+            return False, f"http_{resp.status_code}"
+        return True, f"http_{resp.status_code}"
+    except Exception:
+        pass
+
+    try:
+        import urllib.request
+        import urllib.error
+
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            status = int(getattr(resp, "status", 200))
+            if status == 404:
+                return False, "http_404"
+            if status >= 500:
+                return False, f"http_{status}"
+            return True, f"http_{status}"
+    except urllib.error.HTTPError as e:
+        code = int(getattr(e, "code", 0) or 0)
+        if code == 404:
+            return False, "http_404"
+        if code >= 500:
+            return False, f"http_{code}"
+        return True, f"http_{code}"
+    except Exception as exc:
+        return False, f"error={type(exc).__name__}"
 
 
 def estimate_daily_counts(

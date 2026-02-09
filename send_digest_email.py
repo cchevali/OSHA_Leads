@@ -138,13 +138,25 @@ def _observed_datetime(lead: dict) -> datetime | None:
     return dt
 
 
+def _tz_label(tz: ZoneInfo, dt: datetime | None = None) -> str:
+    """
+    Keep timezone labels short and consistent across header/table.
+    """
+    key = getattr(tz, "key", "") or ""
+    if key in {"America/Chicago", "US/Central"}:
+        return "CT"
+    if dt is None:
+        dt = datetime.now(timezone.utc).astimezone(tz)
+    label = (dt.astimezone(tz)).strftime("%Z")
+    return label or key or "Local"
+
+
 def _observed_timestamp(lead: dict, tz: ZoneInfo) -> str:
     dt = _observed_datetime(lead)
     if not dt:
         return "-"
     local_dt = dt.astimezone(tz)
-    tz_label = "CT" if getattr(tz, "key", "") in {"America/Chicago", "US/Central"} else local_dt.strftime("%Z")
-    return f"{local_dt.strftime('%Y-%m-%d %H:%M')} {tz_label}"
+    return f"{local_dt.strftime('%Y-%m-%d %H:%M')} {_tz_label(tz, local_dt)}"
 
 
 def _priority_label(score: int) -> str:
@@ -252,7 +264,7 @@ def record_render_log(
 def build_coverage_line(total_counts: dict, shown_counts: dict) -> str:
     # Coverage lines were previously appended as a second "not shown" sentence.
     # That duplicated the low-priority CTA.
-    # Keep lows mentioned once via the "Low-priority signals available... Manage preferences" line.
+    # Keep lows mentioned once via the "Low-priority signals available... Enable lows." line.
     return ""
 
 def _build_preheader(leads: list[dict]) -> str:
@@ -1214,31 +1226,104 @@ def build_unsubscribe_payload(
     return f"<{mailto}>, <{one_click_url}>", "List-Unsubscribe=One-Click", one_click_url, signed_token
 
 
-def build_enable_lows_url(signed_token: str, territory_code: str) -> str | None:
+def build_enable_lows_url(signed_token: str) -> str | None:
     """
-    Build a one-click preference URL.
-    Expected server endpoint: /prefs/enable_lows?TOKEN=...&territory=...&enable_lows=1
+    Build a one-click preference URL (canonical).
+    Canonical: https://unsub.microflowops.com/prefs/enable_lows?t=<signed_token>
     """
-    prefs_endpoint = os.getenv("PREFS_ENDPOINT_BASE", "").strip()
-    unsub_endpoint = os.getenv("UNSUB_ENDPOINT_BASE", "").strip()
-    base_endpoint = prefs_endpoint or unsub_endpoint
-    if not (base_endpoint and signed_token and territory_code):
+    if os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
+        return None
+    if not signed_token:
+        return None
+
+    base_endpoint = (os.getenv("PREFS_ENDPOINT_BASE", "") or "https://unsub.microflowops.com").strip()
+    if not base_endpoint:
         return None
 
     try:
         parsed = urlparse(base_endpoint)
-        parsed = parsed._replace(path="/prefs/enable_lows", params="", query="", fragment="")
-        base = urlunparse(parsed)
+        base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
     except Exception:
-        endpoint = base_endpoint.rstrip("/")
-        if endpoint.endswith("/unsubscribe"):
-            base = endpoint.rsplit("/", 1)[0] + "/prefs/enable_lows"
-        else:
-            base = endpoint + "/prefs/enable_lows"
+        base = base_endpoint.rstrip("/")
 
-    qs = urlencode({"TOKEN": signed_token, "territory": territory_code, "enable_lows": "1"})
-    sep = "&" if "?" in base else "?"
-    return f"{base}{sep}{qs}"
+    qs = urlencode({"t": signed_token})
+    return f"{base}/prefs/enable_lows?{qs}"
+
+
+def build_disable_lows_url(signed_token: str) -> str | None:
+    """Canonical: https://unsub.microflowops.com/prefs/disable_lows?t=<signed_token>"""
+    if os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
+        return None
+    if not signed_token:
+        return None
+    base_endpoint = (os.getenv("PREFS_ENDPOINT_BASE", "") or "https://unsub.microflowops.com").strip()
+    if not base_endpoint:
+        return None
+    try:
+        parsed = urlparse(base_endpoint)
+        base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
+    except Exception:
+        base = base_endpoint.rstrip("/")
+    qs = urlencode({"t": signed_token})
+    return f"{base}/prefs/disable_lows?{qs}"
+
+
+def prefs_links_reachable(timeout: float = 2.0) -> tuple[bool, str]:
+    """
+    Best-effort reachability check for prefs endpoints.
+    Returns (ok, detail). ok=False should disable rendering hyperlinks (PREFS_LINKS_DISABLED).
+    """
+    if os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
+        return False, "env_disabled"
+    base_endpoint = (os.getenv("PREFS_ENDPOINT_BASE", "") or "https://unsub.microflowops.com").strip()
+    if not base_endpoint:
+        return False, "missing_base"
+    try:
+        parsed = urlparse(base_endpoint)
+        base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
+    except Exception:
+        base = base_endpoint.rstrip("/")
+
+    # Invalid token should yield 400 on a healthy service (not 404).
+    url = f"{base}/prefs/enable_lows?t=invalid.invalid"
+    try:
+        import requests  # type: ignore
+
+        resp = requests.get(url, timeout=timeout, allow_redirects=False)
+        if resp.status_code == 404:
+            return False, "http_404"
+        if resp.status_code >= 500:
+            return False, f"http_{resp.status_code}"
+        return True, f"http_{resp.status_code}"
+    except Exception as exc:
+        return False, f"error={type(exc).__name__}"
+
+
+def create_and_register_prefs_token(
+    recipient: str,
+    prefs_campaign_id: str,
+    dry_run: bool,
+) -> str | None:
+    """
+    Create a signed token and register it with the remote unsub service.
+    Uses campaign_id to carry territory metadata for prefs endpoints.
+    """
+    try:
+        token = create_unsub_token(recipient, prefs_campaign_id)
+    except Exception:
+        return None
+    ok, status, err = register_unsub_token(
+        token,
+        recipient,
+        prefs_campaign_id,
+        dry_run,
+        retries=2,
+        timeout=5,
+    )
+    if not ok:
+        print(f"[WARN] prefs registration failed (status={status}, error={err})")
+        return None
+    return token
 
 
 def write_tier_audit_artifact(
@@ -1313,17 +1398,20 @@ def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, 
     if not rows:
         return "<p><em>No leads match this section.</em></p>"
 
-    parts = ['<table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%;">']
+    parts = ['<table class="signals-table" border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%;">']
+    parts.append("<thead>")
     if include_area_office:
-        parts.append("<tr><th>Priority</th><th>Company</th><th>City</th><th>Area Office</th><th>Signal</th><th>Observed</th><th>Opened</th></tr>")
+        parts.append("<tr><th>Priority</th><th>Company</th><th>City</th><th>Area Office</th><th>Signal</th><th>Observed</th><th>Event date</th></tr>")
     else:
-        parts.append("<tr><th>Priority</th><th>Company</th><th>City</th><th>Signal</th><th>Observed</th><th>Opened</th></tr>")
+        parts.append("<tr><th>Priority</th><th>Company</th><th>City</th><th>Signal</th><th>Observed</th><th>Event date</th></tr>")
+    parts.append("</thead>")
+    parts.append("<tbody>")
     for lead in rows[:max_rows]:
         company = (lead.get("establishment_name") or "Unknown")[:48]
         city = lead.get("site_city") or "-"
         state = lead.get("site_state") or "-"
         itype = lead.get("inspection_type") or "-"
-        date_opened = lead.get("date_opened") or "-"
+        event_date = lead.get("date_opened") or "-"
         observed = _observed_timestamp(lead, tz)
         score = int(lead.get("lead_score") or 0)
         priority = _priority_label(score)
@@ -1332,12 +1420,28 @@ def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, 
         if include_area_office:
             area_office = lead.get("area_office") or ""
             parts.append(
-                f"<tr><td>{priority}</td><td>{company_html}</td><td>{city}, {state}</td><td>{area_office}</td><td>{itype}</td><td>{observed}</td><td>{date_opened}</td></tr>"
+                "<tr>"
+                f"<td data-label=\"Priority\">{priority}</td>"
+                f"<td data-label=\"Company\">{company_html}</td>"
+                f"<td data-label=\"City\">{city}, {state}</td>"
+                f"<td data-label=\"Area office\">{area_office}</td>"
+                f"<td data-label=\"Signal\">{itype}</td>"
+                f"<td data-label=\"Observed\">{observed}</td>"
+                f"<td data-label=\"Event date\">{event_date}</td>"
+                "</tr>"
             )
         else:
             parts.append(
-                f"<tr><td>{priority}</td><td>{company_html}</td><td>{city}, {state}</td><td>{itype}</td><td>{observed}</td><td>{date_opened}</td></tr>"
+                "<tr>"
+                f"<td data-label=\"Priority\">{priority}</td>"
+                f"<td data-label=\"Company\">{company_html}</td>"
+                f"<td data-label=\"City\">{city}, {state}</td>"
+                f"<td data-label=\"Signal\">{itype}</td>"
+                f"<td data-label=\"Observed\">{observed}</td>"
+                f"<td data-label=\"Event date\">{event_date}</td>"
+                "</tr>"
             )
+    parts.append("</tbody>")
     parts.append("</table>")
     return "\n".join(parts)
 
@@ -1401,19 +1505,44 @@ def generate_digest_html(
         # Ensure low-priority rows are never present in the HTML unless the preference is enabled.
         low_priority = []
 
+    # If prefs links are known-bad (doctor/preflight), never render hyperlinks.
+    if os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
+        enable_lows_url = None
+        snapshot_enable_lows_url = None
+
     html: list[str] = []
+    tz_label = _tz_label(tz)
+
     html.append("<!DOCTYPE html>")
-    html.append("<html><head><meta charset=\"utf-8\"></head>")
+    html.append("<html><head>")
+    html.append("<meta charset=\"utf-8\">")
+    html.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">")
+    # Email clients vary in CSS support; keep it small and safe.
+    html.append(
+        "<style>"
+        "@media only screen and (max-width: 560px){"
+        "body{padding:12px !important;}"
+        ".digest-card{padding:16px !important;}"
+        ".signals-table thead{display:none !important;}"
+        ".signals-table,.signals-table tbody,.signals-table tr,.signals-table td{display:block !important;width:100% !important;}"
+        ".signals-table tr{border:1px solid #d1d5db !important;border-radius:10px !important;margin:0 0 10px 0 !important;overflow:hidden !important;}"
+        ".signals-table td{border:none !important;border-bottom:1px solid #e5e7eb !important;padding:10px 12px !important;}"
+        ".signals-table td:last-child{border-bottom:none !important;}"
+        ".signals-table td::before{content:attr(data-label);display:block;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6b7280;font-weight:700;margin-bottom:4px;}"
+        "}"
+        "</style>"
+    )
+    html.append("</head>")
     html.append('<body style="font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f7f9fc;">')
     html.append(
         f'<span style="display:none;visibility:hidden;opacity:0;color:transparent;height:0;width:0;max-height:0;max-width:0;overflow:hidden;">{preheader}</span>'
     )
-    html.append('<div style="background-color: #ffffff; padding: 24px; border-radius: 8px;">')
+    html.append('<div class="digest-card" style="background-color: #ffffff; padding: 24px; border-radius: 8px;">')
 
     html.append(f"<h1 style=\"margin-top: 0; color: #1a1a2e;\">OSHA Lead Digest ({mode_label})</h1>")
     if report_label:
         html.append(f"<p style=\"color: #1a1a2e;\"><strong>{report_label}</strong></p>")
-    html.append(f"<p style=\"color: #555;\">{gen_date} | {'/'.join(states)}</p>")
+    html.append(f"<p style=\"color: #555;\">{gen_date} | {'/'.join(states)} | {tz_label}</p>")
     if territory_label:
         html.append(f"<p style=\"color: #555;\"><strong>Territory:</strong> {territory_label}</p>")
 
@@ -1439,7 +1568,10 @@ def generate_digest_html(
                 html.append(
                     "<p style=\"color: #555; margin: 6px 0 0 0;\">"
                     f"Low-priority signals available: {low} (not shown). "
-                    f"<a href=\"{enable_lows_url}\">Enable lows.</a>"
+                    f"<a href=\"{enable_lows_url}\" "
+                    "style=\"display: inline-block; margin-left: 8px; background: #0b5fff; color: #ffffff; "
+                    "text-decoration: none; padding: 8px 12px; border-radius: 8px; font-weight: 700;\">"
+                    "Enable lows.</a>"
                     "</p>"
                 )
             else:
@@ -1447,7 +1579,17 @@ def generate_digest_html(
                     f"<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals available: {low} (not shown). Enable lows.</p>"
                 )
     if coverage_line:
-        html.append(f"<p style=\"color: #555;\">{coverage_line}</p>")
+        cov = (coverage_line or "").strip()
+        if cov.lower() == "sample format (dummy data)":
+            html.append(
+                "<p style=\"margin: 10px 0 0 0;\">"
+                "<span style=\"display:inline-block; font-size:12px; color:#374151; "
+                "background:#f3f4f6; border:1px solid #e5e7eb; padding:4px 10px; border-radius:999px;\">"
+                "Sample format (dummy data)"
+                "</span></p>"
+            )
+        else:
+            html.append(f"<p style=\"color: #555;\">{coverage_line}</p>")
 
     if len(leads) == 0 and mode == "daily":
         territory_text = territory_label or "/".join(states)
@@ -1481,7 +1623,7 @@ def generate_digest_html(
             html.append(
                 "<p style=\"margin: 14px 0 0 0; color: #555; font-size: 12px;\">"
                 "More signals available. Some were omitted to keep this email under Gmail clipping limits. "
-                "Manage preferences in the digest header, or reply to adjust."
+                "Adjust preferences or reply to adjust."
                 "</p>"
             )
 
@@ -1516,7 +1658,10 @@ def generate_digest_html(
             html.append(
                 "<p style=\"color: #555; margin: 6px 0 0 0;\">"
                 f"Low-priority signals available: {sl} (not shown). "
-                f"<a href=\"{snapshot_enable_lows_url}\">Enable lows.</a>"
+                f"<a href=\"{snapshot_enable_lows_url}\" "
+                "style=\"display: inline-block; margin-left: 8px; background: #0b5fff; color: #ffffff; "
+                "text-decoration: none; padding: 8px 12px; border-radius: 8px; font-weight: 700;\">"
+                "Enable lows.</a>"
                 "</p>"
             )
         # Snapshot rows should already be filtered to priority only (no low DOM when lows disabled).
@@ -1585,6 +1730,10 @@ def generate_digest_text(
     if not include_lows:
         low_priority = []
 
+    if os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
+        enable_lows_url = None
+        snapshot_enable_lows_url = None
+
     lines = [
         f"OSHA Lead Digest ({mode_label}) - {gen_date}",
         f"Coverage: {'/'.join(states)}",
@@ -1593,6 +1742,7 @@ def generate_digest_text(
         lines.append(report_label)
     if territory_label:
         lines.append(f"Territory: {territory_label}")
+    lines.append(f"Times: {_tz_label(tz)}")
     lines.append("=" * 70)
     lines.append(summary_line)
     if mode == "daily" and tier_counts is not None:
@@ -1614,7 +1764,11 @@ def generate_digest_text(
             else:
                 lines.append(f"Low-priority signals available: {low} (not shown). Enable lows.")
     if coverage_line:
-        lines.append(coverage_line)
+        cov = (coverage_line or "").strip()
+        if cov.lower() == "sample format (dummy data)":
+            lines.append("[Sample format (dummy data)]")
+        else:
+            lines.append(coverage_line)
 
     if len(leads) == 0 and mode == "daily":
         territory_text = territory_label or "/".join(states)
@@ -1691,7 +1845,7 @@ def generate_digest_text(
                 f"  Priority: {priority} | Signal: {(lead.get('inspection_type') or '-')}"
             )
             lines.append(
-                f"  Observed: {_observed_timestamp(lead, tz)} | Opened: {(lead.get('date_opened') or '-')}"
+                f"  Observed: {_observed_timestamp(lead, tz)} | Event date: {(lead.get('date_opened') or '-')}"
             )
             lines.append(f"  {(lead.get('source_url') or '#')}")
 
@@ -1700,7 +1854,7 @@ def generate_digest_text(
             lines.append("")
             lines.append(
                 "More signals available. Some were omitted to keep this email short. "
-                "Manage preferences in the digest header, or reply to adjust."
+                "Adjust preferences or reply to adjust."
             )
 
         if include_low_fallback and low_fallback:
@@ -2416,6 +2570,19 @@ def main() -> None:
     suppressed_emails: list[str] = []
     prefs_territory = (territory_code or "").strip() or ("/".join(states) if states else "")
 
+    prefs_checked = False
+    prefs_ok = True
+    prefs_detail = ""
+    if args.mode == "daily" and content_filter not in {"all", "low"}:
+        low_total = int(tier_counts.get("low", 0)) if tier_counts else 0
+        low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_tier_counts else 0
+        if (low_total > 0 or low_snapshot > 0) and os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() not in {"1", "true", "yes"}:
+            prefs_checked = True
+            prefs_ok, prefs_detail = prefs_links_reachable(timeout=2.0)
+            if not prefs_ok:
+                print(f"PREFS_LINKS_DISABLED detail={prefs_detail}")
+                os.environ["PREFS_LINKS_DISABLED"] = "1"
+
     for recipient in recipients:
         if pilot_mode and recipient not in whitelist:
             logger.warning("PILOT MODE: skipping %s (not in whitelist)", recipient)
@@ -2489,28 +2656,23 @@ def main() -> None:
                 include_lows_pref = False
 
         enable_lows_url = None
-        if (
-            args.mode == "daily"
-            and tier_counts is not None
-            and int(tier_counts.get("low", 0)) > 0
-            and not include_lows_pref
-            and content_filter not in {"all", "low"}
-            and signed_token
-            and prefs_territory
-        ):
-            enable_lows_url = build_enable_lows_url(signed_token, prefs_territory)
-
         snapshot_enable_lows_url = None
-        if (
-            snapshot_label
-            and snapshot_tier_counts is not None
-            and int(snapshot_tier_counts.get("low", 0)) > 0
-            and not include_lows_pref
-            and content_filter not in {"all", "low"}
-            and signed_token
-            and prefs_territory
-        ):
-            snapshot_enable_lows_url = build_enable_lows_url(signed_token, prefs_territory)
+        prefs_token = None
+        if args.mode == "daily" and prefs_territory and not include_lows_pref and content_filter not in {"all", "low"}:
+            low_total = int(tier_counts.get("low", 0)) if tier_counts else 0
+            low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_tier_counts else 0
+            if (low_total > 0 or low_snapshot > 0) and os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() not in {"1", "true", "yes"}:
+                prefs_campaign_id = f"prefs|{customer_id}|terr={prefs_territory}"
+                prefs_token = create_and_register_prefs_token(
+                    recipient=recipient,
+                    prefs_campaign_id=prefs_campaign_id,
+                    dry_run=args.dry_run,
+                )
+                if prefs_token:
+                    enable_lows_url = build_enable_lows_url(prefs_token)
+                    snapshot_enable_lows_url = build_enable_lows_url(prefs_token) if snapshot_label else None
+                    if enable_lows_url:
+                        print("PREFS_LINK_BUILT host=unsub.microflowops.com path=/prefs/enable_lows query=t")
 
         footer_disclaimer = "This report contains public OSHA inspection data for informational purposes only. Not legal advice."
         footer_text = build_footer_text(
@@ -2744,7 +2906,7 @@ def main() -> None:
                     raise SystemExit("SMOKE_ASSERT_FAIL enable_lows_url missing (need PREFS_ENDPOINT_BASE or UNSUB_ENDPOINT_BASE)")
                 if html_body.count("Low-priority signals available:") != 1:
                     raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Low-priority signals available' in HTML")
-                if html_body.count("Enable lows.") != 1:
+                if html_body.count("Enable lows.</a>") != 1:
                     raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows.' CTA label in HTML")
                 if "prefs/enable_lows" not in html_body:
                     raise SystemExit("SMOKE_ASSERT_FAIL prefs link path missing in HTML")
@@ -2757,7 +2919,7 @@ def main() -> None:
                     raise SystemExit("SMOKE_ASSERT_FAIL snapshot_enable_lows_url missing (need PREFS_ENDPOINT_BASE or UNSUB_ENDPOINT_BASE)")
                 if html_body.count("Low-priority signals available:") != 1:
                     raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Low-priority signals available' in HTML (snapshot)")
-                if html_body.count("Enable lows.") != 1:
+                if html_body.count("Enable lows.</a>") != 1:
                     raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows.' CTA label in HTML (snapshot)")
                 if text_body.count("Low-priority signals available:") != 1:
                     raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Low-priority signals available' in text (snapshot)")

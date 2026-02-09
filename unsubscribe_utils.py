@@ -178,14 +178,29 @@ def verify_unsub_token(signed_token: str) -> str | None:
 
 
 def lookup_email_for_token(token_id: str) -> str | None:
+    record = lookup_token_record(token_id)
+    if not record:
+        return None
+    email = (record.get("email") or "").strip().lower()
+    return email or None
+
+
+def lookup_token_record(token_id: str) -> dict | None:
+    """
+    Return token metadata from unsub_tokens.csv.
+    Keys: email, campaign_id, created_at (when available).
+    """
     if not UNSUB_TOKEN_STORE_PATH.exists():
         return None
     with open(UNSUB_TOKEN_STORE_PATH, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if (row.get("token_id") or "").strip() == token_id:
-                email = (row.get("email") or "").strip().lower()
-                return email or None
+                return {
+                    "email": (row.get("email") or "").strip().lower(),
+                    "campaign_id": (row.get("campaign_id") or "").strip(),
+                    "created_at": (row.get("created_at") or "").strip(),
+                }
     return None
 
 

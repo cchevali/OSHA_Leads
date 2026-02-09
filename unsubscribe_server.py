@@ -18,6 +18,7 @@ from unsubscribe_utils import (
     add_to_suppression,
     is_suppressed_email,
     lookup_email_for_token,
+    lookup_token_record,
     sign_check,
     sign_registration,
     sign_stats,
@@ -164,50 +165,127 @@ class UnsubHandler(BaseHTTPRequestHandler):
             self.wfile.write(body.encode("utf-8"))
             return
 
-        if path == "/prefs/enable_lows":
-            token = (params.get("TOKEN") or params.get("token") or [""])[0]
-            raw_territory = (params.get("territory") or [""])[0]
-            token_id = verify_unsub_token(token)
-            if not token_id:
-                self.send_response(HTTPStatus.BAD_REQUEST)
-                self.end_headers()
-                self.wfile.write(b"Invalid link.")
-                return
-
-            email = lookup_email_for_token(token_id)
-            if not email:
-                self.send_response(HTTPStatus.NOT_FOUND)
-                self.end_headers()
-                self.wfile.write(b"Invalid or expired token.")
-                return
-
-            territory_code, territory_display = _resolve_territory(raw_territory)
-            if not territory_code:
-                self.send_response(HTTPStatus.BAD_REQUEST)
-                self.end_headers()
-                self.wfile.write(b"Invalid territory.")
-                return
-
-            set_include_lows_pref(email=email, territory=territory_code, include_lows=True, source="one_click")
-            from datetime import datetime, timezone
-            ts = datetime.now(timezone.utc).isoformat()
-            print(
-                f"[AUDIT] prefs_enable_lows email={email} territory={territory_code} source=one_click ip={ip} at={ts}"
-            )
-
+        def _render_html(title: str, inner_html: str, status: int = 200) -> None:
             body = (
                 "<!doctype html><html><head><meta charset=\"utf-8\">"
-                "<title>Preference updated</title></head><body style=\"font-family: Arial, sans-serif; padding: 24px;\">"
-                f"<h1 style=\"margin-top: 0;\">Preference updated</h1>"
-                f"<p>You will receive low-priority signals in future digests for <strong>{territory_display or territory_code}</strong>. You can disable at any time.</p>"
-                "</body></html>"
+                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                f"<title>{title}</title></head>"
+                "<body style=\"font-family: Arial, sans-serif; padding: 24px; background: #f7f9fc;\">"
+                "<div style=\"max-width: 720px; margin: 0 auto; background: #ffffff; border: 1px solid #e5e7eb; "
+                "border-radius: 12px; padding: 20px;\">"
+                "<div style=\"font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: #6b7280;\">"
+                "MicroFlowOps</div>"
+                f"<h1 style=\"margin: 10px 0 0 0; font-size: 22px; color: #111827;\">{title}</h1>"
+                f"{inner_html}"
+                "</div></body></html>"
             )
             data = body.encode("utf-8")
-            self.send_response(HTTPStatus.OK)
+            self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+
+        def _parse_prefs_territory(campaign_id: str) -> tuple[str | None, str | None]:
+            # Expected campaign_id: prefs|<customer_id>|terr=TX_TRIANGLE_V1
+            text = (campaign_id or "").strip()
+            parts = [p.strip() for p in text.split("|") if p.strip()]
+            terr = None
+            for p in parts:
+                if p.lower().startswith("terr="):
+                    terr = p.split("=", 1)[1].strip()
+                    break
+            if not terr:
+                return None, None
+            return _resolve_territory(terr)
+
+        def _token_is_expired(created_at: str) -> bool:
+            from datetime import datetime, timezone, timedelta
+
+            try:
+                ttl_days = int(os.getenv("UNSUB_TOKEN_TTL_DAYS", "45"))
+            except Exception:
+                ttl_days = 45
+            if ttl_days <= 0:
+                return False
+            if not created_at:
+                return False
+            try:
+                ts_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                if ts_dt.tzinfo is None:
+                    ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                return False
+            cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
+            return ts_dt < cutoff
+
+        if path in {"/prefs/enable_lows", "/prefs/disable_lows"}:
+            signed = (params.get("t") or params.get("TOKEN") or params.get("token") or [""])[0].strip()
+            token_id = verify_unsub_token(signed)
+            if not token_id:
+                _render_html(
+                    "Invalid link",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is invalid. Please request a fresh email.</p>",
+                    status=int(HTTPStatus.BAD_REQUEST),
+                )
+                return
+
+            record = lookup_token_record(token_id) or {}
+            email = (record.get("email") or "").strip().lower()
+            campaign_id = (record.get("campaign_id") or "").strip()
+            created_at = (record.get("created_at") or "").strip()
+            if not email:
+                _render_html(
+                    "Link expired",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is expired. Please request a fresh email.</p>",
+                    status=int(HTTPStatus.NOT_FOUND),
+                )
+                return
+            if _token_is_expired(created_at):
+                _render_html(
+                    "Link expired",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is expired. Please request a fresh email.</p>",
+                    status=int(HTTPStatus.NOT_FOUND),
+                )
+                return
+
+            territory_code, territory_display = _parse_prefs_territory(campaign_id)
+            if not territory_code:
+                _render_html(
+                    "Invalid link",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is missing territory information. Please request a fresh email.</p>",
+                    status=int(HTTPStatus.BAD_REQUEST),
+                )
+                return
+
+            include = path.endswith("/enable_lows")
+            set_include_lows_pref(
+                email=email,
+                territory=territory_code,
+                include_lows=include,
+                source="prefs_enable_lows" if include else "prefs_disable_lows",
+            )
+
+            from datetime import datetime, timezone
+            import hashlib
+
+            ts = datetime.now(timezone.utc).isoformat()
+            email_tag = hashlib.sha256(email.encode("utf-8")).hexdigest()[:10]
+            action = "enable_lows" if include else "disable_lows"
+            print(f"[AUDIT] prefs_{action} email_sha={email_tag} territory={territory_code} ip={ip} at={ts}")
+
+            other_path = "/prefs/disable_lows" if include else "/prefs/enable_lows"
+            other_label = "Disable lows" if include else "Enable lows"
+            inner = (
+                "<p style=\"color:#374151; margin-top: 12px;\">"
+                f"Preference updated for <strong>{territory_display or territory_code}</strong>."
+                "</p>"
+                f"<p style=\"margin-top: 14px;\"><a href=\"{other_path}?t={signed}\" "
+                "style=\"display:inline-block; background:#0b5fff; color:#ffffff; text-decoration:none; "
+                "padding:10px 14px; border-radius:10px; font-weight:700;\">"
+                f"{other_label}</a></p>"
+            )
+            _render_html("Preference updated", inner, status=int(HTTPStatus.OK))
             return
 
         self.send_response(HTTPStatus.NOT_FOUND)
@@ -217,11 +295,12 @@ class UnsubHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         # Make verification curl -I predictable.
         parsed = urlparse(self.path)
-        if parsed.path.rstrip("/") != "/unsubscribe":
-            self.send_response(HTTPStatus.NOT_FOUND)
+        path = parsed.path.rstrip("/")
+        if path in {"/unsubscribe", "/prefs/enable_lows", "/prefs/disable_lows"}:
+            self.send_response(HTTPStatus.OK)
             self.end_headers()
             return
-        self.send_response(HTTPStatus.OK)
+        self.send_response(HTTPStatus.NOT_FOUND)
         self.end_headers()
 
     def do_POST(self):

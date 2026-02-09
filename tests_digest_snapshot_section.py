@@ -121,7 +121,7 @@ class TestDigestSnapshotSection(unittest.TestCase):
             }
         ]
         snap_tiers = {"high": 1, "medium": 0, "low": 3}
-        enable_url = "https://example.com/prefs/enable_lows?TOKEN=abc&territory=TX_TRIANGLE_V1&enable_lows=1"
+        enable_url = "https://unsub.microflowops.com/prefs/enable_lows?t=abc.def"
 
         html = generate_digest_html(
             leads=[],
@@ -147,7 +147,7 @@ class TestDigestSnapshotSection(unittest.TestCase):
             snapshot_total=1,
         )
         self.assertEqual(1, html.count("Low-priority signals available:"))
-        self.assertEqual(1, html.count("Enable lows."))
+        self.assertEqual(1, html.count("Enable lows.</a>"))
         self.assertIn(enable_url, html)
         self.assertNotIn("Also observed (not shown)", html)
 
@@ -182,4 +182,3 @@ class TestDigestSnapshotSection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

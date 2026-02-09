@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
 
 from email_footer import build_footer_html, build_footer_text
@@ -39,7 +40,7 @@ class TestLowPriorityPrefs(unittest.TestCase):
 
     def test_low_count_line_renders_when_high_medium_zero(self):
         tier_counts = {"high": 0, "medium": 0, "low": 3}
-        enable_url = "https://example.com/prefs/enable_lows?TOKEN=abc&territory=TX_TRIANGLE_V1&enable_lows=1"
+        enable_url = "https://unsub.microflowops.com/prefs/enable_lows?t=abc.def"
 
         html = generate_digest_html(
             leads=[],
@@ -80,7 +81,7 @@ class TestLowPriorityPrefs(unittest.TestCase):
         self.assertIn("Low-priority signals available: 3 (not shown).", html)
         self.assertEqual(1, html.count("Low-priority signals available:"))
         self.assertIn("Enable lows.", html)
-        self.assertEqual(1, html.count("Enable lows."))
+        self.assertEqual(1, html.count("Enable lows.</a>"))
         self.assertIn(enable_url, html)
         self.assertNotIn("Also observed (not shown)", html)
 
@@ -91,6 +92,60 @@ class TestLowPriorityPrefs(unittest.TestCase):
         self.assertEqual(1, text.count("Enable lows:"))
         self.assertIn(enable_url, text)
         self.assertNotIn("Also observed (not shown)", text)
+
+    def test_prefs_links_disabled_drops_hyperlink(self):
+        tier_counts = {"high": 0, "medium": 0, "low": 2}
+        enable_url = "https://unsub.microflowops.com/prefs/enable_lows?t=abc.def"
+        try:
+            os.environ["PREFS_LINKS_DISABLED"] = "1"
+            html = generate_digest_html(
+                leads=[],
+                low_fallback=[],
+                config=self.config,
+                gen_date="2026-02-06",
+                mode="daily",
+                territory_code="TX_TRIANGLE_V1",
+                content_filter="high_medium",
+                include_low_fallback=False,
+                branding=self.branding,
+                tier_counts=tier_counts,
+                enable_lows_url=enable_url,
+                include_lows=False,
+                low_priority=[],
+                footer_html=self.footer_html,
+                summary_label="Newly observed today: 0 signals",
+            )
+            text = generate_digest_text(
+                leads=[],
+                low_fallback=[],
+                config=self.config,
+                gen_date="2026-02-06",
+                mode="daily",
+                territory_code="TX_TRIANGLE_V1",
+                content_filter="high_medium",
+                include_low_fallback=False,
+                branding=self.branding,
+                tier_counts=tier_counts,
+                enable_lows_url=enable_url,
+                include_lows=False,
+                low_priority=[],
+                footer_text=self.footer_text,
+                summary_label="Newly observed today: 0 signals",
+            )
+        finally:
+            try:
+                del os.environ["PREFS_LINKS_DISABLED"]
+            except Exception:
+                pass
+
+        self.assertIn("Low-priority signals available: 2 (not shown).", html)
+        self.assertIn("Enable lows.", html)
+        self.assertEqual(0, html.count("Enable lows.</a>"))
+        self.assertNotIn("prefs/enable_lows", html)
+
+        self.assertIn("Low-priority signals available: 2 (not shown).", text)
+        self.assertIn("Enable lows.", text)
+        self.assertNotIn("prefs/enable_lows", text)
 
     def test_enable_lows_link_absent_when_no_low_signals(self):
         tier_counts = {"high": 0, "medium": 0, "low": 0}
@@ -174,7 +229,7 @@ class TestLowPriorityPrefs(unittest.TestCase):
                 include_low_fallback=False,
                 branding=self.branding,
                 tier_counts=tier_counts,
-                enable_lows_url="https://example.com/prefs/enable_lows?TOKEN=abc&territory=TX_TRIANGLE_V1",
+                enable_lows_url="https://unsub.microflowops.com/prefs/enable_lows?t=abc.def",
                 include_lows=include_lows,
                 low_priority=low_priority,
                 footer_html=self.footer_html,

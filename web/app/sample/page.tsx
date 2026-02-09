@@ -112,8 +112,22 @@ export default function SamplePage() {
       </section>
 
       <section className="mx-auto w-full max-w-5xl px-6">
-        <div className="rounded-3xl border border-dashed border-black/20 bg-white/70 p-10 text-center text-sm text-inkMuted">
-          Screenshot slot for an approved customer alert preview
+        <div className="rounded-3xl border border-black/10 bg-white/90 p-6 shadow-soft">
+          <p className="text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">Sample format</p>
+          <h3 className="mt-2 font-display text-2xl text-ink">Digest preview (dummy data)</h3>
+          <p className="mt-2 text-sm text-inkMuted">
+            Cropped from a real digest render to show the header, tier summary, preferences, signals, and compliance
+            footer.
+          </p>
+          <div className="mt-6 flex justify-center">
+            {/* Plain <img> keeps this page simple and avoids extra Next/Image config. */}
+            <img
+              src="/assets/sample-digest-preview.png"
+              alt="Sample OSHA Lead Digest preview (dummy data)"
+              className="w-full max-w-[480px] rounded-2xl border border-black/10 bg-white shadow-soft"
+              loading="lazy"
+            />
+          </div>
         </div>
       </section>
 
