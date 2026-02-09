@@ -5,6 +5,7 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+import re
 from urllib.parse import urlparse, parse_qs, urlencode
 
 # Load environment variables from .env if available
@@ -120,6 +121,26 @@ def _rate_limited(ip: str) -> bool:
     count += 1
     _rate_state[ip] = (window_start, count)
     return count > RATE_LIMIT_MAX_REQ
+
+
+_RE_TERRITORY_CODE = re.compile(r"^[A-Z0-9_]{2,64}$")
+_RE_SUBSCRIBER_KEY = re.compile(r"^[a-z0-9_]{2,80}$")
+
+
+def _normalize_territory_code(value: str | None) -> str:
+    return (value or "").strip().upper()
+
+
+def _normalize_subscriber_key(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _valid_territory_code(value: str) -> bool:
+    return bool(value) and bool(_RE_TERRITORY_CODE.match(value))
+
+
+def _valid_subscriber_key(value: str) -> bool:
+    return bool(value) and bool(_RE_SUBSCRIBER_KEY.match(value))
 
 
 class UnsubHandler(BaseHTTPRequestHandler):
@@ -251,20 +272,20 @@ class UnsubHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            subscriber_key = (params.get("subscriber_key") or [""])[0].strip().lower()
-            territory_raw = (params.get("territory_code") or [""])[0].strip()
-            if not territory_raw:
+            subscriber_key = _normalize_subscriber_key((params.get("subscriber_key") or [""])[0])
+            territory_code = _normalize_territory_code((params.get("territory_code") or [""])[0])
+
+            if not territory_code:
                 _render_html(
                     "Invalid link",
                     "<p style=\"color:#374151; margin-top: 12px;\">This preference link is missing territory_code. Please request a fresh email.</p>",
                     status=int(HTTPStatus.BAD_REQUEST),
                 )
                 return
-            territory_code, territory_display = _resolve_territory(territory_raw)
-            if not territory_code:
+            if not _valid_territory_code(territory_code):
                 _render_html(
                     "Invalid link",
-                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid territory_code. Please request a fresh email.</p>",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid territory_code format. Please request a fresh email.</p>",
                     status=int(HTTPStatus.BAD_REQUEST),
                 )
                 return
@@ -276,33 +297,21 @@ class UnsubHandler(BaseHTTPRequestHandler):
                     status=int(HTTPStatus.BAD_REQUEST),
                 )
                 return
-
-            # Validate subscriber_key against the token's email + territory scope.
-            from hashlib import sha1
-
-            expected_digest = sha1(f"{territory_code.lower()}|{email.lower()}".encode("utf-8")).hexdigest()[:10]
-            expected_key = f"sub_{territory_code.lower()}_{expected_digest}"
-            if subscriber_key != expected_key:
+            if not _valid_subscriber_key(subscriber_key):
                 _render_html(
                     "Invalid link",
-                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid subscriber_key. Please request a fresh email.</p>",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid subscriber_key format. Please request a fresh email.</p>",
                     status=int(HTTPStatus.BAD_REQUEST),
                 )
                 return
 
-            # Optional hardening: if the server-side campaign_id carries a resolvable territory, require it to match.
-            campaign_terr, _campaign_disp = _parse_prefs_territory(campaign_id)
-            if campaign_terr and campaign_terr != territory_code:
-                _render_html(
-                    "Invalid link",
-                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has mismatched territory information. Please request a fresh email.</p>",
-                    status=int(HTTPStatus.BAD_REQUEST),
-                )
-                return
+            # Best-effort display label: if territory_code is known, show a friendly name; else show the code.
+            _resolved_code, territory_display = _resolve_territory(territory_code)
 
             include = path.endswith("/enable_lows")
             set_include_lows_pref(
                 email=email,
+                subscriber_key=subscriber_key,
                 territory=territory_code,
                 include_lows=include,
                 source="prefs_enable_lows" if include else "prefs_disable_lows",

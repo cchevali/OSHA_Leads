@@ -2665,7 +2665,7 @@ def main() -> None:
         include_lows_pref = False
         if args.mode == "daily" and prefs_territory and not args.smoke_cchevali:
             try:
-                include_lows_pref = bool(get_include_lows_pref(recipient, prefs_territory))
+                include_lows_pref = bool(get_include_lows_pref(recipient, subscriber_key, prefs_territory))
             except Exception:
                 include_lows_pref = False
 

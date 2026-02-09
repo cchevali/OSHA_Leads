@@ -204,12 +204,13 @@ class TestLowPriorityPrefs(unittest.TestCase):
             territory = "TX_TRIANGLE_V1"
             set_include_lows_pref(
                 email=email,
+                subscriber_key=None,
                 territory=territory,
                 include_lows=True,
                 source="one_click",
                 prefs_path=prefs_path,
             )
-            include_lows = get_include_lows_pref(email=email, territory=territory, prefs_path=prefs_path)
+            include_lows = get_include_lows_pref(email=email, subscriber_key=None, territory=territory, prefs_path=prefs_path)
             self.assertTrue(include_lows)
 
             tier_counts = {"high": 0, "medium": 0, "low": 1}

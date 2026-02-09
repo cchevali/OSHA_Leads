@@ -91,9 +91,9 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         territory = "TX_TRIANGLE_V1"
         campaign_id = f"prefs|wally_trial|terr={territory}"
         token = unsubscribe_utils.create_unsub_token(email, campaign_id)
-        import hashlib
-        digest = hashlib.sha1(f"{territory.lower()}|{email.lower()}".encode("utf-8")).hexdigest()[:10]
-        subscriber_key = f"sub_{territory.lower()}_{digest}"
+        # Repro: subscriber_key in the email link is not derived from the clicked recipient's email
+        # (fanout recipients share a single subscriber_key).
+        subscriber_key = "wally_trial"
 
         with redirect_stdout(io.StringIO()):
             status, body = _http(
@@ -102,7 +102,7 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
             )
         self.assertEqual(200, status)
         self.assertIn("Preference updated", body)
-        self.assertTrue(unsubscribe_utils.get_include_lows_pref(email, territory))
+        self.assertTrue(unsubscribe_utils.get_include_lows_pref(email, subscriber_key, territory))
 
         with redirect_stdout(io.StringIO()):
             # Back-compat: accept both token= and t=.
@@ -112,7 +112,7 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
             )
         self.assertEqual(200, status)
         self.assertIn("Preference updated", body)
-        self.assertFalse(unsubscribe_utils.get_include_lows_pref(email, territory))
+        self.assertFalse(unsubscribe_utils.get_include_lows_pref(email, subscriber_key, territory))
 
     def test_invalid_token_rejected(self) -> None:
         status, body = _http(
@@ -126,9 +126,7 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         email = "recipient@example.com"
         territory = "TX_TRIANGLE_V1"
         token = unsubscribe_utils.create_unsub_token(email, "prefs|wally_trial")
-        import hashlib
-        digest = hashlib.sha1(f"{territory.lower()}|{email.lower()}".encode("utf-8")).hexdigest()[:10]
-        subscriber_key = f"sub_{territory.lower()}_{digest}"
+        subscriber_key = "wally_trial"
         status, body = _http(
             self._base() + f"/prefs/enable_lows?t={token}&subscriber_key={subscriber_key}&territory_code={territory}"
         )
@@ -139,12 +137,31 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         email = "recipient@example.com"
         territory = "TX_TRIANGLE_V1"
         token = unsubscribe_utils.create_unsub_token(email, f"prefs|wally_trial|terr={territory}")
-        import hashlib
-        digest = hashlib.sha1(f"{territory.lower()}|{email.lower()}".encode("utf-8")).hexdigest()[:10]
-        subscriber_key = f"sub_{territory.lower()}_{digest}"
+        subscriber_key = "wally_trial"
         status, body = _http(self._base() + f"/prefs/enable_lows?t={token}&subscriber_key={subscriber_key}")
         self.assertEqual(400, status)
         self.assertIn("territory_code", body.lower())
+
+    def test_valid_token_with_fanout_subscriber_key_succeeds_and_writes_prefs(self) -> None:
+        # Reproduce the production failure: token email != subscriber_key owner.
+        primary = "primary@example.com"
+        fanout = "coworker@example.com"
+        territory = "TX_TRIANGLE_V1"
+        subscriber_key = "wally_trial"
+
+        token = unsubscribe_utils.create_unsub_token(fanout, f"prefs|wally_trial|terr={territory}")
+        status, body = _http(
+            self._base() + f"/prefs/enable_lows?token={token}&subscriber_key={subscriber_key}&territory_code={territory}"
+        )
+        self.assertEqual(200, status)
+        self.assertIn("preference updated", body.lower())
+
+        # Writes should be keyed by (recipient_from_token, subscriber_key, territory_code).
+        self.assertTrue(unsubscribe_utils.get_include_lows_pref(fanout, subscriber_key, territory))
+        # Ensure we did not implicitly toggle a legacy (subscriber_key blank) record.
+        self.assertFalse(unsubscribe_utils.get_include_lows_pref(fanout, None, territory))
+        # Ensure this does not affect the primary recipient's prefs.
+        self.assertFalse(unsubscribe_utils.get_include_lows_pref(primary, subscriber_key, territory))
 
 
 if __name__ == "__main__":

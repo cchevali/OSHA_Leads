@@ -293,7 +293,9 @@ def ensure_prefs_header(prefs_path: Path | None = None) -> Path:
     Ensure prefs.csv exists with header.
 
     Schema (current-state, upserted):
-      email,territory,include_lows,updated_at,source
+      email,subscriber_key,territory,include_lows,updated_at,source
+
+    Back-compat: older files may omit subscriber_key. Readers/writers should treat it as blank.
     """
     path = Path(prefs_path) if prefs_path else PREFS_PATH
     if path.exists():
@@ -302,7 +304,7 @@ def ensure_prefs_header(prefs_path: Path | None = None) -> Path:
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["email", "territory", "include_lows", "updated_at", "source"],
+            fieldnames=["email", "subscriber_key", "territory", "include_lows", "updated_at", "source"],
         )
         writer.writeheader()
     return path
@@ -310,16 +312,20 @@ def ensure_prefs_header(prefs_path: Path | None = None) -> Path:
 
 def set_include_lows_pref(
     email: str,
+    subscriber_key: str | None,
     territory: str,
     include_lows: bool,
     source: str = "one_click",
     prefs_path: Path | None = None,
 ) -> None:
-    """Upsert include_lows preference for (email, territory)."""
+    """Upsert include_lows preference for (email, subscriber_key, territory)."""
     email_norm = (email or "").strip().lower()
+    sk_norm = (subscriber_key or "").strip().lower()
     territory_norm = _normalize_territory(territory)
     if not email_norm or "@" not in email_norm:
         raise ValueError("invalid email")
+    if subscriber_key is not None and not sk_norm:
+        raise ValueError("invalid subscriber_key")
     if not territory_norm:
         raise ValueError("invalid territory")
 
@@ -336,8 +342,14 @@ def set_include_lows_pref(
                     if not row:
                         continue
                     row_email = (row.get("email") or "").strip().lower()
+                    row_sk = (row.get("subscriber_key") or "").strip().lower()
                     row_terr = _normalize_territory(row.get("territory"))
-                    if row_email == email_norm and row_terr == territory_norm:
+                    if sk_norm:
+                        match = (row_email == email_norm) and (row_sk == sk_norm) and (row_terr == territory_norm)
+                    else:
+                        # Back-compat: when subscriber_key isn't provided, only match legacy rows (blank subscriber_key).
+                        match = (row_email == email_norm) and (row_sk == "") and (row_terr == territory_norm)
+                    if match:
                         row = dict(row)
                         row["include_lows"] = "true" if include_lows else "false"
                         row["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -349,6 +361,7 @@ def set_include_lows_pref(
             rows.append(
                 {
                     "email": email_norm,
+                    "subscriber_key": sk_norm,
                     "territory": territory_norm,
                     "include_lows": "true" if include_lows else "false",
                     "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -360,13 +373,14 @@ def set_include_lows_pref(
         with open(tmp_path, "w", newline="", encoding="utf-8") as wf:
             writer = csv.DictWriter(
                 wf,
-                fieldnames=["email", "territory", "include_lows", "updated_at", "source"],
+                fieldnames=["email", "subscriber_key", "territory", "include_lows", "updated_at", "source"],
             )
             writer.writeheader()
             for row in rows:
                 writer.writerow(
                     {
                         "email": (row.get("email") or "").strip().lower(),
+                        "subscriber_key": (row.get("subscriber_key") or "").strip().lower(),
                         "territory": _normalize_territory(row.get("territory")),
                         "include_lows": "true"
                         if str(row.get("include_lows") or "").strip().lower() in {"1", "true", "yes"}
@@ -380,13 +394,17 @@ def set_include_lows_pref(
 
 def get_include_lows_pref(
     email: str,
+    subscriber_key: str | None,
     territory: str,
     prefs_path: Path | None = None,
 ) -> bool:
-    """Return include_lows for (email, territory). Defaults to False when missing."""
+    """Return include_lows for (email, subscriber_key, territory). Defaults to False when missing."""
     email_norm = (email or "").strip().lower()
+    sk_norm = (subscriber_key or "").strip().lower()
     territory_norm = _normalize_territory(territory)
     if not email_norm or "@" not in email_norm:
+        return False
+    if subscriber_key is not None and not sk_norm:
         return False
     if not territory_norm:
         return False
@@ -401,8 +419,14 @@ def get_include_lows_pref(
                 if not row:
                     continue
                 row_email = (row.get("email") or "").strip().lower()
+                row_sk = (row.get("subscriber_key") or "").strip().lower()
                 row_terr = _normalize_territory(row.get("territory"))
-                if row_email == email_norm and row_terr == territory_norm:
+                if sk_norm:
+                    match = (row_email == email_norm) and (row_sk == sk_norm) and (row_terr == territory_norm)
+                else:
+                    # Back-compat: when subscriber_key isn't provided, only read legacy rows (blank subscriber_key).
+                    match = (row_email == email_norm) and (row_sk == "") and (row_terr == territory_norm)
+                if match:
                     val = str(row.get("include_lows") or "").strip().lower()
                     return val in {"1", "true", "yes"}
     except Exception as exc:
