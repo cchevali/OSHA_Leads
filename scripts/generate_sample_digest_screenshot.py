@@ -94,7 +94,10 @@ def main() -> int:
         "medium": 6,
         "low": 12,
     }
-    enable_lows_url = "https://unsub.microflowops.com/prefs/enable_lows?t=dummy.dummy"
+    enable_lows_url = (
+        "https://unsub.microflowops.com/prefs/enable_lows?"
+        "token=dummy.dummy&subscriber_key=sub_tx_triangle_v1_0000000000&territory_code=TX_TRIANGLE_V1"
+    )
 
     html = generate_digest_html(
         leads=leads,

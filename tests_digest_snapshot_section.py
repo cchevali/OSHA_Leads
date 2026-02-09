@@ -121,7 +121,10 @@ class TestDigestSnapshotSection(unittest.TestCase):
             }
         ]
         snap_tiers = {"high": 1, "medium": 0, "low": 3}
-        enable_url = "https://unsub.microflowops.com/prefs/enable_lows?t=abc.def"
+        enable_url = (
+            "https://unsub.microflowops.com/prefs/enable_lows?"
+            "token=abc.def&subscriber_key=sub_tx_triangle_v1_0000000000&territory_code=TX_TRIANGLE_V1"
+        )
 
         html = generate_digest_html(
             leads=[],

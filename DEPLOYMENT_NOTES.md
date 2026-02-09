@@ -21,8 +21,8 @@ sudo journalctl -u caddy --no-pager -n 30
 - `POST /unsubscribe/register`
 - `POST /unsubscribe/check`
 - `GET /unsubscribe?token=...`
-- `GET /prefs/enable_lows?t=<signed_token>`
-- `GET /prefs/disable_lows?t=<signed_token>`
+- `GET /prefs/enable_lows?token=<signed_token>&subscriber_key=...&territory_code=...` (accepts `token=` or `t=`)
+- `GET /prefs/disable_lows?token=<signed_token>&subscriber_key=...&territory_code=...` (accepts `token=` or `t=`)
 
 ### Deploy / Restart (Lightsail)
 
@@ -59,8 +59,8 @@ sudo journalctl -u <UNIT_NAME> --no-pager -n 80
 curl -I https://unsub.microflowops.com/prefs/enable_lows
 curl -I https://unsub.microflowops.com/prefs/disable_lows
 
-curl -i 'https://unsub.microflowops.com/prefs/enable_lows?t=invalid.invalid'
-curl -i 'https://unsub.microflowops.com/prefs/disable_lows?t=invalid.invalid'
+curl -i 'https://unsub.microflowops.com/prefs/enable_lows?token=invalid.invalid&territory_code=TX_TRIANGLE_V1&subscriber_key=sub_tx_triangle_v1_0000000000'
+curl -i 'https://unsub.microflowops.com/prefs/disable_lows?token=invalid.invalid&territory_code=TX_TRIANGLE_V1&subscriber_key=sub_tx_triangle_v1_0000000000'
 ```
 
 Expected:

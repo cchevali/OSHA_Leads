@@ -40,7 +40,10 @@ class TestLowPriorityPrefs(unittest.TestCase):
 
     def test_low_count_line_renders_when_high_medium_zero(self):
         tier_counts = {"high": 0, "medium": 0, "low": 3}
-        enable_url = "https://unsub.microflowops.com/prefs/enable_lows?t=abc.def"
+        enable_url = (
+            "https://unsub.microflowops.com/prefs/enable_lows?"
+            "token=abc.def&subscriber_key=sub_tx_triangle_v1_0000000000&territory_code=TX_TRIANGLE_V1"
+        )
 
         html = generate_digest_html(
             leads=[],
@@ -95,7 +98,10 @@ class TestLowPriorityPrefs(unittest.TestCase):
 
     def test_prefs_links_disabled_drops_hyperlink(self):
         tier_counts = {"high": 0, "medium": 0, "low": 2}
-        enable_url = "https://unsub.microflowops.com/prefs/enable_lows?t=abc.def"
+        enable_url = (
+            "https://unsub.microflowops.com/prefs/enable_lows?"
+            "token=abc.def&subscriber_key=sub_tx_triangle_v1_0000000000&territory_code=TX_TRIANGLE_V1"
+        )
         try:
             os.environ["PREFS_LINKS_DISABLED"] = "1"
             html = generate_digest_html(
@@ -229,7 +235,10 @@ class TestLowPriorityPrefs(unittest.TestCase):
                 include_low_fallback=False,
                 branding=self.branding,
                 tier_counts=tier_counts,
-                enable_lows_url="https://unsub.microflowops.com/prefs/enable_lows?t=abc.def",
+                enable_lows_url=(
+                    "https://unsub.microflowops.com/prefs/enable_lows?"
+                    "token=abc.def&subscriber_key=sub_tx_triangle_v1_0000000000&territory_code=TX_TRIANGLE_V1"
+                ),
                 include_lows=include_lows,
                 low_priority=low_priority,
                 footer_html=self.footer_html,

@@ -197,7 +197,7 @@ def main() -> None:
         default=os.getenv("WALLY_EXTRA_EMAIL", "brandon@indigoenergyservices.com"),
         help="Additional recipient for fanout delivery",
     )
-    parser.add_argument("--chase-email", default=os.getenv("CHASE_EMAIL", "cchevali@gmail.com"))
+    parser.add_argument("--chase-email", default=os.getenv("CHASE_EMAIL", "cchevali+oshasmoke@gmail.com"))
     parser.add_argument("--brand-name", default=os.getenv("BRAND_NAME", "MicroFlowOps"))
     parser.add_argument(
         "--mailing-address",

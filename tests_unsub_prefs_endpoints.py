@@ -88,33 +88,63 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
 
     def test_enable_then_disable_updates_preference(self) -> None:
         email = "recipient@example.com"
-        campaign_id = "prefs|wally_trial|terr=TX_TRIANGLE_V1"
+        territory = "TX_TRIANGLE_V1"
+        campaign_id = f"prefs|wally_trial|terr={territory}"
         token = unsubscribe_utils.create_unsub_token(email, campaign_id)
+        import hashlib
+        digest = hashlib.sha1(f"{territory.lower()}|{email.lower()}".encode("utf-8")).hexdigest()[:10]
+        subscriber_key = f"sub_{territory.lower()}_{digest}"
 
         with redirect_stdout(io.StringIO()):
-            status, body = _http(self._base() + f"/prefs/enable_lows?t={token}")
+            status, body = _http(
+                self._base()
+                + f"/prefs/enable_lows?token={token}&subscriber_key={subscriber_key}&territory_code={territory}"
+            )
         self.assertEqual(200, status)
         self.assertIn("Preference updated", body)
-        self.assertTrue(unsubscribe_utils.get_include_lows_pref(email, "TX_TRIANGLE_V1"))
+        self.assertTrue(unsubscribe_utils.get_include_lows_pref(email, territory))
 
         with redirect_stdout(io.StringIO()):
-            status, body = _http(self._base() + f"/prefs/disable_lows?t={token}")
+            # Back-compat: accept both token= and t=.
+            status, body = _http(
+                self._base()
+                + f"/prefs/disable_lows?t={token}&subscriber_key={subscriber_key}&territory_code={territory}"
+            )
         self.assertEqual(200, status)
         self.assertIn("Preference updated", body)
-        self.assertFalse(unsubscribe_utils.get_include_lows_pref(email, "TX_TRIANGLE_V1"))
+        self.assertFalse(unsubscribe_utils.get_include_lows_pref(email, territory))
 
     def test_invalid_token_rejected(self) -> None:
-        status, body = _http(self._base() + "/prefs/enable_lows?t=invalid.invalid")
+        status, body = _http(
+            self._base()
+            + "/prefs/enable_lows?token=invalid.invalid&territory_code=TX_TRIANGLE_V1&subscriber_key=sub_tx_triangle_v1_0000000000"
+        )
         self.assertEqual(400, status)
         self.assertIn("invalid", body.lower())
 
-    def test_missing_territory_rejected(self) -> None:
+    def test_missing_campaign_territory_still_works_with_query_params(self) -> None:
         email = "recipient@example.com"
-        # Missing terr=... in campaign_id
+        territory = "TX_TRIANGLE_V1"
         token = unsubscribe_utils.create_unsub_token(email, "prefs|wally_trial")
-        status, body = _http(self._base() + f"/prefs/enable_lows?t={token}")
+        import hashlib
+        digest = hashlib.sha1(f"{territory.lower()}|{email.lower()}".encode("utf-8")).hexdigest()[:10]
+        subscriber_key = f"sub_{territory.lower()}_{digest}"
+        status, body = _http(
+            self._base() + f"/prefs/enable_lows?t={token}&subscriber_key={subscriber_key}&territory_code={territory}"
+        )
+        self.assertEqual(200, status)
+        self.assertIn("preference updated", body.lower())
+
+    def test_missing_territory_code_rejected(self) -> None:
+        email = "recipient@example.com"
+        territory = "TX_TRIANGLE_V1"
+        token = unsubscribe_utils.create_unsub_token(email, f"prefs|wally_trial|terr={territory}")
+        import hashlib
+        digest = hashlib.sha1(f"{territory.lower()}|{email.lower()}".encode("utf-8")).hexdigest()[:10]
+        subscriber_key = f"sub_{territory.lower()}_{digest}"
+        status, body = _http(self._base() + f"/prefs/enable_lows?t={token}&subscriber_key={subscriber_key}")
         self.assertEqual(400, status)
-        self.assertIn("territory", body.lower())
+        self.assertIn("territory_code", body.lower())
 
 
 if __name__ == "__main__":

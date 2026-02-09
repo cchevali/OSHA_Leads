@@ -5,7 +5,7 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode
 
 # Load environment variables from .env if available
 try:
@@ -220,7 +220,9 @@ class UnsubHandler(BaseHTTPRequestHandler):
             return ts_dt < cutoff
 
         if path in {"/prefs/enable_lows", "/prefs/disable_lows"}:
-            signed = (params.get("t") or params.get("TOKEN") or params.get("token") or [""])[0].strip()
+            signed = (
+                (params.get("token") or params.get("TOKEN") or params.get("t") or params.get("T") or [""])[0].strip()
+            )
             token_id = verify_unsub_token(signed)
             if not token_id:
                 _render_html(
@@ -249,11 +251,51 @@ class UnsubHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            territory_code, territory_display = _parse_prefs_territory(campaign_id)
+            subscriber_key = (params.get("subscriber_key") or [""])[0].strip().lower()
+            territory_raw = (params.get("territory_code") or [""])[0].strip()
+            if not territory_raw:
+                _render_html(
+                    "Invalid link",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is missing territory_code. Please request a fresh email.</p>",
+                    status=int(HTTPStatus.BAD_REQUEST),
+                )
+                return
+            territory_code, territory_display = _resolve_territory(territory_raw)
             if not territory_code:
                 _render_html(
                     "Invalid link",
-                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is missing territory information. Please request a fresh email.</p>",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid territory_code. Please request a fresh email.</p>",
+                    status=int(HTTPStatus.BAD_REQUEST),
+                )
+                return
+
+            if not subscriber_key:
+                _render_html(
+                    "Invalid link",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is missing subscriber_key. Please request a fresh email.</p>",
+                    status=int(HTTPStatus.BAD_REQUEST),
+                )
+                return
+
+            # Validate subscriber_key against the token's email + territory scope.
+            from hashlib import sha1
+
+            expected_digest = sha1(f"{territory_code.lower()}|{email.lower()}".encode("utf-8")).hexdigest()[:10]
+            expected_key = f"sub_{territory_code.lower()}_{expected_digest}"
+            if subscriber_key != expected_key:
+                _render_html(
+                    "Invalid link",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid subscriber_key. Please request a fresh email.</p>",
+                    status=int(HTTPStatus.BAD_REQUEST),
+                )
+                return
+
+            # Optional hardening: if the server-side campaign_id carries a resolvable territory, require it to match.
+            campaign_terr, _campaign_disp = _parse_prefs_territory(campaign_id)
+            if campaign_terr and campaign_terr != territory_code:
+                _render_html(
+                    "Invalid link",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has mismatched territory information. Please request a fresh email.</p>",
                     status=int(HTTPStatus.BAD_REQUEST),
                 )
                 return
@@ -276,11 +318,13 @@ class UnsubHandler(BaseHTTPRequestHandler):
 
             other_path = "/prefs/disable_lows" if include else "/prefs/enable_lows"
             other_label = "Disable lows" if include else "Enable lows"
+            other_qs = urlencode({"token": signed, "subscriber_key": subscriber_key, "territory_code": territory_code})
+            other_url = f"{other_path}?{other_qs}"
             inner = (
                 "<p style=\"color:#374151; margin-top: 12px;\">"
                 f"Preference updated for <strong>{territory_display or territory_code}</strong>."
                 "</p>"
-                f"<p style=\"margin-top: 14px;\"><a href=\"{other_path}?t={signed}\" "
+                f"<p style=\"margin-top: 14px;\"><a href=\"{other_url}\" "
                 "style=\"display:inline-block; background:#0b5fff; color:#ffffff; text-decoration:none; "
                 "padding:10px 14px; border-radius:10px; font-weight:700;\">"
                 f"{other_label}</a></p>"

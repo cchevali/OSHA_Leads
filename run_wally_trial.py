@@ -266,7 +266,7 @@ def _load_subscriber_last_sent_at(db_path: str, subscriber_key: str) -> str | No
 
 def run_test_send(db_path: str, customer_config: str) -> None:
     # Test-only laptop entrypoint: force snapshot send to Chase, without mutating send state.
-    chase_email = "cchevali@gmail.com"
+    chase_email = "cchevali+oshasmoke@gmail.com"
     print(f"TEST_SEND variant=starter_snapshot recipient={chase_email} state_mutation=NO", flush=True)
 
     with open(customer_config, "r", encoding="utf-8") as f:
@@ -301,7 +301,7 @@ def run_test_send(db_path: str, customer_config: str) -> None:
 def run_test_send_daily(db_path: str, customer_config: str) -> None:
     # Test-only laptop entrypoint: render the daily "new since last send" variant to Chase,
     # without mutating send state.
-    chase_email = "cchevali@gmail.com"
+    chase_email = "cchevali+oshasmoke@gmail.com"
     print(f"TEST_SEND variant=daily_new_since_last_send recipient={chase_email} state_mutation=NO", flush=True)
 
     with open(customer_config, "r", encoding="utf-8") as f:
@@ -531,18 +531,18 @@ def main() -> None:
     parser.add_argument("--territory-code", default="TX_TRIANGLE_V1")
     parser.add_argument("--content-filter", default="high_medium")
     parser.add_argument("--lookback-days", type=int, default=14)
-    parser.add_argument("--chase-email", default="cchevali@gmail.com")
+    parser.add_argument("--chase-email", default="cchevali+oshasmoke@gmail.com")
     parser.add_argument("--admin-email", default="support@microflowops.com")
     parser.add_argument("--send-live", action="store_true", help="Trigger first live send to Wally")
     parser.add_argument(
         "--test-send",
         action="store_true",
-        help="Laptop-safe: force a Starter Snapshot send to cchevali@gmail.com without mutating send state",
+        help="Laptop-safe: force a Starter Snapshot send to cchevali+oshasmoke@gmail.com without mutating send state",
     )
     parser.add_argument(
         "--test-send-daily",
         action="store_true",
-        help="Laptop-safe: send the daily 'new since last send' variant to cchevali@gmail.com without mutating send state",
+        help="Laptop-safe: send the daily 'new since last send' variant to cchevali+oshasmoke@gmail.com without mutating send state",
     )
     parser.add_argument("--enable-schedule", action="store_true", help="Create 08:00 local scheduled task")
     parser.add_argument("--check-schedule", action="store_true", help="Verify scheduled task action only")

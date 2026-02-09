@@ -47,7 +47,8 @@ from email_footer import build_footer_html, build_footer_text
 logger = logging.getLogger(__name__)
 
 PILOT_MODE_DEFAULT = True
-PILOT_WHITELIST_DEFAULT = ["cchevali@gmail.com"]
+# Default pilot whitelist is intentionally a "plus" alias to reduce provider-level suppression collisions.
+PILOT_WHITELIST_DEFAULT = ["cchevali+oshasmoke@gmail.com"]
 
 DEFAULT_REPLY_TO = "support@microflowops.com"
 DEFAULT_FROM_LOCAL_PART = "alerts"
@@ -727,7 +728,7 @@ def resolve_admin_recipient(config: dict) -> str:
         (config.get("admin_email") or "").strip().lower()
         or (os.getenv("CHASE_EMAIL") or "").strip().lower()
         or (os.getenv("ADMIN_EMAIL") or "").strip().lower()
-        or "cchevali@gmail.com"
+        or "cchevali+oshasmoke@gmail.com"
     )
 
 
@@ -1226,14 +1227,18 @@ def build_unsubscribe_payload(
     return f"<{mailto}>, <{one_click_url}>", "List-Unsubscribe=One-Click", one_click_url, signed_token
 
 
-def build_enable_lows_url(signed_token: str) -> str | None:
+def build_enable_lows_url(signed_token: str, subscriber_key: str, territory_code: str) -> str | None:
     """
     Build a one-click preference URL (canonical).
-    Canonical: https://unsub.microflowops.com/prefs/enable_lows?t=<signed_token>
+    Canonical: https://unsub.microflowops.com/prefs/enable_lows?token=<signed_token>&subscriber_key=...&territory_code=...
     """
     if os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
         return None
     if not signed_token:
+        return None
+    if not (subscriber_key or "").strip():
+        return None
+    if not (territory_code or "").strip():
         return None
 
     base_endpoint = (os.getenv("PREFS_ENDPOINT_BASE", "") or "https://unsub.microflowops.com").strip()
@@ -1246,15 +1251,19 @@ def build_enable_lows_url(signed_token: str) -> str | None:
     except Exception:
         base = base_endpoint.rstrip("/")
 
-    qs = urlencode({"t": signed_token})
+    qs = urlencode({"token": signed_token, "subscriber_key": subscriber_key, "territory_code": territory_code})
     return f"{base}/prefs/enable_lows?{qs}"
 
 
-def build_disable_lows_url(signed_token: str) -> str | None:
-    """Canonical: https://unsub.microflowops.com/prefs/disable_lows?t=<signed_token>"""
+def build_disable_lows_url(signed_token: str, subscriber_key: str, territory_code: str) -> str | None:
+    """Canonical: https://unsub.microflowops.com/prefs/disable_lows?token=<signed_token>&subscriber_key=...&territory_code=..."""
     if os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
         return None
     if not signed_token:
+        return None
+    if not (subscriber_key or "").strip():
+        return None
+    if not (territory_code or "").strip():
         return None
     base_endpoint = (os.getenv("PREFS_ENDPOINT_BASE", "") or "https://unsub.microflowops.com").strip()
     if not base_endpoint:
@@ -1264,7 +1273,7 @@ def build_disable_lows_url(signed_token: str) -> str | None:
         base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
     except Exception:
         base = base_endpoint.rstrip("/")
-    qs = urlencode({"t": signed_token})
+    qs = urlencode({"token": signed_token, "subscriber_key": subscriber_key, "territory_code": territory_code})
     return f"{base}/prefs/disable_lows?{qs}"
 
 
@@ -1284,8 +1293,12 @@ def prefs_links_reachable(timeout: float = 2.0) -> tuple[bool, str]:
     except Exception:
         base = base_endpoint.rstrip("/")
 
-    # Invalid token should yield 400 on a healthy service (not 404).
-    url = f"{base}/prefs/enable_lows?t=invalid.invalid"
+    # Invalid token should yield 400 on a healthy service (not 404). Include required params
+    # so the server doesn't 400 solely due to missing query shape.
+    url = (
+        f"{base}/prefs/enable_lows?"
+        "token=invalid.invalid&territory_code=TX_TRIANGLE_V1&subscriber_key=sub_tx_triangle_v1_0000000000"
+    )
     try:
         import requests  # type: ignore
 
@@ -2088,7 +2101,7 @@ def main() -> None:
     parser.add_argument(
         "--smoke-cchevali",
         action="store_true",
-        help="Laptop-safe smoke: force a single send to cchevali@gmail.com (non-live/admin-only) and print a compact quality summary.",
+        help="Laptop-safe smoke: force a single send to cchevali+oshasmoke@gmail.com (non-live/admin-only) and print a compact quality summary.",
     )
 
     args = parser.parse_args()
@@ -2142,7 +2155,7 @@ def main() -> None:
     recipients = collect_recipients(config, subscriber_profile, args.recipient_override)
     intended_recipients = list(recipients)
 
-    smoke_recipient = "cchevali@gmail.com"
+    smoke_recipient = "cchevali+oshasmoke@gmail.com"
     if args.smoke_cchevali:
         # Hard guard: this entrypoint must only ever send to Chase.
         override_raw = (args.recipient_override or "").strip()
@@ -2210,7 +2223,7 @@ def main() -> None:
                     f"Intended recipient count: {len(intended_recipients)}\n"
                     f"Run log: {run_log_path}\n"
                 )
-                send_safe_mode_alert(subject, body, "cchevali@gmail.com")
+                send_safe_mode_alert(subject, body, "cchevali+oshasmoke@gmail.com")
         if not live_allowed:
             admin_recipient = resolve_admin_recipient(config)
             if not admin_recipient:
@@ -2568,7 +2581,8 @@ def main() -> None:
     suppressed_count = 0
     pilot_skipped_count = 0
     suppressed_emails: list[str] = []
-    prefs_territory = (territory_code or "").strip() or ("/".join(states) if states else "")
+    # Prefs endpoints are territory-scoped; don't render prefs links for state-scoped configs.
+    prefs_territory = (territory_code or "").strip()
 
     prefs_checked = False
     prefs_ok = True
@@ -2658,21 +2672,33 @@ def main() -> None:
         enable_lows_url = None
         snapshot_enable_lows_url = None
         prefs_token = None
-        if args.mode == "daily" and prefs_territory and not include_lows_pref and content_filter not in {"all", "low"}:
+        if (
+            args.mode == "daily"
+            and prefs_territory
+            and subscriber_key
+            and not include_lows_pref
+            and content_filter not in {"all", "low"}
+        ):
             low_total = int(tier_counts.get("low", 0)) if tier_counts else 0
             low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_tier_counts else 0
             if (low_total > 0 or low_snapshot > 0) and os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() not in {"1", "true", "yes"}:
-                prefs_campaign_id = f"prefs|{customer_id}|terr={prefs_territory}"
+                # Keep a server-side record of the intended preference scope for auditing/validation.
+                prefs_campaign_id = f"prefs|{customer_id}|terr={prefs_territory}|sk={subscriber_key}"
                 prefs_token = create_and_register_prefs_token(
                     recipient=recipient,
                     prefs_campaign_id=prefs_campaign_id,
                     dry_run=args.dry_run,
                 )
                 if prefs_token:
-                    enable_lows_url = build_enable_lows_url(prefs_token)
-                    snapshot_enable_lows_url = build_enable_lows_url(prefs_token) if snapshot_label else None
+                    enable_lows_url = build_enable_lows_url(prefs_token, subscriber_key, prefs_territory)
+                    snapshot_enable_lows_url = (
+                        build_enable_lows_url(prefs_token, subscriber_key, prefs_territory) if snapshot_label else None
+                    )
                     if enable_lows_url:
-                        print("PREFS_LINK_BUILT host=unsub.microflowops.com path=/prefs/enable_lows query=t")
+                        print(
+                            "PREFS_LINK_BUILT host=unsub.microflowops.com path=/prefs/enable_lows "
+                            "query=token,subscriber_key,territory_code"
+                        )
 
         footer_disclaimer = "This report contains public OSHA inspection data for informational purposes only. Not legal advice."
         footer_text = build_footer_text(

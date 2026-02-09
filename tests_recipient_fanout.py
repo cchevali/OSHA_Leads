@@ -89,7 +89,7 @@ def run_send(db_path: Path, config_path: Path, out_dir: Path, data_dir: Path, se
     env["UNSUB_ENDPOINT_BASE"] = "https://example.com/unsubscribe"
     env["UNSUB_SECRET"] = "fanout-test-secret"
     env["DATA_DIR"] = str(data_dir)
-    env["CHASE_EMAIL"] = "cchevali@gmail.com"
+    env["CHASE_EMAIL"] = "cchevali+oshasmoke@gmail.com"
 
     cmd = [
         sys.executable,
@@ -266,7 +266,7 @@ class TestRecipientFanout(unittest.TestCase):
             with (out_dir / "email_log.csv").open("r", encoding="utf-8") as f:
                 email_log = list(csv.DictReader(f))
             self.assertEqual(len(email_log), 1)
-            self.assertEqual(email_log[0]["recipient"], "cchevali@gmail.com")
+            self.assertEqual(email_log[0]["recipient"], "cchevali+oshasmoke@gmail.com")
 
     def test_missing_send_live_and_live_with_window(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -317,7 +317,7 @@ class TestRecipientFanout(unittest.TestCase):
             with (out_safe / "email_log.csv").open("r", encoding="utf-8") as f:
                 email_log_safe = list(csv.DictReader(f))
             self.assertEqual(len(email_log_safe), 1)
-            self.assertEqual(email_log_safe[0]["recipient"], "cchevali@gmail.com")
+            self.assertEqual(email_log_safe[0]["recipient"], "cchevali+oshasmoke@gmail.com")
 
             result_live = run_send(db_path, config_path, out_live, data_live, send_live=True)
             self.assertEqual(result_live.returncode, 0, msg=result_live.stderr)
