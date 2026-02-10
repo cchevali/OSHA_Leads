@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import time
+import csv
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -35,6 +36,10 @@ RATE_LIMIT_MAX_REQ = 120
 _rate_state = {}
 
 _TERRITORY_INDEX = None
+
+# Lightweight per-subscriber_key throttle for rendering the low-priority preview (preference write still succeeds).
+_PREFS_PREVIEW_RATE_STATE: dict[str, float] = {}
+_PREFS_PREVIEW_RATE_DEFAULT_S = 10
 
 
 def _territory_display_name(code: str, territory: dict) -> str:
@@ -125,6 +130,252 @@ def _rate_limited(ip: str) -> bool:
     return count > RATE_LIMIT_MAX_REQ
 
 
+def _prefs_preview_rate_limited(subscriber_key: str) -> tuple[bool, int]:
+    """
+    Best-effort throttle to reduce abuse of the preview renderer.
+
+    Returns: (is_limited, retry_after_seconds)
+    """
+    try:
+        window_s = int(os.getenv("PREFS_PREVIEW_RATE_LIMIT_S", str(_PREFS_PREVIEW_RATE_DEFAULT_S)).strip() or "0")
+    except Exception:
+        window_s = _PREFS_PREVIEW_RATE_DEFAULT_S
+    if window_s <= 0:
+        return False, 0
+
+    key = (subscriber_key or "").strip().lower()
+    if not key:
+        return False, 0
+
+    now = time.time()
+    last = float(_PREFS_PREVIEW_RATE_STATE.get(key, 0.0) or 0.0)
+    if last and (now - last) < float(window_s):
+        remaining = int(float(window_s) - (now - last) + 0.999)
+        return True, max(1, remaining)
+
+    _PREFS_PREVIEW_RATE_STATE[key] = now
+
+    # Best-effort cleanup to avoid unbounded growth.
+    if len(_PREFS_PREVIEW_RATE_STATE) > 5000:
+        cutoff = now - float(max(window_s, 60) * 10)
+        for k, ts in list(_PREFS_PREVIEW_RATE_STATE.items()):
+            if float(ts or 0.0) < cutoff:
+                _PREFS_PREVIEW_RATE_STATE.pop(k, None)
+
+    return False, 0
+
+
+def _resolve_preview_db_path() -> Path | None:
+    env_path = (os.getenv("OSHA_DB_PATH") or os.getenv("DB_PATH") or "").strip()
+    if env_path:
+        p = Path(env_path).expanduser()
+        return p if p.exists() else None
+
+    # Default to the repo's conventional path when running co-located with the pipeline.
+    root = Path(__file__).resolve().parent
+    p = root / "data" / "osha.sqlite"
+    return p if p.exists() else None
+
+
+def _load_recent_low_priority_preview(
+    territory_code: str, days: int = 14, limit: int = 20
+) -> tuple[list[dict], str | None, Exception | None]:
+    """
+    Return (rows, error_message, exception). Rows are low-priority only and territory-scoped.
+    Shared logic: uses the same query + tier threshold used by the digest renderer.
+    """
+    db_path = _resolve_preview_db_path()
+    if not db_path:
+        return [], "db_missing", None
+
+    try:
+        from lead_filters import load_territory_definitions
+    except Exception as e:
+        return [], "territory_defs_import_error", e
+
+    root = Path(__file__).resolve().parent
+    try:
+        defs = load_territory_definitions(str(root / "territories.json"))
+        terr = defs.get(territory_code)
+        if not isinstance(terr, dict):
+            return [], "unknown_territory", None
+        states = [str(s or "").strip().upper() for s in (terr.get("states") or []) if str(s or "").strip()]
+        if not states:
+            return [], "territory_no_states", None
+    except Exception as e:
+        return [], "territory_defs_load_error", e
+
+    try:
+        import sqlite3
+        from send_digest_email import TIER_THRESHOLDS, get_leads_for_period
+    except Exception as e:
+        return [], "digest_logic_import_error", e
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+    except Exception as e:
+        return [], "db_open_error", e
+
+    try:
+        all_rows, _, _ = get_leads_for_period(
+            conn=conn,
+            states=states,
+            since_days=int(days),
+            new_only_days=int(days),
+            skip_first_seen_filter=True,
+            territory_code=territory_code,
+            content_filter="all",
+            include_low_fallback=False,
+            window_start=None,
+            new_only_cutoff=None,
+            include_changed=False,
+            use_opened_window=True,
+        )
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return [], "query_error", e
+
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+    try:
+        medium_min = int(TIER_THRESHOLDS.get("medium_min", 6))
+    except Exception:
+        medium_min = 6
+
+    low_only = [row for row in (all_rows or []) if int(row.get("lead_score") or 0) < medium_min]
+    low_only.sort(
+        key=lambda lead: str((lead.get("last_seen_at") or lead.get("first_seen_at") or lead.get("date_opened") or "")),
+        reverse=True,
+    )
+    limit = max(0, min(50, int(limit)))
+    return low_only[:limit], None, None
+
+
+def _log_preview_unavailable(
+    subscriber_key: str,
+    territory_code: str,
+    reason: str,
+    exc: Exception | None = None,
+) -> None:
+    payload = {
+        "event": "PREVIEW_UNAVAILABLE",
+        "subscriber_key": (subscriber_key or "").strip().lower()[:120],
+        "territory_code": (territory_code or "").strip().upper()[:80],
+        "reason": (reason or "unknown").strip()[:200],
+        "exception_class": (exc.__class__.__name__ if exc else "None"),
+    }
+    try:
+        print(f"[WARN] {json.dumps(payload, separators=(',',':'))}")
+    except Exception:
+        # Best-effort: never break the handler on logging failures.
+        pass
+
+
+def _recent_low_priority_preview_html(
+    subscriber_key: str,
+    territory_code: str,
+    title: str = "Recent low-priority preview (last 14 days)",
+    limit: int = 20,
+) -> str:
+    safe_title = html.escape(title)
+
+    def _empty_state(message: str) -> str:
+        return (
+            "<div style=\"margin: 10px 0 0 0; padding: 10px 12px; border-radius: 10px; "
+            "background: #f9fafb; border: 1px solid #e5e7eb; color: #374151;\">"
+            f"{html.escape(message)}"
+            "</div>"
+        )
+
+    try:
+        out = [
+            "<div style=\"margin-top: 18px; padding-top: 12px; border-top: 1px solid #e5e7eb;\">",
+            f"<h2 style=\"margin: 0 0 8px 0; font-size: 16px; color: #111827;\">{safe_title}</h2>",
+            "<p style=\"margin: 0 0 10px 0; color: #374151; font-size: 13px;\">"
+            "Showing low-priority rows for this territory only (capped).</p>",
+        ]
+
+        limited, retry_s = _prefs_preview_rate_limited(subscriber_key)
+        if limited:
+            out.append(
+                "<div style=\"margin: 10px 0 0 0; padding: 10px 12px; border-radius: 10px; "
+                "background: #fffbeb; border: 1px solid #fde68a; color: #92400e;\">"
+                f"Preview is temporarily throttled. Please retry in {int(retry_s)} seconds."
+                "</div>"
+            )
+            out.append("</div>")
+            return "".join(out)
+
+        rows, err, exc = _load_recent_low_priority_preview(territory_code=territory_code, days=14, limit=limit)
+        if err:
+            _log_preview_unavailable(subscriber_key, territory_code, reason=err, exc=exc)
+            out.append(_empty_state("Preview unavailable right now. Low-priority rows will appear starting the next scheduled digest."))
+            out.append("</div>")
+            return "".join(out)
+
+        if not rows:
+            out.append(_empty_state("No low-priority signals found for this territory in the last 14 days."))
+            out.append("</div>")
+            return "".join(out)
+
+        def _cell(text: str) -> str:
+            return html.escape((text or "").strip())
+
+        out.append(
+            "<div style=\"overflow-x:auto; border: 1px solid #e5e7eb; border-radius: 10px;\">"
+            "<table style=\"width:100%; border-collapse: collapse; font-size: 13px;\">"
+            "<thead><tr style=\"background:#f3f4f6;\">"
+            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Opened</th>"
+            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Establishment</th>"
+            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Location</th>"
+            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Type</th>"
+            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Score</th>"
+            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Source</th>"
+            "</tr></thead><tbody>"
+        )
+        for lead in rows:
+            opened = _cell(str(lead.get("date_opened") or ""))
+            name = _cell(str(lead.get("establishment_name") or ""))
+            city = _cell(str(lead.get("site_city") or ""))
+            state = _cell(str(lead.get("site_state") or ""))
+            loc = _cell(", ".join([p for p in [city, state] if p]))
+            itype = _cell(str(lead.get("inspection_type") or ""))
+            score = _cell(str(lead.get("lead_score") or ""))
+            url = str(lead.get("source_url") or "").strip()
+            href = html.escape(url, quote=True)
+            src = (
+                f"<a href=\"{href}\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:#0b5fff;\">OSHA</a>"
+                if (url.startswith("http://") or url.startswith("https://"))
+                else ""
+            )
+            out.append(
+                "<tr>"
+                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6; white-space: nowrap;\">{opened}</td>"
+                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6;\">{name}</td>"
+                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6;\">{loc}</td>"
+                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6;\">{itype}</td>"
+                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6;\">{score}</td>"
+                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6;\">{src}</td>"
+                "</tr>"
+            )
+        out.append("</tbody></table></div></div>")
+        return "".join(out)
+    except Exception as e:
+        _log_preview_unavailable(subscriber_key, territory_code, reason="exception", exc=e)
+        return (
+            "<div style=\"margin-top: 18px; padding-top: 12px; border-top: 1px solid #e5e7eb;\">"
+            f"<h2 style=\"margin: 0 0 8px 0; font-size: 16px; color: #111827;\">{safe_title}</h2>"
+            + _empty_state("Preview unavailable right now. Low-priority rows will appear starting the next scheduled digest.")
+            + "</div>"
+        )
+
+
 _RE_TERRITORY_CODE = re.compile(r"^[A-Z0-9_]{2,64}$")
 # Subscriber keys come from email links; allow a conservative set and cap length to avoid abuse.
 # Allowed: 1-80 chars from [A-Za-z0-9_.-] plus underscore.
@@ -193,6 +444,73 @@ class UnsubHandler(BaseHTTPRequestHandler):
 
         if path == "/__version":
             payload = json.dumps({"git_sha": _GIT_SHA}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if path == "/api/prefs":
+            expected_key = (os.getenv("MFO_INTERNAL_API_KEY") or "").strip()
+            provided_key = (self.headers.get("X-MFO-API-Key") or "").strip()
+            if not expected_key or not provided_key or (provided_key != expected_key):
+                self.send_response(HTTPStatus.UNAUTHORIZED)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"{\"error\":\"unauthorized\"}\n")
+                return
+
+            raw_subscriber_key = (params.get("subscriber_key") or [""])[0]
+            raw_territory_code = (params.get("territory_code") or [""])[0]
+            subscriber_key = _normalize_subscriber_key(raw_subscriber_key)
+            territory_code = _normalize_territory_code(raw_territory_code)
+            if not subscriber_key or not _valid_subscriber_key(subscriber_key):
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"{\"error\":\"invalid_subscriber_key\"}\n")
+                return
+            if not territory_code or not _valid_territory_code(territory_code):
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"{\"error\":\"invalid_territory_code\"}\n")
+                return
+
+            # Best-effort: compute include_lows for (subscriber_key, territory_code) by scanning prefs.csv.
+            # Pref writes remain keyed by email, but the digest preference is subscriber-scoped.
+            include_lows = False
+            best_ts = ""
+            try:
+                import unsubscribe_utils as _uu
+
+                prefs_path = _uu.PREFS_PATH
+                if prefs_path.exists():
+                    with open(prefs_path, "r", newline="", encoding="utf-8") as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            if not row:
+                                continue
+                            row_sk = (row.get("subscriber_key") or "").strip().lower()
+                            row_terr = _normalize_territory_code(row.get("territory"))
+                            if row_sk != subscriber_key or row_terr != territory_code:
+                                continue
+                            ts = (row.get("updated_at") or "").strip()
+                            # Prefer the newest update when multiple emails wrote prefs for the same subscriber_key.
+                            if ts and best_ts and ts <= best_ts:
+                                continue
+                            best_ts = ts or best_ts
+                            val = str(row.get("include_lows") or "").strip().lower()
+                            include_lows = val in {"1", "true", "yes"}
+            except Exception as e:
+                _log_preview_unavailable(subscriber_key, territory_code, reason="prefs_read_error", exc=e)
+                include_lows = False
+
+            payload = json.dumps(
+                {"subscriber_key": subscriber_key, "territory_code": territory_code, "lows_enabled": bool(include_lows)},
+                separators=(",", ":"),
+            ).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -391,8 +709,33 @@ class UnsubHandler(BaseHTTPRequestHandler):
             other_label = "Disable lows" if include else "Enable lows"
             other_qs = urlencode({"token": signed, "subscriber_key": subscriber_key, "territory_code": territory_code})
             other_url = f"{other_path}?{other_qs}"
-            inner = (
+
+            banner_text = "Low-priority signals enabled" if include else "Low-priority signals disabled"
+            banner = (
+                "<div style=\"margin-top: 12px; padding: 12px 14px; border-radius: 12px; "
+                "background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; font-weight: 800;\">"
+                f"{html.escape(banner_text)}"
+                "</div>"
+            )
+            expectation = (
                 "<p style=\"color:#374151; margin-top: 12px;\">"
+                "<strong>Will start next scheduled digest; preview is immediate.</strong>"
+                "</p>"
+                if include
+                else (
+                    "<p style=\"color:#374151; margin-top: 12px;\">"
+                    "<strong>Will stop starting with the next scheduled digest.</strong>"
+                    "</p>"
+                )
+            )
+
+            preview = _recent_low_priority_preview_html(subscriber_key=subscriber_key, territory_code=territory_code) if include else ""
+
+            inner = (
+                banner
+                + expectation
+                + preview
+                + "<p style=\"color:#374151; margin-top: 12px;\">"
                 f"Preference updated for <strong>{territory_display or territory_code}</strong>."
                 "</p>"
                 f"<p style=\"margin-top: 14px;\"><a href=\"{other_url}\" "

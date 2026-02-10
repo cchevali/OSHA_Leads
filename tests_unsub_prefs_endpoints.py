@@ -8,6 +8,8 @@ import io
 from contextlib import redirect_stdout
 from http.server import HTTPServer
 from pathlib import Path
+from datetime import datetime, timedelta
+import sqlite3
 
 import unsubscribe_server
 import unsubscribe_utils
@@ -45,14 +47,135 @@ def _http_full(url: str, method: str = "GET") -> tuple[int, str, dict]:
         return int(e.code), data, headers
 
 
+def _http_full_headers(url: str, method: str = "GET", headers: dict | None = None) -> tuple[int, str, dict]:
+    req = urllib.request.Request(url, method=method, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = resp.read().decode("utf-8", errors="replace")
+            resp_headers = dict(resp.headers.items())
+            return int(resp.status), data, resp_headers
+    except urllib.error.HTTPError as e:
+        data = ""
+        try:
+            data = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        resp_headers = dict(e.headers.items()) if getattr(e, "headers", None) else {}
+        return int(e.code), data, resp_headers
+
+
 class TestUnsubPrefsEndpoints(unittest.TestCase):
     def setUp(self) -> None:
         self._env_before = dict(os.environ)
         os.environ["UNSUB_SECRET"] = "test_unsub_secret"
         os.environ["UNSUB_TOKEN_TTL_DAYS"] = "45"
+        # Avoid cross-test flakiness from the per-subscriber_key preview throttle.
+        os.environ["PREFS_PREVIEW_RATE_LIMIT_S"] = "0"
+        os.environ["MFO_INTERNAL_API_KEY"] = "test_internal_api_key"
 
         self._tmp = tempfile.TemporaryDirectory()
         out = Path(self._tmp.name)
+
+        # Create a tiny SQLite DB for the immediate low-priority preview on the enable_lows confirmation page.
+        # The unsubscribe server reads this path via env.
+        self._db_path = out / "osha.sqlite"
+        conn = sqlite3.connect(str(self._db_path))
+        conn.execute(
+            """
+            CREATE TABLE inspections (
+                activity_nr TEXT,
+                date_opened TEXT,
+                inspection_type TEXT,
+                scope TEXT,
+                case_status TEXT,
+                establishment_name TEXT,
+                site_city TEXT,
+                site_state TEXT,
+                site_zip TEXT,
+                area_office TEXT,
+                naics TEXT,
+                naics_desc TEXT,
+                violations_count INTEGER,
+                emphasis TEXT,
+                lead_score INTEGER,
+                first_seen_at TEXT,
+                last_seen_at TEXT,
+                changed_at TEXT,
+                source_url TEXT,
+                parse_invalid INTEGER
+            )
+            """
+        )
+        now = datetime.now()
+        opened = now.date().isoformat()
+        first_seen = (now - timedelta(days=1)).isoformat()
+        last_seen = now.isoformat()
+        conn.execute(
+            """
+            INSERT INTO inspections (
+                activity_nr, date_opened, inspection_type, scope, case_status, establishment_name,
+                site_city, site_state, site_zip, area_office, naics, naics_desc, violations_count,
+                emphasis, lead_score, first_seen_at, last_seen_at, changed_at, source_url, parse_invalid
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "A-LOW-1",
+                opened,
+                "Planned",
+                "General",
+                "Open",
+                "LowCo",
+                "Austin",
+                "TX",
+                "78701",
+                "",
+                "000000",
+                "",
+                0,
+                "",
+                1,
+                first_seen,
+                last_seen,
+                None,
+                "https://example.com/low",
+                0,
+            ),
+        )
+        # Out-of-territory low row should be excluded by territory filter.
+        conn.execute(
+            """
+            INSERT INTO inspections (
+                activity_nr, date_opened, inspection_type, scope, case_status, establishment_name,
+                site_city, site_state, site_zip, area_office, naics, naics_desc, violations_count,
+                emphasis, lead_score, first_seen_at, last_seen_at, changed_at, source_url, parse_invalid
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "A-LOW-2",
+                opened,
+                "Planned",
+                "General",
+                "Open",
+                "FarCo",
+                "El Paso",
+                "TX",
+                "79901",
+                "",
+                "000000",
+                "",
+                0,
+                "",
+                1,
+                first_seen,
+                last_seen,
+                None,
+                "https://example.com/far",
+                0,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        os.environ["OSHA_DB_PATH"] = str(self._db_path)
 
         # Patch storage paths into the temp dir so tests don't touch repo state.
         self._orig_paths = {
@@ -122,6 +245,10 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
             )
         self.assertEqual(200, status)
         self.assertIn("Preference updated", body)
+        self.assertIn("Low-priority signals enabled", body)
+        self.assertIn("Recent low-priority preview (last 14 days)", body)
+        self.assertIn("LowCo", body)
+        self.assertNotIn("FarCo", body)
         self.assertTrue(unsubscribe_utils.get_include_lows_pref(email, subscriber_key, territory))
 
         with redirect_stdout(io.StringIO()):
@@ -133,6 +260,78 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertIn("Preference updated", body)
         self.assertFalse(unsubscribe_utils.get_include_lows_pref(email, subscriber_key, territory))
+
+    def test_api_prefs_requires_key_and_reflects_latest_subscriber_preference(self) -> None:
+        email = "recipient@example.com"
+        territory = "TX_TRIANGLE_V1"
+        campaign_id = f"prefs|wally_trial|terr={territory}"
+        token = unsubscribe_utils.create_unsub_token(email, campaign_id)
+        subscriber_key = "wally_trial"
+
+        # Unauthorized without header.
+        status, _, _ = _http_full(self._base() + f"/api/prefs?subscriber_key={subscriber_key}&territory_code={territory}")
+        self.assertEqual(401, status)
+
+        with redirect_stdout(io.StringIO()):
+            status, _ = _http(
+                self._base()
+                + f"/prefs/enable_lows?token={token}&subscriber_key={subscriber_key}&territory_code={territory}"
+            )
+        self.assertEqual(200, status)
+
+        status, body, _ = _http_full_headers(
+            self._base() + f"/api/prefs?subscriber_key={subscriber_key}&territory_code={territory}",
+            headers={"X-MFO-API-Key": "test_internal_api_key"},
+        )
+        self.assertEqual(200, status)
+        import json as _json
+
+        payload = _json.loads(body)
+        self.assertTrue(bool(payload.get("lows_enabled")))
+
+        with redirect_stdout(io.StringIO()):
+            status, _ = _http(
+                self._base()
+                + f"/prefs/disable_lows?token={token}&subscriber_key={subscriber_key}&territory_code={territory}"
+            )
+        self.assertEqual(200, status)
+
+        status, body, _ = _http_full_headers(
+            self._base() + f"/api/prefs?subscriber_key={subscriber_key}&territory_code={territory}",
+            headers={"X-MFO-API-Key": "test_internal_api_key"},
+        )
+        self.assertEqual(200, status)
+        payload = _json.loads(body)
+        self.assertFalse(bool(payload.get("lows_enabled")))
+
+    def test_enable_lows_preview_missing_still_200_persists_and_warns(self) -> None:
+        email = "recipient@example.com"
+        territory = "TX_TRIANGLE_V1"
+        campaign_id = f"prefs|wally_trial|terr={territory}"
+        token = unsubscribe_utils.create_unsub_token(email, campaign_id)
+        subscriber_key = "wally_trial"
+
+        # Force preview DB missing/unavailable.
+        os.environ["OSHA_DB_PATH"] = str(Path(self._tmp.name) / "missing.sqlite")
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            status, body = _http(
+                self._base()
+                + f"/prefs/enable_lows?token={token}&subscriber_key={subscriber_key}&territory_code={territory}"
+            )
+        self.assertEqual(200, status)
+        self.assertTrue(unsubscribe_utils.get_include_lows_pref(email, subscriber_key, territory))
+
+        # Header must stay stable for UX/tests even if data is unavailable.
+        self.assertIn("Recent low-priority preview (last 14 days)", body)
+        self.assertIn("Preview unavailable right now.", body)
+
+        # Structured warning log: best-effort, no 500.
+        logs = buf.getvalue()
+        self.assertIn("\"event\":\"PREVIEW_UNAVAILABLE\"", logs)
+        self.assertIn("\"subscriber_key\":\"wally_trial\"", logs)
+        self.assertIn("\"territory_code\":\"TX_TRIANGLE_V1\"", logs)
 
     def test_invalid_token_rejected(self) -> None:
         status, body, headers = _http_full(

@@ -20,6 +20,8 @@ import smtplib
 import sqlite3
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -41,7 +43,7 @@ from lead_filters import (
     load_territory_definitions,
     normalize_content_filter,
 )
-from unsubscribe_utils import create_unsub_token, get_include_lows_pref, sign_registration
+from unsubscribe_utils import create_unsub_token, sign_registration
 from email_footer import build_footer_html, build_footer_text
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,65 @@ HEALTH_ANCHORS_BY_TERRITORY = {
 
 LEAD_SCORE_VERSION = "lead_score_v1"
 TIER_THRESHOLDS = {"high_min": 10, "medium_min": 6}
+
+
+def fetch_lows_enabled_pref(subscriber_key: str | None, territory_code: str | None, timeout_s: int = 3) -> bool:
+    """
+    Query the unsubscribe service for the subscriber-scoped low-priority preference.
+
+    On any failure, log PREFS_FETCH_FAIL and default to lows_disabled.
+    """
+    sk = (subscriber_key or "").strip().lower()
+    terr = (territory_code or "").strip().upper()
+    if not sk or not terr:
+        return False
+
+    base = (
+        (os.getenv("MFO_PREFS_BASE_URL") or "")
+        or (os.getenv("PREFS_ENDPOINT_BASE") or "")
+        or (os.getenv("UNSUB_ENDPOINT_BASE") or "")
+        or "https://unsub.microflowops.com"
+    ).strip()
+    api_key = (os.getenv("MFO_INTERNAL_API_KEY") or "").strip()
+    if not base or not api_key:
+        print(f"PREFS_FETCH_FAIL subscriber_key={sk} territory_code={terr} reason=missing_config exception_class=None")
+        return False
+
+    url = base.rstrip("/") + "/api/prefs?" + urlencode({"subscriber_key": sk, "territory_code": terr})
+    req = urllib.request.Request(url, headers={"X-MFO-API-Key": api_key}, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            data = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        print(
+            f"PREFS_FETCH_FAIL subscriber_key={sk} territory_code={terr} "
+            f"reason=http_{int(getattr(e, 'code', 0) or 0)} exception_class={e.__class__.__name__}"
+        )
+        return False
+    except Exception as e:
+        print(
+            f"PREFS_FETCH_FAIL subscriber_key={sk} territory_code={terr} "
+            f"reason=exception exception_class={e.__class__.__name__}"
+        )
+        return False
+
+    try:
+        payload = json.loads(data or "{}")
+    except Exception as e:
+        print(
+            f"PREFS_FETCH_FAIL subscriber_key={sk} territory_code={terr} "
+            f"reason=bad_json exception_class={e.__class__.__name__}"
+        )
+        return False
+
+    try:
+        return bool(payload.get("lows_enabled", False))
+    except Exception as e:
+        print(
+            f"PREFS_FETCH_FAIL subscriber_key={sk} territory_code={terr} "
+            f"reason=bad_payload exception_class={e.__class__.__name__}"
+        )
+        return False
 
 
 def content_filter_label(value: str) -> str:
@@ -1577,20 +1638,26 @@ def generate_digest_html(
         elif low_shown:
             html.append(f"<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals: {low}.</p>")
         else:
-            if enable_lows_url:
-                html.append(
-                    "<p style=\"color: #555; margin: 6px 0 0 0;\">"
-                    f"Low-priority signals available: {low} (not shown). "
-                    f"<a href=\"{enable_lows_url}\" "
-                    "style=\"display: inline-block; margin-left: 8px; background: #0b5fff; color: #ffffff; "
-                    "text-decoration: none; padding: 8px 12px; border-radius: 8px; font-weight: 700;\">"
-                    "Enable lows.</a>"
+             if enable_lows_url:
+                 html.append(
+                     "<p style=\"color: #555; margin: 6px 0 0 0;\">"
+                     f"Low-priority signals available: {low} (not shown). "
+                     f"<a href=\"{enable_lows_url}\" "
+                     "style=\"display: inline-block; margin-left: 8px; background: #0b5fff; color: #ffffff; "
+                     "text-decoration: none; padding: 8px 12px; border-radius: 8px; font-weight: 700;\">"
+                     "Enable lows.</a>"
+                     "<span style=\"color:#6b7280; font-size:12px; margin-left: 10px;\">"
+                     "Starts next digest; instant preview after enabling."
+                     "</span>"
+                     "</p>"
+                 )
+             else:
+                 html.append(
+                    f"<p style=\"color: #555; margin: 6px 0 0 0;\">"
+                    f"Low-priority signals available: {low} (not shown). Enable lows. "
+                    "<span style=\"color:#6b7280; font-size:12px;\">Starts next digest; instant preview after enabling.</span>"
                     "</p>"
-                )
-            else:
-                html.append(
-                    f"<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals available: {low} (not shown). Enable lows.</p>"
-                )
+                 )
     if coverage_line:
         cov = (coverage_line or "").strip()
         if cov.lower() == "sample format (dummy data)":
@@ -1769,13 +1836,16 @@ def generate_digest_text(
         elif low_shown:
             lines.append(f"Low-priority signals: {low}.")
         else:
-            if enable_lows_url:
+             if enable_lows_url:
+                 lines.append(
+                     "Low-priority signals available: "
+                    f"{low} (not shown). Enable lows: {enable_lows_url} (starts next digest; instant preview after enabling)"
+                 )
+             else:
                 lines.append(
-                    "Low-priority signals available: "
-                    f"{low} (not shown). Enable lows: {enable_lows_url}"
+                    f"Low-priority signals available: {low} (not shown). Enable lows. "
+                    "(starts next digest; instant preview after enabling)"
                 )
-            else:
-                lines.append(f"Low-priority signals available: {low} (not shown). Enable lows.")
     if coverage_line:
         cov = (coverage_line or "").strip()
         if cov.lower() == "sample format (dummy data)":
@@ -2665,7 +2735,7 @@ def main() -> None:
         include_lows_pref = False
         if args.mode == "daily" and prefs_territory and not args.smoke_cchevali:
             try:
-                include_lows_pref = bool(get_include_lows_pref(recipient, subscriber_key, prefs_territory))
+                include_lows_pref = bool(fetch_lows_enabled_pref(subscriber_key, prefs_territory))
             except Exception:
                 include_lows_pref = False
 
