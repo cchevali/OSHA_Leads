@@ -1,6 +1,8 @@
 import argparse
+import html
 import json
 import os
+import subprocess
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -124,7 +126,9 @@ def _rate_limited(ip: str) -> bool:
 
 
 _RE_TERRITORY_CODE = re.compile(r"^[A-Z0-9_]{2,64}$")
-_RE_SUBSCRIBER_KEY = re.compile(r"^[a-z0-9_]{2,80}$")
+# Subscriber keys come from email links; allow a conservative set and cap length to avoid abuse.
+# Allowed: 1-80 chars from [A-Za-z0-9_.-] plus underscore.
+_RE_SUBSCRIBER_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 
 
 def _normalize_territory_code(value: str | None) -> str:
@@ -132,6 +136,7 @@ def _normalize_territory_code(value: str | None) -> str:
 
 
 def _normalize_subscriber_key(value: str | None) -> str:
+    # Canonicalize to lowercase for storage/lookup; diagnostics should show the raw value.
     return (value or "").strip().lower()
 
 
@@ -143,8 +148,34 @@ def _valid_subscriber_key(value: str) -> bool:
     return bool(value) and bool(_RE_SUBSCRIBER_KEY.match(value))
 
 
+def _resolve_git_sha() -> str:
+    """
+    Best-effort git sha for observability.
+    Prefer env var, fall back to `git rev-parse` when available, else "unknown".
+    """
+    env_sha = (os.getenv("MFO_UNSUB_SHA") or os.getenv("GIT_SHA") or "").strip()
+    if env_sha:
+        return env_sha
+    try:
+        root = Path(__file__).resolve().parent
+        out = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(root), timeout=1)
+        sha = out.decode("utf-8", errors="replace").strip()
+        if sha:
+            return sha
+    except Exception:
+        pass
+    return "unknown"
+
+
+_GIT_SHA = _resolve_git_sha()
+
+
 class UnsubHandler(BaseHTTPRequestHandler):
     server_version = "UnsubServer/1.0"
+
+    def end_headers(self) -> None:
+        self.send_header("X-MFO-Unsub-SHA", _GIT_SHA)
+        super().end_headers()
 
     def do_GET(self):
         ip = _client_ip(self)
@@ -159,6 +190,15 @@ class UnsubHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/")
 
         params = parse_qs(parsed.query)
+
+        if path == "/__version":
+            payload = json.dumps({"git_sha": _GIT_SHA}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
 
         if path == "/unsubscribe":
             token = (params.get("token") or [""])[0]
@@ -207,6 +247,21 @@ class UnsubHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
 
+        def _prefs_diag_block(raw_subscriber_key: str, raw_territory_code: str) -> str:
+            sk = html.escape((raw_subscriber_key or "").strip())
+            terr = html.escape((raw_territory_code or "").strip())
+            return (
+                "<div style=\"margin-top: 16px; padding: 12px; border: 1px solid #e5e7eb; "
+                "border-radius: 10px; background: #f9fafb;\">"
+                "<div style=\"font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; "
+                "color: #6b7280; font-weight: 700;\">Diagnostics</div>"
+                "<pre style=\"margin: 10px 0 0 0; white-space: pre-wrap; word-break: break-word; "
+                "font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; "
+                "font-size: 12px; color: #111827;\">"
+                f"subscriber_key={sk}\nterritory_code={terr}</pre>"
+                "</div>"
+            )
+
         def _parse_prefs_territory(campaign_id: str) -> tuple[str | None, str | None]:
             # Expected campaign_id: prefs|<customer_id>|terr=TX_TRIANGLE_V1
             text = (campaign_id or "").strip()
@@ -241,6 +296,8 @@ class UnsubHandler(BaseHTTPRequestHandler):
             return ts_dt < cutoff
 
         if path in {"/prefs/enable_lows", "/prefs/disable_lows"}:
+            raw_subscriber_key = (params.get("subscriber_key") or [""])[0]
+            raw_territory_code = (params.get("territory_code") or [""])[0]
             signed = (
                 (params.get("token") or params.get("TOKEN") or params.get("t") or params.get("T") or [""])[0].strip()
             )
@@ -248,7 +305,8 @@ class UnsubHandler(BaseHTTPRequestHandler):
             if not token_id:
                 _render_html(
                     "Invalid link",
-                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is invalid. Please request a fresh email.</p>",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is invalid. Please request a fresh email.</p>"
+                    + _prefs_diag_block(raw_subscriber_key, raw_territory_code),
                     status=int(HTTPStatus.BAD_REQUEST),
                 )
                 return
@@ -272,20 +330,22 @@ class UnsubHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            subscriber_key = _normalize_subscriber_key((params.get("subscriber_key") or [""])[0])
-            territory_code = _normalize_territory_code((params.get("territory_code") or [""])[0])
+            subscriber_key = _normalize_subscriber_key(raw_subscriber_key)
+            territory_code = _normalize_territory_code(raw_territory_code)
 
             if not territory_code:
                 _render_html(
                     "Invalid link",
-                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is missing territory_code. Please request a fresh email.</p>",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is missing territory_code. Please request a fresh email.</p>"
+                    + _prefs_diag_block(raw_subscriber_key, raw_territory_code),
                     status=int(HTTPStatus.BAD_REQUEST),
                 )
                 return
             if not _valid_territory_code(territory_code):
                 _render_html(
                     "Invalid link",
-                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid territory_code format. Please request a fresh email.</p>",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid territory_code format. Please request a fresh email.</p>"
+                    + _prefs_diag_block(raw_subscriber_key, raw_territory_code),
                     status=int(HTTPStatus.BAD_REQUEST),
                 )
                 return
@@ -293,14 +353,16 @@ class UnsubHandler(BaseHTTPRequestHandler):
             if not subscriber_key:
                 _render_html(
                     "Invalid link",
-                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is missing subscriber_key. Please request a fresh email.</p>",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is missing subscriber_key. Please request a fresh email.</p>"
+                    + _prefs_diag_block(raw_subscriber_key, raw_territory_code),
                     status=int(HTTPStatus.BAD_REQUEST),
                 )
                 return
             if not _valid_subscriber_key(subscriber_key):
                 _render_html(
                     "Invalid link",
-                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid subscriber_key format. Please request a fresh email.</p>",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid subscriber_key format. Please request a fresh email.</p>"
+                    + _prefs_diag_block(raw_subscriber_key, raw_territory_code),
                     status=int(HTTPStatus.BAD_REQUEST),
                 )
                 return
@@ -349,7 +411,7 @@ class UnsubHandler(BaseHTTPRequestHandler):
         # Make verification curl -I predictable.
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
-        if path in {"/unsubscribe", "/prefs/enable_lows", "/prefs/disable_lows"}:
+        if path in {"/__version", "/unsubscribe", "/prefs/enable_lows", "/prefs/disable_lows"}:
             self.send_response(HTTPStatus.OK)
             self.end_headers()
             return

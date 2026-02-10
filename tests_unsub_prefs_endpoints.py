@@ -28,6 +28,23 @@ def _http(url: str, method: str = "GET") -> tuple[int, str]:
         return int(e.code), data
 
 
+def _http_full(url: str, method: str = "GET") -> tuple[int, str, dict]:
+    req = urllib.request.Request(url, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = resp.read().decode("utf-8", errors="replace")
+            headers = dict(resp.headers.items())
+            return int(resp.status), data, headers
+    except urllib.error.HTTPError as e:
+        data = ""
+        try:
+            data = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        headers = dict(e.headers.items()) if getattr(e, "headers", None) else {}
+        return int(e.code), data, headers
+
+
 class TestUnsubPrefsEndpoints(unittest.TestCase):
     def setUp(self) -> None:
         self._env_before = dict(os.environ)
@@ -85,6 +102,9 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         for path in ["/prefs/enable_lows", "/prefs/disable_lows"]:
             status, _ = _http(self._base() + path, method="HEAD")
             self.assertEqual(200, status)
+        status, _, headers = _http_full(self._base() + "/__version", method="GET")
+        self.assertEqual(200, status)
+        self.assertIn("X-MFO-Unsub-SHA", headers)
 
     def test_enable_then_disable_updates_preference(self) -> None:
         email = "recipient@example.com"
@@ -115,12 +135,14 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         self.assertFalse(unsubscribe_utils.get_include_lows_pref(email, subscriber_key, territory))
 
     def test_invalid_token_rejected(self) -> None:
-        status, body = _http(
+        status, body, headers = _http_full(
             self._base()
             + "/prefs/enable_lows?token=invalid.invalid&territory_code=TX_TRIANGLE_V1&subscriber_key=sub_tx_triangle_v1_0000000000"
         )
         self.assertEqual(400, status)
         self.assertIn("invalid", body.lower())
+        self.assertIn("X-MFO-Unsub-SHA", headers)
+        self.assertNotIn("subscriber_key format", body.lower())
 
     def test_missing_campaign_territory_still_works_with_query_params(self) -> None:
         email = "recipient@example.com"
@@ -162,6 +184,47 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         self.assertFalse(unsubscribe_utils.get_include_lows_pref(fanout, None, territory))
         # Ensure this does not affect the primary recipient's prefs.
         self.assertFalse(unsubscribe_utils.get_include_lows_pref(primary, subscriber_key, territory))
+
+    def test_realistic_subscriber_key_allowed_and_invalid_subscriber_key_rejected(self) -> None:
+        email = "recipient@example.com"
+        territory = "TX_TRIANGLE_V1"
+        token = unsubscribe_utils.create_unsub_token(email, f"prefs|wally_trial|terr={territory}")
+        import urllib.parse
+
+        # Realistic link key: letters/digits/._- only.
+        subscriber_key = "wally.trial-2026_v1"
+        status, body, headers = _http_full(
+            self._base() + f"/prefs/enable_lows?token={token}&subscriber_key={subscriber_key}&territory_code={territory}"
+        )
+        self.assertEqual(200, status)
+        self.assertIn("preference updated", body.lower())
+        self.assertIn("X-MFO-Unsub-SHA", headers)
+
+        # Truly invalid key: contains space.
+        bad_key = "wally trial"
+        qs = urllib.parse.urlencode({"token": token, "subscriber_key": bad_key, "territory_code": territory})
+        status, body, _ = _http_full(self._base() + f"/prefs/enable_lows?{qs}")
+        self.assertEqual(400, status)
+        self.assertIn("subscriber_key", body.lower())
+        self.assertIn("wally trial", body.lower())
+
+        # Truly invalid key: too long (>80).
+        too_long = "a" * 81
+        qs = urllib.parse.urlencode({"token": token, "subscriber_key": too_long, "territory_code": territory})
+        status, body, _ = _http_full(self._base() + f"/prefs/enable_lows?{qs}")
+        self.assertEqual(400, status)
+        self.assertIn("subscriber_key", body.lower())
+
+    def test_version_endpoint_returns_same_sha_as_header(self) -> None:
+        status, body, headers = _http_full(self._base() + "/__version")
+        self.assertEqual(200, status)
+        self.assertIn("X-MFO-Unsub-SHA", headers)
+        sha_header = (headers.get("X-MFO-Unsub-SHA") or "").strip()
+        self.assertTrue(sha_header)
+
+        import json as _json
+        payload = _json.loads(body)
+        self.assertEqual(payload.get("git_sha"), sha_header)
 
 
 if __name__ == "__main__":
