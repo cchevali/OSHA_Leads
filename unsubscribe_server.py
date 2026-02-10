@@ -179,42 +179,42 @@ def _resolve_preview_db_path() -> Path | None:
 
 def _load_recent_low_priority_preview(
     territory_code: str, days: int = 14, limit: int = 20
-) -> tuple[list[dict], str | None, Exception | None]:
+) -> tuple[list[dict], int, str | None, Exception | None]:
     """
     Return (rows, error_message, exception). Rows are low-priority only and territory-scoped.
     Shared logic: uses the same query + tier threshold used by the digest renderer.
     """
     db_path = _resolve_preview_db_path()
     if not db_path:
-        return [], "db_missing", None
+        return [], 0, "db_missing", None
 
     try:
         from lead_filters import load_territory_definitions
     except Exception as e:
-        return [], "territory_defs_import_error", e
+        return [], 0, "territory_defs_import_error", e
 
     root = Path(__file__).resolve().parent
     try:
         defs = load_territory_definitions(str(root / "territories.json"))
         terr = defs.get(territory_code)
         if not isinstance(terr, dict):
-            return [], "unknown_territory", None
+            return [], 0, "unknown_territory", None
         states = [str(s or "").strip().upper() for s in (terr.get("states") or []) if str(s or "").strip()]
         if not states:
-            return [], "territory_no_states", None
+            return [], 0, "territory_no_states", None
     except Exception as e:
-        return [], "territory_defs_load_error", e
+        return [], 0, "territory_defs_load_error", e
 
     try:
         import sqlite3
         from send_digest_email import TIER_THRESHOLDS, get_leads_for_period
     except Exception as e:
-        return [], "digest_logic_import_error", e
+        return [], 0, "digest_logic_import_error", e
 
     try:
         conn = sqlite3.connect(str(db_path))
     except Exception as e:
-        return [], "db_open_error", e
+        return [], 0, "db_open_error", e
 
     try:
         all_rows, _, _ = get_leads_for_period(
@@ -236,7 +236,7 @@ def _load_recent_low_priority_preview(
             conn.close()
         except Exception:
             pass
-        return [], "query_error", e
+        return [], 0, "query_error", e
 
     try:
         conn.close()
@@ -253,8 +253,9 @@ def _load_recent_low_priority_preview(
         key=lambda lead: str((lead.get("last_seen_at") or lead.get("first_seen_at") or lead.get("date_opened") or "")),
         reverse=True,
     )
+    total = len(low_only)
     limit = max(0, min(50, int(limit)))
-    return low_only[:limit], None, None
+    return low_only[:limit], total, None, None
 
 
 def _log_preview_unavailable(
@@ -280,8 +281,8 @@ def _log_preview_unavailable(
 def _recent_low_priority_preview_html(
     subscriber_key: str,
     territory_code: str,
-    title: str = "Recent low-priority preview (last 14 days)",
-    limit: int = 20,
+    title: str = "Recent low signals",
+    limit: int = 5,
 ) -> str:
     safe_title = html.escape(title)
 
@@ -298,7 +299,7 @@ def _recent_low_priority_preview_html(
             "<div style=\"margin-top: 18px; padding-top: 12px; border-top: 1px solid #e5e7eb;\">",
             f"<h2 style=\"margin: 0 0 8px 0; font-size: 16px; color: #111827;\">{safe_title}</h2>",
             "<p style=\"margin: 0 0 10px 0; color: #374151; font-size: 13px;\">"
-            "Showing low-priority rows for this territory only (capped).</p>",
+            "Business-only fields. Last 14 days for this territory.</p>",
         ]
 
         limited, retry_s = _prefs_preview_rate_limited(subscriber_key)
@@ -312,41 +313,58 @@ def _recent_low_priority_preview_html(
             out.append("</div>")
             return "".join(out)
 
-        rows, err, exc = _load_recent_low_priority_preview(territory_code=territory_code, days=14, limit=limit)
+        rows, total, err, exc = _load_recent_low_priority_preview(territory_code=territory_code, days=14, limit=limit)
         if err:
             _log_preview_unavailable(subscriber_key, territory_code, reason=err, exc=exc)
             out.append(_empty_state("Preview unavailable right now. Low-priority rows will appear starting the next scheduled digest."))
             out.append("</div>")
             return "".join(out)
 
-        if not rows:
-            out.append(_empty_state("No low-priority signals found for this territory in the last 14 days."))
+        if int(total or 0) <= 0:
+            out.append(_empty_state("0 low signals in the last 14 days for this territory."))
             out.append("</div>")
             return "".join(out)
 
+        show_n = len(rows or [])
+        out.append(
+            "<div style=\"margin: 10px 0 10px 0; color: #374151; font-size: 13px;\">"
+            f"<strong>{int(total)}</strong> low signals found (showing up to {int(show_n)} most recent).</div>"
+        )
+
         def _cell(text: str) -> str:
             return html.escape((text or "").strip())
+
+        def _observed_date(lead: dict) -> str:
+            ts = str(lead.get("last_seen_at") or lead.get("first_seen_at") or "").strip()
+            if ts and len(ts) >= 10:
+                return ts[:10]
+            opened = str(lead.get("date_opened") or "").strip()
+            return opened[:10] if opened else "-"
+
+        def _inspection_id(lead: dict) -> str:
+            val = str(lead.get("activity_nr") or lead.get("lead_id") or "").strip()
+            return val
 
         out.append(
             "<div style=\"overflow-x:auto; border: 1px solid #e5e7eb; border-radius: 10px;\">"
             "<table style=\"width:100%; border-collapse: collapse; font-size: 13px;\">"
             "<thead><tr style=\"background:#f3f4f6;\">"
-            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Opened</th>"
+            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Observed</th>"
             "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Establishment</th>"
             "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Location</th>"
-            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Type</th>"
-            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Score</th>"
+            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Inspection</th>"
+            "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Label</th>"
             "<th style=\"text-align:left; padding: 10px; border-bottom: 1px solid #e5e7eb;\">Source</th>"
             "</tr></thead><tbody>"
         )
         for lead in rows:
-            opened = _cell(str(lead.get("date_opened") or ""))
+            observed = _cell(_observed_date(lead))
             name = _cell(str(lead.get("establishment_name") or ""))
             city = _cell(str(lead.get("site_city") or ""))
             state = _cell(str(lead.get("site_state") or ""))
             loc = _cell(", ".join([p for p in [city, state] if p]))
-            itype = _cell(str(lead.get("inspection_type") or ""))
-            score = _cell(str(lead.get("lead_score") or ""))
+            insp = _cell(_inspection_id(lead))
+            label = _cell(str(lead.get("inspection_type") or ""))
             url = str(lead.get("source_url") or "").strip()
             href = html.escape(url, quote=True)
             src = (
@@ -356,11 +374,11 @@ def _recent_low_priority_preview_html(
             )
             out.append(
                 "<tr>"
-                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6; white-space: nowrap;\">{opened}</td>"
+                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6; white-space: nowrap;\">{observed}</td>"
                 f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6;\">{name}</td>"
                 f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6;\">{loc}</td>"
-                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6;\">{itype}</td>"
-                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6;\">{score}</td>"
+                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6; white-space: nowrap;\">{insp}</td>"
+                f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6;\">{label}</td>"
                 f"<td style=\"padding: 10px; border-bottom: 1px solid #f3f4f6;\">{src}</td>"
                 "</tr>"
             )
@@ -397,6 +415,50 @@ def _valid_territory_code(value: str) -> bool:
 
 def _valid_subscriber_key(value: str) -> bool:
     return bool(value) and bool(_RE_SUBSCRIBER_KEY.match(value))
+
+
+def _latest_lows_enabled_pref(subscriber_key: str, territory_code: str) -> tuple[bool, str | None, Exception | None]:
+    """
+    Best-effort include_lows for (subscriber_key, territory_code) based on prefs.csv.
+
+    Digest preference is subscriber-scoped, so we intentionally ignore email here and use the newest row.
+    Returns (include_lows, error_reason, exception).
+    """
+    try:
+        import unsubscribe_utils as _uu
+    except Exception as e:
+        return False, "prefs_import_error", e
+
+    sk = _normalize_subscriber_key(subscriber_key)
+    terr = _normalize_territory_code(territory_code)
+    if not sk or not terr:
+        return False, None, None
+
+    path = getattr(_uu, "PREFS_PATH", None)
+    if not path or not Path(path).exists():
+        return False, None, None
+
+    include_lows = False
+    best_ts = ""
+    try:
+        with open(Path(path), "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if not row:
+                    continue
+                row_sk = _normalize_subscriber_key(row.get("subscriber_key"))
+                row_terr = _normalize_territory_code(row.get("territory"))
+                if row_sk != sk or row_terr != terr:
+                    continue
+                ts = (row.get("updated_at") or "").strip()
+                if ts and best_ts and ts <= best_ts:
+                    continue
+                best_ts = ts or best_ts
+                val = str(row.get("include_lows") or "").strip().lower()
+                include_lows = val in {"1", "true", "yes"}
+        return bool(include_lows), None, None
+    except Exception as e:
+        return False, "prefs_read_error", e
 
 
 def _resolve_git_sha() -> str:
@@ -478,34 +540,9 @@ class UnsubHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b"{\"error\":\"invalid_territory_code\"}\n")
                 return
 
-            # Best-effort: compute include_lows for (subscriber_key, territory_code) by scanning prefs.csv.
-            # Pref writes remain keyed by email, but the digest preference is subscriber-scoped.
-            include_lows = False
-            best_ts = ""
-            try:
-                import unsubscribe_utils as _uu
-
-                prefs_path = _uu.PREFS_PATH
-                if prefs_path.exists():
-                    with open(prefs_path, "r", newline="", encoding="utf-8") as f:
-                        reader = csv.DictReader(f)
-                        for row in reader:
-                            if not row:
-                                continue
-                            row_sk = (row.get("subscriber_key") or "").strip().lower()
-                            row_terr = _normalize_territory_code(row.get("territory"))
-                            if row_sk != subscriber_key or row_terr != territory_code:
-                                continue
-                            ts = (row.get("updated_at") or "").strip()
-                            # Prefer the newest update when multiple emails wrote prefs for the same subscriber_key.
-                            if ts and best_ts and ts <= best_ts:
-                                continue
-                            best_ts = ts or best_ts
-                            val = str(row.get("include_lows") or "").strip().lower()
-                            include_lows = val in {"1", "true", "yes"}
-            except Exception as e:
-                _log_preview_unavailable(subscriber_key, territory_code, reason="prefs_read_error", exc=e)
-                include_lows = False
+            include_lows, err, exc = _latest_lows_enabled_pref(subscriber_key, territory_code)
+            if err:
+                _log_preview_unavailable(subscriber_key, territory_code, reason=err, exc=exc)
 
             payload = json.dumps(
                 {"subscriber_key": subscriber_key, "territory_code": territory_code, "lows_enabled": bool(include_lows)},
@@ -612,6 +649,110 @@ class UnsubHandler(BaseHTTPRequestHandler):
                 return False
             cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
             return ts_dt < cutoff
+
+        if path == "/prefs":
+            raw_subscriber_key = (params.get("subscriber_key") or [""])[0]
+            raw_territory_code = (params.get("territory_code") or [""])[0]
+            signed = (
+                (params.get("token") or params.get("TOKEN") or params.get("t") or params.get("T") or [""])[0].strip()
+            )
+            token_id = verify_unsub_token(signed)
+            if not token_id:
+                _render_html(
+                    "Invalid link",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is invalid. Please request a fresh email.</p>"
+                    + _prefs_diag_block(raw_subscriber_key, raw_territory_code),
+                    status=int(HTTPStatus.BAD_REQUEST),
+                )
+                return
+
+            record = lookup_token_record(token_id) or {}
+            email = (record.get("email") or "").strip().lower()
+            created_at = (record.get("created_at") or "").strip()
+            if not email:
+                _render_html(
+                    "Link expired",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is expired. Please request a fresh email.</p>",
+                    status=int(HTTPStatus.NOT_FOUND),
+                )
+                return
+            if _token_is_expired(created_at):
+                _render_html(
+                    "Link expired",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is expired. Please request a fresh email.</p>",
+                    status=int(HTTPStatus.NOT_FOUND),
+                )
+                return
+
+            subscriber_key = _normalize_subscriber_key(raw_subscriber_key)
+            territory_code = _normalize_territory_code(raw_territory_code)
+
+            if not territory_code:
+                _render_html(
+                    "Invalid link",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is missing territory_code. Please request a fresh email.</p>"
+                    + _prefs_diag_block(raw_subscriber_key, raw_territory_code),
+                    status=int(HTTPStatus.BAD_REQUEST),
+                )
+                return
+            if not _valid_territory_code(territory_code):
+                _render_html(
+                    "Invalid link",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid territory_code format. Please request a fresh email.</p>"
+                    + _prefs_diag_block(raw_subscriber_key, raw_territory_code),
+                    status=int(HTTPStatus.BAD_REQUEST),
+                )
+                return
+
+            if not subscriber_key:
+                _render_html(
+                    "Invalid link",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link is missing subscriber_key. Please request a fresh email.</p>"
+                    + _prefs_diag_block(raw_subscriber_key, raw_territory_code),
+                    status=int(HTTPStatus.BAD_REQUEST),
+                )
+                return
+            if not _valid_subscriber_key(subscriber_key):
+                _render_html(
+                    "Invalid link",
+                    "<p style=\"color:#374151; margin-top: 12px;\">This preference link has an invalid subscriber_key format. Please request a fresh email.</p>"
+                    + _prefs_diag_block(raw_subscriber_key, raw_territory_code),
+                    status=int(HTTPStatus.BAD_REQUEST),
+                )
+                return
+
+            _resolved_code, territory_display = _resolve_territory(territory_code)
+            include_lows, err, exc = _latest_lows_enabled_pref(subscriber_key, territory_code)
+            if err:
+                _log_preview_unavailable(subscriber_key, territory_code, reason=err, exc=exc)
+                include_lows = False
+
+            qs = urlencode({"token": signed, "subscriber_key": subscriber_key, "territory_code": territory_code})
+            enable_url = f"/prefs/enable_lows?{qs}"
+            disable_url = f"/prefs/disable_lows?{qs}"
+
+            state = "ON" if include_lows else "OFF"
+            state_bg = "#ecfdf5" if include_lows else "#fef2f2"
+            state_border = "#a7f3d0" if include_lows else "#fecaca"
+            state_color = "#065f46" if include_lows else "#991b1b"
+
+            preview = _recent_low_priority_preview_html(subscriber_key=subscriber_key, territory_code=territory_code)
+            inner = (
+                "<p style=\"color:#374151; margin-top: 12px;\">"
+                f"Territory: <strong>{html.escape(territory_display or territory_code)}</strong></p>"
+                f"<div style=\"margin-top: 10px; padding: 10px 12px; border-radius: 12px; "
+                f"background: {state_bg}; border: 1px solid {state_border}; color: {state_color}; font-weight: 900;\">"
+                f"Low signals: {state}</div>"
+                "<div style=\"margin-top: 14px; display:flex; gap:10px; flex-wrap:wrap;\">"
+                f"<a href=\"{enable_url}\" style=\"display:inline-block; background:#0b5fff; color:#ffffff; text-decoration:none; "
+                "padding:10px 14px; border-radius:10px; font-weight:700;\">Enable lows</a>"
+                f"<a href=\"{disable_url}\" style=\"display:inline-block; background:#6b7280; color:#ffffff; text-decoration:none; "
+                "padding:10px 14px; border-radius:10px; font-weight:700;\">Disable lows</a>"
+                "</div>"
+                + preview
+            )
+            _render_html("Preferences", inner, status=int(HTTPStatus.OK))
+            return
 
         if path in {"/prefs/enable_lows", "/prefs/disable_lows"}:
             raw_subscriber_key = (params.get("subscriber_key") or [""])[0]
@@ -729,15 +870,22 @@ class UnsubHandler(BaseHTTPRequestHandler):
                 )
             )
 
-            preview = _recent_low_priority_preview_html(subscriber_key=subscriber_key, territory_code=territory_code) if include else ""
+            preview = _recent_low_priority_preview_html(subscriber_key=subscriber_key, territory_code=territory_code)
+            prefs_url = f"/prefs?{urlencode({'token': signed, 'subscriber_key': subscriber_key, 'territory_code': territory_code})}"
+            state_line = (
+                "<p style=\"color:#374151; margin-top: 12px;\">"
+                f"Low signals: <strong>{'ON' if include else 'OFF'}</strong>.</p>"
+            )
 
             inner = (
                 banner
                 + expectation
+                + state_line
                 + preview
                 + "<p style=\"color:#374151; margin-top: 12px;\">"
                 f"Preference updated for <strong>{territory_display or territory_code}</strong>."
                 "</p>"
+                f"<p style=\"margin-top: 14px;\"><a href=\"{prefs_url}\" style=\"color:#0b5fff;\">Back to preferences</a></p>"
                 f"<p style=\"margin-top: 14px;\"><a href=\"{other_url}\" "
                 "style=\"display:inline-block; background:#0b5fff; color:#ffffff; text-decoration:none; "
                 "padding:10px 14px; border-radius:10px; font-weight:700;\">"
@@ -754,7 +902,7 @@ class UnsubHandler(BaseHTTPRequestHandler):
         # Make verification curl -I predictable.
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
-        if path in {"/__version", "/unsubscribe", "/prefs/enable_lows", "/prefs/disable_lows"}:
+        if path in {"/__version", "/unsubscribe", "/prefs", "/prefs/enable_lows", "/prefs/disable_lows"}:
             self.send_response(HTTPStatus.OK)
             self.end_headers()
             return

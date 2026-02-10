@@ -222,7 +222,7 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         return f"http://127.0.0.1:{self._port}"
 
     def test_routes_exist(self) -> None:
-        for path in ["/prefs/enable_lows", "/prefs/disable_lows"]:
+        for path in ["/prefs", "/prefs/enable_lows", "/prefs/disable_lows"]:
             status, _ = _http(self._base() + path, method="HEAD")
             self.assertEqual(200, status)
         status, _, headers = _http_full(self._base() + "/__version", method="GET")
@@ -246,8 +246,9 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertIn("Preference updated", body)
         self.assertIn("Low-priority signals enabled", body)
-        self.assertIn("Recent low-priority preview (last 14 days)", body)
+        self.assertIn("Recent low signals", body)
         self.assertIn("LowCo", body)
+        self.assertIn("A-LOW-1", body)
         self.assertNotIn("FarCo", body)
         self.assertTrue(unsubscribe_utils.get_include_lows_pref(email, subscriber_key, territory))
 
@@ -259,7 +260,54 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
             )
         self.assertEqual(200, status)
         self.assertIn("Preference updated", body)
+        self.assertIn("Recent low signals", body)
+        self.assertIn("LowCo", body)
+        self.assertIn("A-LOW-1", body)
         self.assertFalse(unsubscribe_utils.get_include_lows_pref(email, subscriber_key, territory))
+
+    def test_prefs_landing_renders_state_and_preview(self) -> None:
+        email = "recipient@example.com"
+        territory = "TX_TRIANGLE_V1"
+        campaign_id = f"prefs|wally_trial|terr={territory}"
+        token = unsubscribe_utils.create_unsub_token(email, campaign_id)
+        subscriber_key = "wally_trial"
+
+        status, body = _http(self._base() + f"/prefs?token={token}&subscriber_key={subscriber_key}&territory_code={territory}")
+        self.assertEqual(200, status)
+        self.assertIn("Preferences", body)
+        self.assertIn("Low signals: OFF", body)
+        self.assertIn("Recent low signals", body)
+        self.assertIn("LowCo", body)
+        self.assertIn("A-LOW-1", body)
+
+        with redirect_stdout(io.StringIO()):
+            status, _ = _http(
+                self._base()
+                + f"/prefs/enable_lows?token={token}&subscriber_key={subscriber_key}&territory_code={territory}"
+            )
+        self.assertEqual(200, status)
+
+        status, body = _http(self._base() + f"/prefs?token={token}&subscriber_key={subscriber_key}&territory_code={territory}")
+        self.assertEqual(200, status)
+        self.assertIn("Low signals: ON", body)
+        self.assertIn("Recent low signals", body)
+
+    def test_prefs_preview_no_lows_message(self) -> None:
+        # Mutate the preview DB so there are no low rows (< medium_min).
+        conn = sqlite3.connect(str(self._db_path))
+        conn.execute("UPDATE inspections SET lead_score=7 WHERE lead_score < 6")
+        conn.commit()
+        conn.close()
+
+        email = "recipient@example.com"
+        territory = "TX_TRIANGLE_V1"
+        token = unsubscribe_utils.create_unsub_token(email, f"prefs|wally_trial|terr={territory}")
+        subscriber_key = "wally_trial"
+
+        status, body = _http(self._base() + f"/prefs?token={token}&subscriber_key={subscriber_key}&territory_code={territory}")
+        self.assertEqual(200, status)
+        self.assertIn("Recent low signals", body)
+        self.assertIn("0 low signals in the last 14 days for this territory.", body)
 
     def test_api_prefs_requires_key_and_reflects_latest_subscriber_preference(self) -> None:
         email = "recipient@example.com"
@@ -324,7 +372,7 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         self.assertTrue(unsubscribe_utils.get_include_lows_pref(email, subscriber_key, territory))
 
         # Header must stay stable for UX/tests even if data is unavailable.
-        self.assertIn("Recent low-priority preview (last 14 days)", body)
+        self.assertIn("Recent low signals", body)
         self.assertIn("Preview unavailable right now.", body)
 
         # Structured warning log: best-effort, no 500.
