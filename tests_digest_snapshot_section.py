@@ -137,7 +137,7 @@ class TestDigestSnapshotSection(unittest.TestCase):
             include_low_fallback=False,
             branding=self.branding,
             tier_counts={"high": 0, "medium": 0, "low": 0},
-            enable_lows_url=None,
+            enable_lows_url=enable_url,
             include_lows=False,
             low_priority=[],
             footer_html=self.footer_html,
@@ -145,13 +145,13 @@ class TestDigestSnapshotSection(unittest.TestCase):
             snapshot_label="Last 14 days snapshot (not new)",
             snapshot_days=14,
             snapshot_tier_counts=snap_tiers,
-            snapshot_enable_lows_url=enable_url,
+            snapshot_enable_lows_url=None,
             snapshot_rows=snap_rows,
             snapshot_total=1,
         )
-        self.assertEqual(1, html.count("Low-priority signals available:"))
         self.assertEqual(1, html.count("Enable lows.</a>"))
         self.assertIn(enable_url, html)
+        self.assertNotIn("Low-priority signals available:", html)
         self.assertNotIn("Also observed (not shown)", html)
 
         text = generate_digest_text(
@@ -165,7 +165,7 @@ class TestDigestSnapshotSection(unittest.TestCase):
             include_low_fallback=False,
             branding=self.branding,
             tier_counts={"high": 0, "medium": 0, "low": 0},
-            enable_lows_url=None,
+            enable_lows_url=enable_url,
             include_lows=False,
             low_priority=[],
             footer_text=self.footer_text,
@@ -173,13 +173,13 @@ class TestDigestSnapshotSection(unittest.TestCase):
             snapshot_label="Last 14 days snapshot (not new)",
             snapshot_days=14,
             snapshot_tier_counts=snap_tiers,
-            snapshot_enable_lows_url=enable_url,
+            snapshot_enable_lows_url=None,
             snapshot_rows=snap_rows,
             snapshot_total=1,
         )
-        self.assertEqual(1, text.count("Low-priority signals available:"))
         self.assertEqual(1, text.count("Enable lows:"))
         self.assertIn(enable_url, text)
+        self.assertNotIn("Low-priority signals available:", text)
         self.assertNotIn("Also observed (not shown)", text)
 
     def test_snapshot_rows_include_lows_when_enabled(self) -> None:
@@ -250,13 +250,15 @@ class TestDigestSnapshotSection(unittest.TestCase):
             snapshot_days=14,
             snapshot_tier_counts=snap_tiers,
             snapshot_enable_lows_url="https://example.invalid/should_not_render",
-            snapshot_disable_lows_url=None,
+            snapshot_disable_lows_url="https://unsub.example/prefs/disable_lows?token=x.y",
             snapshot_rows=snap_rows,
             snapshot_total=1,
         )
         self.assertIn("Example Low Co", html)
         self.assertNotIn("(not shown)", html)
         self.assertNotIn("Enable lows", html)
+        self.assertIn("Low signals: <strong>ON</strong> (showing 1 of 1 low signals)", html)
+        self.assertNotIn("https://unsub.example/prefs/disable_lows?token=x.y", html)
 
 
 if __name__ == "__main__":

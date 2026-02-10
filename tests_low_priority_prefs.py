@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from email_footer import build_footer_html, build_footer_text
-from send_digest_email import generate_digest_html, generate_digest_text
+from send_digest_email import build_enable_lows_url, build_disable_lows_url, generate_digest_html, generate_digest_text
 from unsubscribe_utils import get_include_lows_pref, set_include_lows_pref
 
 
@@ -285,7 +285,7 @@ class TestLowPriorityPrefs(unittest.TestCase):
         )
         self.assertIn("Low signals:", html)
         self.assertIn("ON", html)
-        self.assertIn("(0 available today)", html)
+        self.assertIn("(none observed today)", html)
         self.assertIn("Disable lows", html)
         self.assertNotIn("Enable lows", html)
 
@@ -308,9 +308,27 @@ class TestLowPriorityPrefs(unittest.TestCase):
             summary_label="Newly observed today: 0 signals",
         )
         self.assertIn("Low signals: ON", text)
-        self.assertIn("(0 available today)", text)
+        self.assertIn("(none observed today)", text)
         self.assertIn("Disable lows", text)
         self.assertNotIn("Enable lows", text)
+
+    def test_prefs_urls_derive_base_from_unsub_endpoint(self) -> None:
+        # UNSUB_ENDPOINT_BASE is frequently configured as https://host/unsubscribe; prefs URLs must use the host root.
+        old = os.environ.get("UNSUB_ENDPOINT_BASE")
+        try:
+            os.environ.pop("PREFS_ENDPOINT_BASE", None)
+            os.environ["UNSUB_ENDPOINT_BASE"] = "https://unsub.example.internal/unsubscribe"
+            u1 = build_enable_lows_url("tok.sig", "wally_trial", "TX_TRIANGLE_V1")
+            u2 = build_disable_lows_url("tok.sig", "wally_trial", "TX_TRIANGLE_V1")
+            self.assertTrue(u1 and u1.startswith("https://unsub.example.internal/prefs/enable_lows?"))
+            self.assertTrue(u2 and u2.startswith("https://unsub.example.internal/prefs/disable_lows?"))
+            self.assertNotIn("/unsubscribe/prefs/", u1 or "")
+            self.assertNotIn("/unsubscribe/prefs/", u2 or "")
+        finally:
+            if old is None:
+                os.environ.pop("UNSUB_ENDPOINT_BASE", None)
+            else:
+                os.environ["UNSUB_ENDPOINT_BASE"] = old
 
 
 if __name__ == "__main__":

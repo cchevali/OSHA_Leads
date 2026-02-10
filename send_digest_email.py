@@ -452,7 +452,7 @@ def record_render_log(
 def build_coverage_line(total_counts: dict, shown_counts: dict) -> str:
     # Coverage lines were previously appended as a second "not shown" sentence.
     # That duplicated the low-priority CTA.
-    # Keep lows mentioned once via the "Low-priority signals available... Enable lows." line.
+    # Keep enable/disable lows CTA mentioned once (in the main "Low signals" line).
     return ""
 
 def _build_preheader(leads: list[dict]) -> str:
@@ -1428,15 +1428,9 @@ def build_enable_lows_url(signed_token: str, subscriber_key: str, territory_code
     if not (territory_code or "").strip():
         return None
 
-    base_endpoint = (os.getenv("PREFS_ENDPOINT_BASE", "") or "https://unsub.microflowops.com").strip()
-    if not base_endpoint:
+    base = get_prefs_base_url()
+    if not base:
         return None
-
-    try:
-        parsed = urlparse(base_endpoint)
-        base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
-    except Exception:
-        base = base_endpoint.rstrip("/")
 
     qs = urlencode({"token": signed_token, "subscriber_key": subscriber_key, "territory_code": territory_code})
     return f"{base}/prefs/enable_lows?{qs}"
@@ -1452,16 +1446,33 @@ def build_disable_lows_url(signed_token: str, subscriber_key: str, territory_cod
         return None
     if not (territory_code or "").strip():
         return None
-    base_endpoint = (os.getenv("PREFS_ENDPOINT_BASE", "") or "https://unsub.microflowops.com").strip()
-    if not base_endpoint:
+    base = get_prefs_base_url()
+    if not base:
         return None
+    qs = urlencode({"token": signed_token, "subscriber_key": subscriber_key, "territory_code": territory_code})
+    return f"{base}/prefs/disable_lows?{qs}"
+
+
+def get_prefs_base_url() -> str | None:
+    """
+    Canonical prefs host root (no path/query).
+
+    Priority:
+    - PREFS_ENDPOINT_BASE (optional override)
+    - UNSUB_ENDPOINT_BASE (often includes /unsubscribe; we strip path)
+    - default https://unsub.microflowops.com
+    """
+    base_endpoint = (os.getenv("PREFS_ENDPOINT_BASE") or "").strip()
+    if not base_endpoint:
+        base_endpoint = (os.getenv("UNSUB_ENDPOINT_BASE") or "").strip()
+    if not base_endpoint:
+        base_endpoint = "https://unsub.microflowops.com"
     try:
         parsed = urlparse(base_endpoint)
         base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
     except Exception:
         base = base_endpoint.rstrip("/")
-    qs = urlencode({"token": signed_token, "subscriber_key": subscriber_key, "territory_code": territory_code})
-    return f"{base}/prefs/disable_lows?{qs}"
+    return base or None
 
 
 def prefs_links_reachable(timeout: float = 2.0) -> tuple[bool, str]:
@@ -1471,14 +1482,14 @@ def prefs_links_reachable(timeout: float = 2.0) -> tuple[bool, str]:
     """
     if os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
         return False, "env_disabled"
-    base_endpoint = (os.getenv("PREFS_ENDPOINT_BASE", "") or "https://unsub.microflowops.com").strip()
-    if not base_endpoint:
+    base = get_prefs_base_url()
+    if not base:
         return False, "missing_base"
     try:
-        parsed = urlparse(base_endpoint)
+        parsed = urlparse(base)
         base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
     except Exception:
-        base = base_endpoint.rstrip("/")
+        base = (base or "").rstrip("/")
 
     # Invalid token should yield 400 on a healthy service (not 404). Include required params
     # so the server doesn't 400 solely due to missing query shape.
@@ -1761,8 +1772,18 @@ def generate_digest_html(
         )
     html.append("</div>")
     if mode == "daily" and tier_counts is not None:
-        low = int(tier_counts.get("low", 0))
-        low_note = f"({low} available today)"
+        low_today = int(tier_counts.get("low", 0))
+        try:
+            low_snapshot = (
+                int(snapshot_tier_counts.get("low", 0))
+                if snapshot_label and snapshot_tier_counts is not None
+                else 0
+            )
+        except Exception:
+            low_snapshot = 0
+
+        low = low_today
+        low_note = f"({low_today} available today)" if low_today > 0 else "(none observed today)"
         if include_lows:
             shown = len(low_priority or [])
             if low > 0 and shown > 0 and shown < low:
@@ -1784,16 +1805,11 @@ def generate_digest_html(
                     f"Low signals: <strong>ON</strong> {low_note}. Disable lows."
                     "</p>"
                 )
-        elif low > 0:
-            # If a snapshot section is present and already contains the enable CTA, keep the email to a single CTA.
-            dedupe_cta = bool(snapshot_label and snapshot_enable_lows_url)
-            if dedupe_cta:
-                html.append(
-                    "<p style=\"color: #555; margin: 6px 0 0 0;\">"
-                    f"Low signals: <strong>OFF</strong> {low_note} (not shown)."
-                    "</p>"
-                )
-            elif enable_lows_url:
+        elif (low_today > 0) or (low_snapshot > 0):
+            if (low_today == 0) and (low_snapshot > 0):
+                days = int(snapshot_days or 14)
+                low_note = f"(none observed today; {low_snapshot} in last {days} days)"
+            if enable_lows_url:
                 html.append(
                     "<p style=\"color: #555; margin: 6px 0 0 0;\">"
                     f"Low signals: <strong>OFF</strong> {low_note} (not shown). "
@@ -1899,15 +1915,10 @@ def generate_digest_html(
                 "<p style=\"margin: 6px 0 0 0; color: #555; font-size: 12px;\">"
                 f"Low signals: <strong>ON</strong> (showing {int(shown_low)} of {int(sl)} low signals)</p>"
             )
-        if sl > 0 and (not include_lows) and snapshot_enable_lows_url:
+        elif sl > 0:
             html.append(
-                "<p style=\"color: #555; margin: 6px 0 0 0;\">"
-                f"Low-priority signals available: {sl} (not shown). "
-                f"<a href=\"{snapshot_enable_lows_url}\" "
-                "style=\"display: inline-block; margin-left: 8px; background: #0b5fff; color: #ffffff; "
-                "text-decoration: none; padding: 8px 12px; border-radius: 8px; font-weight: 700;\">"
-                "Enable lows.</a>"
-                "</p>"
+                "<p style=\"margin: 6px 0 0 0; color: #555; font-size: 12px;\">"
+                f"Low signals: <strong>OFF</strong> ({int(sl)} in this snapshot; not shown)</p>"
             )
         if snapshot_rows:
             include_area_office_snapshot = any((lead.get("area_office") or "").strip() for lead in snapshot_rows)
@@ -2000,9 +2011,19 @@ def generate_digest_text(
     if mode == "daily" and tier_counts is not None:
         high = int(tier_counts.get("high", 0))
         medium = int(tier_counts.get("medium", 0))
-        low = int(tier_counts.get("low", 0))
+        low_today = int(tier_counts.get("low", 0))
+        try:
+            low_snapshot = (
+                int(snapshot_tier_counts.get("low", 0))
+                if snapshot_label and snapshot_tier_counts is not None
+                else 0
+            )
+        except Exception:
+            low_snapshot = 0
+
+        low = low_today
         lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low}")
-        low_note = f"({low} available today)"
+        low_note = f"({low_today} available today)" if low_today > 0 else "(none observed today)"
         if include_lows:
             shown = len(low_priority or [])
             if low > 0 and shown > 0 and shown < low:
@@ -2011,11 +2032,11 @@ def generate_digest_text(
                 lines.append(f"Low signals: ON {low_note}. Disable lows: {disable_lows_url}")
             else:
                 lines.append(f"Low signals: ON {low_note}. Disable lows.")
-        elif low > 0:
-            dedupe_cta = bool(snapshot_label and snapshot_enable_lows_url)
-            if dedupe_cta:
-                lines.append(f"Low signals: OFF {low_note} (not shown).")
-            elif enable_lows_url:
+        elif (low_today > 0) or (low_snapshot > 0):
+            if (low_today == 0) and (low_snapshot > 0):
+                days = int(snapshot_days or 14)
+                low_note = f"(none observed today; {low_snapshot} in last {days} days)"
+            if enable_lows_url:
                 lines.append(
                     f"Low signals: OFF {low_note} (not shown). Enable lows: {enable_lows_url} "
                     "(starts next digest; prefs page preview may be unavailable)"
@@ -2075,10 +2096,8 @@ def generate_digest_text(
                     medium_min = 6
                 shown_low = sum(1 for lead in (snapshot_rows or []) if int(lead.get("lead_score") or 0) < int(medium_min))
                 lines.append(f"Low signals: ON (showing {int(shown_low)} of {int(sl)} low signals)")
-            if sl > 0 and (not include_lows) and snapshot_enable_lows_url:
-                lines.append(
-                    f"Low-priority signals available: {sl} (not shown). Enable lows: {snapshot_enable_lows_url}"
-                )
+            elif sl > 0:
+                lines.append(f"Low signals: OFF ({int(sl)} in this snapshot; not shown)")
             if snapshot_rows:
                 lines.append("")
                 label = "Most recent signals (not new):" if include_lows else "Most recent priority signals (not new):"
@@ -3232,48 +3251,31 @@ def main() -> None:
         if args.smoke_cchevali:
             if "Also observed (not shown)" in html_body or "Also observed (not shown)" in text_body:
                 raise SystemExit("SMOKE_ASSERT_FAIL found 'Also observed (not shown)' in rendered email")
-            # When low signals exist and lows are disabled, require exactly one CTA mention + prefs link.
-            lows_available = int(tier_counts.get("low", 0)) if (tier_counts and args.mode == "daily") else 0
-            lows_available_snapshot = (
-                int(snapshot_tier_counts.get("low", 0)) if (snapshot_tier_counts and snapshot_label) else 0
-            )
-            expect_cta_snapshot = bool(
-                args.mode == "daily"
-                and snapshot_label
-                and lows_available_snapshot > 0
-                and content_filter not in {"all", "low"}
-            )
-            # If the snapshot section is present and has its own enable CTA, we intentionally suppress the main enable CTA.
-            expect_cta = bool(
-                args.mode == "daily"
-                and lows_available > 0
-                and content_filter not in {"all", "low"}
-                and not expect_cta_snapshot
-            )
-            if expect_cta:
-                if not enable_lows_url:
-                    raise SystemExit("SMOKE_ASSERT_FAIL enable_lows_url missing (need PREFS_ENDPOINT_BASE or UNSUB_ENDPOINT_BASE)")
-                if "Low signals:" not in html_body:
-                    raise SystemExit("SMOKE_ASSERT_FAIL expected 'Low signals:' line in HTML")
-                if html_body.count("Enable lows.</a>") != 1:
-                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows.' CTA label in HTML")
-                if "prefs/enable_lows" not in html_body:
-                    raise SystemExit("SMOKE_ASSERT_FAIL prefs link path missing in HTML")
-                if "Low signals: OFF" not in text_body:
-                    raise SystemExit("SMOKE_ASSERT_FAIL expected 'Low signals: OFF' line in text")
-                if text_body.count("Enable lows:") != 1:
-                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows:' CTA label in text")
-            if expect_cta_snapshot:
-                if not snapshot_enable_lows_url:
-                    raise SystemExit("SMOKE_ASSERT_FAIL snapshot_enable_lows_url missing (need PREFS_ENDPOINT_BASE or UNSUB_ENDPOINT_BASE)")
-                if html_body.count("Low-priority signals available:") != 1:
-                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Low-priority signals available' in HTML (snapshot)")
-                if html_body.count("Enable lows.</a>") != 1:
-                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows.' CTA label in HTML (snapshot)")
-                if text_body.count("Low-priority signals available:") != 1:
-                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Low-priority signals available' in text (snapshot)")
-                if text_body.count("Enable lows:") != 1:
-                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows:' CTA label in text (snapshot)")
+            # Smoke assertions should never hard-fail on missing optional marketing/prefs URLs.
+            # They should only flag state mismatches that would confuse the recipient.
+            if include_lows_pref:
+                if "Enable lows" in html_body or "Enable lows" in text_body:
+                    raise SystemExit("SMOKE_ASSERT_FAIL lows_enabled=true but found 'Enable lows' in rendered email")
+                if "Low signals: ON" not in text_body:
+                    raise SystemExit("SMOKE_ASSERT_FAIL lows_enabled=true but missing 'Low signals: ON' line in text")
+                if snapshot_label and snapshot_tier_counts is not None:
+                    if "Low signals:" not in html_body or "ON</strong>" not in html_body:
+                        raise SystemExit("SMOKE_ASSERT_FAIL lows_enabled=true but missing 'Low signals: ON' state in HTML")
+            else:
+                if "Disable lows" in html_body or "Disable lows" in text_body:
+                    raise SystemExit("SMOKE_ASSERT_FAIL lows_enabled=false but found 'Disable lows' in rendered email")
+
+            # Best-effort diagnostics for CTA URLs (do not fail send).
+            if args.mode == "daily" and content_filter not in {"all", "low"}:
+                if include_lows_pref and (not disable_lows_url) and (not snapshot_disable_lows_url):
+                    print("SMOKE_NOTE prefs_cta=missing_disable_lows_url")
+                if (not include_lows_pref) and (tier_counts and int(tier_counts.get("low", 0)) > 0) and (not enable_lows_url):
+                    print("SMOKE_NOTE prefs_cta=missing_enable_lows_url")
+                if snapshot_label and snapshot_tier_counts and int(snapshot_tier_counts.get("low", 0)) > 0:
+                    if include_lows_pref and (not snapshot_disable_lows_url):
+                        print("SMOKE_NOTE prefs_cta=missing_snapshot_disable_lows_url")
+                    if (not include_lows_pref) and (not snapshot_enable_lows_url):
+                        print("SMOKE_NOTE prefs_cta=missing_snapshot_enable_lows_url")
 
             # Print compact quality summary.
             terr_label = territory_display_name(territory_code) or (territory_code or "")
