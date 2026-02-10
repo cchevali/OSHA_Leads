@@ -11,9 +11,11 @@ Features:
 """
 
 import argparse
+import base64
 import csv
 import json
 import hashlib
+import hmac
 import logging
 import os
 import smtplib
@@ -66,6 +68,17 @@ LEAD_SCORE_VERSION = "lead_score_v1"
 TIER_THRESHOLDS = {"high_min": 10, "medium_min": 6}
 
 
+_PREFS_CACHE: dict[tuple[str, str], tuple[float, bool, str]] = {}
+
+
+def _derive_internal_prefs_key() -> str:
+    secret = (os.getenv("UNSUB_SECRET") or "").strip()
+    if not secret:
+        return ""
+    mac = hmac.new(secret.encode("utf-8"), b"prefs_state_v1", hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(mac).decode("ascii").rstrip("=")
+
+
 def fetch_lows_enabled_pref(subscriber_key: str | None, territory_code: str | None, timeout_s: int = 3) -> bool:
     """
     Query the unsubscribe service for the subscriber-scoped low-priority preference.
@@ -77,32 +90,91 @@ def fetch_lows_enabled_pref(subscriber_key: str | None, territory_code: str | No
     if not sk or not terr:
         return False
 
+    try:
+        ttl_s = float(os.getenv("PREFS_CACHE_TTL_S", "60").strip() or "60")
+    except Exception:
+        ttl_s = 60.0
+    ttl_s = max(0.0, min(600.0, float(ttl_s)))
+
+    now = time.monotonic()
+    cached = _PREFS_CACHE.get((sk, terr))
+    if cached and ttl_s > 0 and (now - float(cached[0])) <= ttl_s:
+        return bool(cached[1])
+
     base = (
         (os.getenv("MFO_PREFS_BASE_URL") or "")
         or (os.getenv("PREFS_ENDPOINT_BASE") or "")
         or (os.getenv("UNSUB_ENDPOINT_BASE") or "")
         or "https://unsub.microflowops.com"
     ).strip()
-    api_key = (os.getenv("MFO_INTERNAL_API_KEY") or "").strip()
-    if not base or not api_key:
-        print(f"PREFS_FETCH_FAIL subscriber_key={sk} territory_code={terr} reason=missing_config exception_class=None")
-        return False
-
-    url = base.rstrip("/") + "/api/prefs?" + urlencode({"subscriber_key": sk, "territory_code": terr})
-    req = urllib.request.Request(url, headers={"X-MFO-API-Key": api_key}, method="GET")
+    # Operators often set UNSUB_ENDPOINT_BASE to a full path (e.g. https://host/unsubscribe).
+    # Prefs APIs live at the host root; strip any path/query to avoid accidental 404s.
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            data = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
+        parsed = urlparse(base)
+        base = urlunparse(parsed._replace(path="", params="", query="", fragment="")).rstrip("/")
+    except Exception:
+        base = base.rstrip("/")
+    internal_key = (os.getenv("MFO_INTERNAL_KEY") or "").strip() or _derive_internal_prefs_key()
+    api_key = (os.getenv("MFO_INTERNAL_API_KEY") or "").strip()
+    if not base or (not internal_key and not api_key):
         print(
             f"PREFS_FETCH_FAIL subscriber_key={sk} territory_code={terr} "
-            f"reason=http_{int(getattr(e, 'code', 0) or 0)} exception_class={e.__class__.__name__}"
+            "reason=missing_config exception_class=None"
+        )
+        return False
+
+    def _do_request(endpoint_path: str, headers: dict[str, str], source_name: str) -> tuple[str, str]:
+        qs = urlencode({"subscriber_key": sk, "territory_code": terr})
+        url = f"{base}{endpoint_path}?{qs}"
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            data = resp.read().decode("utf-8", errors="replace")
+        return url, data
+
+    attempts: list[str] = []
+    canonical_url = f"{base}/api/prefs_state?" + urlencode({"subscriber_key": sk, "territory_code": terr})
+    last_url = ""
+    data = ""
+    source = ""
+    try:
+        if internal_key:
+            for endpoint_path, src in [("/api/prefs_state", "prefs_state"), ("/prefs_state", "prefs_state_alt")]:
+                try:
+                    source = src
+                    last_url, data = _do_request(endpoint_path, {"X-MFO-Internal-Key": internal_key}, src)
+                    break
+                except urllib.error.HTTPError as e:
+                    code = int(getattr(e, "code", 0) or 0)
+                    attempts.append(f"{src}:http_{code}")
+                    last_url = f"{base}{endpoint_path}"
+                    if code == 404:
+                        continue
+                    raise
+            else:
+                # Optional legacy fallback.
+                if api_key:
+                    source = "prefs_fallback"
+                    last_url, data = _do_request("/api/prefs", {"X-MFO-API-Key": api_key}, source)
+                else:
+                    raise urllib.error.HTTPError(last_url or base, 404, "Not Found", hdrs=None, fp=None)
+        else:
+            source = "prefs"
+            last_url, data = _do_request("/api/prefs", {"X-MFO-API-Key": api_key}, source)
+    except urllib.error.HTTPError as e:
+        code = int(getattr(e, "code", 0) or 0)
+        attempts.append(f"{source or 'unknown'}:http_{code}")
+        attempts_text = ",".join(attempts) if attempts else f"{source or 'unknown'}:http_{code}"
+        print(
+            f"PREFS_FETCH_FAIL subscriber_key={sk} territory_code={terr} "
+            f"url={canonical_url if internal_key else (last_url or '-') } status=http_{code} attempts={attempts_text} exception_class={e.__class__.__name__}"
         )
         return False
     except Exception as e:
+        attempts.append(f"{source or 'unknown'}:exception")
+        attempts_text = ",".join(attempts)
         print(
             f"PREFS_FETCH_FAIL subscriber_key={sk} territory_code={terr} "
-            f"reason=exception exception_class={e.__class__.__name__}"
+            f"url={canonical_url if internal_key else (last_url or '-') } status=exception attempts={attempts_text} exception_class={e.__class__.__name__}"
         )
         return False
 
@@ -111,16 +183,23 @@ def fetch_lows_enabled_pref(subscriber_key: str | None, territory_code: str | No
     except Exception as e:
         print(
             f"PREFS_FETCH_FAIL subscriber_key={sk} territory_code={terr} "
-            f"reason=bad_json exception_class={e.__class__.__name__}"
+            f"url={last_url or '-'} status=bad_json source={source} exception_class={e.__class__.__name__}"
         )
         return False
 
     try:
-        return bool(payload.get("lows_enabled", False))
+        include = bool(payload.get("lows_enabled", False))
+        updated_at = str(payload.get("updated_at_iso") or payload.get("updated_at") or "").strip()
+        print(
+            f"PREFS_FETCH_OK subscriber_key={sk} territory_code={terr} "
+            f"url={last_url or '-'} status=200 source={source} updated_at={updated_at or '-'} lows_enabled={'true' if include else 'false'}"
+        )
+        _PREFS_CACHE[(sk, terr)] = (now, include, updated_at)
+        return include
     except Exception as e:
         print(
             f"PREFS_FETCH_FAIL subscriber_key={sk} territory_code={terr} "
-            f"reason=bad_payload exception_class={e.__class__.__name__}"
+            f"url={last_url or '-'} status=bad_payload source={source} exception_class={e.__class__.__name__}"
         )
         return False
 
@@ -240,6 +319,53 @@ def _tier_counts(leads: list[dict]) -> dict[str, int]:
         else:
             counts["low"] += 1
     return counts
+
+
+def _select_snapshot_rows(
+    snapshot_all: list[dict],
+    *,
+    include_lows: bool,
+    medium_min: int,
+    limit: int,
+) -> tuple[list[dict], int]:
+    """
+    Used by the "0-new snapshot fallback" rendering.
+
+    If low signals are enabled, include them in snapshot rows; otherwise show only priority rows.
+    """
+    all_rows = list(snapshot_all or [])
+    if include_lows:
+        rows = all_rows
+    else:
+        rows = [lead for lead in all_rows if int(lead.get("lead_score") or 0) >= int(medium_min)]
+
+    rows.sort(
+        key=lambda lead: str((lead.get("last_seen_at") or lead.get("first_seen_at") or lead.get("date_opened") or "")),
+        reverse=True,
+    )
+    total = len(rows)
+    lim = max(0, min(25, int(limit)))
+    selected = rows[:lim]
+
+    # Sales-effective guarantee: if lows are enabled and lows exist, ensure at least one low row appears
+    # in the bounded snapshot selection (otherwise the "ON" state looks broken).
+    if include_lows and lim > 0:
+        low_rows = [lead for lead in all_rows if int(lead.get("lead_score") or 0) < int(medium_min)]
+        if low_rows:
+            has_low = any(int(lead.get("lead_score") or 0) < int(medium_min) for lead in selected)
+            if not has_low:
+                # Swap in the most recent low row(s) while keeping total bounded.
+                min_low = min(len(low_rows), max(1, min(3, lim)))
+                combined = list(selected[: max(0, lim - min_low)]) + low_rows[:min_low]
+                combined.sort(
+                    key=lambda lead: str(
+                        (lead.get("last_seen_at") or lead.get("first_seen_at") or lead.get("date_opened") or "")
+                    ),
+                    reverse=True,
+                )
+                selected = combined[:lim]
+
+    return selected, total
 
 
 def _format_lead_row(lead: dict) -> str:
@@ -1540,6 +1666,7 @@ def generate_digest_html(
     branding: dict,
     tier_counts: dict[str, int] | None = None,
     enable_lows_url: str | None = None,
+    disable_lows_url: str | None = None,
     include_lows: bool = False,
     low_priority: list[dict] | None = None,
     signals_limit: int | None = None,
@@ -1552,6 +1679,7 @@ def generate_digest_html(
     snapshot_days: int | None = None,
     snapshot_tier_counts: dict[str, int] | None = None,
     snapshot_enable_lows_url: str | None = None,
+    snapshot_disable_lows_url: str | None = None,
     snapshot_rows: list[dict] | None = None,
     snapshot_total: int | None = None,
     tz: ZoneInfo | None = None,
@@ -1582,7 +1710,9 @@ def generate_digest_html(
     # If prefs links are known-bad (doctor/preflight), never render hyperlinks.
     if os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
         enable_lows_url = None
+        disable_lows_url = None
         snapshot_enable_lows_url = None
+        snapshot_disable_lows_url = None
 
     html: list[str] = []
     tz_label = _tz_label(tz)
@@ -1632,32 +1762,57 @@ def generate_digest_html(
     html.append("</div>")
     if mode == "daily" and tier_counts is not None:
         low = int(tier_counts.get("low", 0))
-        low_shown = bool(include_lows) or (content_filter in {"all", "low"})
-        if low <= 0:
-            pass
-        elif low_shown:
-            html.append(f"<p style=\"color: #555; margin: 6px 0 0 0;\">Low-priority signals: {low}.</p>")
-        else:
-             if enable_lows_url:
-                 html.append(
-                     "<p style=\"color: #555; margin: 6px 0 0 0;\">"
-                     f"Low-priority signals available: {low} (not shown). "
-                     f"<a href=\"{enable_lows_url}\" "
-                     "style=\"display: inline-block; margin-left: 8px; background: #0b5fff; color: #ffffff; "
-                     "text-decoration: none; padding: 8px 12px; border-radius: 8px; font-weight: 700;\">"
-                     "Enable lows.</a>"
-                     "<span style=\"color:#6b7280; font-size:12px; margin-left: 10px;\">"
-                     "Starts next digest; instant preview after enabling."
-                     "</span>"
-                     "</p>"
-                 )
-             else:
-                 html.append(
-                    f"<p style=\"color: #555; margin: 6px 0 0 0;\">"
-                    f"Low-priority signals available: {low} (not shown). Enable lows. "
-                    "<span style=\"color:#6b7280; font-size:12px;\">Starts next digest; instant preview after enabling.</span>"
+        low_note = f"({low} available today)"
+        if include_lows:
+            shown = len(low_priority or [])
+            if low > 0 and shown > 0 and shown < low:
+                low_note = f"(showing {shown} of {low} available today)"
+            # Make enabled state explicit even when low==0.
+            if disable_lows_url:
+                html.append(
+                    "<p style=\"color: #555; margin: 6px 0 0 0;\">"
+                    f"Low signals: <strong>ON</strong> {low_note}. "
+                    f"<a href=\"{disable_lows_url}\" "
+                    "style=\"display: inline-block; margin-left: 8px; background: #6b7280; color: #ffffff; "
+                    "text-decoration: none; padding: 8px 12px; border-radius: 8px; font-weight: 700;\">"
+                    "Disable lows.</a>"
                     "</p>"
-                 )
+                )
+            else:
+                html.append(
+                    "<p style=\"color: #555; margin: 6px 0 0 0;\">"
+                    f"Low signals: <strong>ON</strong> {low_note}. Disable lows."
+                    "</p>"
+                )
+        elif low > 0:
+            # If a snapshot section is present and already contains the enable CTA, keep the email to a single CTA.
+            dedupe_cta = bool(snapshot_label and snapshot_enable_lows_url)
+            if dedupe_cta:
+                html.append(
+                    "<p style=\"color: #555; margin: 6px 0 0 0;\">"
+                    f"Low signals: <strong>OFF</strong> {low_note} (not shown)."
+                    "</p>"
+                )
+            elif enable_lows_url:
+                html.append(
+                    "<p style=\"color: #555; margin: 6px 0 0 0;\">"
+                    f"Low signals: <strong>OFF</strong> {low_note} (not shown). "
+                    f"<a href=\"{enable_lows_url}\" "
+                    "style=\"display: inline-block; margin-left: 8px; background: #0b5fff; color: #ffffff; "
+                    "text-decoration: none; padding: 8px 12px; border-radius: 8px; font-weight: 700;\">"
+                      "Enable lows.</a>"
+                      "<span style=\"color:#6b7280; font-size:12px; margin-left: 10px;\">"
+                      "Starts next digest; preview on prefs page (if available)."
+                      "</span>"
+                      "</p>"
+                  )
+            else:
+                  html.append(
+                     "<p style=\"color: #555; margin: 6px 0 0 0;\">"
+                    f"Low signals: <strong>OFF</strong> {low_note} (not shown). Enable lows. "
+                    "<span style=\"color:#6b7280; font-size:12px;\">Starts next digest; preview on prefs page (if available).</span>"
+                    "</p>"
+                  )
     if coverage_line:
         cov = (coverage_line or "").strip()
         if cov.lower() == "sample format (dummy data)":
@@ -1734,7 +1889,17 @@ def generate_digest_html(
         html.append(
             f"<p style=\"margin: 0; color: #555; font-size: 12px;\">Tier summary (not new): High {sh}, Medium {sm}, Low {sl}</p>"
         )
-        if sl > 0 and snapshot_enable_lows_url:
+        if include_lows:
+            try:
+                medium_min = int(TIER_THRESHOLDS.get("medium_min", 6))
+            except Exception:
+                medium_min = 6
+            shown_low = sum(1 for lead in (snapshot_rows or []) if int(lead.get("lead_score") or 0) < int(medium_min))
+            html.append(
+                "<p style=\"margin: 6px 0 0 0; color: #555; font-size: 12px;\">"
+                f"Low signals: <strong>ON</strong> (showing {int(shown_low)} of {int(sl)} low signals)</p>"
+            )
+        if sl > 0 and (not include_lows) and snapshot_enable_lows_url:
             html.append(
                 "<p style=\"color: #555; margin: 6px 0 0 0;\">"
                 f"Low-priority signals available: {sl} (not shown). "
@@ -1744,10 +1909,10 @@ def generate_digest_html(
                 "Enable lows.</a>"
                 "</p>"
             )
-        # Snapshot rows should already be filtered to priority only (no low DOM when lows disabled).
         if snapshot_rows:
             include_area_office_snapshot = any((lead.get("area_office") or "").strip() for lead in snapshot_rows)
-            html.append("<p style=\"margin: 10px 0 8px 0; color: #555;\">Most recent priority signals (not new):</p>")
+            label = "Most recent signals (not new):" if include_lows else "Most recent priority signals (not new):"
+            html.append(f"<p style=\"margin: 10px 0 8px 0; color: #555;\">{label}</p>")
             html.append(_lead_rows_html(snapshot_rows, len(snapshot_rows), include_area_office_snapshot, tz))
             if snapshot_total is not None and int(snapshot_total) > len(snapshot_rows):
                 html.append(
@@ -1755,7 +1920,10 @@ def generate_digest_html(
                     f"More available: showing {len(snapshot_rows)} of {int(snapshot_total)}.</p>"
                 )
         else:
-            html.append("<p style=\"margin: 10px 0 0 0; color: #555;\"><em>No priority signals in the last 14 days.</em></p>")
+            empty_msg = (
+                "No signals in the last 14 days." if include_lows else "No priority signals in the last 14 days."
+            )
+            html.append(f"<p style=\"margin: 10px 0 0 0; color: #555;\"><em>{empty_msg}</em></p>")
 
     if footer_html:
         html.append(footer_html)
@@ -1776,6 +1944,7 @@ def generate_digest_text(
     branding: dict,
     tier_counts: dict[str, int] | None = None,
     enable_lows_url: str | None = None,
+    disable_lows_url: str | None = None,
     include_lows: bool = False,
     low_priority: list[dict] | None = None,
     signals_limit: int | None = None,
@@ -1788,6 +1957,7 @@ def generate_digest_text(
     snapshot_days: int | None = None,
     snapshot_tier_counts: dict[str, int] | None = None,
     snapshot_enable_lows_url: str | None = None,
+    snapshot_disable_lows_url: str | None = None,
     snapshot_rows: list[dict] | None = None,
     snapshot_total: int | None = None,
     tz: ZoneInfo | None = None,
@@ -1812,7 +1982,9 @@ def generate_digest_text(
 
     if os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() in {"1", "true", "yes"}:
         enable_lows_url = None
+        disable_lows_url = None
         snapshot_enable_lows_url = None
+        snapshot_disable_lows_url = None
 
     lines = [
         f"OSHA Lead Digest ({mode_label}) - {gen_date}",
@@ -1830,21 +2002,28 @@ def generate_digest_text(
         medium = int(tier_counts.get("medium", 0))
         low = int(tier_counts.get("low", 0))
         lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low}")
-        low_shown = bool(include_lows) or (content_filter in {"all", "low"})
-        if low <= 0:
-            pass
-        elif low_shown:
-            lines.append(f"Low-priority signals: {low}.")
-        else:
-             if enable_lows_url:
-                 lines.append(
-                     "Low-priority signals available: "
-                    f"{low} (not shown). Enable lows: {enable_lows_url} (starts next digest; instant preview after enabling)"
-                 )
-             else:
+        low_note = f"({low} available today)"
+        if include_lows:
+            shown = len(low_priority or [])
+            if low > 0 and shown > 0 and shown < low:
+                low_note = f"(showing {shown} of {low} available today)"
+            if disable_lows_url:
+                lines.append(f"Low signals: ON {low_note}. Disable lows: {disable_lows_url}")
+            else:
+                lines.append(f"Low signals: ON {low_note}. Disable lows.")
+        elif low > 0:
+            dedupe_cta = bool(snapshot_label and snapshot_enable_lows_url)
+            if dedupe_cta:
+                lines.append(f"Low signals: OFF {low_note} (not shown).")
+            elif enable_lows_url:
                 lines.append(
-                    f"Low-priority signals available: {low} (not shown). Enable lows. "
-                    "(starts next digest; instant preview after enabling)"
+                    f"Low signals: OFF {low_note} (not shown). Enable lows: {enable_lows_url} "
+                    "(starts next digest; prefs page preview may be unavailable)"
+                )
+            else:
+                lines.append(
+                    f"Low signals: OFF {low_note} (not shown). Enable lows. "
+                    "(starts next digest; prefs page preview may be unavailable)"
                 )
     if coverage_line:
         cov = (coverage_line or "").strip()
@@ -1889,13 +2068,21 @@ def generate_digest_text(
             sm = int(snapshot_tier_counts.get("medium", 0))
             sl = int(snapshot_tier_counts.get("low", 0))
             lines.append(f"Tier summary (not new): High {sh}, Medium {sm}, Low {sl}")
-            if sl > 0 and snapshot_enable_lows_url:
+            if include_lows:
+                try:
+                    medium_min = int(TIER_THRESHOLDS.get("medium_min", 6))
+                except Exception:
+                    medium_min = 6
+                shown_low = sum(1 for lead in (snapshot_rows or []) if int(lead.get("lead_score") or 0) < int(medium_min))
+                lines.append(f"Low signals: ON (showing {int(shown_low)} of {int(sl)} low signals)")
+            if sl > 0 and (not include_lows) and snapshot_enable_lows_url:
                 lines.append(
                     f"Low-priority signals available: {sl} (not shown). Enable lows: {snapshot_enable_lows_url}"
                 )
             if snapshot_rows:
                 lines.append("")
-                lines.append("Most recent priority signals (not new):")
+                label = "Most recent signals (not new):" if include_lows else "Most recent priority signals (not new):"
+                lines.append(label)
                 for lead in snapshot_rows:
                     lines.append(
                         f"- {(lead.get('establishment_name') or 'Unknown')} | "
@@ -1906,7 +2093,7 @@ def generate_digest_text(
                     lines.append(f"More available: showing {len(snapshot_rows)} of {int(snapshot_total)}.")
             else:
                 lines.append("")
-                lines.append("No priority signals in the last 14 days.")
+                lines.append("No signals in the last 14 days." if include_lows else "No priority signals in the last 14 days.")
     else:
         if len(unique_states) > 1:
             lines.append("")
@@ -2375,8 +2562,8 @@ def main() -> None:
     snapshot_label = None
     snapshot_days = None
     snapshot_tier_counts = None
-    snapshot_rows: list[dict] | None = None
-    snapshot_total = None
+    snapshot_all_0_new: list[dict] | None = None
+    snapshot_limit_0_new: int | None = None
     if args.mode == "daily":
         all_leads_deduped, _, _ = get_leads_for_period(
             conn=conn,
@@ -2416,22 +2603,12 @@ def main() -> None:
                 use_opened_window=True,
             )
             snapshot_tier_counts = _tier_counts(snapshot_all)
-
-            # Snapshot rows: only priority rows (no low DOM when lows disabled).
-            priority_rows = [lead for lead in snapshot_all if int(lead.get("lead_score") or 0) >= medium_min]
-            snapshot_total = len(priority_rows)
+            snapshot_all_0_new = snapshot_all
             try:
-                snapshot_limit = int(config.get("snapshot_recent_limit", 8))
+                snapshot_limit_0_new = int(config.get("snapshot_recent_limit", 8))
             except Exception:
-                snapshot_limit = 8
-            snapshot_limit = max(0, min(25, snapshot_limit))
-            priority_rows.sort(
-                key=lambda lead: str(
-                    (lead.get("last_seen_at") or lead.get("first_seen_at") or lead.get("date_opened") or "")
-                ),
-                reverse=True,
-            )
-            snapshot_rows = priority_rows[:snapshot_limit]
+                snapshot_limit_0_new = 8
+            snapshot_limit_0_new = max(0, min(25, int(snapshot_limit_0_new)))
 
     health_summary_text = None
     health_summary_html = None
@@ -2733,25 +2910,30 @@ def main() -> None:
         )
 
         include_lows_pref = False
-        if args.mode == "daily" and prefs_territory and not args.smoke_cchevali:
+        if args.mode == "daily" and prefs_territory:
             try:
                 include_lows_pref = bool(fetch_lows_enabled_pref(subscriber_key, prefs_territory))
             except Exception:
                 include_lows_pref = False
 
         enable_lows_url = None
+        disable_lows_url = None
         snapshot_enable_lows_url = None
+        snapshot_disable_lows_url = None
         prefs_token = None
         if (
             args.mode == "daily"
             and prefs_territory
             and subscriber_key
-            and not include_lows_pref
             and content_filter not in {"all", "low"}
         ):
             low_total = int(tier_counts.get("low", 0)) if tier_counts else 0
             low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_tier_counts else 0
-            if (low_total > 0 or low_snapshot > 0) and os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() not in {"1", "true", "yes"}:
+            # Render a prefs toggle link when it matters:
+            # - lows are available and currently hidden (enable)
+            # - lows are enabled (disable), even if 0 are available today
+            needs_toggle = bool(include_lows_pref or low_total > 0 or low_snapshot > 0)
+            if needs_toggle and os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() not in {"1", "true", "yes"}:
                 # Keep a server-side record of the intended preference scope for auditing/validation.
                 prefs_campaign_id = f"prefs|{customer_id}|terr={prefs_territory}|sk={subscriber_key}"
                 prefs_token = create_and_register_prefs_token(
@@ -2760,15 +2942,48 @@ def main() -> None:
                     dry_run=args.dry_run,
                 )
                 if prefs_token:
-                    enable_lows_url = build_enable_lows_url(prefs_token, subscriber_key, prefs_territory)
-                    snapshot_enable_lows_url = (
-                        build_enable_lows_url(prefs_token, subscriber_key, prefs_territory) if snapshot_label else None
-                    )
-                    if enable_lows_url:
-                        print(
-                            "PREFS_LINK_BUILT host=unsub.microflowops.com path=/prefs/enable_lows "
-                            "query=token,subscriber_key,territory_code"
+                    if include_lows_pref:
+                        disable_lows_url = build_disable_lows_url(prefs_token, subscriber_key, prefs_territory)
+                        snapshot_disable_lows_url = (
+                            build_disable_lows_url(prefs_token, subscriber_key, prefs_territory) if snapshot_label else None
                         )
+                        if disable_lows_url:
+                            print(
+                                "PREFS_LINK_BUILT host=unsub.microflowops.com path=/prefs/disable_lows "
+                                "query=token,subscriber_key,territory_code"
+                            )
+                    else:
+                        # Only build an enable link when lows exist (new or snapshot), otherwise it is noise.
+                        if low_total > 0 or low_snapshot > 0:
+                            enable_lows_url = build_enable_lows_url(prefs_token, subscriber_key, prefs_territory)
+                            snapshot_enable_lows_url = (
+                                build_enable_lows_url(prefs_token, subscriber_key, prefs_territory) if snapshot_label else None
+                            )
+                            if enable_lows_url:
+                                print(
+                                    "PREFS_LINK_BUILT host=unsub.microflowops.com path=/prefs/enable_lows "
+                                    "query=token,subscriber_key,territory_code"
+                                )
+
+        # Per-recipient snapshot rows (0-new fallback): include lows only when enabled.
+        snapshot_rows = None
+        snapshot_total = None
+        if snapshot_label and snapshot_all_0_new is not None and snapshot_limit_0_new is not None:
+            snapshot_rows, snapshot_total = _select_snapshot_rows(
+                snapshot_all_0_new,
+                include_lows=include_lows_pref,
+                medium_min=medium_min,
+                limit=int(snapshot_limit_0_new),
+            )
+
+        if args.mode == "daily" and tier_counts is not None and content_filter not in {"all", "low"}:
+            low_today = int(tier_counts.get("low", 0))
+            print(
+                "LOW_SIGNALS_PREF "
+                f"lows_enabled={'YES' if include_lows_pref else 'NO'} "
+                f"low_today={low_today} "
+                f"cta={'disable' if include_lows_pref else ('enable' if low_today > 0 else 'none')}"
+            )
 
         footer_disclaimer = "This report contains public OSHA inspection data for informational purposes only. Not legal advice."
         footer_text = build_footer_text(
@@ -2797,6 +3012,20 @@ def main() -> None:
             cap = max(1, cap)
             signals_limit = min(len(leads), cap)
 
+        low_priority_shown: list[dict] = []
+        if include_lows_pref and content_filter not in {"all", "low"}:
+            try:
+                low_limit = int(config.get("low_signals_limit", os.getenv("LOW_SIGNALS_LIMIT", "8")))
+            except Exception:
+                low_limit = 8
+            low_limit = max(0, min(25, int(low_limit)))
+            low_sorted = list(low_priority_all or [])
+            low_sorted.sort(
+                key=lambda lead: str((lead.get("last_seen_at") or lead.get("first_seen_at") or lead.get("date_opened") or "")),
+                reverse=True,
+            )
+            low_priority_shown = low_sorted[:low_limit]
+
         html_body = generate_digest_html(
             leads=leads,
             low_fallback=low_fallback,
@@ -2809,8 +3038,9 @@ def main() -> None:
             branding=branding,
             tier_counts=tier_counts if args.mode == "daily" else None,
             enable_lows_url=enable_lows_url,
+            disable_lows_url=disable_lows_url,
             include_lows=include_lows_pref,
-            low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
+            low_priority=low_priority_shown,
             signals_limit=signals_limit,
             report_label=report_label,
             footer_html=footer_html,
@@ -2821,6 +3051,7 @@ def main() -> None:
             snapshot_days=snapshot_days,
             snapshot_tier_counts=snapshot_tier_counts,
             snapshot_enable_lows_url=snapshot_enable_lows_url,
+            snapshot_disable_lows_url=snapshot_disable_lows_url,
             snapshot_rows=snapshot_rows,
             snapshot_total=snapshot_total,
             tz=tz,
@@ -2849,8 +3080,9 @@ def main() -> None:
                     branding=branding,
                     tier_counts=tier_counts if args.mode == "daily" else None,
                     enable_lows_url=enable_lows_url,
+                    disable_lows_url=disable_lows_url,
                     include_lows=include_lows_pref,
-                    low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
+                    low_priority=low_priority_shown,
                     signals_limit=mid,
                     report_label=report_label,
                     footer_html=footer_html,
@@ -2861,6 +3093,7 @@ def main() -> None:
                     snapshot_days=snapshot_days,
                     snapshot_tier_counts=snapshot_tier_counts,
                     snapshot_enable_lows_url=snapshot_enable_lows_url,
+                    snapshot_disable_lows_url=snapshot_disable_lows_url,
                     snapshot_rows=snapshot_rows,
                     snapshot_total=snapshot_total,
                     tz=tz,
@@ -2888,8 +3121,9 @@ def main() -> None:
                     branding=branding,
                     tier_counts=tier_counts if args.mode == "daily" else None,
                     enable_lows_url=enable_lows_url,
+                    disable_lows_url=disable_lows_url,
                     include_lows=include_lows_pref,
-                    low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
+                    low_priority=low_priority_shown,
                     signals_limit=best_limit,
                     report_label=report_label,
                     footer_html=footer_html,
@@ -2900,6 +3134,7 @@ def main() -> None:
                     snapshot_days=snapshot_days,
                     snapshot_tier_counts=snapshot_tier_counts,
                     snapshot_enable_lows_url=snapshot_enable_lows_url,
+                    snapshot_disable_lows_url=snapshot_disable_lows_url,
                     snapshot_rows=snapshot_rows,
                     snapshot_total=snapshot_total,
                     tz=tz,
@@ -2932,8 +3167,9 @@ def main() -> None:
                     branding=branding,
                     tier_counts=tier_counts if args.mode == "daily" else None,
                     enable_lows_url=enable_lows_url,
+                    disable_lows_url=disable_lows_url,
                     include_lows=include_lows_pref,
-                    low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
+                    low_priority=low_priority_shown,
                     signals_limit=limit,
                     report_label=report_label,
                     footer_html=footer_html,
@@ -2944,6 +3180,7 @@ def main() -> None:
                     snapshot_days=snapshot_days,
                     snapshot_tier_counts=snapshot_tier_counts,
                     snapshot_enable_lows_url=snapshot_enable_lows_url,
+                    snapshot_disable_lows_url=snapshot_disable_lows_url,
                     snapshot_rows=snapshot_rows,
                     snapshot_total=snapshot_total,
                     tz=tz,
@@ -2964,8 +3201,9 @@ def main() -> None:
             branding=branding,
             tier_counts=tier_counts if args.mode == "daily" else None,
             enable_lows_url=enable_lows_url,
+            disable_lows_url=disable_lows_url,
             include_lows=include_lows_pref,
-            low_priority=(low_priority_all if include_lows_pref and content_filter not in {"all", "low"} else []),
+            low_priority=low_priority_shown,
             signals_limit=signals_limit,
             report_label=report_label,
             footer_text=footer_text,
@@ -2976,10 +3214,19 @@ def main() -> None:
             snapshot_days=snapshot_days,
             snapshot_tier_counts=snapshot_tier_counts,
             snapshot_enable_lows_url=snapshot_enable_lows_url,
+            snapshot_disable_lows_url=snapshot_disable_lows_url,
             snapshot_rows=snapshot_rows,
             snapshot_total=snapshot_total,
             tz=tz,
         )
+
+        if args.mode == "daily" and content_filter not in {"all", "low"}:
+            print(
+                "LOW_SIGNALS_RENDER "
+                f"lows_enabled={'YES' if include_lows_pref else 'NO'} "
+                f"html_enable={html_body.count('Enable lows')} html_disable={html_body.count('Disable lows')} "
+                f"text_enable={text_body.count('Enable lows')} text_disable={text_body.count('Disable lows')}"
+            )
 
         # Smoke-mode content assertions (fail fast before sending).
         if args.smoke_cchevali:
@@ -2990,24 +3237,30 @@ def main() -> None:
             lows_available_snapshot = (
                 int(snapshot_tier_counts.get("low", 0)) if (snapshot_tier_counts and snapshot_label) else 0
             )
-            expect_cta = bool(args.mode == "daily" and lows_available > 0 and content_filter not in {"all", "low"})
             expect_cta_snapshot = bool(
                 args.mode == "daily"
                 and snapshot_label
                 and lows_available_snapshot > 0
                 and content_filter not in {"all", "low"}
             )
+            # If the snapshot section is present and has its own enable CTA, we intentionally suppress the main enable CTA.
+            expect_cta = bool(
+                args.mode == "daily"
+                and lows_available > 0
+                and content_filter not in {"all", "low"}
+                and not expect_cta_snapshot
+            )
             if expect_cta:
                 if not enable_lows_url:
                     raise SystemExit("SMOKE_ASSERT_FAIL enable_lows_url missing (need PREFS_ENDPOINT_BASE or UNSUB_ENDPOINT_BASE)")
-                if html_body.count("Low-priority signals available:") != 1:
-                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Low-priority signals available' in HTML")
+                if "Low signals:" not in html_body:
+                    raise SystemExit("SMOKE_ASSERT_FAIL expected 'Low signals:' line in HTML")
                 if html_body.count("Enable lows.</a>") != 1:
                     raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows.' CTA label in HTML")
                 if "prefs/enable_lows" not in html_body:
                     raise SystemExit("SMOKE_ASSERT_FAIL prefs link path missing in HTML")
-                if text_body.count("Low-priority signals available:") != 1:
-                    raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Low-priority signals available' in text")
+                if "Low signals: OFF" not in text_body:
+                    raise SystemExit("SMOKE_ASSERT_FAIL expected 'Low signals: OFF' line in text")
                 if text_body.count("Enable lows:") != 1:
                     raise SystemExit("SMOKE_ASSERT_FAIL expected exactly one 'Enable lows:' CTA label in text")
             if expect_cta_snapshot:

@@ -72,6 +72,7 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         # Avoid cross-test flakiness from the per-subscriber_key preview throttle.
         os.environ["PREFS_PREVIEW_RATE_LIMIT_S"] = "0"
         os.environ["MFO_INTERNAL_API_KEY"] = "test_internal_api_key"
+        os.environ["MFO_INTERNAL_KEY"] = "test_internal_key"
 
         self._tmp = tempfile.TemporaryDirectory()
         out = Path(self._tmp.name)
@@ -351,6 +352,55 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         self.assertEqual(200, status)
         payload = _json.loads(body)
         self.assertFalse(bool(payload.get("lows_enabled")))
+
+    def test_api_prefs_state_requires_key_and_returns_updated_at(self) -> None:
+        email = "recipient@example.com"
+        territory = "TX_TRIANGLE_V1"
+        campaign_id = f"prefs|wally_trial|terr={territory}"
+        token = unsubscribe_utils.create_unsub_token(email, campaign_id)
+        subscriber_key = "wally_trial"
+
+        # Unauthorized without header.
+        status, _, _ = _http_full(self._base() + f"/api/prefs_state?subscriber_key={subscriber_key}&territory_code={territory}")
+        self.assertEqual(401, status)
+
+        status, body, _ = _http_full_headers(
+            self._base() + f"/api/prefs_state?subscriber_key={subscriber_key}&territory_code={territory}",
+            headers={"X-MFO-Internal-Key": "test_internal_key"},
+        )
+        self.assertEqual(200, status)
+        import json as _json
+
+        payload = _json.loads(body)
+        self.assertFalse(bool(payload.get("lows_enabled")))
+        self.assertTrue("updated_at_iso" in payload)
+
+        with redirect_stdout(io.StringIO()):
+            status, _ = _http(
+                self._base()
+                + f"/prefs/enable_lows?token={token}&subscriber_key={subscriber_key}&territory_code={territory}"
+            )
+        self.assertEqual(200, status)
+
+        status, body, _ = _http_full_headers(
+            self._base() + f"/api/prefs_state?subscriber_key={subscriber_key}&territory_code={territory}",
+            headers={"X-MFO-Internal-Key": "test_internal_key"},
+        )
+        self.assertEqual(200, status)
+        payload = _json.loads(body)
+        self.assertTrue(bool(payload.get("lows_enabled")))
+        self.assertTrue(bool(str(payload.get("updated_at_iso") or "").strip()))
+
+        # Alias endpoint should exist (401 when unauthenticated, 200 when authenticated).
+        status, _, _ = _http_full(self._base() + f"/prefs_state?subscriber_key={subscriber_key}&territory_code={territory}")
+        self.assertEqual(401, status)
+        status, body, _ = _http_full_headers(
+            self._base() + f"/prefs_state?subscriber_key={subscriber_key}&territory_code={territory}",
+            headers={"X-MFO-Internal-Key": "test_internal_key"},
+        )
+        self.assertEqual(200, status)
+        payload = _json.loads(body)
+        self.assertTrue("updated_at_iso" in payload)
 
     def test_enable_lows_preview_missing_still_200_persists_and_warns(self) -> None:
         email = "recipient@example.com"

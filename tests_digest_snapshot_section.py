@@ -1,7 +1,7 @@
 import unittest
 
 from email_footer import build_footer_html, build_footer_text
-from send_digest_email import generate_digest_html, generate_digest_text
+from send_digest_email import _select_snapshot_rows, generate_digest_html, generate_digest_text
 
 
 class TestDigestSnapshotSection(unittest.TestCase):
@@ -181,6 +181,82 @@ class TestDigestSnapshotSection(unittest.TestCase):
         self.assertEqual(1, text.count("Enable lows:"))
         self.assertIn(enable_url, text)
         self.assertNotIn("Also observed (not shown)", text)
+
+    def test_snapshot_rows_include_lows_when_enabled(self) -> None:
+        snapshot_all = [
+            {
+                "establishment_name": "Low Snapshot Co",
+                "site_city": "Austin",
+                "site_state": "TX",
+                "inspection_type": "Planned",
+                "date_opened": "2026-02-01",
+                "lead_score": 2,
+                "source_url": "https://example.com/low",
+                "last_seen_at": "2026-02-08T12:00:00+00:00",
+            },
+            {
+                "establishment_name": "High Snapshot Co",
+                "site_city": "Austin",
+                "site_state": "TX",
+                "inspection_type": "Complaint",
+                "date_opened": "2026-02-01",
+                "lead_score": 9,
+                "source_url": "https://example.com/high",
+                "last_seen_at": "2026-02-07T12:00:00+00:00",
+            },
+        ]
+
+        rows_on, total_on = _select_snapshot_rows(snapshot_all, include_lows=True, medium_min=6, limit=25)
+        self.assertEqual(2, total_on)
+        self.assertTrue(any(r.get("establishment_name") == "Low Snapshot Co" for r in rows_on))
+
+        rows_off, total_off = _select_snapshot_rows(snapshot_all, include_lows=False, medium_min=6, limit=25)
+        self.assertEqual(1, total_off)
+        self.assertFalse(any(r.get("establishment_name") == "Low Snapshot Co" for r in rows_off))
+
+    def test_snapshot_section_shows_low_rows_when_enabled(self) -> None:
+        snap_rows = [
+            {
+                "establishment_name": "Example Low Co",
+                "site_city": "Austin",
+                "site_state": "TX",
+                "inspection_type": "Planned",
+                "date_opened": "2026-02-01",
+                "lead_score": 2,
+                "source_url": "https://example.com/low",
+                "first_seen_at": "2026-02-02T12:00:00+00:00",
+            }
+        ]
+        snap_tiers = {"high": 0, "medium": 0, "low": 1}
+
+        html = generate_digest_html(
+            leads=[],
+            low_fallback=[],
+            config=self.config,
+            gen_date="2026-02-08",
+            mode="daily",
+            territory_code="TX_TRIANGLE_V1",
+            content_filter="high_medium",
+            include_low_fallback=False,
+            branding=self.branding,
+            tier_counts={"high": 0, "medium": 0, "low": 0},
+            enable_lows_url=None,
+            disable_lows_url=None,
+            include_lows=True,
+            low_priority=[],
+            footer_html=self.footer_html,
+            summary_label="Newly observed today: 0 signals",
+            snapshot_label="Last 14 days snapshot (not new)",
+            snapshot_days=14,
+            snapshot_tier_counts=snap_tiers,
+            snapshot_enable_lows_url="https://example.invalid/should_not_render",
+            snapshot_disable_lows_url=None,
+            snapshot_rows=snap_rows,
+            snapshot_total=1,
+        )
+        self.assertIn("Example Low Co", html)
+        self.assertNotIn("(not shown)", html)
+        self.assertNotIn("Enable lows", html)
 
 
 if __name__ == "__main__":

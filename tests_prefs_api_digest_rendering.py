@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from email_footer import build_footer_html
+import send_digest_email
 from send_digest_email import fetch_lows_enabled_pref, generate_digest_html
 
 
@@ -27,7 +28,8 @@ class TestDigestPrefsApi(unittest.TestCase):
     def setUp(self) -> None:
         self._env_before = dict(os.environ)
         os.environ["MFO_PREFS_BASE_URL"] = "https://unsub.example.internal"
-        os.environ["MFO_INTERNAL_API_KEY"] = "test_key"
+        os.environ["MFO_INTERNAL_KEY"] = "test_key"
+        send_digest_email._PREFS_CACHE.clear()
 
         self.config = {
             "states": ["TX"],
@@ -50,11 +52,18 @@ class TestDigestPrefsApi(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        send_digest_email._PREFS_CACHE.clear()
         os.environ.clear()
         os.environ.update(self._env_before)
 
     def test_prefs_api_true_includes_low_priority_rows(self) -> None:
-        with patch("send_digest_email.urllib.request.urlopen", return_value=_FakeHTTPResponse("{\"lows_enabled\":true}")):
+        def _urlopen(req, timeout=3):
+            headers = {k.lower(): v for k, v in (getattr(req, "headers", {}) or {}).items()}
+            self.assertEqual("test_key", headers.get("x-mfo-internal-key"))
+            self.assertIn("/api/prefs_state?", getattr(req, "full_url", ""))
+            return _FakeHTTPResponse("{\"lows_enabled\":true,\"updated_at_iso\":\"2026-02-10T00:00:00Z\"}")
+
+        with patch("send_digest_email.urllib.request.urlopen", side_effect=_urlopen):
             include = fetch_lows_enabled_pref("wally_trial", "TX_TRIANGLE_V1")
         self.assertTrue(include)
 
@@ -90,6 +99,8 @@ class TestDigestPrefsApi(unittest.TestCase):
         self.assertIn("Low priority (1)", html)
         self.assertIn("LowCo", html)
         self.assertNotIn("(not shown)", html)
+        self.assertNotIn("Enable lows", html)
+        self.assertIn("Disable lows", html)
 
     def test_prefs_api_failure_defaults_disabled_and_logs(self) -> None:
         buf = io.StringIO()
@@ -130,7 +141,11 @@ class TestDigestPrefsApi(unittest.TestCase):
         )
         self.assertNotIn("Low priority (", html)
         self.assertNotIn("LowCo", html)
-        self.assertIn("Low-priority signals available:", html)
+        self.assertIn("Low signals:", html)
+        self.assertIn("OFF", html)
+        self.assertIn("(1 available today)", html)
+        self.assertIn("(not shown)", html)
+        self.assertIn("Enable lows", html)
 
 
 if __name__ == "__main__":

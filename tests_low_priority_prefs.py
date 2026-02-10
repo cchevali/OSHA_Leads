@@ -81,16 +81,17 @@ class TestLowPriorityPrefs(unittest.TestCase):
         )
 
         self.assertIn("Tier summary: High 0, Medium 0, Low 3", html)
-        self.assertIn("Low-priority signals available: 3 (not shown).", html)
-        self.assertEqual(1, html.count("Low-priority signals available:"))
+        self.assertIn("Low signals:", html)
+        self.assertIn("OFF", html)
+        self.assertIn("(3 available today)", html)
         self.assertIn("Enable lows.", html)
         self.assertEqual(1, html.count("Enable lows.</a>"))
         self.assertIn(enable_url, html)
         self.assertNotIn("Also observed (not shown)", html)
 
         self.assertIn("Tier summary: High 0, Medium 0, Low 3", text)
-        self.assertIn("Low-priority signals available: 3 (not shown).", text)
-        self.assertEqual(1, text.count("Low-priority signals available:"))
+        self.assertIn("Low signals: OFF", text)
+        self.assertIn("(3 available today)", text)
         self.assertIn("Enable lows:", text)
         self.assertEqual(1, text.count("Enable lows:"))
         self.assertIn(enable_url, text)
@@ -144,12 +145,15 @@ class TestLowPriorityPrefs(unittest.TestCase):
             except Exception:
                 pass
 
-        self.assertIn("Low-priority signals available: 2 (not shown).", html)
+        self.assertIn("Low signals:", html)
+        self.assertIn("OFF", html)
+        self.assertIn("(2 available today)", html)
         self.assertIn("Enable lows.", html)
         self.assertEqual(0, html.count("Enable lows.</a>"))
         self.assertNotIn("prefs/enable_lows", html)
 
-        self.assertIn("Low-priority signals available: 2 (not shown).", text)
+        self.assertIn("Low signals: OFF", text)
+        self.assertIn("(2 available today)", text)
         self.assertIn("Enable lows.", text)
         self.assertNotIn("prefs/enable_lows", text)
 
@@ -246,11 +250,67 @@ class TestLowPriorityPrefs(unittest.TestCase):
                 summary_label="Newly observed today: 0 signals",
             )
 
-            self.assertIn("Low-priority signals: 1.", html)
+            self.assertIn("Low signals:", html)
+            self.assertIn("ON", html)
+            self.assertIn("(1 available today)", html)
             self.assertIn("Low priority (1)", html)
             self.assertIn("LowCo", html)
             self.assertNotIn("(not shown)", html)
             self.assertNotIn("Enable lows", html)
+            self.assertIn("Disable lows", html)
+
+    def test_lows_enabled_zero_available_is_explicit(self) -> None:
+        tier_counts = {"high": 0, "medium": 0, "low": 0}
+        disable_url = (
+            "https://unsub.microflowops.com/prefs/disable_lows?"
+            "token=abc.def&subscriber_key=sub_tx_triangle_v1_0000000000&territory_code=TX_TRIANGLE_V1"
+        )
+        html = generate_digest_html(
+            leads=[],
+            low_fallback=[],
+            config=self.config,
+            gen_date="2026-02-08",
+            mode="daily",
+            territory_code="TX_TRIANGLE_V1",
+            content_filter="high_medium",
+            include_low_fallback=False,
+            branding=self.branding,
+            tier_counts=tier_counts,
+            enable_lows_url=None,
+            disable_lows_url=disable_url,
+            include_lows=True,
+            low_priority=[],
+            footer_html=self.footer_html,
+            summary_label="Newly observed today: 0 signals",
+        )
+        self.assertIn("Low signals:", html)
+        self.assertIn("ON", html)
+        self.assertIn("(0 available today)", html)
+        self.assertIn("Disable lows", html)
+        self.assertNotIn("Enable lows", html)
+
+        text = generate_digest_text(
+            leads=[],
+            low_fallback=[],
+            config=self.config,
+            gen_date="2026-02-08",
+            mode="daily",
+            territory_code="TX_TRIANGLE_V1",
+            content_filter="high_medium",
+            include_low_fallback=False,
+            branding=self.branding,
+            tier_counts=tier_counts,
+            enable_lows_url=None,
+            disable_lows_url=disable_url,
+            include_lows=True,
+            low_priority=[],
+            footer_text=self.footer_text,
+            summary_label="Newly observed today: 0 signals",
+        )
+        self.assertIn("Low signals: ON", text)
+        self.assertIn("(0 available today)", text)
+        self.assertIn("Disable lows", text)
+        self.assertNotIn("Enable lows", text)
 
 
 if __name__ == "__main__":

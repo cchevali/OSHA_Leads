@@ -1,10 +1,13 @@
 import argparse
+import base64
 import html
 import json
 import os
 import subprocess
 import time
 import csv
+import hashlib
+import hmac
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -417,26 +420,40 @@ def _valid_subscriber_key(value: str) -> bool:
     return bool(value) and bool(_RE_SUBSCRIBER_KEY.match(value))
 
 
-def _latest_lows_enabled_pref(subscriber_key: str, territory_code: str) -> tuple[bool, str | None, Exception | None]:
+def _derive_internal_prefs_key() -> str:
+    """
+    Derive a stable internal key from UNSUB_SECRET so operators don't need to manage an additional secret.
+    If MFO_INTERNAL_KEY is set explicitly, it takes precedence.
+    """
+    secret = (os.getenv("UNSUB_SECRET") or "").strip()
+    if not secret:
+        return ""
+    mac = hmac.new(secret.encode("utf-8"), b"prefs_state_v1", hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(mac).decode("ascii").rstrip("=")
+
+
+def _latest_lows_enabled_pref(
+    subscriber_key: str, territory_code: str
+) -> tuple[bool, str | None, str | None, Exception | None]:
     """
     Best-effort include_lows for (subscriber_key, territory_code) based on prefs.csv.
 
     Digest preference is subscriber-scoped, so we intentionally ignore email here and use the newest row.
-    Returns (include_lows, error_reason, exception).
+    Returns (include_lows, updated_at_iso, error_reason, exception).
     """
     try:
         import unsubscribe_utils as _uu
     except Exception as e:
-        return False, "prefs_import_error", e
+        return False, None, "prefs_import_error", e
 
     sk = _normalize_subscriber_key(subscriber_key)
     terr = _normalize_territory_code(territory_code)
     if not sk or not terr:
-        return False, None, None
+        return False, None, None, None
 
     path = getattr(_uu, "PREFS_PATH", None)
     if not path or not Path(path).exists():
-        return False, None, None
+        return False, None, None, None
 
     include_lows = False
     best_ts = ""
@@ -456,9 +473,9 @@ def _latest_lows_enabled_pref(subscriber_key: str, territory_code: str) -> tuple
                 best_ts = ts or best_ts
                 val = str(row.get("include_lows") or "").strip().lower()
                 include_lows = val in {"1", "true", "yes"}
-        return bool(include_lows), None, None
+        return bool(include_lows), (best_ts or None), None, None
     except Exception as e:
-        return False, "prefs_read_error", e
+        return False, None, "prefs_read_error", e
 
 
 def _resolve_git_sha() -> str:
@@ -540,12 +557,66 @@ class UnsubHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b"{\"error\":\"invalid_territory_code\"}\n")
                 return
 
-            include_lows, err, exc = _latest_lows_enabled_pref(subscriber_key, territory_code)
+            include_lows, _updated_at, err, exc = _latest_lows_enabled_pref(subscriber_key, territory_code)
             if err:
                 _log_preview_unavailable(subscriber_key, territory_code, reason=err, exc=exc)
 
             payload = json.dumps(
                 {"subscriber_key": subscriber_key, "territory_code": territory_code, "lows_enabled": bool(include_lows)},
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if path in {"/api/prefs_state", "/prefs_state"}:
+            expected_key = (os.getenv("MFO_INTERNAL_KEY") or "").strip() or _derive_internal_prefs_key()
+            provided_key = (self.headers.get("X-MFO-Internal-Key") or "").strip()
+            if not expected_key or not provided_key or (provided_key != expected_key):
+                # Distinct audit line; do not include provided key.
+                try:
+                    print(
+                        f"[WARN] {json.dumps({'event':'PREFS_STATE_UNAUTHORIZED','ip':ip}, separators=(',',':'))}"
+                    )
+                except Exception:
+                    pass
+                self.send_response(HTTPStatus.UNAUTHORIZED)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"{\"error\":\"unauthorized\"}\n")
+                return
+
+            raw_subscriber_key = (params.get("subscriber_key") or [""])[0]
+            raw_territory_code = (params.get("territory_code") or [""])[0]
+            subscriber_key = _normalize_subscriber_key(raw_subscriber_key)
+            territory_code = _normalize_territory_code(raw_territory_code)
+            if not subscriber_key or not _valid_subscriber_key(subscriber_key):
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"{\"error\":\"invalid_subscriber_key\"}\n")
+                return
+            if not territory_code or not _valid_territory_code(territory_code):
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"{\"error\":\"invalid_territory_code\"}\n")
+                return
+
+            include_lows, updated_at, err, exc = _latest_lows_enabled_pref(subscriber_key, territory_code)
+            if err:
+                _log_preview_unavailable(subscriber_key, territory_code, reason=err, exc=exc)
+                include_lows = False
+                updated_at = None
+
+            payload = json.dumps(
+                {
+                    "lows_enabled": bool(include_lows),
+                    "updated_at_iso": (updated_at or ""),
+                },
                 separators=(",", ":"),
             ).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -722,7 +793,7 @@ class UnsubHandler(BaseHTTPRequestHandler):
                 return
 
             _resolved_code, territory_display = _resolve_territory(territory_code)
-            include_lows, err, exc = _latest_lows_enabled_pref(subscriber_key, territory_code)
+            include_lows, _updated_at, err, exc = _latest_lows_enabled_pref(subscriber_key, territory_code)
             if err:
                 _log_preview_unavailable(subscriber_key, territory_code, reason=err, exc=exc)
                 include_lows = False
@@ -860,7 +931,8 @@ class UnsubHandler(BaseHTTPRequestHandler):
             )
             expectation = (
                 "<p style=\"color:#374151; margin-top: 12px;\">"
-                "<strong>Will start next scheduled digest; preview is immediate.</strong>"
+                "<strong>Will start next scheduled digest.</strong> "
+                "This page attempts a best-effort preview below; if unavailable here, the change still applies to the next digest."
                 "</p>"
                 if include
                 else (
@@ -902,7 +974,15 @@ class UnsubHandler(BaseHTTPRequestHandler):
         # Make verification curl -I predictable.
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
-        if path in {"/__version", "/unsubscribe", "/prefs", "/prefs/enable_lows", "/prefs/disable_lows"}:
+        if path in {
+            "/__version",
+            "/unsubscribe",
+            "/prefs",
+            "/prefs/enable_lows",
+            "/prefs/disable_lows",
+            "/api/prefs_state",
+            "/prefs_state",
+        }:
             self.send_response(HTTPStatus.OK)
             self.end_headers()
             return
