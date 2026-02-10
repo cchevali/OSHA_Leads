@@ -1925,11 +1925,6 @@ def generate_digest_html(
             label = "Most recent signals (not new):" if include_lows else "Most recent priority signals (not new):"
             html.append(f"<p style=\"margin: 10px 0 8px 0; color: #555;\">{label}</p>")
             html.append(_lead_rows_html(snapshot_rows, len(snapshot_rows), include_area_office_snapshot, tz))
-            if snapshot_total is not None and int(snapshot_total) > len(snapshot_rows):
-                html.append(
-                    f"<p style=\"margin: 8px 0 0 0; color: #555; font-size: 12px;\">"
-                    f"More available: showing {len(snapshot_rows)} of {int(snapshot_total)}.</p>"
-                )
         else:
             empty_msg = (
                 "No signals in the last 14 days." if include_lows else "No priority signals in the last 14 days."
@@ -2108,8 +2103,6 @@ def generate_digest_text(
                         f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
                         f"Score {int(lead.get('lead_score') or 0)}"
                     )
-                if snapshot_total is not None and int(snapshot_total) > len(snapshot_rows):
-                    lines.append(f"More available: showing {len(snapshot_rows)} of {int(snapshot_total)}.")
             else:
                 lines.append("")
                 lines.append("No signals in the last 14 days." if include_lows else "No priority signals in the last 14 days.")
