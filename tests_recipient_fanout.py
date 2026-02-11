@@ -89,7 +89,7 @@ def run_send(db_path: Path, config_path: Path, out_dir: Path, data_dir: Path, se
     env["UNSUB_ENDPOINT_BASE"] = "https://example.com/unsubscribe"
     env["UNSUB_SECRET"] = "fanout-test-secret"
     env["DATA_DIR"] = str(data_dir)
-    env["CHASE_EMAIL"] = "cchevali+oshasmoke@gmail.com"
+    env["OSHA_SMOKE_TO"] = "cchevali+oshasmoke@gmail.com"
 
     cmd = [
         sys.executable,

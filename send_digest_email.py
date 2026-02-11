@@ -913,6 +913,7 @@ def format_territory_health_summary(health: dict) -> tuple[str, str]:
 def resolve_admin_recipient(config: dict) -> str:
     return (
         (config.get("admin_email") or "").strip().lower()
+        or (os.getenv("OSHA_SMOKE_TO") or "").strip().lower()
         or (os.getenv("CHASE_EMAIL") or "").strip().lower()
         or (os.getenv("ADMIN_EMAIL") or "").strip().lower()
         or "cchevali+oshasmoke@gmail.com"
@@ -2182,6 +2183,10 @@ def build_email_message(
     branding: dict,
     list_unsub: str,
     list_unsub_post: str | None,
+    *,
+    # Optional alias for callers that conceptually treat this as a "label".
+    # When provided, it overrides `customer_id` for the X-Customer-ID header.
+    label: str | None = None,
 ) -> MIMEMultipart:
     from_header = formataddr((branding["from_display_name"], branding["from_email"]))
     reply_to_header = formataddr((branding["from_display_name"], branding["reply_to"]))
@@ -2193,7 +2198,8 @@ def build_email_message(
     msg["Reply-To"] = reply_to_header
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid()
-    msg["X-Customer-ID"] = customer_id
+    effective_customer_id = (label if label is not None else customer_id) or ""
+    msg["X-Customer-ID"] = effective_customer_id
     msg["X-Territory-Code"] = territory_code or ""
 
     msg["List-Unsubscribe"] = list_unsub
@@ -2216,6 +2222,10 @@ def send_email(
     dry_run: bool,
     list_unsub: str,
     list_unsub_post: str | None,
+    *,
+    # Optional alias for callers that conceptually treat this as a "label".
+    # When provided, it overrides `customer_id` for the X-Customer-ID header.
+    label: str | None = None,
 ) -> tuple[bool, str, str]:
     smtp_host = os.environ.get("SMTP_HOST", "")
     smtp_port_text = os.environ.get("SMTP_PORT", "")
@@ -2232,6 +2242,7 @@ def send_email(
         branding=branding,
         list_unsub=list_unsub,
         list_unsub_post=list_unsub_post,
+        label=label,
     )
 
     if dry_run:
@@ -2424,7 +2435,7 @@ def main() -> None:
     recipients = collect_recipients(config, subscriber_profile, args.recipient_override)
     intended_recipients = list(recipients)
 
-    smoke_recipient = "cchevali+oshasmoke@gmail.com"
+    smoke_recipient = (os.getenv("OSHA_SMOKE_TO") or "").strip().lower() or "cchevali+oshasmoke@gmail.com"
     if args.smoke_cchevali:
         # Hard guard: this entrypoint must only ever send to Chase.
         override_raw = (args.recipient_override or "").strip()
@@ -2492,7 +2503,7 @@ def main() -> None:
                     f"Intended recipient count: {len(intended_recipients)}\n"
                     f"Run log: {run_log_path}\n"
                 )
-                send_safe_mode_alert(subject, body, "cchevali+oshasmoke@gmail.com")
+                send_safe_mode_alert(subject, body, smoke_recipient)
         if not live_allowed:
             admin_recipient = resolve_admin_recipient(config)
             if not admin_recipient:

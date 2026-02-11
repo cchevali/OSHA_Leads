@@ -1,0 +1,68 @@
+<!-- Outreach HTML "Wally" card (Indigo Compliance style).
+
+This is a plain HTML fragment intended for email clients.
+Template tokens (string replace, no templating engine):
+- FIRST_NAME, FIRM, STATE, RECENT_SIGNALS_HTML, LAST_REFRESH_ET
+- UNSUBSCRIBE_URL, PREFS_URL, MAILING_ADDRESS, MICROFLOWOPS_URL
+-->
+
+<div style="margin: 0; padding: 0; background-color: #f5f5f5; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;">
+  <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+
+    <div style="background-color: rgb(255, 255, 255); border-radius: 8px; padding: 24px; color: rgb(26, 26, 26); border: 1px solid #e5e7eb;">
+
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 16px 0;">Hi {{FIRST_NAME}},</p>
+
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 12px 0;">
+        I'm reaching out because {{FIRM}} appears active in safety/construction, and we track new OSHA activity signals in {{STATE}}.
+      </p>
+
+      <p style="font-size: 16px; font-weight: 600; margin: 0 0 12px 0; color: rgb(26, 26, 26);">Recent signals:</p>
+      <p style="font-size: 13px; color: rgb(102, 102, 102); line-height: 1.5; margin: 0 0 12px 0;">
+        Priority is a heuristic based on severity/penalty/recency; not legal advice.
+      </p>
+      <p style="font-size: 13px; color: rgb(102, 102, 102); line-height: 1.5; margin: 0 0 12px 0;">
+        Only the highest-priority signals are included in this sample.
+      </p>
+      <p style="font-size: 12px; color: rgb(136, 136, 136); line-height: 1.5; margin: 0 0 12px 0;">
+        Last refresh: {{LAST_REFRESH_ET}}
+      </p>
+
+      <div style="margin-bottom: 20px;">
+        {{RECENT_SIGNALS_HTML}}
+      </div>
+
+      <p style="font-size: 13px; color: rgb(102, 102, 102); line-height: 1.5; margin: 0 0 20px 0;">
+        Some OSHA matters can be time-sensitive; deadlines vary by case. We include deadlines only when available.
+      </p>
+
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 24px 0;">
+        If you'd like, I can send a short daily {{STATE}} digest like this. Reply "yes" and I'll set it up.
+      </p>
+
+      <p style="font-size: 13px; color: rgb(102, 102, 102); line-height: 1.5; margin: 0 0 16px 0;">
+        Not affiliated with OSHA; this is an independent alert service (no legal advice).
+      </p>
+
+      <p style="font-size: 14px; margin: 0 0 2px 0; color: rgb(26, 26, 26);">Chase Chevalier</p>
+      <p style="font-size: 13px; margin: 0 0 2px 0; color: rgb(26, 26, 26);">Micro Flow Ops - OSHA Alerts</p>
+      <p style="font-size: 13px; margin: 0 0 2px 0;">
+        <a href="{{MICROFLOWOPS_URL}}" style="color: rgb(26, 26, 26); text-decoration: underline;" target="_blank" rel="noopener noreferrer">microflowops.com</a>
+      </p>
+      <p style="font-size: 13px; margin: 0 0 16px 0;">
+        <a href="mailto:support@microflowops.com" style="color: rgb(26, 26, 26); text-decoration: none;" target="_blank">support@microflowops.com</a>
+      </p>
+
+    </div>
+
+    <div style="padding: 16px 24px; text-align: center;">
+      <p style="font-size: 12px; color: rgb(102, 102, 102); margin: 0;">{{MAILING_ADDRESS}}</p>
+      <p style="font-size: 12px; color: rgb(136, 136, 136); margin: 6px 0 0 0;">
+        <a href="{{UNSUBSCRIBE_URL}}" style="color: rgb(136, 136, 136); text-decoration: underline;" target="_blank" rel="noopener noreferrer">Unsubscribe</a>
+        |
+        <a href="{{PREFS_URL}}" style="color: rgb(136, 136, 136); text-decoration: underline;" target="_blank" rel="noopener noreferrer">Manage preferences</a>
+      </p>
+    </div>
+
+  </div>
+</div>

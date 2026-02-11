@@ -1,0 +1,21 @@
+Hi FIRST_NAME,
+
+I run MicroFlowOps. We track recent OSHA inspection activity and send concise, plain-English heads-ups to safety and ops teams in STATE.
+
+Recent signals:
+RECENT_SIGNALS_LINES
+
+Last refresh: LAST_REFRESH_ET
+
+If you'd like a sample digest, reply "yes" and I'll send one.
+
+Notes:
+- Accident, Complaint, and Referral describe OSHA activity signals (not citations).
+- Informational only; not legal advice.
+
+Opt out anytime: Unsubscribe | Manage preferences
+UNSUBSCRIBE_URL
+PREFS_URL
+
+Thanks,
+MicroFlowOps

@@ -531,7 +531,10 @@ def main() -> None:
     parser.add_argument("--territory-code", default="TX_TRIANGLE_V1")
     parser.add_argument("--content-filter", default="high_medium")
     parser.add_argument("--lookback-days", type=int, default=14)
-    parser.add_argument("--chase-email", default="cchevali+oshasmoke@gmail.com")
+    parser.add_argument(
+        "--chase-email",
+        default=(os.getenv("OSHA_SMOKE_TO") or os.getenv("CHASE_EMAIL") or "cchevali+oshasmoke@gmail.com"),
+    )
     parser.add_argument("--admin-email", default="support@microflowops.com")
     parser.add_argument("--send-live", action="store_true", help="Trigger first live send to Wally")
     parser.add_argument(
