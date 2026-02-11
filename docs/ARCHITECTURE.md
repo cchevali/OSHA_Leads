@@ -5,27 +5,30 @@
 - Ingest + data store: OSHA inspections -> `data/osha.sqlite`
 - Digest delivery: build customer-facing alerts and send to subscribers
 - Suppression/opt-out: local suppression list (`out/suppression.csv`) and optional one-click unsubscribe service
-- Outreach export (this repo): prospects CSV -> mail-merge outbox CSV for external sending
+- Outreach operations (this repo): SQLite CRM-lite (`out/crm.sqlite`) for prospect selection, sending, and lifecycle tracking
+- Outreach debug export: optional CSV outbox generation for QA/debug only
 
-## Outreach Export Data Flow
+## Outreach CRM Auto-Run Data Flow
 
-1. Input: a prospects CSV matching `outreach/prospects_schema.md`.
-2. Generator: `outreach/generate_mailmerge.py`
-   - Filters to a geo batch (`--state`) and labels the export batch (`--batch`)
-   - Normalizes + dedupes by email (case-insensitive)
-   - Enforces suppression:
-     - local CSV suppression (`out/suppression.csv`)
-     - optional domain/email suppression from `suppression_list` in SQLite (when available)
-   - Generates opt-out links:
-     - HTTPS one-click when `UNSUB_ENDPOINT_BASE` + `UNSUB_SECRET` are available
-     - otherwise exits non-zero (unless `--allow-mailto-fallback` is provided)
-   - Emits an outbox CSV with `subject` and `body` columns for mail-merge
-   - Emits a batch manifest CSV alongside the outbox export (exported vs dropped with reasons)
-   - Writes an append-only per-run log to `outreach/outreach_runs/<YYYY-MM-DD>_<batch>.jsonl`
-3. Output: the outbox CSV is handed to an external sender (no SMTP/provider integration in this repo).
+1. Seed/import: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
+2. Daily run: `outreach/run_outreach_auto.py`
+   - Resolves daily state from `OUTREACH_STATES` and batch id `<YYYY-MM-DD>_<STATE>`
+   - Selects/prioritizes prospects from `prospects` table
+   - Enforces suppression + one-click unsubscribe compliance gates
+   - Sends multipart outreach emails directly via `send_digest_email.send_email`
+   - Records `outreach_events` and prospect status transitions atomically
+   - Sends ops summary email to `OSHA_SMOKE_TO`
+3. Lifecycle ops: `outreach/crm_admin.py mark` records replied/trial/converted/DNC outcomes.
+4. Optional compatibility: append-only ledger at `out/outreach_export_ledger.jsonl`.
+
+## Outreach Debug Export Data Flow
+
+- `outreach/generate_mailmerge.py` remains available to generate outbox CSV + manifest for preview/debug workflows.
+- This path is no longer required for normal daily operations.
 
 ## Operational Artifacts
 
-- `outreach/outreach_runs/`: per-run logs (counts + metadata)
+- `out/crm.sqlite` (or `${DATA_DIR}/crm.sqlite`): prospects/outreach/trials/suppression source of truth
 - `out/unsub_tokens.csv`: token store for one-click unsubscribe links (when enabled)
 - `out/suppression.csv`: suppression list enforced by exports and sending paths
+- `out/outreach_export_ledger.jsonl`: optional compatibility ledger for contacted records

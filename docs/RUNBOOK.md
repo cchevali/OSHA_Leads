@@ -116,22 +116,17 @@ Failure tokens (no partial outputs):
 
 - Suppression list:
 `<DATA_DIR>\suppression.csv` when `DATA_DIR` is set, else `.\out\suppression.csv`
-- Prospects input:
-`OUTREACH_PROSPECTS_PATH` (required for production PC automation; local file)
-- Outputs:
-`OUTREACH_OUTPUT_ROOT\<YYYY-MM-DD_STATE>\outbox_<YYYY-MM-DD_STATE>.csv` and manifest/run log beside it
-Default `OUTREACH_OUTPUT_ROOT` is `.\out\outreach`
+- CRM database:
+`<DATA_DIR>\crm.sqlite` when `DATA_DIR` is set, else `.\out\crm.sqlite`
 - Duplicate-prevention ledger:
 `<DATA_DIR>\outreach_export_ledger.jsonl` when `DATA_DIR` is set, else `.\out\outreach_export_ledger.jsonl`
 
-### One-Command Batch Run
+### One-Time Seed (CSV -> CRM)
 
 ```powershell
 cd C:\dev\OSHA_Leads
-.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_batch.py `
-  --state TX `
-  --batch TX_W2 `
-  --input outreach\sample_prospects.csv
+.\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py seed `
+  --input C:\path\to\prospects.csv
 ```
 
 ### Single Command (Scheduled Daily)
@@ -147,45 +142,45 @@ Dry-run (no outputs, no summary email):
 .\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py --dry-run
 ```
 
+Print resolved paths/state:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py --print-config
+```
+
 Recommended env on PC (set in `.env.sops`):
 
 - `OUTREACH_STATES=TX,CA,FL`
 - `OUTREACH_DAILY_LIMIT=200`
-- `OUTREACH_PROSPECTS_PATH=C:\path\to\prospects.csv`
-- `OUTREACH_OUTPUT_ROOT=C:\dev\OSHA_Leads\out\outreach`
 - `OSHA_SMOKE_TO=cchevali+oshasmoke@gmail.com`
 
 `run_outreach_auto.py` deterministically picks today's state from `OUTREACH_STATES` by weekday index and uses batch id `<YYYY-MM-DD>_<STATE>`.
-If the day's outbox+manifest already exist, it exits cleanly with `PASS_AUTO_ALREADY_RAN`.
+Normal runs select and prioritize prospects directly from `crm.sqlite`, send outreach emails, then record `outreach_events` and status updates.
 
 Expected artifacts:
 
-- `out/outreach/TX_W2/outbox_TX_W2.csv`
-- `out/outreach/TX_W2/outbox_TX_W2_manifest.csv`
-- `out/outreach/TX_W2/run_log.jsonl`
+- `out/crm.sqlite` (or `${DATA_DIR}\crm.sqlite`)
+- `out/outreach_export_ledger.jsonl` (optional compatibility ledger)
 
-### QA Checks (Before External Send)
+### QA Checks (Before/After Daily Send)
 
 ```powershell
-# Verify files exist
-Test-Path -LiteralPath .\out\outreach\TX_W2\outbox_TX_W2.csv
-Test-Path -LiteralPath .\out\outreach\TX_W2\outbox_TX_W2_manifest.csv
-Test-Path -LiteralPath .\out\outreach\TX_W2\run_log.jsonl
+# Verify CRM + suppression paths
+.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py --print-config
 
-# Quick counts
-(Import-Csv .\out\outreach\TX_W2\outbox_TX_W2.csv).Count
-(Import-Csv .\out\outreach\TX_W2\outbox_TX_W2_manifest.csv | Where-Object { $_.status -eq 'dropped' }).Count
-
-# One-click links present in generated outbox
-(Import-Csv .\out\outreach\TX_W2\outbox_TX_W2.csv | Select-Object -First 1).unsubscribe_url
-(Import-Csv .\out\outreach\TX_W2\outbox_TX_W2.csv | Select-Object -First 1).prefs_url
+# Dry-run candidate preview
+.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py --dry-run
 
 # Ledger exists and is appending
 Test-Path -LiteralPath .\out\outreach_export_ledger.jsonl
 
-# Smoke test exactly one rendered outreach email
-.\run_with_secrets.ps1 -- py -3 outreach\send_test_cold_email.py `
-  --outbox .\out\outreach\TX_W2\outbox_TX_W2.csv
+# Optional debug export path (not needed for operations)
+.\run_with_secrets.ps1 -- py -3 outreach\generate_mailmerge.py `
+  --input outreach\sample_prospects.csv `
+  --batch TX_DEBUG `
+  --state TX `
+  --out outreach\outbox_TX_DEBUG.csv `
+  --allow-mailto-fallback
 ```
 
 ### Daily Suppression Update Loop
@@ -226,5 +221,5 @@ schtasks /Create /F /SC DAILY /ST 08:00 /TN "OSHA_Outreach_Auto" `
 ### Minimal Daily Ops Checklist
 
 1. Update `suppression.csv` with yesterday's unsubscribes/bounces.
-2. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with exported/dropped counts.
-3. QA outbox + manifest quickly, then upload outbox to your external mail-merge sender.
+2. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with contacted/skipped/new-replies-trials-conversions.
+3. Use `outreach\crm_admin.py mark` to record `replied`, `trial_started`, `converted`, or `do_not_contact`.
