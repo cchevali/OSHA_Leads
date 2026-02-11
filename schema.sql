@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS inspections (
     
     -- Canonical identifiers
     activity_nr TEXT UNIQUE NOT NULL,
+    lead_key TEXT,
     lead_id TEXT GENERATED ALWAYS AS ('osha:inspection:' || activity_nr) STORED,
     
     -- Dates
@@ -171,6 +172,7 @@ CREATE INDEX IF NOT EXISTS idx_inspections_first_seen ON inspections(first_seen_
 CREATE INDEX IF NOT EXISTS idx_inspections_needs_review ON inspections(needs_review);
 CREATE INDEX IF NOT EXISTS idx_inspections_lead_score ON inspections(lead_score DESC);
 CREATE INDEX IF NOT EXISTS idx_inspections_area_office ON inspections(area_office);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inspections_lead_key ON inspections(lead_key);
 CREATE INDEX IF NOT EXISTS idx_citations_inspection_id ON citations(inspection_id);
 CREATE INDEX IF NOT EXISTS idx_suppression_email ON suppression_list(email_or_domain);
 CREATE INDEX IF NOT EXISTS idx_subscribers_active ON subscribers(active);

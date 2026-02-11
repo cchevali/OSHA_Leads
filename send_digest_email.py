@@ -60,6 +60,10 @@ LOW_FALLBACK_LIMIT = 5
 HEALTH_MIN_SHARE_DEFAULT = 0.1
 HEALTH_MIN_TOTAL_DEFAULT = 20
 SEND_WINDOW_MINUTES_DEFAULT = 20
+DEFAULT_TRIAL_TARGET_LOCAL_HHMM = "09:00"
+DEFAULT_TRIAL_CATCHUP_MAX_MINUTES = 180
+WALLY_TRIAL_CUSTOMER_ID = "wally_trial_tx_triangle_v1"
+WALLY_TRIAL_SUBSCRIBER_KEY = "wally_trial"
 HEALTH_ANCHORS_BY_TERRITORY = {
     "TX_TRIANGLE_V1": ["Houston", "Dallas/Fort Worth", "Austin", "San Antonio"],
 }
@@ -258,6 +262,12 @@ def _parse_timestamp(value: str | None) -> datetime | None:
     return None
 
 
+def _coerce_datetime_aware_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _to_naive(dt: datetime | None) -> datetime | None:
     if not dt:
         return None
@@ -266,17 +276,31 @@ def _to_naive(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def _stable_lead_id_for_log(lead: dict) -> str:
+    for key in ("lead_key", "inspection_id", "activity_nr", "lead_id"):
+        value = str(lead.get(key) or "").strip()
+        if value:
+            return value
+    return "unknown"
+
+
 def _observed_datetime(lead: dict) -> datetime | None:
-    changed_dt = _parse_timestamp(lead.get("changed_at"))
-    first_dt = _parse_timestamp(lead.get("first_seen_at"))
-    last_dt = _parse_timestamp(lead.get("last_seen_at"))
-    candidates = [dt for dt in (changed_dt, first_dt, last_dt) if dt]
+    candidates: list[datetime] = []
+    lead_id = _stable_lead_id_for_log(lead)
+    for field in ("changed_at", "first_seen_at", "last_seen_at"):
+        try:
+            parsed = _parse_timestamp(lead.get(field))
+            if not parsed:
+                continue
+            candidates.append(_coerce_datetime_aware_utc(parsed))
+        except Exception as exc:
+            print(
+                f"WARN_OBSERVED_DT_COERCE_FAIL lead_id={lead_id} "
+                f"field={field} error={exc.__class__.__name__}"
+            )
     if not candidates:
         return None
-    dt = max(candidates)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    return max(candidates)
 
 
 def _tz_label(tz: ZoneInfo, dt: datetime | None = None) -> str:
@@ -293,7 +317,12 @@ def _tz_label(tz: ZoneInfo, dt: datetime | None = None) -> str:
 
 
 def _observed_timestamp(lead: dict, tz: ZoneInfo) -> str:
-    dt = _observed_datetime(lead)
+    dt = None
+    for field in ("first_seen_at", "changed_at", "last_seen_at", "date_opened"):
+        parsed = _parse_timestamp(lead.get(field))
+        if parsed:
+            dt = _coerce_datetime_aware_utc(parsed)
+            break
     if not dt:
         return "-"
     local_dt = dt.astimezone(tz)
@@ -476,7 +505,7 @@ def compute_digest_hash(
 ) -> str:
     """Stable digest hash over normalized lead identifiers and config flags."""
     def _lead_id(lead: dict) -> str:
-        return str(lead.get("activity_nr") or lead.get("lead_id") or "").strip()
+        return str(lead.get("lead_key") or lead.get("activity_nr") or lead.get("lead_id") or "").strip()
 
     main_ids = sorted([_lead_id(lead) for lead in leads if _lead_id(lead)])
     low_ids = sorted([_lead_id(lead) for lead in low_fallback if _lead_id(lead)])
@@ -608,6 +637,73 @@ def _coerce_send_window_minutes(value: object) -> int:
     return minutes
 
 
+def _coerce_trial_target_local_hhmm(value: object) -> str:
+    text = str(value or "").strip()
+    parsed = _parse_send_time_local(text)
+    if not parsed:
+        return DEFAULT_TRIAL_TARGET_LOCAL_HHMM
+    hour, minute = parsed
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _coerce_trial_catchup_max_minutes(value: object) -> int:
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_TRIAL_CATCHUP_MAX_MINUTES
+    if minutes < 0:
+        return DEFAULT_TRIAL_CATCHUP_MAX_MINUTES
+    return minutes
+
+
+def _is_wally_trial_daily_mode(config: dict, mode: str) -> bool:
+    if mode != "daily":
+        return False
+    customer_id = str(config.get("customer_id") or "").strip().lower()
+    subscriber_key = str(config.get("subscriber_key") or "").strip().lower()
+    return customer_id == WALLY_TRIAL_CUSTOMER_ID or subscriber_key == WALLY_TRIAL_SUBSCRIBER_KEY
+
+
+def _within_trial_catchup_window(
+    now_local: datetime,
+    trial_target_local_hhmm: str,
+    catchup_max_minutes: int,
+) -> tuple[bool, datetime | None, datetime | None]:
+    parsed = _parse_send_time_local(trial_target_local_hhmm)
+    if not parsed:
+        return False, None, None
+    hour, minute = parsed
+    target = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    catchup_end = target + timedelta(minutes=catchup_max_minutes)
+    return target <= now_local <= catchup_end, target, catchup_end
+
+
+def _already_sent_today_local(last_sent_at: str | None, now_local: datetime, tz: ZoneInfo) -> bool:
+    sent_dt = _parse_timestamp(last_sent_at)
+    if not sent_dt:
+        return False
+    if sent_dt.tzinfo is None:
+        sent_dt = sent_dt.replace(tzinfo=timezone.utc)
+    return sent_dt.astimezone(tz).date() == now_local.date()
+
+
+def _trial_catchup_window_allows_send(
+    now_local: datetime,
+    tz: ZoneInfo,
+    last_sent_at: str | None,
+    trial_target_local_hhmm: str,
+    catchup_max_minutes: int,
+) -> tuple[bool, datetime | None]:
+    in_window, target, _catchup_end = _within_trial_catchup_window(
+        now_local, trial_target_local_hhmm, catchup_max_minutes
+    )
+    if not in_window:
+        return False, target
+    if _already_sent_today_local(last_sent_at, now_local, tz):
+        return False, target
+    return True, target
+
+
 def _within_send_window(
     now_local: datetime,
     send_time_local: str | None,
@@ -642,7 +738,7 @@ def update_subscriber_last_sent_at(db_path: str, subscriber_key: str, timestamp:
 
 
 def print_area_office_debug(conn: sqlite3.Connection) -> None:
-    cutoff = datetime.now() - timedelta(days=30)
+    cutoff = _coerce_datetime_aware_utc(datetime.now(timezone.utc) - timedelta(days=30))
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -661,6 +757,8 @@ def print_area_office_debug(conn: sqlite3.Connection) -> None:
     for office, site_city, mail_city, site_address1, first_seen, last_seen in rows:
         first_dt = _parse_timestamp(first_seen)
         last_dt = _parse_timestamp(last_seen)
+        first_dt = _coerce_datetime_aware_utc(first_dt) if first_dt else None
+        last_dt = _coerce_datetime_aware_utc(last_dt) if last_dt else None
         if not ((first_dt and first_dt >= cutoff) or (last_dt and last_dt >= cutoff)):
             continue
         total += 1
@@ -717,7 +815,7 @@ def compute_territory_health(
     min_share: float = HEALTH_MIN_SHARE_DEFAULT,
     min_total: int = HEALTH_MIN_TOTAL_DEFAULT,
 ) -> dict:
-    now_utc = now_utc or datetime.now(timezone.utc)
+    now_utc = _coerce_datetime_aware_utc(now_utc or datetime.now(timezone.utc))
     anchors = HEALTH_ANCHORS_BY_TERRITORY.get(territory_code, [])
     placeholders = ",".join(["?" for _ in states])
     changed_at_expr = "changed_at" if _has_column(conn, "inspections", "changed_at") else "NULL AS changed_at"
@@ -995,6 +1093,38 @@ def log_suppression(log_path: str, row: dict) -> None:
         writer.writerow({k: row.get(k, "") for k in fieldnames})
 
 
+def _load_latest_ingestion_counts(db_path: str) -> dict[str, int]:
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT rows_inserted, rows_updated
+            FROM ingestion_log
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return {"ingested_total": 0, "new_inserted": 0, "existing_updated": 0}
+        new_inserted = int(row[0] or 0)
+        existing_updated = int(row[1] or 0)
+        return {
+            "ingested_total": new_inserted + existing_updated,
+            "new_inserted": new_inserted,
+            "existing_updated": existing_updated,
+        }
+    except Exception:
+        return {"ingested_total": 0, "new_inserted": 0, "existing_updated": 0}
+
+
+def log_run_diagnostics(log_path: str, row: dict) -> None:
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
 def ensure_unsubscribe_events_table(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
     cursor.execute(
@@ -1168,6 +1298,7 @@ def get_leads_for_period(
     include_low_fallback: bool,
     window_start: datetime | None = None,
     new_only_cutoff: datetime | None = None,
+    strict_first_seen_after: datetime | None = None,
     include_changed: bool = False,
     use_opened_window: bool = False,
 ) -> tuple[list[dict], list[dict], dict]:
@@ -1176,11 +1307,17 @@ def get_leads_for_period(
     effective_new_only = new_only_cutoff or (today - timedelta(days=new_only_days))
     window_cutoff = _to_naive(window_cutoff)
     effective_new_only = _to_naive(effective_new_only)
+    strict_first_seen_after = _to_naive(strict_first_seen_after)
 
     lead_id_expr = (
         "lead_id"
         if _has_column(conn, "inspections", "lead_id")
         else "('osha:inspection:' || activity_nr) AS lead_id"
+    )
+    lead_key_expr = (
+        "lead_key"
+        if _has_column(conn, "inspections", "lead_key")
+        else "('osha:activity:' || activity_nr) AS lead_key"
     )
     area_office_expr = "area_office" if _has_column(conn, "inspections", "area_office") else "NULL AS area_office"
     changed_at_expr = "changed_at" if _has_column(conn, "inspections", "changed_at") else "NULL AS changed_at"
@@ -1189,6 +1326,7 @@ def get_leads_for_period(
     query = f"""
         SELECT
             {lead_id_expr},
+            {lead_key_expr},
             activity_nr,
             date_opened,
             inspection_type,
@@ -1226,11 +1364,13 @@ def get_leads_for_period(
 
     for lead in all_results:
         first_seen_dt = _to_naive(_parse_timestamp(lead.get("first_seen_at")))
-        last_seen_dt = _to_naive(_parse_timestamp(lead.get("last_seen_at")))
         changed_dt = _to_naive(_parse_timestamp(lead.get("changed_at")))
 
         in_window = False
-        if use_opened_window:
+        if strict_first_seen_after is not None:
+            if first_seen_dt and first_seen_dt > strict_first_seen_after:
+                in_window = True
+        elif use_opened_window:
             date_opened = lead.get("date_opened")
             if date_opened:
                 try:
@@ -2473,7 +2613,31 @@ def main() -> None:
             f"window_ok={'YES' if window_ok else 'NO'}"
         )
 
-        live_allowed = bool(args.send_live and allow_live_send and send_enabled_ok and (args.dry_run or window_ok))
+        catchup_allowed = False
+        if (
+            args.send_live
+            and allow_live_send
+            and send_enabled_ok
+            and window_reason == "outside send window"
+            and _is_wally_trial_daily_mode(config, args.mode)
+        ):
+            trial_target_local_hhmm = _coerce_trial_target_local_hhmm(config.get("trial_target_local_hhmm"))
+            trial_catchup_max_minutes = _coerce_trial_catchup_max_minutes(config.get("trial_catchup_max_minutes"))
+            catchup_allowed, catchup_target = _trial_catchup_window_allows_send(
+                now_local, tz, last_sent_at, trial_target_local_hhmm, trial_catchup_max_minutes
+            )
+            if catchup_allowed and catchup_target is not None:
+                print(
+                    "SAFE_MODE_CATCHUP_ALLOWED "
+                    "gate=outside send window "
+                    f"target={catchup_target.isoformat()} "
+                    f"now={now_local.isoformat()} "
+                    f"max_minutes={trial_catchup_max_minutes}"
+                )
+
+        live_allowed = bool(
+            args.send_live and allow_live_send and send_enabled_ok and (args.dry_run or window_ok or catchup_allowed)
+        )
         safe_mode_reason = None
         if not live_allowed:
             if not args.send_live:
@@ -2482,7 +2646,7 @@ def main() -> None:
                 safe_mode_reason = "allow_live_send=false"
             elif not send_enabled_ok:
                 safe_mode_reason = "send_enabled=0"
-            elif not (args.dry_run or window_ok):
+            elif not (args.dry_run or window_ok or catchup_allowed):
                 safe_mode_reason = window_reason or "outside send window"
             else:
                 safe_mode_reason = "unknown"
@@ -2542,6 +2706,7 @@ def main() -> None:
     snapshot_days = int(config["opened_window_days"])
     window_start = None
     new_only_cutoff = None
+    strict_first_seen_after = None
     include_changed = False
     use_opened_window = False
     skip_first_seen_filter = args.mode == "baseline"
@@ -2556,11 +2721,12 @@ def main() -> None:
         last_sent_dt = _parse_timestamp(str(last_sent_at))
         if last_sent_dt:
             window_start = last_sent_dt
-        include_changed = True
+            strict_first_seen_after = last_sent_dt
+        include_changed = False
         skip_first_seen_filter = True
         new_only_cutoff = None
     elif args.mode == "daily":
-        include_changed = True
+        include_changed = False
     # summary_label set after leads computed
 
     leads, low_fallback, filter_stats = get_leads_for_period(
@@ -2574,6 +2740,7 @@ def main() -> None:
         include_low_fallback=include_low_fallback,
         window_start=window_start,
         new_only_cutoff=new_only_cutoff,
+        strict_first_seen_after=strict_first_seen_after,
         include_changed=include_changed,
         use_opened_window=use_opened_window,
     )
@@ -2599,6 +2766,7 @@ def main() -> None:
             include_low_fallback=False,
             window_start=window_start,
             new_only_cutoff=new_only_cutoff,
+            strict_first_seen_after=strict_first_seen_after,
             include_changed=include_changed,
             use_opened_window=use_opened_window,
         )
@@ -2622,6 +2790,7 @@ def main() -> None:
                 include_low_fallback=False,
                 window_start=None,
                 new_only_cutoff=None,
+                strict_first_seen_after=None,
                 include_changed=False,
                 use_opened_window=True,
             )
@@ -2692,6 +2861,31 @@ def main() -> None:
         summary_label = f"Newly observed today: {len(leads)} signals"
     else:
         summary_label = f"{len(leads)} signals"
+
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    run_diagnostics_path = os.path.join(args.output_dir, "run_diagnostics.jsonl")
+    ingest_counts = _load_latest_ingestion_counts(args.db)
+    diagnostics_row = {
+        "timestamp": timestamp,
+        "customer_id": customer_id,
+        "mode": args.mode,
+        "territory_code": territory_code or "",
+        "ingested_total": int(ingest_counts.get("ingested_total", 0)),
+        "new_inserted": int(ingest_counts.get("new_inserted", 0)),
+        "existing_updated": int(ingest_counts.get("existing_updated", 0)),
+        "selected_for_digest": int(len(leads)),
+        "dedupe_dropped_due_to_first_seen_before_window": int(filter_stats.get("excluded_by_time_window", 0)),
+    }
+    log_run_diagnostics(run_diagnostics_path, diagnostics_row)
+    print(
+        "RUN_DIAGNOSTICS "
+        f"ingested_total={diagnostics_row['ingested_total']} "
+        f"new_inserted={diagnostics_row['new_inserted']} "
+        f"existing_updated={diagnostics_row['existing_updated']} "
+        f"selected_for_digest={diagnostics_row['selected_for_digest']} "
+        "dedupe_dropped_due_to_first_seen_before_window="
+        f"{diagnostics_row['dedupe_dropped_due_to_first_seen_before_window']}"
+    )
 
     # Write daily tier audit artifact (even in dry-run / safe mode).
     if args.mode == "daily" and tier_counts is not None and not args.smoke_cchevali:

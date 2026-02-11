@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,21 @@ def _parse_datetime(value: Any) -> datetime:
     return datetime.min
 
 
+def _coerce_datetime_aware_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _normalized_datetime_sort_value(value: Any) -> datetime:
+    dt = _coerce_datetime_aware_utc(_parse_datetime(value))
+    if dt is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def load_territory_definitions(path: str = "territories.json") -> dict[str, dict[str, Any]]:
     definitions = dict(DEFAULT_TERRITORIES)
     json_path = Path(path)
@@ -108,7 +123,7 @@ def dedupe_by_activity_nr(leads: list[dict]) -> tuple[list[dict], int]:
     by_key: dict[str, dict] = {}
 
     for lead in leads:
-        key = str(lead.get("activity_nr") or lead.get("lead_id") or "").strip()
+        key = str(lead.get("lead_key") or lead.get("activity_nr") or lead.get("lead_id") or "").strip()
         if not key:
             continue
 
@@ -119,15 +134,15 @@ def dedupe_by_activity_nr(leads: list[dict]) -> tuple[list[dict], int]:
 
         current_key = (
             int(current.get("lead_score") or 0),
-            _parse_datetime(current.get("first_seen_at")),
-            _parse_datetime(current.get("last_seen_at")),
-            _parse_datetime(current.get("date_opened")),
+            _normalized_datetime_sort_value(current.get("first_seen_at")),
+            _normalized_datetime_sort_value(current.get("last_seen_at")),
+            _normalized_datetime_sort_value(current.get("date_opened")),
         )
         candidate_key = (
             int(lead.get("lead_score") or 0),
-            _parse_datetime(lead.get("first_seen_at")),
-            _parse_datetime(lead.get("last_seen_at")),
-            _parse_datetime(lead.get("date_opened")),
+            _normalized_datetime_sort_value(lead.get("first_seen_at")),
+            _normalized_datetime_sort_value(lead.get("last_seen_at")),
+            _normalized_datetime_sort_value(lead.get("date_opened")),
         )
 
         if candidate_key > current_key:
@@ -137,8 +152,8 @@ def dedupe_by_activity_nr(leads: list[dict]) -> tuple[list[dict], int]:
         by_key.values(),
         key=lambda row: (
             int(row.get("lead_score") or 0),
-            _parse_datetime(row.get("date_opened")),
-            _parse_datetime(row.get("first_seen_at")),
+            _normalized_datetime_sort_value(row.get("date_opened")),
+            _normalized_datetime_sort_value(row.get("first_seen_at")),
         ),
         reverse=True,
     )

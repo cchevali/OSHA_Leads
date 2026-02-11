@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -51,15 +51,18 @@ def write_config(
     path: Path,
     recipients: list[str],
     *,
+    customer_id: str = "fanout_test",
     subscriber_key: str | None = None,
     send_time_local: str | None = None,
     timezone_name: str | None = None,
     send_window_minutes: int | None = None,
+    trial_target_local_hhmm: str | None = None,
+    trial_catchup_max_minutes: int | None = None,
     allow_live_send: bool = True,
     pilot_mode: bool = False,
 ) -> None:
     config = {
-        "customer_id": "fanout_test",
+        "customer_id": customer_id,
         "states": ["TX"],
         "opened_window_days": 14,
         "new_only_days": 1,
@@ -81,6 +84,10 @@ def write_config(
         config["timezone"] = timezone_name
     if send_window_minutes is not None:
         config["send_window_minutes"] = int(send_window_minutes)
+    if trial_target_local_hhmm is not None:
+        config["trial_target_local_hhmm"] = trial_target_local_hhmm
+    if trial_catchup_max_minutes is not None:
+        config["trial_catchup_max_minutes"] = int(trial_catchup_max_minutes)
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
@@ -155,6 +162,16 @@ def insert_subscriber(
     conn.close()
 
 
+def set_subscriber_last_sent_at(db_path: Path, subscriber_key: str, last_sent_at: str) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE subscribers SET last_sent_at = ? WHERE subscriber_key = ?",
+        (last_sent_at, subscriber_key),
+    )
+    conn.commit()
+    conn.close()
+
+
 class TestRecipientFanout(unittest.TestCase):
     def test_multi_recipient_distinct_tokens_and_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,6 +202,67 @@ class TestRecipientFanout(unittest.TestCase):
             self.assertEqual({row["email"] for row in token_rows}, set(recipients))
             token_ids = {row["token_id"] for row in token_rows}
             self.assertEqual(len(token_ids), 2)
+
+    def test_daily_new_since_last_send_excludes_reobserved_same_lead(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "fanout.sqlite"
+            config_path = tmp_path / "customer.json"
+            out_dir = tmp_path / "out"
+            data_dir = tmp_path / "data"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            recipients = ["wgs@indigocompliance.com"]
+            init_db(db_path)
+            write_config(
+                config_path,
+                recipients,
+                customer_id="fanout_test",
+                subscriber_key="fanout_sub",
+            )
+            insert_subscriber(
+                db_path,
+                subscriber_key="fanout_sub",
+                email=recipients[0],
+                recipients=recipients,
+                customer_id="fanout_test",
+            )
+
+            t1 = "2026-02-11T09:00:00+00:00"
+            t2 = "2026-02-11T11:00:00+00:00"
+            t0 = "2026-02-11T08:59:59+00:00"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                UPDATE inspections
+                SET first_seen_at = ?, last_seen_at = ?, changed_at = ?, establishment_name = ?, site_state = ?
+                WHERE activity_nr = ?
+                """,
+                (t1, t1, t1, "Regression Co", "TX", "900000001"),
+            )
+            conn.commit()
+            conn.close()
+
+            set_subscriber_last_sent_at(db_path, "fanout_sub", t0)
+            first_run = run_send(db_path, config_path, out_dir, data_dir, send_live=True)
+            self.assertEqual(first_run.returncode, 0, msg=first_run.stderr)
+            self.assertIn("Leads after filters:      1", first_run.stdout)
+            self.assertIn("name=Regression Co", first_run.stdout)
+
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "UPDATE inspections SET last_seen_at = ?, changed_at = ? WHERE activity_nr = ?",
+                (t2, t2, "900000001"),
+            )
+            conn.commit()
+            conn.close()
+
+            set_subscriber_last_sent_at(db_path, "fanout_sub", t1)
+            second_run = run_send(db_path, config_path, out_dir, data_dir, send_live=True)
+            self.assertEqual(second_run.returncode, 0, msg=second_run.stderr)
+            self.assertIn("Leads after filters:      0", second_run.stdout)
+            self.assertNotIn("name=Regression Co", second_run.stdout)
 
     def test_suppressed_recipient_does_not_block_other(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -329,6 +407,216 @@ class TestRecipientFanout(unittest.TestCase):
             self.assertEqual(len(email_log_live), 2)
             self.assertEqual({row["recipient"] for row in email_log_live}, set(recipients))
             self.assertTrue(all(row["status"] == "dry_run" for row in email_log_live))
+
+    def test_trial_catchup_allows_live_send_after_strict_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "fanout.sqlite"
+            config_path = tmp_path / "customer.json"
+            out_dir = tmp_path / "out"
+            data_dir = tmp_path / "data"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            recipients = ["wgs@indigocompliance.com", "brandon@indigoenergyservices.com"]
+            init_db(db_path)
+
+            now_utc = datetime.now(timezone.utc)
+            strict_window_time = (now_utc + timedelta(hours=12)).strftime("%H:%M")
+            trial_target = now_utc.strftime("%H:%M")
+
+            write_config(
+                config_path,
+                recipients,
+                customer_id="wally_trial_tx_triangle_v1",
+                subscriber_key="wally_trial",
+                send_time_local=strict_window_time,
+                timezone_name="UTC",
+                send_window_minutes=20,
+                trial_target_local_hhmm=trial_target,
+                trial_catchup_max_minutes=180,
+                allow_live_send=True,
+                pilot_mode=False,
+            )
+            insert_subscriber(
+                db_path,
+                subscriber_key="wally_trial",
+                email=recipients[0],
+                recipients=recipients,
+                send_enabled=1,
+                active=1,
+                send_time_local=strict_window_time,
+                timezone_name="UTC",
+                customer_id="wally_trial_tx_triangle_v1",
+            )
+
+            result = run_send(db_path, config_path, out_dir, data_dir, send_live=True)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertIn("SAFE_MODE_CATCHUP_ALLOWED gate=outside send window", result.stdout)
+            self.assertIn("SEND_START mode=LIVE", result.stdout)
+            self.assertNotIn("[SAFE_MODE] forced admin recipient", result.stdout)
+
+            with (out_dir / "email_log.csv").open("r", encoding="utf-8") as f:
+                email_log = list(csv.DictReader(f))
+            self.assertEqual(len(email_log), 2)
+            self.assertEqual({row["recipient"] for row in email_log}, set(recipients))
+
+    def test_trial_catchup_denied_when_already_sent_today(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "fanout.sqlite"
+            config_path = tmp_path / "customer.json"
+            out_dir = tmp_path / "out"
+            data_dir = tmp_path / "data"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            recipients = ["wgs@indigocompliance.com", "brandon@indigoenergyservices.com"]
+            init_db(db_path)
+
+            now_utc = datetime.now(timezone.utc)
+            strict_window_time = (now_utc + timedelta(hours=12)).strftime("%H:%M")
+            trial_target = now_utc.strftime("%H:%M")
+
+            write_config(
+                config_path,
+                recipients,
+                customer_id="wally_trial_tx_triangle_v1",
+                subscriber_key="wally_trial",
+                send_time_local=strict_window_time,
+                timezone_name="UTC",
+                send_window_minutes=20,
+                trial_target_local_hhmm=trial_target,
+                trial_catchup_max_minutes=180,
+                allow_live_send=True,
+                pilot_mode=False,
+            )
+            insert_subscriber(
+                db_path,
+                subscriber_key="wally_trial",
+                email=recipients[0],
+                recipients=recipients,
+                send_enabled=1,
+                active=1,
+                send_time_local=strict_window_time,
+                timezone_name="UTC",
+                customer_id="wally_trial_tx_triangle_v1",
+            )
+            set_subscriber_last_sent_at(db_path, "wally_trial", now_utc.isoformat())
+
+            result = run_send(db_path, config_path, out_dir, data_dir, send_live=True)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertNotIn("SAFE_MODE_CATCHUP_ALLOWED", result.stdout)
+            self.assertIn("SEND_START mode=LIVE", result.stdout)
+
+            with (out_dir / "email_log.csv").open("r", encoding="utf-8") as f:
+                email_log = list(csv.DictReader(f))
+            self.assertEqual(len(email_log), 2)
+            self.assertEqual({row["recipient"] for row in email_log}, set(recipients))
+
+    def test_trial_catchup_denied_after_catchup_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "fanout.sqlite"
+            config_path = tmp_path / "customer.json"
+            out_dir = tmp_path / "out"
+            data_dir = tmp_path / "data"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            recipients = ["wgs@indigocompliance.com", "brandon@indigoenergyservices.com"]
+            init_db(db_path)
+
+            now_utc = datetime.now(timezone.utc)
+            strict_window_time = (now_utc + timedelta(hours=12)).strftime("%H:%M")
+            trial_target = (now_utc - timedelta(minutes=1)).strftime("%H:%M")
+
+            write_config(
+                config_path,
+                recipients,
+                customer_id="wally_trial_tx_triangle_v1",
+                subscriber_key="wally_trial",
+                send_time_local=strict_window_time,
+                timezone_name="UTC",
+                send_window_minutes=20,
+                trial_target_local_hhmm=trial_target,
+                trial_catchup_max_minutes=0,
+                allow_live_send=True,
+                pilot_mode=False,
+            )
+            insert_subscriber(
+                db_path,
+                subscriber_key="wally_trial",
+                email=recipients[0],
+                recipients=recipients,
+                send_enabled=1,
+                active=1,
+                send_time_local=strict_window_time,
+                timezone_name="UTC",
+                customer_id="wally_trial_tx_triangle_v1",
+            )
+
+            result = run_send(db_path, config_path, out_dir, data_dir, send_live=True)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertNotIn("SAFE_MODE_CATCHUP_ALLOWED", result.stdout)
+            self.assertIn("SEND_START mode=LIVE", result.stdout)
+
+            with (out_dir / "email_log.csv").open("r", encoding="utf-8") as f:
+                email_log = list(csv.DictReader(f))
+            self.assertEqual(len(email_log), 2)
+            self.assertEqual({row["recipient"] for row in email_log}, set(recipients))
+
+    def test_non_trial_stays_strict_window_even_with_trial_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "fanout.sqlite"
+            config_path = tmp_path / "customer.json"
+            out_dir = tmp_path / "out"
+            data_dir = tmp_path / "data"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            recipients = ["wgs@indigocompliance.com", "brandon@indigoenergyservices.com"]
+            init_db(db_path)
+
+            now_utc = datetime.now(timezone.utc)
+            strict_window_time = (now_utc + timedelta(hours=12)).strftime("%H:%M")
+            trial_target = now_utc.strftime("%H:%M")
+
+            write_config(
+                config_path,
+                recipients,
+                customer_id="fanout_test",
+                subscriber_key="fanout_sub",
+                send_time_local=strict_window_time,
+                timezone_name="UTC",
+                send_window_minutes=20,
+                trial_target_local_hhmm=trial_target,
+                trial_catchup_max_minutes=180,
+                allow_live_send=True,
+                pilot_mode=False,
+            )
+            insert_subscriber(
+                db_path,
+                subscriber_key="fanout_sub",
+                email=recipients[0],
+                recipients=recipients,
+                send_enabled=1,
+                active=1,
+                send_time_local=strict_window_time,
+                timezone_name="UTC",
+                customer_id="fanout_test",
+            )
+
+            result = run_send(db_path, config_path, out_dir, data_dir, send_live=True)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertNotIn("SAFE_MODE_CATCHUP_ALLOWED", result.stdout)
+            self.assertIn("SEND_START mode=LIVE", result.stdout)
+
+            with (out_dir / "email_log.csv").open("r", encoding="utf-8") as f:
+                email_log = list(csv.DictReader(f))
+            self.assertEqual(len(email_log), 2)
+            self.assertEqual({row["recipient"] for row in email_log}, set(recipients))
 
 
 if __name__ == "__main__":

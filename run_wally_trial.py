@@ -19,6 +19,9 @@ except Exception:  # pragma: no cover
 
 from export_daily import export_daily
 
+DEFAULT_TRIAL_TARGET_LOCAL_HHMM = "09:00"
+DEFAULT_TRIAL_CATCHUP_MAX_MINUTES = 180
+
 
 def load_environment(repo_root: Path) -> None:
     if load_dotenv is None:
@@ -94,6 +97,51 @@ def preflight(customer_path: Path, require_smtp: bool = True) -> tuple[bool, str
     if not prefs_ok and prefs_detail not in {"env_disabled"}:
         print(f"PREFS_LINKS_DISABLED detail={prefs_detail}", flush=True)
     return True, "PREFLIGHT_OK"
+
+
+def _coerce_trial_target_local_hhmm(value: object) -> str:
+    text = str(value or "").strip()
+    parts = text.split(":")
+    if len(parts) != 2:
+        return DEFAULT_TRIAL_TARGET_LOCAL_HHMM
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return DEFAULT_TRIAL_TARGET_LOCAL_HHMM
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return DEFAULT_TRIAL_TARGET_LOCAL_HHMM
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _coerce_trial_catchup_max_minutes(value: object) -> int:
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_TRIAL_CATCHUP_MAX_MINUTES
+    if minutes < 0:
+        return DEFAULT_TRIAL_CATCHUP_MAX_MINUTES
+    return minutes
+
+
+def _load_customer_config_or_exit(customer_path: Path) -> dict:
+    if not customer_path.exists():
+        print(f"CONFIG_ERROR missing variables: CUSTOMER_CONFIG({customer_path})")
+        raise SystemExit(1)
+    try:
+        with open(customer_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        print(f"CONFIG_ERROR invalid CUSTOMER_CONFIG({customer_path}) error={type(exc).__name__}")
+        raise SystemExit(1)
+
+
+def print_trial_config(customer_path: Path) -> None:
+    config = _load_customer_config_or_exit(customer_path)
+    target = _coerce_trial_target_local_hhmm(config.get("trial_target_local_hhmm"))
+    catchup = _coerce_trial_catchup_max_minutes(config.get("trial_catchup_max_minutes"))
+    print(f"trial_target_local_hhmm={target}")
+    print(f"trial_catchup_max_minutes={catchup}")
 
 
 def _prefs_links_reachable(timeout_s: float = 2.0) -> tuple[bool, str]:
@@ -298,7 +346,7 @@ def run_test_send(db_path: str, customer_config: str) -> None:
         )
 
 
-def run_test_send_daily(db_path: str, customer_config: str) -> None:
+def run_test_send_daily(db_path: str, customer_config: str, dry_run: bool = False) -> None:
     # Test-only laptop entrypoint: render the daily "new since last send" variant to Chase,
     # without mutating send state.
     chase_email = "cchevali+oshasmoke@gmail.com"
@@ -338,6 +386,8 @@ def run_test_send_daily(db_path: str, customer_config: str) -> None:
         "--log-level",
         "ERROR",
     ]
+    if dry_run:
+        cmd.append("--dry-run")
     subprocess.run(cmd, check=True)
 
     last_sent_after = _load_subscriber_last_sent_at(db_path, subscriber_key)
@@ -547,10 +597,20 @@ def main() -> None:
         action="store_true",
         help="Laptop-safe: send the daily 'new since last send' variant to cchevali+oshasmoke@gmail.com without mutating send state",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="When used with --test-send-daily, render only (no send).",
+    )
     parser.add_argument("--enable-schedule", action="store_true", help="Create 08:00 local scheduled task")
     parser.add_argument("--check-schedule", action="store_true", help="Verify scheduled task action only")
     parser.add_argument("--task-name", default="OSHA Wally Trial Daily")
     parser.add_argument("--preflight-only", action="store_true", help="Check config/env and exit")
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        help="Print resolved trial scheduling config (non-secret) and exit",
+    )
     parser.add_argument(
         "--doctor",
         action="store_true",
@@ -570,6 +630,10 @@ def main() -> None:
     customer_arg = args.customer_path if args.customer_path else args.customer
     customer_path = resolve_customer_path(customer_arg, repo_root)
 
+    if args.print_config:
+        print_trial_config(customer_path)
+        raise SystemExit(0)
+
     if args.test_send_daily:
         # Allow a single "night-before" command: scheduler verification (PC-only) + non-mutating daily test send.
         if args.doctor_check_scheduler:
@@ -581,7 +645,7 @@ def main() -> None:
             )
             if code != 0:
                 raise SystemExit(code)
-        run_test_send_daily(db_path=args.db, customer_config=str(customer_path))
+        run_test_send_daily(db_path=args.db, customer_config=str(customer_path), dry_run=bool(args.dry_run))
         raise SystemExit(0)
 
     if args.test_send:

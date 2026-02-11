@@ -113,6 +113,35 @@ def compute_record_hash(inspection: dict) -> str:
     return compute_hash(payload)
 
 
+def _normalize_lead_identity_part(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return " ".join(text.split())
+
+
+def build_lead_key(inspection: dict) -> Optional[str]:
+    """
+    Build stable lead identity key.
+    Prefer source-provided identifier; fallback to deterministic composite hash.
+    """
+    activity_nr = str(inspection.get("activity_nr") or "").strip()
+    if activity_nr:
+        return f"osha:activity:{activity_nr}"
+
+    company = _normalize_lead_identity_part(inspection.get("establishment_name"))
+    city = _normalize_lead_identity_part(inspection.get("site_city"))
+    state = _normalize_lead_identity_part(inspection.get("site_state"))
+    signal_type = _normalize_lead_identity_part(inspection.get("inspection_type"))
+    event_date = _normalize_lead_identity_part(inspection.get("date_opened"))
+    territory = _normalize_lead_identity_part(inspection.get("territory_code"))
+    composite = "|".join([company, city, state, signal_type, event_date, territory])
+    if not composite.replace("|", "").strip():
+        return None
+    digest = hashlib.sha1(composite.encode("utf-8")).hexdigest()
+    return f"osha:composite:{digest}"
+
+
 def parse_date(date_str: Optional[str]) -> Optional[str]:
     """Parse various date formats to YYYY-MM-DD."""
     if not date_str:
@@ -769,8 +798,13 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
     Returns (is_new, is_updated).
     """
     cursor = conn.cursor()
-    activity_nr = inspection.get("activity_nr")
-    
+    activity_nr = str(inspection.get("activity_nr") or "").strip()
+    lead_key = build_lead_key(inspection)
+    inspection["lead_key"] = lead_key
+
+    if not lead_key:
+        logger.warning("Cannot upsert inspection without stable lead_key")
+        return False, False
     if not activity_nr:
         logger.warning("Cannot upsert inspection without activity_nr")
         return False, False
@@ -794,8 +828,8 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
     
     # Check for existing record
     cursor.execute(
-        "SELECT id, violations_count, case_status, raw_hash, parse_invalid, record_hash FROM inspections WHERE activity_nr = ?",
-        (activity_nr,)
+        "SELECT id, violations_count, case_status, raw_hash, parse_invalid, record_hash FROM inspections WHERE lead_key = ?",
+        (lead_key,)
     )
     existing = cursor.fetchone()
     
@@ -833,7 +867,7 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
             "serious_violations", "willful_violations", "repeat_violations", "other_violations",
             "establishment_name", "site_address1", "site_city", "site_state", "site_zip",
             "area_office", "mail_address1", "mail_city", "mail_state", "mail_zip",
-            "report_id", "source_url", "raw_hash", "lead_score", "needs_review", "parse_invalid"
+            "report_id", "source_url", "raw_hash", "lead_score", "needs_review", "parse_invalid", "lead_key"
         ]:
             value = inspection.get(field)
             if value is not None:
@@ -865,7 +899,7 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
     else:
         # Insert new record
         fields = [
-            "activity_nr", "date_opened", "inspection_type", "scope", "case_status",
+            "activity_nr", "lead_key", "date_opened", "inspection_type", "scope", "case_status",
             "emphasis", "safety_health", "sic", "naics", "naics_desc",
             "violations_count", "serious_violations", "willful_violations",
             "repeat_violations", "other_violations", "establishment_name",
@@ -909,6 +943,36 @@ def ensure_inspection_columns(conn: sqlite3.Connection) -> None:
         cursor.execute("ALTER TABLE inspections ADD COLUMN changed_at DATETIME")
         conn.commit()
         logger.info("Added missing inspections.changed_at column")
+    if "lead_key" not in existing:
+        cursor.execute("ALTER TABLE inspections ADD COLUMN lead_key TEXT")
+        conn.commit()
+        logger.info("Added missing inspections.lead_key column")
+
+    cursor.execute("SELECT id, activity_nr, establishment_name, site_city, site_state, inspection_type, date_opened FROM inspections WHERE lead_key IS NULL OR trim(lead_key) = ''")
+    rows = cursor.fetchall()
+    backfilled = 0
+    for row in rows:
+        row_id, activity_nr, establishment_name, site_city, site_state, inspection_type, date_opened = row
+        lead_key = build_lead_key(
+            {
+                "activity_nr": activity_nr,
+                "establishment_name": establishment_name,
+                "site_city": site_city,
+                "site_state": site_state,
+                "inspection_type": inspection_type,
+                "date_opened": date_opened,
+            }
+        )
+        if not lead_key:
+            continue
+        cursor.execute("UPDATE inspections SET lead_key = ? WHERE id = ?", (lead_key, row_id))
+        backfilled += 1
+    if backfilled:
+        conn.commit()
+        logger.info(f"Backfilled inspections.lead_key for {backfilled} rows")
+
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_inspections_lead_key ON inspections(lead_key)")
+    conn.commit()
 
 
 def run_ingestion(
