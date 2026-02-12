@@ -218,3 +218,54 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 run_wally_trial.run_live_send = orig_live  # type: ignore[assignment]
                 run_wally_trial.query_task_to_run = orig_query  # type: ignore[assignment]
                 sys.argv = argv0
+
+    def test_doctor_invokes_project_context_soft_check(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "customer.json"
+            cfg_path.write_text(
+                json.dumps(
+                    {
+                        "brand_name": "Test Brand",
+                        "mailing_address": "123 Test St, Test City, TS",
+                        "recipients": ["test@example.com"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            keys = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS"]
+            old_vals = {k: os.environ.get(k) for k in keys}
+            os.environ["SMTP_HOST"] = "smtp.example.com"
+            os.environ["SMTP_PORT"] = "587"
+            os.environ["SMTP_USER"] = "user"
+            os.environ["SMTP_PASS"] = "pass"
+
+            called = {"n": 0}
+            orig_soft = run_wally_trial.run_project_context_soft_check
+
+            def _fake_soft(_repo_root: Path) -> None:
+                called["n"] += 1
+                print("WARN_CONTEXT_PACK_MISSING missing file PROJECT_CONTEXT_PACK.md")
+
+            run_wally_trial.run_project_context_soft_check = _fake_soft  # type: ignore[assignment]
+            try:
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    code = run_wally_trial.run_doctor(
+                        customer_path=cfg_path,
+                        repo_root=Path(run_wally_trial.__file__).resolve().parent,
+                        task_name="OSHA Wally Trial Daily",
+                        check_scheduler=False,
+                    )
+                self.assertEqual(code, 0)
+                self.assertEqual(called["n"], 1)
+                text = out.getvalue()
+                self.assertIn("WARN_CONTEXT_PACK_MISSING", text)
+                self.assertIn("DOCTOR_OK", text)
+            finally:
+                run_wally_trial.run_project_context_soft_check = orig_soft  # type: ignore[assignment]
+                for k, v in old_vals.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v

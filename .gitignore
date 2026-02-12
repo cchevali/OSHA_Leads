@@ -19,6 +19,8 @@ secrets/
 out/
 *.log
 logs/
+PROJECT_CONTEXT_PACK.md
+.local/
 
 # Local databases & exports
 *.sqlite

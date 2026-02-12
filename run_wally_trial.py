@@ -21,6 +21,7 @@ from export_daily import export_daily
 
 DEFAULT_TRIAL_TARGET_LOCAL_HHMM = "09:00"
 DEFAULT_TRIAL_CATCHUP_MAX_MINUTES = 180
+PROJECT_CONTEXT_SOFT_CHECK_CMD = ["--check", "--soft"]
 
 
 def load_environment(repo_root: Path) -> None:
@@ -537,9 +538,46 @@ def verify_schedule_action_from_actual(expected_action: str, actual: str | None)
     print(f"SCHEDULE_OK /TR={actual}")
 
 
+def run_project_context_soft_check(repo_root: Path) -> None:
+    script_path = repo_root / "tools" / "project_context_pack.py"
+    if not script_path.exists():
+        print("WARN_CONTEXT_PACK_SCRIPT_MISSING tools/project_context_pack.py")
+        return
+
+    commands = [
+        ["py", "-3", str(script_path)] + PROJECT_CONTEXT_SOFT_CHECK_CMD,
+        [sys.executable, str(script_path)] + PROJECT_CONTEXT_SOFT_CHECK_CMD,
+    ]
+    for idx, cmd in enumerate(commands):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo_root))
+        except FileNotFoundError:
+            if idx == 0:
+                continue
+            print("WARN_CONTEXT_PACK_CHECK_FAILED runner_not_found")
+            return
+        except Exception as e:
+            print(f"WARN_CONTEXT_PACK_CHECK_FAILED error={type(e).__name__}")
+            return
+
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+        if stdout:
+            for line in stdout.splitlines():
+                print(line)
+        if stderr:
+            for line in stderr.splitlines():
+                print(line)
+        if proc.returncode != 0:
+            print(f"WARN_CONTEXT_PACK_CHECK_FAILED returncode={proc.returncode}")
+        return
+
+
 def run_doctor(customer_path: Path, repo_root: Path, task_name: str, check_scheduler: bool) -> int:
     # Non-sending health check: validate config/env (including SMTP vars) and, if available,
     # verify the Task Scheduler action matches the repo's expected batch runner.
+    run_project_context_soft_check(repo_root)
+
     ok, msg = preflight(customer_path, require_smtp=True)
     if not ok:
         print(f"DOCTOR_FAIL preflight={msg}")

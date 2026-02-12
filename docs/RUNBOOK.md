@@ -11,6 +11,29 @@ Use this runbook for executable commands, but resolve policy conflicts in favor 
 2. Keep ChatGPT Project Instructions as a thin wrapper that points to `AGENTS.md`.
 3. Re-upload updated `AGENTS.md` to ChatGPT Project Files after each contract change.
 
+## Project Context Pack (ChatGPT Project Files)
+
+Use one generated upload file to keep Project Files current:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools/project_context_pack.py --build
+py -3 tools/project_context_pack.py --check
+py -3 tools/project_context_pack.py --mark-uploaded
+```
+
+Operator flow:
+
+1. Run `--build`.
+2. Upload only `PROJECT_CONTEXT_PACK.md` in ChatGPT Project Settings -> Files (replace prior file).
+3. Run `--mark-uploaded`.
+4. Run strict `--check` at session start to fail fast on stale context.
+
+Doctor behavior:
+
+- `run_wally_trial.py --doctor` runs `tools/project_context_pack.py --check --soft`.
+- Soft mode prints `WARN_CONTEXT_PACK_*` reminders and upload instructions but does not fail doctor by itself.
+
 ## Switch machines: laptop -> PC
 
 Commands:
