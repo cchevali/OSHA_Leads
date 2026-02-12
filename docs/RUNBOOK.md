@@ -197,13 +197,19 @@ Run discovery before outreach each day:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
+.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input C:\path\to\prospects.csv
 ```
 
 Dry-run discovery:
 
 ```powershell
-.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --dry-run
+.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input C:\path\to\prospects.csv --dry-run
+```
+
+Print resolved discovery config:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --print-config --input C:\path\to\prospects.csv
 ```
 
 ### Single Command (Scheduled Daily)
@@ -220,7 +226,7 @@ Run this in order each day:
 ```powershell
 cd C:\dev\OSHA_Leads
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --doctor
-.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
+.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input C:\path\to\prospects.csv
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py
 ```
 
@@ -265,14 +271,28 @@ Expected artifacts:
 cd C:\dev\OSHA_Leads
 .\run_with_secrets.ps1 -- py -3 outreach\ops_report.py --print-config
 .\run_with_secrets.ps1 -- py -3 outreach\ops_report.py --dry-run
+.\run_with_secrets.ps1 -- py -3 outreach\ops_report.py --dry-run --no-write
 .\run_with_secrets.ps1 -- py -3 outreach\ops_report.py
 .\run_with_secrets.ps1 -- py -3 outreach\ops_report.py --format json
 ```
 
-Default output writes:
+Artifact behavior:
 
+- Default and `--dry-run` both write:
 - `out\outreach\ops_reports\<YYYY-MM-DD>\ops_report_<HHMMSSZ>.json`
 - `out\outreach\ops_reports\latest.json`
+- `--no-write` suppresses all report file writes (including `latest.json`).
+
+Default text stdout always ends with these three lines (in order):
+
+- `OPS_REPORT_JSON_PATH=<path>` (or `(no-write)` when `--no-write` is set)
+- `OPS_REPORT_SCHEMA_VERSION=v1`
+- `OPS_REPORT_GENERATED_AT_UTC=<iso>`
+
+`--format json` rule:
+
+- Prints only the JSON object to stdout (no footer lines).
+- Still writes artifacts unless `--no-write` is provided.
 
 Metric scope:
 
