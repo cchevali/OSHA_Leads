@@ -2,10 +2,15 @@ import argparse
 import json
 import os
 import sqlite3
+import subprocess
 import sys
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 try:  # pragma: no cover
     from dotenv import load_dotenv
@@ -35,6 +40,33 @@ PASS_AUTO_PRINT_CONFIG = "PASS_AUTO_PRINT_CONFIG"
 PASS_AUTO_EXPORT = "PASS_AUTO_EXPORT"
 PASS_AUTO_SUMMARY = "PASS_AUTO_SUMMARY"
 
+ERR_DOCTOR_SECRETS_DECRYPT = "ERR_DOCTOR_SECRETS_DECRYPT"
+ERR_DOCTOR_ENV_MISSING_PREFIX = "ERR_DOCTOR_ENV_MISSING_"
+ERR_DOCTOR_ENV_INVALID_PREFIX = "ERR_DOCTOR_ENV_INVALID_"
+ERR_DOCTOR_CRM_REQUIRED = "ERR_DOCTOR_CRM_REQUIRED"
+ERR_DOCTOR_CRM_SCHEMA = "ERR_DOCTOR_CRM_SCHEMA"
+ERR_DOCTOR_SUPPRESSION_REQUIRED = "ERR_DOCTOR_SUPPRESSION_REQUIRED"
+ERR_DOCTOR_SUPPRESSION_UNREADABLE = "ERR_DOCTOR_SUPPRESSION_UNREADABLE"
+ERR_DOCTOR_SUPPRESSION_STALE = "ERR_DOCTOR_SUPPRESSION_STALE"
+ERR_DOCTOR_UNSUB_CONFIG = "ERR_DOCTOR_UNSUB_CONFIG"
+ERR_DOCTOR_UNSUB_UNREACHABLE = "ERR_DOCTOR_UNSUB_UNREACHABLE"
+ERR_DOCTOR_PROVIDER_CONFIG = "ERR_DOCTOR_PROVIDER_CONFIG"
+ERR_DOCTOR_DRY_RUN_ARTIFACT = "ERR_DOCTOR_DRY_RUN_ARTIFACT"
+ERR_DOCTOR_IDEMPOTENCY = "ERR_DOCTOR_IDEMPOTENCY"
+
+PASS_DOCTOR_SECRETS_DECRYPT = "PASS_DOCTOR_SECRETS_DECRYPT"
+PASS_DOCTOR_ENV = "PASS_DOCTOR_ENV"
+PASS_DOCTOR_CRM_REQUIRED = "PASS_DOCTOR_CRM_REQUIRED"
+PASS_DOCTOR_SUPPRESSION = "PASS_DOCTOR_SUPPRESSION"
+PASS_DOCTOR_UNSUB = "PASS_DOCTOR_UNSUB"
+PASS_DOCTOR_PROVIDER_CONFIG = "PASS_DOCTOR_PROVIDER_CONFIG"
+PASS_DOCTOR_DRY_RUN_ARTIFACT = "PASS_DOCTOR_DRY_RUN_ARTIFACT"
+PASS_DOCTOR_IDEMPOTENCY = "PASS_DOCTOR_IDEMPOTENCY"
+PASS_DOCTOR_COMPLETE = "PASS_DOCTOR_COMPLETE"
+
+DOCTOR_TIMEOUT_SECRETS_SECONDS = 90
+DOCTOR_TIMEOUT_DRY_RUN_SECONDS = 120
+DOCTOR_HTTP_TIMEOUT_SECONDS = 5.0
 
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
 STATE_SCORE_BOOST = 3
@@ -54,6 +86,35 @@ TRIAL_BOOST = 6
 
 def _norm_email(s: str) -> str:
     return (s or "").strip().lower()
+
+
+def _compact_detail(text: str, max_len: int = 220) -> str:
+    value = str(text or "").replace("\r", " ").replace("\n", " ").strip()
+    value = " ".join(value.split())
+    if not value:
+        return "unknown"
+    if len(value) > max_len:
+        return value[:max_len] + "..."
+    return value
+
+
+def _is_valid_email_shape(email: str) -> bool:
+    value = _norm_email(email)
+    if "@" not in value:
+        return False
+    local, _, domain = value.partition("@")
+    if not local or not domain:
+        return False
+    if "." not in domain:
+        return False
+    if domain.startswith(".") or domain.endswith("."):
+        return False
+    return True
+
+
+def _doctor_error(token: str, detail: str = "") -> tuple[bool, str]:
+    msg = token if not detail else f"{token} {detail}"
+    return False, msg.strip()
 
 
 def _parse_states(raw: str) -> list[str]:
@@ -152,6 +213,15 @@ def _connect_existing_crm(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _connect_existing_crm_readonly(path: Path) -> sqlite3.Connection:
+    if not path.exists():
+        raise FileNotFoundError(str(path))
+    uri = "file:" + path.as_posix() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -485,15 +555,330 @@ def _event_count_for_today(conn: sqlite3.Connection, event_type: str, today: dat
     return int(row[0] or 0) if row else 0
 
 
+def _doctor_check_secrets_decrypt() -> tuple[bool, str]:
+    wrapper = REPO_ROOT / "run_with_secrets.ps1"
+    if not wrapper.exists():
+        return _doctor_error(ERR_DOCTOR_SECRETS_DECRYPT, f"wrapper_missing path={wrapper}")
+
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(wrapper),
+        "--diagnostics",
+        "--check-decrypt",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=DOCTOR_TIMEOUT_SECRETS_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return _doctor_error(ERR_DOCTOR_SECRETS_DECRYPT, "timeout")
+    except Exception as e:
+        return _doctor_error(ERR_DOCTOR_SECRETS_DECRYPT, f"subprocess_failed err={type(e).__name__}")
+
+    lines = []
+    if proc.stdout:
+        lines.extend(proc.stdout.splitlines())
+    if proc.stderr:
+        lines.extend(proc.stderr.splitlines())
+    pass_line = next((ln.strip() for ln in lines if ln.startswith("PASS:")), "")
+    fail_line = next((ln.strip() for ln in lines if ln.startswith("FAIL:")), "")
+    if proc.returncode != 0 or not pass_line:
+        detail = fail_line if fail_line else _compact_detail((proc.stdout or "") + " " + (proc.stderr or ""))
+        return _doctor_error(ERR_DOCTOR_SECRETS_DECRYPT, f"diag_failed code={proc.returncode} detail={detail}")
+
+    print(f"{PASS_DOCTOR_SECRETS_DECRYPT} diagnostics=ok")
+    return True, ""
+
+
+def _doctor_parse_env() -> tuple[bool, str, dict]:
+    ctx: dict[str, object] = {}
+
+    raw_states = (os.getenv("OUTREACH_STATES") or "").strip()
+    if not raw_states:
+        return _doctor_error(ERR_DOCTOR_ENV_MISSING_PREFIX + "OUTREACH_STATES") + ({},)
+    states = _parse_states(raw_states)
+    if not states:
+        return _doctor_error(ERR_DOCTOR_ENV_INVALID_PREFIX + "OUTREACH_STATES", f"value={_compact_detail(raw_states)}") + ({},)
+    ctx["states"] = states
+
+    raw_limit = (os.getenv("OUTREACH_DAILY_LIMIT") or "").strip()
+    if not raw_limit:
+        return _doctor_error(ERR_DOCTOR_ENV_MISSING_PREFIX + "OUTREACH_DAILY_LIMIT") + ({},)
+    try:
+        daily_limit = int(raw_limit)
+    except Exception:
+        return _doctor_error(ERR_DOCTOR_ENV_INVALID_PREFIX + "OUTREACH_DAILY_LIMIT", f"value={raw_limit}") + ({},)
+    if daily_limit < 1:
+        return _doctor_error(ERR_DOCTOR_ENV_INVALID_PREFIX + "OUTREACH_DAILY_LIMIT", f"value={daily_limit}") + ({},)
+    ctx["daily_limit"] = daily_limit
+
+    smoke_to = (os.getenv("OSHA_SMOKE_TO") or "").strip()
+    if not smoke_to:
+        return _doctor_error(ERR_DOCTOR_ENV_MISSING_PREFIX + "OSHA_SMOKE_TO") + ({},)
+    if not _is_valid_email_shape(smoke_to):
+        return _doctor_error(ERR_DOCTOR_ENV_INVALID_PREFIX + "OSHA_SMOKE_TO", f"value={_compact_detail(smoke_to, 120)}") + ({},)
+    ctx["smoke_to"] = _norm_email(smoke_to)
+
+    raw_max_age = (os.getenv("OUTREACH_SUPPRESSION_MAX_AGE_HOURS") or "").strip()
+    if not raw_max_age:
+        return _doctor_error(ERR_DOCTOR_ENV_MISSING_PREFIX + "OUTREACH_SUPPRESSION_MAX_AGE_HOURS") + ({},)
+    try:
+        suppression_max_age_hours = float(raw_max_age)
+    except Exception:
+        return _doctor_error(
+            ERR_DOCTOR_ENV_INVALID_PREFIX + "OUTREACH_SUPPRESSION_MAX_AGE_HOURS",
+            f"value={raw_max_age}",
+        ) + ({},)
+    if suppression_max_age_hours <= 0:
+        return _doctor_error(
+            ERR_DOCTOR_ENV_INVALID_PREFIX + "OUTREACH_SUPPRESSION_MAX_AGE_HOURS",
+            f"value={suppression_max_age_hours}",
+        ) + ({},)
+    ctx["suppression_max_age_hours"] = suppression_max_age_hours
+
+    print(
+        f"{PASS_DOCTOR_ENV} outreach_states={','.join(states)} daily_limit={daily_limit} "
+        f"smoke_to={ctx['smoke_to']} suppression_max_age_hours={suppression_max_age_hours:.1f}"
+    )
+    return True, "", ctx
+
+
+def _doctor_check_crm() -> tuple[bool, str]:
+    crm_db = _crm_db_path()
+    if not crm_db.exists():
+        return _doctor_error(ERR_DOCTOR_CRM_REQUIRED, f"crm_missing path={crm_db}")
+    try:
+        conn = _connect_existing_crm_readonly(crm_db)
+    except Exception as e:
+        return _doctor_error(ERR_DOCTOR_CRM_REQUIRED, f"crm_open_failed path={crm_db} err={type(e).__name__}")
+    try:
+        if not _require_schema(conn):
+            return _doctor_error(ERR_DOCTOR_CRM_SCHEMA, f"schema_missing path={crm_db}")
+    finally:
+        conn.close()
+
+    print(f"{PASS_DOCTOR_CRM_REQUIRED} crm_db={crm_db.resolve()}")
+    return True, ""
+
+
+def _doctor_check_suppression(ctx: dict[str, object]) -> tuple[bool, str]:
+    suppression_csv = _suppression_csv_path()
+    if not suppression_csv.exists():
+        return _doctor_error(ERR_DOCTOR_SUPPRESSION_REQUIRED, f"path={suppression_csv}")
+
+    try:
+        with open(suppression_csv, "r", encoding="utf-8", newline="") as f:
+            _ = f.read(1)
+    except Exception as e:
+        return _doctor_error(ERR_DOCTOR_SUPPRESSION_UNREADABLE, f"path={suppression_csv} err={type(e).__name__}")
+
+    try:
+        max_age_hours = float(ctx.get("suppression_max_age_hours", 0.0))
+    except Exception:
+        return _doctor_error(ERR_DOCTOR_ENV_INVALID_PREFIX + "OUTREACH_SUPPRESSION_MAX_AGE_HOURS")
+    if max_age_hours <= 0:
+        return _doctor_error(ERR_DOCTOR_ENV_INVALID_PREFIX + "OUTREACH_SUPPRESSION_MAX_AGE_HOURS")
+
+    try:
+        mtime = float(suppression_csv.stat().st_mtime)
+    except Exception as e:
+        return _doctor_error(ERR_DOCTOR_SUPPRESSION_UNREADABLE, f"path={suppression_csv} err={type(e).__name__}")
+    age_hours = max(0.0, (time.time() - mtime) / 3600.0)
+    if age_hours > max_age_hours:
+        return _doctor_error(
+            ERR_DOCTOR_SUPPRESSION_STALE,
+            f"path={suppression_csv} age_hours={age_hours:.1f} max_age_hours={max_age_hours:.1f}",
+        )
+
+    print(f"{PASS_DOCTOR_SUPPRESSION} path={suppression_csv.resolve()} age_hours={age_hours:.1f} max_age_hours={max_age_hours:.1f}")
+    return True, ""
+
+
+def _doctor_probe_http(url: str) -> tuple[int, str]:
+    try:
+        req = Request(url, method="GET")
+        with urlopen(req, timeout=DOCTOR_HTTP_TIMEOUT_SECONDS) as resp:
+            return int(getattr(resp, "status", 200)), ""
+    except HTTPError as e:
+        return int(getattr(e, "code", 0) or 0), ""
+    except URLError as e:
+        return 0, _compact_detail(getattr(e, "reason", e))
+    except Exception as e:
+        return 0, type(e).__name__
+
+
+def _doctor_is_reachable_status(status: int) -> bool:
+    return bool(status and status < 500 and status != 404)
+
+
+def _doctor_check_unsub() -> tuple[bool, str]:
+    one_click_ok, reason = gm._one_click_config_present()
+    if not one_click_ok:
+        return _doctor_error(ERR_DOCTOR_UNSUB_CONFIG, reason or "missing_one_click_config")
+
+    try:
+        host_base, unsub_url = gm._unsub_host_base()
+    except Exception as e:
+        return _doctor_error(ERR_DOCTOR_UNSUB_CONFIG, f"resolve_failed err={type(e).__name__}")
+
+    parsed = urlparse(host_base or "")
+    if not parsed.scheme or not parsed.netloc:
+        return _doctor_error(ERR_DOCTOR_UNSUB_CONFIG, "invalid_unsub_host_base")
+    if not unsub_url:
+        return _doctor_error(ERR_DOCTOR_UNSUB_CONFIG, "missing_unsubscribe_url")
+
+    version_url = f"{parsed.scheme}://{parsed.netloc}/__version"
+    version_status, version_err = _doctor_probe_http(version_url)
+    if not _doctor_is_reachable_status(version_status):
+        detail = f"url={version_url} status={version_status or 'error'}"
+        if version_err:
+            detail += f" err={version_err}"
+        return _doctor_error(ERR_DOCTOR_UNSUB_UNREACHABLE, detail)
+
+    unsub_status, unsub_err = _doctor_probe_http(unsub_url)
+    if not _doctor_is_reachable_status(unsub_status):
+        detail = f"url={unsub_url} status={unsub_status or 'error'}"
+        if unsub_err:
+            detail += f" err={unsub_err}"
+        return _doctor_error(ERR_DOCTOR_UNSUB_UNREACHABLE, detail)
+
+    print(f"{PASS_DOCTOR_UNSUB} version_status={version_status} unsubscribe_status={unsub_status}")
+    return True, ""
+
+
+def _doctor_check_provider() -> tuple[bool, str]:
+    required = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS"]
+    missing = [key for key in required if not (os.getenv(key) or "").strip()]
+    if missing:
+        return _doctor_error(ERR_DOCTOR_PROVIDER_CONFIG, "missing=" + ",".join(missing))
+
+    raw_port = (os.getenv("SMTP_PORT") or "").strip()
+    try:
+        smtp_port = int(raw_port)
+    except Exception:
+        return _doctor_error(ERR_DOCTOR_PROVIDER_CONFIG, f"invalid_smtp_port={raw_port}")
+    if not (1 <= smtp_port <= 65535):
+        return _doctor_error(ERR_DOCTOR_PROVIDER_CONFIG, f"invalid_smtp_port={smtp_port}")
+
+    print(f"{PASS_DOCTOR_PROVIDER_CONFIG} smtp_port={smtp_port}")
+    return True, ""
+
+
+def _doctor_check_dry_run_artifact(allow_repeat: bool) -> tuple[bool, str]:
+    entrypoint = REPO_ROOT / "run_outreach_auto.py"
+    if not entrypoint.exists():
+        return _doctor_error(ERR_DOCTOR_DRY_RUN_ARTIFACT, f"entrypoint_missing path={entrypoint}")
+
+    cmd = [sys.executable, str(entrypoint), "--dry-run"]
+    if allow_repeat:
+        cmd.append("--allow-repeat")
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=DOCTOR_TIMEOUT_DRY_RUN_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return _doctor_error(ERR_DOCTOR_DRY_RUN_ARTIFACT, "timeout")
+    except Exception as e:
+        return _doctor_error(ERR_DOCTOR_DRY_RUN_ARTIFACT, f"subprocess_failed err={type(e).__name__}")
+
+    dry_run_text = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    if proc.returncode != 0:
+        return _doctor_error(
+            ERR_DOCTOR_DRY_RUN_ARTIFACT,
+            f"dry_run_failed code={proc.returncode} detail={_compact_detail(dry_run_text)}",
+        )
+    if PASS_AUTO_DRY_RUN not in dry_run_text:
+        return _doctor_error(ERR_DOCTOR_DRY_RUN_ARTIFACT, f"missing_token={PASS_AUTO_DRY_RUN}")
+
+    print(f"{PASS_DOCTOR_DRY_RUN_ARTIFACT} dry_run_token={PASS_AUTO_DRY_RUN}")
+    return True, ""
+
+
+def _doctor_check_idempotency(allow_repeat: bool) -> tuple[bool, str]:
+    crm_db = _crm_db_path()
+    try:
+        conn = _connect_existing_crm_readonly(crm_db)
+    except Exception as e:
+        return _doctor_error(ERR_DOCTOR_IDEMPOTENCY, f"crm_open_failed path={crm_db} err={type(e).__name__}")
+    try:
+        row = conn.execute(
+            """
+            SELECT prospect_id, batch_id, COUNT(*) AS c
+            FROM outreach_events
+            WHERE event_type = 'sent'
+            GROUP BY prospect_id, batch_id
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row:
+        return _doctor_error(
+            ERR_DOCTOR_IDEMPOTENCY,
+            f"duplicate_sent_events prospect_id={row['prospect_id']} batch_id={row['batch_id']} count={int(row['c'] or 0)}",
+        )
+
+    print(f"{PASS_DOCTOR_IDEMPOTENCY} allow_repeat={bool(allow_repeat)} duplicates=0")
+    return True, ""
+
+
+def _run_doctor(allow_repeat: bool) -> tuple[bool, str]:
+    ok, msg = _doctor_check_secrets_decrypt()
+    if not ok:
+        return False, msg
+
+    ok_env, msg_env, ctx = _doctor_parse_env()
+    if not ok_env:
+        return False, msg_env
+
+    checks = [
+        _doctor_check_crm,
+        lambda: _doctor_check_suppression(ctx),
+        _doctor_check_unsub,
+        _doctor_check_provider,
+        lambda: _doctor_check_dry_run_artifact(allow_repeat=allow_repeat),
+        lambda: _doctor_check_idempotency(allow_repeat=allow_repeat),
+    ]
+    for check in checks:
+        ok, msg = check()
+        if not ok:
+            return False, msg
+
+    print(PASS_DOCTOR_COMPLETE)
+    return True, ""
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Daily outreach automation: select->prioritize->send->record from SQLite CRM."
     )
+    ap.add_argument("--doctor", action="store_true", help="Run non-sending readiness checks and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Select and print actions only. No DB writes, no email.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved config paths/state and exit.")
     ap.add_argument("--allow-repeat", action="store_true", help="Allow contacting previously contacted prospects.")
     ap.add_argument("--to", default="", help="Optional summary recipient override; must equal OSHA_SMOKE_TO.")
     args = ap.parse_args()
+
+    if args.doctor:
+        ok, msg = _run_doctor(allow_repeat=bool(args.allow_repeat))
+        if not ok:
+            print(msg, file=sys.stderr)
+            return 2
+        return 0
 
     states = _parse_states(os.getenv("OUTREACH_STATES", "TX"))
     if not states:

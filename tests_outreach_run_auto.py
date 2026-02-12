@@ -1,11 +1,14 @@
 import csv
+import io
 import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -15,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from outreach import crm_store
+from outreach import run_outreach_auto as roa
 
 
 def _write_suppression(path: Path, emails: list[str] | None = None) -> None:
@@ -231,6 +235,129 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("outreach_states=TX,CA", out)
             self.assertIn("selected_state=", out)
             self.assertIn("batch_id=", out)
+
+    def test_doctor_missing_env_returns_single_err_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "A",
+                        "firm": "F",
+                        "email": "a@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": None,
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
+            }
+            with mock.patch.dict(os.environ, {}, clear=False):
+                for key, value in env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+                with mock.patch.object(roa, "_doctor_check_secrets_decrypt", return_value=(True, "")):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+
+            self.assertEqual(rc, 2)
+            err_lines = [ln.strip() for ln in (err.getvalue() or "").splitlines() if ln.strip()]
+            self.assertEqual(len(err_lines), 1, msg=err.getvalue())
+            self.assertTrue(err_lines[0].startswith("ERR_DOCTOR_ENV_MISSING_"), msg=err_lines[0])
+
+    def test_doctor_success_pass_tokens_only_and_no_db_mutation(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_new",
+                        "contact_name": "Alice New",
+                        "firm": "ACME",
+                        "email": "alice@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 2,
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+
+            conn = sqlite3.connect(str(crm_db))
+            try:
+                before_events = int(conn.execute("SELECT COUNT(*) FROM outreach_events").fetchone()[0])
+                before_last_contacted = conn.execute(
+                    "SELECT COALESCE(last_contacted_at, '') FROM prospects WHERE prospect_id = 'p_new'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(roa, "_doctor_check_secrets_decrypt") as m_secrets, mock.patch.object(
+                    roa, "_doctor_check_unsub"
+                ) as m_unsub, mock.patch.object(roa, "_doctor_check_provider") as m_provider, mock.patch.object(
+                    roa, "_doctor_check_dry_run_artifact"
+                ) as m_dry_run:
+                    m_secrets.side_effect = lambda: (print("PASS_DOCTOR_SECRETS_DECRYPT diagnostics=ok"), (True, ""))[1]
+                    m_unsub.side_effect = lambda: (print("PASS_DOCTOR_UNSUB version_status=200 unsubscribe_status=400"), (True, ""))[1]
+                    m_provider.side_effect = lambda: (print("PASS_DOCTOR_PROVIDER_CONFIG smtp_port=465"), (True, ""))[1]
+                    m_dry_run.side_effect = lambda allow_repeat=False: (
+                        print("PASS_DOCTOR_DRY_RUN_ARTIFACT dry_run_token=PASS_AUTO_DRY_RUN"),
+                        (True, ""),
+                    )[1]
+
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            self.assertEqual((err.getvalue() or "").strip(), "")
+            out_lines = [ln.strip() for ln in (out.getvalue() or "").splitlines() if ln.strip()]
+            self.assertGreater(len(out_lines), 0)
+            for line in out_lines:
+                self.assertTrue(line.startswith("PASS_DOCTOR_"), msg=line)
+            self.assertTrue(any(line.startswith("PASS_DOCTOR_COMPLETE") for line in out_lines))
+
+            conn = sqlite3.connect(str(crm_db))
+            try:
+                after_events = int(conn.execute("SELECT COUNT(*) FROM outreach_events").fetchone()[0])
+                after_last_contacted = conn.execute(
+                    "SELECT COALESCE(last_contacted_at, '') FROM prospects WHERE prospect_id = 'p_new'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+            self.assertEqual(before_events, after_events)
+            self.assertEqual(before_last_contacted, after_last_contacted)
 
 
 if __name__ == "__main__":
