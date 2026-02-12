@@ -23,6 +23,7 @@ def _seed_required_docs(repo_root: Path) -> None:
     _write_file(repo_root / "docs/ARCHITECTURE.md", "# ARCHITECTURE\n")
     _write_file(repo_root / "docs/DECISIONS.md", "# DECISIONS\n")
     _write_file(repo_root / "docs/RUNBOOK.md", "# RUNBOOK\n")
+    _write_file(repo_root / "docs/V1_CUSTOMER_VALIDATED.md", "# V1_CUSTOMER_VALIDATED\n")
     _write_file(repo_root / "docs/TODO.md", "# TODO\n")
 
 
@@ -73,6 +74,17 @@ class TestProjectContextPack(unittest.TestCase):
             self.assertEqual(a, b)
             self.assertIn("PACK_GIT_SHA=abc123", a)
             self.assertIn("PACK_BUILD_UTC=2026-02-12T00:00:00Z", a)
+
+    def test_pack_includes_v1_capsule_source_hash_and_body(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_required_docs(root)
+            pack = pcp.generate_pack_text(root, pack_git_sha="sha_v1", pack_build_utc="2026-02-12T00:00:00Z")
+            meta = pcp.parse_pack_metadata(pack)
+            source_hashes = dict(meta.get("source_hashes") or {})
+            self.assertIn("docs/V1_CUSTOMER_VALIDATED.md", source_hashes)
+            self.assertIn("## docs/V1_CUSTOMER_VALIDATED.md", pack)
+            self.assertIn("# V1_CUSTOMER_VALIDATED", pack)
 
     def test_strict_check_detects_stale_when_source_doc_changes(self) -> None:
         with tempfile.TemporaryDirectory() as td:

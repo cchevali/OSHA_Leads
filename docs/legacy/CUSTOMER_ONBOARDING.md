@@ -1,4 +1,9 @@
-﻿# Onboard a New Customer in 3 Minutes
+﻿> DEPRECATED - see `docs/V1_CUSTOMER_VALIDATED.md` and `docs/RUNBOOK.md`.
+> Date: 2026-02-12
+> Rationale: Archived during canonical spine adoption; retained only as a historical V1 artifact.
+
+---
+# Onboard a New Customer in 3 Minutes
 
 This guide walks through adding a new customer to the OSHA Concierge system. The process is 100% config-driven — no code changes required.
 
@@ -153,4 +158,5 @@ After onboarding, verify:
 | `send_digest_email.py` | Email logic (PILOT_MODE here) |
 | `out/email_log.csv` | Send history |
 | `out/run_log_*.txt` | Execution logs |
+
 

@@ -1,3 +1,8 @@
+﻿> DEPRECATED - see `docs/V1_CUSTOMER_VALIDATED.md`, `docs/RUNBOOK.md`, and `docs/ARCHITECTURE.md`.
+> Date: 2026-02-12
+> Rationale: Archived during canonical spine adoption; retained only as a historical V1 artifact.
+
+---
 # Lead Definition v0.1
 
 ## Entity: InspectionLead
@@ -98,3 +103,4 @@ This product provides informational alerts only. Users must verify all informati
 - No sensitive personal data collected
 - Opt-out/suppression list maintained
 - Source URLs logged for all records
+

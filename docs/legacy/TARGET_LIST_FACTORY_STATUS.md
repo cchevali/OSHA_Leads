@@ -1,4 +1,9 @@
-﻿# Target List Factory – Implementation Status
+﻿> DEPRECATED - see `docs/V1_CUSTOMER_VALIDATED.md`, `docs/RUNBOOK.md`, and `docs/ARCHITECTURE.md`.
+> Date: 2026-02-12
+> Rationale: Archived during canonical spine adoption; retained only as a historical V1 artifact.
+
+---
+# Target List Factory – Implementation Status
 
 **Date:** 2026-01-13  
 **Status:** ✅ Complete  
@@ -17,7 +22,7 @@ Implemented a "Target List Factory" workflow for building and managing prospect 
 |------|------|---------|
 | `out/prospect_tracking_template.csv` | CSV Template | Standard columns for prospect data entry |
 | `out/prospect_status_codes.csv` | Reference | Status code definitions with next actions |
-| `PROSPECTING_SOP.md` | Documentation | Step-by-step process for collecting 30 targets/territory |
+| `docs/legacy/PROSPECTING_SOP.md` | Documentation | Step-by-step process for collecting 30 targets/territory |
 | `dedupe_prospects.py` | Python Script | Deduplication and field normalization |
 
 ---
@@ -107,4 +112,6 @@ Plus: `NOT_FIT`, `COLD`, `DO_NOT_CONTACT`
 ## File Locations
 
 All files created in: `C:\dev\OSHA_Leads\`
+
+
 

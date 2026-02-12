@@ -1,4 +1,9 @@
-# Target List Factory – Prospecting SOP
+﻿> DEPRECATED - see `docs/V1_CUSTOMER_VALIDATED.md` and `docs/RUNBOOK.md`.
+> Date: 2026-02-12
+> Rationale: Archived during canonical spine adoption; retained only as a historical V1 artifact.
+
+---
+# Target List Factory â€“ Prospecting SOP
 
 ## Objective
 Build 30 qualified prospects per territory, deduplicated by domain, with verified business email/contact.
@@ -9,7 +14,7 @@ Build 30 qualified prospects per territory, deduplicated by domain, with verifie
 
 | # | Source | URL | Best For |
 |---|--------|-----|----------|
-| 1 | **OH&S Buyers Guide – OSHA Compliance** | ohsonline.com/buyersguide | Safety consultants, EHS service providers |
+| 1 | **OH&S Buyers Guide â€“ OSHA Compliance** | ohsonline.com/buyersguide | Safety consultants, EHS service providers |
 | 2 | **AIHA Consultants Listing** | aiha.org/consultants-list | Industrial hygiene / CIH consultants |
 | 3 | **ASSP Chapter Consultant Lists** | assp.org/membership/chapters | Local safety professionals, regional coverage |
 
@@ -20,7 +25,7 @@ Build 30 qualified prospects per territory, deduplicated by domain, with verifie
 ### A. Gather Raw Leads (per territory)
 1. Open each source and filter by target state/region.
 2. Export or copy company name, website, and contact info into `out/prospect_tracking_template.csv`.
-3. Aim for **10+ leads per source** → 30 total per territory.
+3. Aim for **10+ leads per source** â†’ 30 total per territory.
 
 ### B. Dedupe & Normalize
 Run the dedupe script after adding new rows:
@@ -31,11 +36,11 @@ python dedupe_prospects.py out/prospect_tracking_template.csv
 
 The script will:
 - **Normalize domains** (strip `www.`, lowercase, remove trailing slashes).
-- **Flag duplicates** by domain – keeps first occurrence, marks later rows `[DUP]`.
+- **Flag duplicates** by domain â€“ keeps first occurrence, marks later rows `[DUP]`.
 - **Standardize fields**:
-  - `state` → 2-letter uppercase (e.g., `California` → `CA`).
-  - `contact_role` → mapped to standard titles (see table below).
-  - `company_name` → trim whitespace, title-case.
+  - `state` â†’ 2-letter uppercase (e.g., `California` â†’ `CA`).
+  - `contact_role` â†’ mapped to standard titles (see table below).
+  - `company_name` â†’ trim whitespace, title-case.
 - Output saved to `out/prospect_tracking_deduped.csv`.
 
 ### C. Identify Best Contact
@@ -49,7 +54,7 @@ For each unique domain, locate the decision-maker:
 
 **Email discovery tips:**
 - Check company website "About/Team" page.
-- Use LinkedIn → filter by company + role.
+- Use LinkedIn â†’ filter by company + role.
 - Pattern-guess: `first@domain.com`, `first.last@domain.com`.
 
 ---
@@ -85,3 +90,4 @@ Template:  out/prospect_tracking_template.csv
 Dedupe:    python dedupe_prospects.py out/prospect_tracking_template.csv
 Output:    out/prospect_tracking_deduped.csv
 ```
+

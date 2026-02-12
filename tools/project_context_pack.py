@@ -24,6 +24,7 @@ REQUIRED_DOCS = [
     "docs/ARCHITECTURE.md",
     "docs/DECISIONS.md",
     "docs/RUNBOOK.md",
+    "docs/V1_CUSTOMER_VALIDATED.md",
     "docs/TODO.md",
 ]
 OPTIONAL_DOCS = [

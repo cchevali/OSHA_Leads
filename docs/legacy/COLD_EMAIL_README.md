@@ -1,4 +1,9 @@
-﻿# OSHA Cold Email & Inbox Triage
+﻿> DEPRECATED - see `docs/V1_CUSTOMER_VALIDATED.md`, `docs/RUNBOOK.md`, and `docs/ARCHITECTURE.md`.
+> Date: 2026-02-12
+> Rationale: Archived during canonical spine adoption; retained only as a historical V1 artifact.
+
+---
+# OSHA Cold Email & Inbox Triage
 
 Automated outbound cold email and inbound inbox triage for OSHA Citation Lead SaaS.
 
@@ -180,4 +185,5 @@ crontab -e
 - `out/inbox_state.json` - Processing cursor
 - `out/suppression.csv` - Suppression list
 - `out/eng_tickets/*.md` - Engineering tickets
+
 

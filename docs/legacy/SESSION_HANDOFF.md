@@ -1,4 +1,9 @@
-# SESSION HANDOFF — OSHA Concierge MVP
+﻿> DEPRECATED - see `docs/V1_CUSTOMER_VALIDATED.md`, `docs/RUNBOOK.md`, and `docs/ARCHITECTURE.md`.
+> Date: 2026-02-12
+> Rationale: Archived during canonical spine adoption; retained only as a historical V1 artifact.
+
+---
+# SESSION HANDOFF â€” OSHA Concierge MVP
 **Date:** 2026-01-13
 
 ---
@@ -7,11 +12,11 @@
 
 | Feature | Status | Files |
 |---------|--------|-------|
-| Data Ingestion | ✅ Live | `ingest_osha.py` |
-| Per-State Alerts | ✅ Live | `generate_alert.py` |
-| Customer Bundles | ✅ Live | `generate_customer_alert.py` |
-| Email Delivery | ✅ Live | `send_digest_email.py` |
-| Daily Metrics | ✅ Tracking | `out/daily_metrics.csv` |
+| Data Ingestion | âœ… Live | `ingest_osha.py` |
+| Per-State Alerts | âœ… Live | `generate_alert.py` |
+| Customer Bundles | âœ… Live | `generate_customer_alert.py` |
+| Email Delivery | âœ… Live | `send_digest_email.py` |
+| Daily Metrics | âœ… Tracking | `out/daily_metrics.csv` |
 
 ---
 
@@ -52,16 +57,16 @@
 | Sender | `alerts@microflowops.com` |
 
 **Features:**
-- ✅ Pilot mode ON (whitelist only)
-- ✅ Suppression check before send
-- ✅ List-Unsubscribe + One-Click headers
-- ✅ HTML + plain text multipart
-- ✅ Configurable branding (`brand_name`, `legal_name`, `mailing_address`)
-- ✅ Email logging → `out/email_log.csv`
+- âœ… Pilot mode ON (whitelist only)
+- âœ… Suppression check before send
+- âœ… List-Unsubscribe + One-Click headers
+- âœ… HTML + plain text multipart
+- âœ… Configurable branding (`brand_name`, `legal_name`, `mailing_address`)
+- âœ… Email logging â†’ `out/email_log.csv`
 
 **Subject Format:**
 ```
-TX/CA/FL · 2026-01-13 · 22 new · 2 high (≥10) (DAILY)
+TX/CA/FL Â· 2026-01-13 Â· 22 new Â· 2 high (â‰¥10) (DAILY)
 ```
 
 ---
@@ -87,7 +92,7 @@ $env:SMTP_PASS='<your-smtp-password>'  # Set via env vars
 
 | File | Purpose |
 |------|---------|
-| `deliver_daily.py` | **Daily entrypoint** — runs ingest + email, validates config |
+| `deliver_daily.py` | **Daily entrypoint** â€” runs ingest + email, validates config |
 | `ingest_osha.py` | Scrape OSHA, parse, store with deduplication |
 | `generate_alert.py` | Per-state CSV + digest generation |
 | `generate_customer_alert.py` | Customer bundle with baseline/daily modes |
@@ -98,15 +103,17 @@ $env:SMTP_PASS='<your-smtp-password>'  # Set via env vars
 | `out/email_log.csv` | Email send history |
 | `out/run_log_YYYY-MM-DD.txt` | Daily run logs |
 | `TASK_SCHEDULER_RUNBOOK.md` | Windows Task Scheduler setup guide |
-| `CUSTOMER_ONBOARDING.md` | 3-minute customer onboarding checklist |
+| `docs/legacy/CUSTOMER_ONBOARDING.md` | 3-minute customer onboarding checklist |
 
 ---
 
 ## 7. Next Steps
 
-1. **Rotate SMTP password** — Previous password was in repo; generate new app password in Zoho
-2. **Add more customers** — See `CUSTOMER_ONBOARDING.md` for 3-minute process
-3. **Schedule automation** — See `TASK_SCHEDULER_RUNBOOK.md`
-4. **Disable pilot mode** — Edit `send_digest_email.py` line 28: `PILOT_MODE = False`
-5. **Set legal entity** — Add `legal_name` and `mailing_address` to customer config when incorporated
+1. **Rotate SMTP password** â€” Previous password was in repo; generate new app password in Zoho
+2. **Add more customers** â€” See `docs/legacy/CUSTOMER_ONBOARDING.md` for 3-minute process
+3. **Schedule automation** â€” See `TASK_SCHEDULER_RUNBOOK.md`
+4. **Disable pilot mode** â€” Edit `send_digest_email.py` line 28: `PILOT_MODE = False`
+5. **Set legal entity** â€” Add `legal_name` and `mailing_address` to customer config when incorporated
+
+
 

@@ -10,7 +10,7 @@ Use this runbook for executable commands, but resolve policy conflicts in favor 
 1. Update `AGENTS.md` first when process or instruction policy changes.
 2. Keep ChatGPT Project Instructions as a thin wrapper that points to `AGENTS.md`.
 3. Rebuild and upload `PROJECT_CONTEXT_PACK.md` after each contract change.
-4. Upload only `PROJECT_CONTEXT_PACK.md` to ChatGPT Project Files because it embeds `AGENTS.md` plus the repo context spine docs.
+4. Upload only `PROJECT_CONTEXT_PACK.md` to ChatGPT Project Files because it embeds `AGENTS.md`, `docs/V1_CUSTOMER_VALIDATED.md`, and the repo context spine docs.
 
 ## Project Context Pack (ChatGPT Project Files)
 
@@ -22,6 +22,11 @@ py -3 tools/project_context_pack.py --build
 py -3 tools/project_context_pack.py --check
 py -3 tools/project_context_pack.py --mark-uploaded
 ```
+
+`PROJECT_CONTEXT_PACK.md` is the only upload artifact and includes:
+- `AGENTS.md`
+- `docs/V1_CUSTOMER_VALIDATED.md`
+- spine docs (`docs/PROJECT_BRIEF.md`, `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `docs/RUNBOOK.md`, `docs/TODO.md`)
 
 Project Files are injected by the platform into ChatGPT context during chats.
 The assistant cannot browse ChatGPT Project Settings -> Files UI to verify what is uploaded.

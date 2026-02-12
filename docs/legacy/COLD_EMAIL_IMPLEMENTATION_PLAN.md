@@ -1,4 +1,9 @@
-﻿# OSHA Cold Email & Inbox Triage Automation
+﻿> DEPRECATED - see `docs/V1_CUSTOMER_VALIDATED.md`, `docs/ARCHITECTURE.md`, and `docs/DECISIONS.md`.
+> Date: 2026-02-12
+> Rationale: Archived during canonical spine adoption; retained only as a historical V1 artifact.
+
+---
+# OSHA Cold Email & Inbox Triage Automation
 
 Two production-ready Python scripts for automated outbound cold email and inbound inbox triage for the OSHA Citation Lead SaaS.
 
@@ -155,4 +160,5 @@ python3 inbound_inbox_triage.py --dry-run --test-classify
 # Inbound polling every 15 minutes
 */15 * * * * cd /mnt/c/dev/OSHA_Leads && python3 inbound_inbox_triage.py >> out/inbox_triage_cron.log 2>&1
 ```
+
 

@@ -127,3 +127,29 @@ Adopt repo-root `AGENTS.md` as the canonical instruction contract for Codex and 
 - Task Packets are evaluated against `AGENTS.md` acceptance gates.
 - ChatGPT Project Instructions remain a thin wrapper that points to `AGENTS.md`.
 
+## ADR-0005: V1 Capsule Canonicalization and Legacy Doc Archival
+
+Date: 2026-02-12
+Status: Accepted
+
+### Context
+
+Customer-validated V1 knowledge was spread across multiple legacy markdown files at repo root.
+Those files contained useful operational truths but created authority drift versus the spine docs.
+
+### Decision
+
+Adopt `docs/V1_CUSTOMER_VALIDATED.md` as the canonical V1 requirements capsule and archive the prior V1 markdown files under `docs/legacy/` with explicit deprecation headers that point to canonical docs.
+
+### Rationale
+
+- Preserve validated V1 operational truths without keeping multiple competing authorities.
+- Keep current operator/system authority concentrated in `AGENTS.md` and the docs spine.
+- Retain historical artifacts for auditability and traceability.
+
+### Consequences
+
+- Legacy V1 files remain available only as historical artifacts in `docs/legacy/`.
+- `docs/V1_CUSTOMER_VALIDATED.md` becomes the canonical bridge between historical V1 behavior and current spine docs.
+- `PROJECT_CONTEXT_PACK.md` generation includes the V1 capsule to keep single-file upload workflows complete.
+

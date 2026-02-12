@@ -39,3 +39,11 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - `out/suppression.csv`: suppression list enforced by exports and sending paths
 - `out/outreach_export_ledger.jsonl`: optional compatibility ledger for contacted records
 - `out/outreach/<batch>/outbox_*_dry_run.csv` + manifest: non-sending artifact output from `run_outreach_auto.py --dry-run`
+
+## V1 Preserved Invariants
+
+- Suppression and opt-out controls are mandatory send/export gates.
+- List-Unsubscribe headers and footer opt-out behavior are preserved compliance markers.
+- Dry-run behavior remains no-send and side-effect-safe for live channels.
+- Lead identity/dedupe semantics preserve first-observed behavior to avoid repeat "new" leads.
+- Documentation consolidation (including legacy archival) does not change outreach behavior.
