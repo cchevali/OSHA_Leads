@@ -1,11 +1,15 @@
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from tools import project_context_pack as pcp
+
+REPO_ROOT = Path(__file__).resolve().parent
 
 
 def _write_file(path: Path, text: str) -> None:
@@ -236,6 +240,40 @@ class TestProjectContextPack(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 pcp.main(["--build", "--fingerprint"])
         self.assertEqual(cm.exception.code, 2)
+
+    def test_root_wrapper_exists_and_is_thin_shim(self) -> None:
+        script = REPO_ROOT / "project_context_pack.py"
+        self.assertTrue(script.exists(), msg=f"missing script: {script}")
+        text = script.read_text(encoding="utf-8")
+        self.assertIn("from tools.project_context_pack import main", text)
+        self.assertIn("raise SystemExit(main())", text)
+
+    def test_root_wrapper_help_lists_required_flags(self) -> None:
+        script = REPO_ROOT / "project_context_pack.py"
+        self.assertTrue(script.exists(), msg=f"missing script: {script}")
+        proc = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, msg=(proc.stderr or "") + "\n" + (proc.stdout or ""))
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        self.assertIn("--build", out)
+        self.assertIn("--check", out)
+        self.assertIn("--soft", out)
+        self.assertIn("--mark-uploaded", out)
+
+    def test_root_wrapper_check_soft_exits_zero(self) -> None:
+        script = REPO_ROOT / "project_context_pack.py"
+        self.assertTrue(script.exists(), msg=f"missing script: {script}")
+        proc = subprocess.run(
+            [sys.executable, str(script), "--check", "--soft"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, msg=(proc.stderr or "") + "\n" + (proc.stdout or ""))
 
 
 if __name__ == "__main__":
