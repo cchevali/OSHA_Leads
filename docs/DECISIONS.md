@@ -1,19 +1,31 @@
 # Decisions (ADRs)
 
+## ADR Template
+
+Use this format for new entries:
+
+- Date: YYYY-MM-DD
+- Status: Proposed | Accepted | Superseded
+- Context
+- Decision
+- Rationale
+- Consequences
+
 ## ADR-0001: Outbound Via Mail-Merge Export (Not In-App Sending)
 
 Date: 2026-02-10
+Status: Superseded by ADR-0002
 
 ### Context
 
 We need a fast, compliant outbound motion to validate demand by geography/batch, without building a full CRM or deliverability stack inside this repo.
 
-### Decision
+### Decision (Historical)
 
-Outbound outreach will be executed via **mail-merge CSV exports**:
+Outbound outreach was initially executed via **mail-merge CSV exports**:
 
-- `outreach/generate_mailmerge.py` produces an outbox CSV (subject/body + opt-out link fields)
-- External sending is done outside this codebase
+- `outreach/generate_mailmerge.py` produced an outbox CSV (subject/body + opt-out link fields)
+- External sending was done outside this codebase
 
 ### Rationale
 
@@ -21,7 +33,7 @@ Outbound outreach will be executed via **mail-merge CSV exports**:
 - Faster iteration on copy + targeting
 - Keeps this repo focused on ingestion/alerts and compliance primitives (suppression + opt-out)
 
-### Consequences
+### Consequences (Superseded)
 
 - We must log exports (counts + batch metadata) for auditing and measurement
 - Suppression/opt-out enforcement becomes a hard gate for export generation
@@ -55,4 +67,63 @@ Daily outreach operations move to a SQLite CRM-lite database (`crm.sqlite`):
 - Daily runs require a seeded `crm.sqlite` and suppression file at startup
 - Operator workflow now includes lifecycle updates via `crm_admin.py mark`
 - Existing mail-merge export paths remain available but are non-operational by default
+
+## ADR-0003: Outreach Doctor-First Operations Gate
+
+Date: 2026-02-12
+
+### Context
+
+Operational readiness checks were spread across runbook steps and did not exist as a single machine-verifiable command.
+This made it easy to miss env/config/dependency drift before scheduled sends.
+
+### Decision
+
+`run_outreach_auto.py` provides a single `--doctor` command that validates:
+
+- secrets decrypt tooling
+- required outreach env keys and value formats
+- CRM presence/schema
+- suppression presence/readability/freshness
+- unsubscribe base URL configuration and reachability
+- outbound provider configuration
+- dry-run outbox/manifest artifact generation
+- idempotency/no-repeat guard behavior
+
+### Rationale
+
+- One command gives a deterministic pass/fail gate before unattended daily operation.
+- Stable `PASS_DOCTOR_*` and `ERR_DOCTOR_*` tokens make scheduling/ops checks scriptable.
+- Keeps compliance controls centralized in the operational entrypoint.
+
+### Consequences
+
+- Operators can use `run_outreach_auto.py --doctor` as the first daily command and task-health probe.
+- Misconfiguration now fails fast with explicit machine-readable tokens.
+
+## ADR-0004: AGENTS.md As Canonical Instruction Contract
+
+Date: 2026-02-12
+Status: Accepted
+
+### Context
+
+Instruction and workflow expectations were spread across chat/project instruction surfaces and several docs.
+This increased drift risk and made it harder to enforce a single operational contract.
+
+### Decision
+
+Adopt repo-root `AGENTS.md` as the canonical instruction contract for Codex and operator workflows.
+
+### Rationale
+
+- Centralizes execution and compliance guardrails in one repo-tracked document.
+- Reduces ambiguity between chat instructions and durable repository context.
+- Improves repeatability of Windows-first operator procedures.
+
+### Consequences
+
+- The docs spine (`PROJECT_BRIEF`, `ARCHITECTURE`, `DECISIONS`, `RUNBOOK`) references `AGENTS.md` as canonical.
+- Task Packets are evaluated against `AGENTS.md` acceptance gates.
+- ChatGPT Project Instructions remain a thin wrapper that points to `AGENTS.md`.
 

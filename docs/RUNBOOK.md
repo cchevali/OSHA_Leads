@@ -1,5 +1,16 @@
 # RUNBOOK
 
+## Canonical Contract
+
+`AGENTS.md` at repo root is the canonical operator + Codex instruction contract.
+Use this runbook for executable commands, but resolve policy conflicts in favor of `AGENTS.md`.
+
+## AGENTS Workflow + Re-Upload Guidance
+
+1. Update `AGENTS.md` first when process or instruction policy changes.
+2. Keep ChatGPT Project Instructions as a thin wrapper that points to `AGENTS.md`.
+3. Re-upload updated `AGENTS.md` to ChatGPT Project Files after each contract change.
+
 ## Switch machines: laptop -> PC
 
 Commands:
@@ -56,7 +67,7 @@ if (-not (Test-Path -LiteralPath .\out\suppression.csv)) {
 }
 
 # Preflight (no outputs written). Prints PASS/FAIL tokens and exits 0/1.
-.\run_with_secrets.ps1 py -3 outreach\preflight_outreach.py
+.\run_with_secrets.ps1 -- py -3 outreach\preflight_outreach.py
 
 # Preview export (mailto fallback allowed; still enforces suppression.csv presence).
 py -3 outreach\generate_mailmerge.py `
@@ -70,16 +81,16 @@ py -3 outreach\generate_mailmerge.py `
 # Canonical: set OSHA_SMOKE_TO=cchevali+oshasmoke@gmail.com in .env.sops; all test-sends use this.
 # Legacy aliases (only if OSHA_SMOKE_TO is unset): CHASE_EMAIL, OUTREACH_TEST_TO.
 # Note: test-send prefers `html_body` when present and sends multipart/alternative (text + HTML) to match the cold outreach card style.
-.\run_with_secrets.ps1 py -3 outreach\send_test_cold_email.py `
+.\run_with_secrets.ps1 -- py -3 outreach\send_test_cold_email.py `
   --outbox outreach\outbox_TX_W2_preview.csv
 
 # Optional: include a diagnostic preamble in the email body (prospect_id + links).
-.\run_with_secrets.ps1 py -3 outreach\send_test_cold_email.py `
+.\run_with_secrets.ps1 -- py -3 outreach\send_test_cold_email.py `
   --outbox outreach\outbox_TX_W2_preview.csv `
   --debug-header
 
 # Real export (requires one-click env; uses secrets wrapper).
-.\run_with_secrets.ps1 py -3 outreach\generate_mailmerge.py `
+.\run_with_secrets.ps1 -- py -3 outreach\generate_mailmerge.py `
   --input outreach\sample_prospects.csv `
   --batch TX_W2 `
   --state TX `
@@ -127,15 +138,18 @@ Do not edit `.env.sops` manually (no Notepad/editor workflow) for outreach keys.
 Use only:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -OutreachDailyLimit 10
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -OutreachDailyLimit 10 -TrialSendsLimitDefault 10 -TrialExpiredBehaviorDefault notify_once
 ```
 
 This script:
 
 - Ensures `DATA_DIR`, `OSHA_SMOKE_TO`, `OUTREACH_STATES`, and `OUTREACH_DAILY_LIMIT` exist in `.env.sops`
+- Ensures trial defaults `TRIAL_SENDS_LIMIT_DEFAULT`, `TRIAL_EXPIRED_BEHAVIOR_DEFAULT`, and optional `TRIAL_CONVERSION_URL` are managed in the same no-editor flow
 - Re-encrypts `.env.sops` on save
 - Refuses to run when `.env.sops` is staged (`ERR_ENV_SOPS_STAGED`)
-- Verifies with `.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py --print-config`
+- Verifies with `.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py --print-config` and mismatch-gate check (`ERR_AUTO_SUMMARY_TO_MISMATCH`)
+
+Expect clear `ERR_*` tokens on missing/invalid key states; treat them as hard blockers before live sends.
 
 Use `-OutreachDailyLimit 10` as a safe first-live default. Increase only after deliverability/ops checks.
 
@@ -155,26 +169,39 @@ Run discovery before outreach each day:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-.\run_with_secrets.ps1 -- py -3 outreach\run_prospect_discovery.py
+.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
 ```
 
 Dry-run discovery:
 
 ```powershell
-.\run_with_secrets.ps1 -- py -3 outreach\run_prospect_discovery.py --dry-run
+.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --dry-run
 ```
 
 ### Single Command (Scheduled Daily)
 
 ```powershell
 cd C:\dev\OSHA_Leads
-.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py
 ```
 
-Dry-run (no outputs, no summary email):
+### Doctor-First Daily Sequence (Canonical)
+
+Run this in order each day:
 
 ```powershell
-.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py --dry-run
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --doctor
+.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py
+```
+
+The `--doctor` command must exit `0` with `PASS_DOCTOR_*` lines only before unattended sends.
+
+Dry-run (no sends, writes outbox + manifest artifacts):
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
 ```
 
 Repo-root wrapper (equivalent command path):
@@ -186,7 +213,7 @@ Repo-root wrapper (equivalent command path):
 Print resolved paths/state:
 
 ```powershell
-.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py --print-config
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --print-config
 ```
 
 Required outreach env keys (managed by `scripts\set_outreach_env.ps1`):
@@ -208,16 +235,14 @@ Expected artifacts:
 
 ```powershell
 # Verify CRM + suppression paths
-.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py --print-config
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --print-config
 
 # Dry-run candidate preview
-.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py --dry-run
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
 
-# Dry-run integrity/smoke lines to confirm:
-# - template_fingerprint=<sha256>
-# - template_golden=PASS
-# - fixture_smoke_would_contact_count=1
-# - fixture_smoke=PASS
+# Verify dry-run artifacts exist and no-send marker was printed
+Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run.csv
+Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run_manifest.csv
 
 # Ledger exists and is appending
 Test-Path -LiteralPath .\out\outreach_export_ledger.jsonl
@@ -230,6 +255,19 @@ Test-Path -LiteralPath .\out\outreach_export_ledger.jsonl
   --out outreach\outbox_TX_DEBUG.csv `
   --allow-mailto-fallback
 ```
+
+### Doctor Failure Tokens (Troubleshooting)
+
+- `ERR_DOCTOR_SECRETS_DECRYPT`: run `.\run_with_secrets.ps1 --diagnostics --check-decrypt`; fix `sops/age` install or key setup.
+- `ERR_DOCTOR_ENV_MISSING_*` / `ERR_DOCTOR_ENV_INVALID_*`: set outreach keys via `scripts\set_outreach_env.ps1` only.
+- `ERR_DOCTOR_CRM_REQUIRED` / `ERR_DOCTOR_CRM_SCHEMA`: ensure `crm.sqlite` exists and includes required outreach tables (`crm_admin.py seed` if needed).
+- `ERR_DOCTOR_SUPPRESSION_REQUIRED` / `ERR_DOCTOR_SUPPRESSION_UNREADABLE`: ensure suppression CSV exists and is readable at resolved `DATA_DIR`.
+- `ERR_DOCTOR_SUPPRESSION_STALE`: refresh/update suppression file; optionally tune `OUTREACH_SUPPRESSION_MAX_AGE_HOURS`.
+- `ERR_DOCTOR_UNSUB_CONFIG`: set `UNSUB_ENDPOINT_BASE` + `UNSUB_SECRET`.
+- `ERR_DOCTOR_UNSUB_UNREACHABLE`: verify unsubscribe host/network reachability (`/__version` and `/unsubscribe`).
+- `ERR_DOCTOR_PROVIDER_CONFIG`: set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`.
+- `ERR_DOCTOR_DRY_RUN_ARTIFACT`: run `--dry-run` directly and inspect template/unsub/suppression configuration.
+- `ERR_DOCTOR_IDEMPOTENCY`: inspect `outreach_events` for duplicate `sent` rows in the same batch window and fix repeat-contact state.
 
 ### Daily Suppression Update Loop
 
@@ -262,14 +300,22 @@ Create/update daily tasks (discovery first, outreach second):
 
 ```powershell
 schtasks /Create /F /SC DAILY /ST 07:30 /TN "OSHA_Prospect_Discovery" `
-  /TR "powershell -NoProfile -ExecutionPolicy Bypass -Command \"cd C:\dev\OSHA_Leads; .\run_with_secrets.ps1 -- py -3 outreach\run_prospect_discovery.py\"" `
+  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_prospect_discovery.py" `
   /RL HIGHEST
 ```
 
 ```powershell
 schtasks /Create /F /SC DAILY /ST 08:00 /TN "OSHA_Outreach_Auto" `
-  /TR "powershell -NoProfile -ExecutionPolicy Bypass -Command \"cd C:\dev\OSHA_Leads; .\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py\"" `
+  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_outreach_auto.py" `
   /RL HIGHEST
+```
+
+Deterministic installer (preferred):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --print-config
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --dry-run
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
 ```
 
 ### Minimal Daily Ops Checklist
@@ -303,6 +349,58 @@ Important:
 
 - Catch-up is allowed only for the Wally trial daily path and only when the subscriber has not already been sent that local day.
 - Do not temporarily widen `send_window_minutes` for missed trial sends; use the trial catch-up keys/workflow above.
+
+## Trial Framework (Subscriber-Keyed)
+
+Trial daily sends are now subscriber-keyed and backed by a minimal SQLite CRM-light registry plus an append-only send ledger.
+
+Source of truth:
+
+- Subscriber registry + trial latches: `out/crm_light.sqlite` (or `${env:DATA_DIR}\crm_light.sqlite` when `DATA_DIR` is set)
+- Send ledger: `send_events` (counts successful sends where `status=SENT`)
+
+### Add a Trial Participant (No Secrets Required)
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 run_trial_admin.py add-trial --subscriber-key test_sub --email test@example.com --territory TX_TRI --start-date 2026-02-04 --sends-limit 10
+```
+
+### Single-Command Dry-Run Verification (PowerShell)
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 run_trial_admin.py add-trial --subscriber-key test_sub --email test@example.com --territory TX_TRI --start-date 2026-02-04 --sends-limit 10; .\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key test_sub --test-send-daily --dry-run
+```
+
+Expected markers:
+
+- `dry_run=YES`
+- `TRIAL_EVENT status=DRY_RUN`
+- `send_events` appended with `status=DRY_RUN` (does not count toward expiry)
+
+### Expiry QA (Limit=1)
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 run_trial_admin.py add-trial --subscriber-key test_sub --email test@example.com --territory TX_TRI --start-date 2026-02-04 --sends-limit 1
+```
+
+Unit test covers the expiry behavior:
+- When a single `SENT` exists at/after `start_date` and `sends_limit=1`, the next run must emit `SKIP_TRIAL_EXPIRED` and generate exactly one conversion artifact at `out\trials\<subscriber_key>\conversion_email.txt` (notify_once).
+
+### Backfill a Historical Send Event
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 run_trial_admin.py append-event --subscriber-key wally_trial --status SENT --ts-utc 2026-02-04T15:00:00Z --variant DAILY --run-id backfill_20260204
+```
+
+Verify backfill impact:
+
+```powershell
+py -3 run_trial_admin.py show --subscriber-key wally_trial --recent 5
+```
 
 ## Duplicate Lead Prevention (`lead_key` + `first_seen_at`)
 
