@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -28,6 +29,10 @@ REQUIRED_DOCS = [
 OPTIONAL_DOCS = [
     "docs/READINESS_AUDIT.md",
 ]
+UNKNOWN_VALUE = "UNKNOWN"
+UTC_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+SHA1_HEX_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass
@@ -209,6 +214,55 @@ def _load_upload_state(repo_root: Path) -> dict[str, object] | None:
         return {"_invalid": True}
 
 
+def _normalized_value(value: object, pattern: re.Pattern[str]) -> str:
+    text = str(value or "").strip()
+    if pattern.fullmatch(text):
+        return text
+    return UNKNOWN_VALUE
+
+
+def fingerprint_pack(repo_root: Path) -> int:
+    pack_git_sha = UNKNOWN_VALUE
+    pack_build_utc = UNKNOWN_VALUE
+    pack_hash = UNKNOWN_VALUE
+
+    pack_path = repo_root / PACK_FILENAME
+    if pack_path.exists():
+        try:
+            meta = parse_pack_metadata(pack_path.read_text(encoding="utf-8"))
+            pack_git_sha = _normalized_value(meta.get("pack_git_sha"), SHA1_HEX_RE)
+            pack_build_utc = _normalized_value(meta.get("pack_build_utc"), UTC_ISO_RE)
+            pack_hash = _normalized_value(meta.get("pack_hash"), SHA256_HEX_RE)
+        except Exception:
+            pass
+
+    upload_marked = UNKNOWN_VALUE
+    upload_marked_at_utc = UNKNOWN_VALUE
+    state = _load_upload_state(repo_root)
+    if state is None:
+        upload_marked = "NO"
+    elif state.get("_invalid"):
+        upload_marked = UNKNOWN_VALUE
+    else:
+        marked_hash = _normalized_value(state.get("pack_hash"), SHA256_HEX_RE)
+        upload_marked_at_utc = _normalized_value(state.get("marked_uploaded_utc"), UTC_ISO_RE)
+        if marked_hash == UNKNOWN_VALUE:
+            upload_marked = UNKNOWN_VALUE
+        elif pack_hash == UNKNOWN_VALUE:
+            upload_marked = UNKNOWN_VALUE
+        elif marked_hash == pack_hash:
+            upload_marked = "YES"
+        else:
+            upload_marked = "NO"
+
+    print(f"PACK_GIT_SHA={pack_git_sha}")
+    print(f"PACK_BUILD_UTC={pack_build_utc}")
+    print(f"PACK_HASH={pack_hash}")
+    print(f"UPLOAD_MARKED={upload_marked}")
+    print(f"UPLOAD_MARKED_AT_UTC={upload_marked_at_utc}")
+    return 0
+
+
 def check_pack(repo_root: Path, *, soft: bool = False, current_git_sha: str | None = None) -> int:
     issues: list[Issue] = []
     pack_path = repo_root / PACK_FILENAME
@@ -294,11 +348,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--check", action="store_true", help="Validate context pack freshness and upload state.")
     ap.add_argument("--soft", action="store_true", help="With --check: warning-only mode (exit 0 on issues).")
     ap.add_argument("--mark-uploaded", action="store_true", help="Mark current pack hash as uploaded (local state only).")
+    ap.add_argument("--fingerprint", action="store_true", help="Print deterministic low-token pack and upload marker status.")
     args = ap.parse_args(argv)
 
-    modes = [args.build, args.check, args.mark_uploaded]
+    modes = [args.build, args.check, args.mark_uploaded, args.fingerprint]
     if sum(1 for m in modes if m) != 1:
-        ap.error("choose exactly one of --build, --check, --mark-uploaded")
+        ap.error("choose exactly one of --build, --check, --mark-uploaded, --fingerprint")
     if args.soft and not args.check:
         ap.error("--soft is only valid with --check")
 
@@ -307,6 +362,8 @@ def main(argv: list[str] | None = None) -> int:
         return build_pack(repo_root)
     if args.check:
         return check_pack(repo_root, soft=bool(args.soft))
+    if args.fingerprint:
+        return fingerprint_pack(repo_root)
     return mark_uploaded(repo_root)
 
 

@@ -9,7 +9,8 @@ Use this runbook for executable commands, but resolve policy conflicts in favor 
 
 1. Update `AGENTS.md` first when process or instruction policy changes.
 2. Keep ChatGPT Project Instructions as a thin wrapper that points to `AGENTS.md`.
-3. Re-upload updated `AGENTS.md` to ChatGPT Project Files after each contract change.
+3. Rebuild and upload `PROJECT_CONTEXT_PACK.md` after each contract change.
+4. Upload only `PROJECT_CONTEXT_PACK.md` to ChatGPT Project Files because it embeds `AGENTS.md` plus the repo context spine docs.
 
 ## Project Context Pack (ChatGPT Project Files)
 
@@ -21,6 +22,10 @@ py -3 tools/project_context_pack.py --build
 py -3 tools/project_context_pack.py --check
 py -3 tools/project_context_pack.py --mark-uploaded
 ```
+
+Project Files are injected by the platform into ChatGPT context during chats.
+The assistant cannot browse ChatGPT Project Settings -> Files UI to verify what is uploaded.
+Verification is repo-side only: confirm `PACK_HASH` in `PROJECT_CONTEXT_PACK.md` and the upload marker in `.local/project_upload_state.json` via `--mark-uploaded` and `--check`.
 
 Operator flow:
 
@@ -170,7 +175,7 @@ This script:
 - Ensures trial defaults `TRIAL_SENDS_LIMIT_DEFAULT`, `TRIAL_EXPIRED_BEHAVIOR_DEFAULT`, and optional `TRIAL_CONVERSION_URL` are managed in the same no-editor flow
 - Re-encrypts `.env.sops` on save
 - Refuses to run when `.env.sops` is staged (`ERR_ENV_SOPS_STAGED`)
-- Verifies with `.\run_with_secrets.ps1 -- py -3 outreach\run_outreach_auto.py --print-config` and mismatch-gate check (`ERR_AUTO_SUMMARY_TO_MISMATCH`)
+- Verifies with `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --print-config` and mismatch-gate check (`ERR_AUTO_SUMMARY_TO_MISMATCH`)
 
 Expect clear `ERR_*` tokens on missing/invalid key states; treat them as hard blockers before live sends.
 
@@ -253,6 +258,26 @@ Expected artifacts:
 
 - `out/crm.sqlite` (or `${DATA_DIR}\crm.sqlite`)
 - `out/outreach_export_ledger.jsonl` (optional compatibility ledger)
+
+### Outreach Ops Report (7/30-Day KPI Snapshot)
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 outreach\ops_report.py --print-config
+.\run_with_secrets.ps1 -- py -3 outreach\ops_report.py --dry-run
+.\run_with_secrets.ps1 -- py -3 outreach\ops_report.py
+.\run_with_secrets.ps1 -- py -3 outreach\ops_report.py --format json
+```
+
+Default output writes:
+
+- `out\outreach\ops_reports\<YYYY-MM-DD>\ops_report_<HHMMSSZ>.json`
+- `out\outreach\ops_reports\latest.json`
+
+Metric scope:
+
+- Last 7 and 30 days by `(batch_id, state_at_send)` with `sent`, `delivered_proxy`, `bounced_confirmed`, `bounced_inferred`, `replied`, `trial_started`, and `converted`.
+- List quality snapshot: `new_prospects_count`, `% valid email format`, duplicate-domain rows/share, and role-based inbox share.
 
 ### QA Checks (Before/After Daily Send)
 

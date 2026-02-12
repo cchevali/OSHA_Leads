@@ -2,7 +2,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from tools import project_context_pack as pcp
@@ -23,6 +23,41 @@ def _seed_required_docs(repo_root: Path) -> None:
 
 
 class TestProjectContextPack(unittest.TestCase):
+    def _run_fingerprint_lines(self, repo_root: Path) -> list[str]:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = pcp.fingerprint_pack(repo_root)
+        self.assertEqual(code, 0)
+        return buf.getvalue().splitlines()
+
+    def _parse_fingerprint(self, lines: list[str]) -> dict[str, str]:
+        self.assertEqual(
+            lines,
+            [
+                line
+                for line in lines
+                if line.startswith("PACK_GIT_SHA=")
+                or line.startswith("PACK_BUILD_UTC=")
+                or line.startswith("PACK_HASH=")
+                or line.startswith("UPLOAD_MARKED=")
+                or line.startswith("UPLOAD_MARKED_AT_UTC=")
+            ],
+        )
+        self.assertEqual(len(lines), 5)
+        expected_keys = [
+            "PACK_GIT_SHA",
+            "PACK_BUILD_UTC",
+            "PACK_HASH",
+            "UPLOAD_MARKED",
+            "UPLOAD_MARKED_AT_UTC",
+        ]
+        parsed: dict[str, str] = {}
+        for idx, key in enumerate(expected_keys):
+            line = lines[idx]
+            self.assertTrue(line.startswith(f"{key}="), line)
+            parsed[key] = line.split("=", 1)[1]
+        return parsed
+
     def test_deterministic_pack_generation_given_fixed_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -96,6 +131,111 @@ class TestProjectContextPack(unittest.TestCase):
             self.assertEqual(state["pack_hash"], meta["pack_hash"])
             self.assertEqual(state["pack_git_sha"], "sha3")
             self.assertTrue(state.get("marked_uploaded_utc"))
+
+    def test_fingerprint_matching_pack_and_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_required_docs(root)
+            sha = "a" * 40
+            built_utc = "2026-02-12T00:00:00Z"
+            pack = pcp.generate_pack_text(root, pack_git_sha=sha, pack_build_utc=built_utc)
+            (root / pcp.PACK_FILENAME).write_text(pack, encoding="utf-8")
+            self.assertEqual(pcp.mark_uploaded(root), 0)
+
+            parsed = self._parse_fingerprint(self._run_fingerprint_lines(root))
+            meta = pcp.parse_pack_metadata(pack)
+            self.assertEqual(parsed["PACK_GIT_SHA"], sha)
+            self.assertEqual(parsed["PACK_BUILD_UTC"], built_utc)
+            self.assertEqual(parsed["PACK_HASH"], meta["pack_hash"])
+            self.assertEqual(parsed["UPLOAD_MARKED"], "YES")
+            self.assertRegex(parsed["UPLOAD_MARKED_AT_UTC"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+    def test_fingerprint_missing_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_required_docs(root)
+            pack = pcp.generate_pack_text(
+                root,
+                pack_git_sha=("b" * 40),
+                pack_build_utc="2026-02-12T00:00:00Z",
+            )
+            (root / pcp.PACK_FILENAME).write_text(pack, encoding="utf-8")
+
+            parsed = self._parse_fingerprint(self._run_fingerprint_lines(root))
+            self.assertEqual(parsed["UPLOAD_MARKED"], "NO")
+            self.assertEqual(parsed["UPLOAD_MARKED_AT_UTC"], "UNKNOWN")
+
+    def test_fingerprint_stale_marker_hash_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_required_docs(root)
+            pack_1 = pcp.generate_pack_text(
+                root,
+                pack_git_sha=("c" * 40),
+                pack_build_utc="2026-02-12T00:00:00Z",
+            )
+            (root / pcp.PACK_FILENAME).write_text(pack_1, encoding="utf-8")
+            self.assertEqual(pcp.mark_uploaded(root), 0)
+
+            pack_2 = pcp.generate_pack_text(
+                root,
+                pack_git_sha=("d" * 40),
+                pack_build_utc="2026-02-12T00:00:01Z",
+            )
+            (root / pcp.PACK_FILENAME).write_text(pack_2, encoding="utf-8")
+
+            parsed = self._parse_fingerprint(self._run_fingerprint_lines(root))
+            self.assertEqual(parsed["UPLOAD_MARKED"], "NO")
+            self.assertRegex(parsed["UPLOAD_MARKED_AT_UTC"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+    def test_fingerprint_invalid_marker_json(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_required_docs(root)
+            pack = pcp.generate_pack_text(
+                root,
+                pack_git_sha=("e" * 40),
+                pack_build_utc="2026-02-12T00:00:00Z",
+            )
+            (root / pcp.PACK_FILENAME).write_text(pack, encoding="utf-8")
+            state_path = root / pcp.UPLOAD_STATE_PATH
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text("{not-json}", encoding="utf-8")
+
+            parsed = self._parse_fingerprint(self._run_fingerprint_lines(root))
+            self.assertEqual(parsed["UPLOAD_MARKED"], "UNKNOWN")
+            self.assertEqual(parsed["UPLOAD_MARKED_AT_UTC"], "UNKNOWN")
+
+    def test_fingerprint_missing_pack_with_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_required_docs(root)
+            state_path = root / pcp.UPLOAD_STATE_PATH
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "pack_hash": "f" * 64,
+                        "pack_git_sha": "f" * 40,
+                        "marked_uploaded_utc": "2026-02-12T00:00:00Z",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            parsed = self._parse_fingerprint(self._run_fingerprint_lines(root))
+            self.assertEqual(parsed["PACK_GIT_SHA"], "UNKNOWN")
+            self.assertEqual(parsed["PACK_BUILD_UTC"], "UNKNOWN")
+            self.assertEqual(parsed["PACK_HASH"], "UNKNOWN")
+            self.assertEqual(parsed["UPLOAD_MARKED"], "UNKNOWN")
+            self.assertEqual(parsed["UPLOAD_MARKED_AT_UTC"], "2026-02-12T00:00:00Z")
+
+    def test_cli_requires_exactly_one_mode_including_fingerprint(self) -> None:
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                pcp.main(["--build", "--fingerprint"])
+        self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":
