@@ -166,16 +166,23 @@ Do not edit `.env.sops` manually (no Notepad/editor workflow) for outreach keys.
 Use only:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -OutreachDailyLimit 10 -TrialSendsLimitDefault 10 -TrialExpiredBehaviorDefault notify_once
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 `
+  -OutreachDailyLimit 10 `
+  -OutreachStates TX `
+  -OshaSmokeTo cchevali+oshasmoke@gmail.com `
+  -OutreachSuppressionMaxAgeHours 240 `
+  -TrialSendsLimitDefault 10 `
+  -TrialExpiredBehaviorDefault notify_once
 ```
 
 This script:
 
 - Ensures `DATA_DIR`, `OSHA_SMOKE_TO`, `OUTREACH_STATES`, and `OUTREACH_DAILY_LIMIT` exist in `.env.sops`
+- Ensures `OUTREACH_SUPPRESSION_MAX_AGE_HOURS` is set to `240` when missing (or to your explicit parameter value)
 - Ensures trial defaults `TRIAL_SENDS_LIMIT_DEFAULT`, `TRIAL_EXPIRED_BEHAVIOR_DEFAULT`, and optional `TRIAL_CONVERSION_URL` are managed in the same no-editor flow
 - Re-encrypts `.env.sops` on save
 - Refuses to run when `.env.sops` is staged (`ERR_ENV_SOPS_STAGED`)
-- Verifies with `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --print-config` and mismatch-gate check (`ERR_AUTO_SUMMARY_TO_MISMATCH`)
+- Verifies with `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --print-config`
 
 Expect clear `ERR_*` tokens on missing/invalid key states; treat them as hard blockers before live sends.
 
@@ -219,18 +226,18 @@ cd C:\dev\OSHA_Leads
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py
 ```
 
-### Doctor-First Daily Sequence (Canonical)
+### Doctor/Dry-Run/Live Sequence (Canonical)
 
 Run this in order each day:
 
 ```powershell
 cd C:\dev\OSHA_Leads
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --doctor
-.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input C:\path\to\prospects.csv
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py
 ```
 
-The `--doctor` command must exit `0` with `PASS_DOCTOR_*` lines only before unattended sends.
+The `--doctor` command must exit `0` with `PASS_DOCTOR_*` lines only before unattended sends. The dry-run command must complete successfully before live send.
 
 Dry-run (no sends, writes outbox + manifest artifacts):
 
@@ -252,9 +259,10 @@ Print resolved paths/state:
 
 Required outreach env keys (managed by `scripts\set_outreach_env.ps1`):
 
-- `OUTREACH_STATES=TX,CA,FL`
-- `OUTREACH_DAILY_LIMIT=200`
+- `OUTREACH_STATES=TX`
+- `OUTREACH_DAILY_LIMIT=10`
 - `OSHA_SMOKE_TO=cchevali+oshasmoke@gmail.com`
+- `OUTREACH_SUPPRESSION_MAX_AGE_HOURS=240`
 - `DATA_DIR=out` (or your runtime path)
 
 `run_outreach_auto.py` deterministically picks today's state from `OUTREACH_STATES` by weekday index and uses batch id `<YYYY-MM-DD>_<STATE>`.
