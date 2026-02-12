@@ -780,6 +780,8 @@ def main() -> int:
         if missing:
             print(f"{ERR_OPS_CRM_SCHEMA} missing_tables={','.join(missing)}", file=sys.stderr)
             return 2
+        crm_store.ensure_outreach_events_columns(conn)
+        conn.commit()
 
         sent_index = _load_sent_index(conn)
         windows, notes = _load_windows_report(

@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -269,6 +270,44 @@ class TestOutreachOpsReport(unittest.TestCase):
             self.assertIn("dry_run=False", p.stdout)
             self.assertIn("no_write=False", p.stdout)
             self.assertFalse((data_dir / "outreach" / "ops_reports").exists())
+
+    def test_init_schema_migrates_old_outreach_events_columns_idempotently(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            db_path = data_dir / "crm.sqlite"
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                conn.executescript(
+                    """
+                    CREATE TABLE outreach_events (
+                        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        prospect_id TEXT NOT NULL,
+                        ts TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        batch_id TEXT NOT NULL DEFAULT '',
+                        metadata_json TEXT NOT NULL DEFAULT '{}'
+                    );
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            crm_store.ensure_database(db_path)
+            crm_store.ensure_database(db_path)
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                cols = [str(r[1]) for r in conn.execute("PRAGMA table_info(outreach_events)").fetchall()]
+            finally:
+                conn.close()
+
+            self.assertEqual(cols.count("attributed_send_event_id"), 1)
+            self.assertEqual(cols.count("attributed_batch_id"), 1)
+            self.assertEqual(cols.count("attributed_state_at_send"), 1)
+            self.assertEqual(cols.count("attributed_model"), 1)
 
     def test_default_output_writes_artifact_latest_and_footer_contract(self):
         with tempfile.TemporaryDirectory() as d:
