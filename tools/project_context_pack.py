@@ -186,13 +186,16 @@ def parse_pack_metadata(text: str) -> dict[str, object]:
     return meta
 
 
-def build_pack(repo_root: Path) -> int:
+def build_pack(repo_root: Path, *, output_path: Path | None = None) -> int:
     try:
         text = generate_pack_text(repo_root)
     except FileNotFoundError as e:
         print(f"ERR_CONTEXT_PACK_SOURCE_MISSING {e}")
         return 1
-    pack_path = repo_root / PACK_FILENAME
+    pack_path = output_path or (repo_root / PACK_FILENAME)
+    if not pack_path.is_absolute():
+        pack_path = (repo_root / pack_path).resolve()
+    pack_path.parent.mkdir(parents=True, exist_ok=True)
     pack_path.write_text(text, encoding="utf-8")
     meta = parse_pack_metadata(text)
     print(f"PASS_CONTEXT_PACK_BUILT path={pack_path} pack_hash={meta.get('pack_hash','')}")
@@ -346,6 +349,7 @@ def mark_uploaded(repo_root: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Build/check local Project Context Pack upload freshness.")
     ap.add_argument("--build", action="store_true", help="Generate PROJECT_CONTEXT_PACK.md from canonical docs.")
+    ap.add_argument("--output", default="", help="With --build: optional output path (default repo root PROJECT_CONTEXT_PACK.md).")
     ap.add_argument("--check", action="store_true", help="Validate context pack freshness and upload state.")
     ap.add_argument("--soft", action="store_true", help="With --check: warning-only mode (exit 0 on issues).")
     ap.add_argument("--mark-uploaded", action="store_true", help="Mark current pack hash as uploaded (local state only).")
@@ -357,10 +361,13 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("choose exactly one of --build, --check, --mark-uploaded, --fingerprint")
     if args.soft and not args.check:
         ap.error("--soft is only valid with --check")
+    if args.output and not args.build:
+        ap.error("--output is only valid with --build")
 
     repo_root = _repo_root()
     if args.build:
-        return build_pack(repo_root)
+        output_path = Path(str(args.output).strip()) if str(args.output or "").strip() else None
+        return build_pack(repo_root, output_path=output_path)
     if args.check:
         return check_pack(repo_root, soft=bool(args.soft))
     if args.fingerprint:

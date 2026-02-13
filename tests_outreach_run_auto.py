@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import os
 import sqlite3
 import subprocess
@@ -65,6 +66,12 @@ def _seed_crm(path: Path, rows: list[dict]) -> None:
 
 
 class TestOutreachRunAuto(unittest.TestCase):
+    def _stdout_value(self, stdout: str, key: str) -> str:
+        prefix = f"{key}="
+        line = next((ln.strip() for ln in (stdout or "").splitlines() if ln.strip().startswith(prefix)), "")
+        self.assertTrue(line, msg=f"missing {key} in stdout:\n{stdout}")
+        return line.split("=", 1)[1].strip()
+
     def _run(
         self,
         args: list[str],
@@ -312,7 +319,37 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("OUTREACH_PLAN_STATE=TX", out)
             self.assertIn("OUTREACH_PLAN_BATCH=2026-02-10_TX", out)
             self.assertIn("OUTREACH_PLAN_SKIP_BREAKDOWN", out)
+            self.assertIn("OUTREACH_PLAN_POOL_TOTAL=", out)
+            self.assertIn("OUTREACH_PLAN_POOL_TOTAL_ALL_STATES=", out)
+            self.assertIn("OUTREACH_PLAN_POOL_TOTAL_SELECTED_STATE=", out)
+            self.assertIn("OUTREACH_PLAN_FILTER_BREAKDOWN=", out)
+            self.assertIn("OUTREACH_PLAN_DIAGNOSTICS_PATH=", out)
             self.assertIn("prospect_id,email,domain,segment,role_or_title,state_pref,rank_reason", out)
+            breakdown_raw = self._stdout_value(out, "OUTREACH_PLAN_FILTER_BREAKDOWN")
+            breakdown = json.loads(breakdown_raw)
+            self.assertIn("pool_total_all_states", breakdown)
+            self.assertIn("pool_total_selected_state", breakdown)
+            self.assertIn("eligible", breakdown)
+            self.assertIn("selected", breakdown)
+            self.assertIn("filters", breakdown)
+            self.assertIn("gates", breakdown)
+            diagnostics_path = Path(self._stdout_value(out, "OUTREACH_PLAN_DIAGNOSTICS_PATH"))
+            self.assertTrue(diagnostics_path.exists(), msg=f"missing diagnostics sidecar: {diagnostics_path}")
+            with open(diagnostics_path, "r", encoding="utf-8") as f:
+                diagnostics = json.load(f)
+            for key in [
+                "plan_date",
+                "state",
+                "batch_id",
+                "daily_limit",
+                "will_send",
+                "pool_total_all_states",
+                "pool_total_selected_state",
+                "skip_breakdown",
+                "filter_breakdown",
+                "generated_at_utc",
+            ]:
+                self.assertIn(key, diagnostics)
 
             conn = sqlite3.connect(str(crm_db))
             try:
@@ -324,6 +361,64 @@ class TestOutreachRunAuto(unittest.TestCase):
                 self.assertEqual(last_contacted, "")
             finally:
                 conn.close()
+
+    def test_plan_will_send_zero_reports_pool_totals_and_state_mismatch(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_tx1",
+                        "contact_name": "Alice TX",
+                        "firm": "TX Co",
+                        "email": "alice.tx@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 7,
+                    },
+                    {
+                        "prospect_id": "p_tx2",
+                        "contact_name": "Bob TX",
+                        "firm": "TX Co",
+                        "email": "bob.tx@example.com",
+                        "title": "Safety Manager",
+                        "state": "TX",
+                        "score": 6,
+                    },
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+            plan = self._run(["--plan", "--for-date", "2001-01-02"], env)
+            self.assertEqual(plan.returncode, 0, msg=plan.stderr + "\n" + plan.stdout)
+            out = plan.stdout or ""
+            self.assertIn("OUTREACH_PLAN_STATE=CA", out)
+            self.assertIn("OUTREACH_PLAN_WILL_SEND=0", out)
+            self.assertIn(
+                "OUTREACH_PLAN_SKIP_BREAKDOWN suppressed=0 invalid_email=0 do_not_contact=0 already_contacted=0 other=0",
+                out,
+            )
+            pool_all = int(self._stdout_value(out, "OUTREACH_PLAN_POOL_TOTAL_ALL_STATES"))
+            pool_selected = int(self._stdout_value(out, "OUTREACH_PLAN_POOL_TOTAL_SELECTED_STATE"))
+            pool_alias = int(self._stdout_value(out, "OUTREACH_PLAN_POOL_TOTAL"))
+            self.assertGreater(pool_all, 0)
+            self.assertEqual(pool_selected, 0)
+            self.assertEqual(pool_alias, 0)
+
+            breakdown = json.loads(self._stdout_value(out, "OUTREACH_PLAN_FILTER_BREAKDOWN"))
+            self.assertEqual(int(breakdown.get("selected", -1)), 0)
+            self.assertEqual(int(breakdown.get("pool_total_selected_state", -1)), 0)
+            self.assertGreater(int((breakdown.get("gates") or {}).get("state_mismatch", 0)), 0)
+            self.assertIs((breakdown.get("gates") or {}).get("weekend_block"), False)
 
     def test_for_date_changes_state_for_no_send_and_blocks_live_non_today(self):
         with tempfile.TemporaryDirectory() as d:
@@ -479,6 +574,43 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertEqual((dropped_role[0].get("reason") or ""), "domain_dedup")
             for field in ["domain", "segment", "role_or_title", "state_pref", "rank_reason"]:
                 self.assertIn(field, rows[0], msg=f"missing manifest field {field}")
+
+    def test_dry_run_writes_plan_diagnostics_sidecar_and_prints_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "Alice Owner",
+                        "firm": "Alpha",
+                        "email": "alice@alpha.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 5,
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+            dry_run = self._run(["--dry-run", "--for-date", "2026-02-10"], env)
+            self.assertEqual(dry_run.returncode, 0, msg=dry_run.stderr + "\n" + dry_run.stdout)
+            out = dry_run.stdout or ""
+            diagnostics_path = Path(self._stdout_value(out, "OUTREACH_PLAN_DIAGNOSTICS_PATH"))
+            self.assertTrue(diagnostics_path.exists(), msg=f"missing diagnostics sidecar: {diagnostics_path}")
+            with open(diagnostics_path, "r", encoding="utf-8") as f:
+                diagnostics = json.load(f)
+            self.assertIn("filter_breakdown", diagnostics)
+            self.assertIn("skip_breakdown", diagnostics)
+            self.assertEqual((diagnostics.get("state") or "").strip(), "TX")
 
     def test_doctor_missing_env_returns_single_err_line(self):
         with tempfile.TemporaryDirectory() as d:

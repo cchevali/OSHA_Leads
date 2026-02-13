@@ -87,6 +87,17 @@ OPTIONAL_PROSPECT_COLUMNS = (
     "contact_role",
     "buyer_segment",
 )
+FILTER_BREAKDOWN_FILTER_KEYS = (
+    "suppressed",
+    "invalid_email",
+    "status_do_not_contact",
+    "status_unsubscribed",
+    "status_bounced",
+    "status_converted",
+    "already_contacted",
+    "domain_dedup",
+    "daily_limit",
+)
 
 
 def _norm_email(s: str) -> str:
@@ -542,7 +553,7 @@ def _select_candidates(
     limit: int,
     suppressed_emails: set[str],
     allow_repeat: bool,
-) -> tuple[list[dict], Counter, list[dict]]:
+) -> tuple[list[dict], Counter, list[dict], dict[str, int]]:
     cols = _prospect_select_columns(conn)
     query = "SELECT " + ", ".join(cols) + " FROM prospects WHERE UPPER(COALESCE(state, '')) = ?"
     rows = conn.execute(query, ((state or "").upper(),)).fetchall()
@@ -552,9 +563,15 @@ def _select_candidates(
     skipped = Counter()
     manifest_rows: list[dict] = []
     ranked: list[dict] = []
+    role_inbox_penalty_count = 0
+    missing_state_pref_count = 0
     for row in rows:
-        reason = _skip_reason(row, suppressed_emails=suppressed_emails, sent_ids=sent_ids, allow_repeat=allow_repeat)
         candidate = _candidate_from_row(row)
+        if _role_inbox_penalty(candidate["email"]) > 0:
+            role_inbox_penalty_count += 1
+        if not _safe_text(candidate["state_pref"]):
+            missing_state_pref_count += 1
+        reason = _skip_reason(row, suppressed_emails=suppressed_emails, sent_ids=sent_ids, allow_repeat=allow_repeat)
         if reason:
             skipped[reason] += 1
             dropped = _candidate_csv_row(candidate)
@@ -590,7 +607,94 @@ def _select_candidates(
         selected_row = _candidate_csv_row(candidate)
         selected_row.update({"status": "selected", "reason": ""})
         manifest_rows.append(selected_row)
-    return selected, skipped, manifest_rows
+    selection_stats = {
+        "pool_total_selected_state": int(len(rows)),
+        "eligible": int(len(ranked)),
+        "role_inbox_penalty": int(role_inbox_penalty_count),
+        "missing_state_pref": int(missing_state_pref_count),
+    }
+    return selected, skipped, manifest_rows, selection_stats
+
+
+def _count_pool_total_all_states(conn: sqlite3.Connection) -> int:
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM prospects").fetchone()
+    except Exception:
+        return 0
+    if not row:
+        return 0
+    try:
+        return max(0, int(row[0] or 0))
+    except Exception:
+        return 0
+
+
+def _build_filter_breakdown(
+    skipped: Counter,
+    pool_total_all_states: int,
+    pool_total_selected_state: int,
+    eligible: int,
+    selected_count: int,
+    role_inbox_penalty: int,
+    missing_state_pref: int,
+    state: str,
+) -> dict:
+    filters: dict[str, int] = {}
+    for key in FILTER_BREAKDOWN_FILTER_KEYS:
+        filters[key] = max(0, int(skipped.get(key, 0)))
+    for key in sorted(skipped.keys()):
+        if key in filters:
+            continue
+        filters[str(key)] = max(0, int(skipped.get(key, 0)))
+    return {
+        "pool_total_all_states": max(0, int(pool_total_all_states)),
+        "pool_total_selected_state": max(0, int(pool_total_selected_state)),
+        "eligible": max(0, int(eligible)),
+        "selected": max(0, int(selected_count)),
+        "filters": filters,
+        "gates": {
+            "state_mismatch": max(0, int(pool_total_all_states) - int(pool_total_selected_state)),
+            "role_inbox_penalty": max(0, int(role_inbox_penalty)),
+            "missing_state_pref": max(0, int(missing_state_pref)),
+            "weekend_block": False,
+            "selected_state": _safe_text(state).upper(),
+            "state_rotation_source": "weekday_index",
+        },
+    }
+
+
+def _build_plan_diagnostics(
+    run_date: date,
+    state: str,
+    batch: str,
+    daily_limit: int,
+    selected: list[dict],
+    skipped: Counter,
+    pool_total_all_states: int,
+    selection_stats: dict[str, int],
+) -> dict:
+    filter_breakdown = _build_filter_breakdown(
+        skipped=skipped,
+        pool_total_all_states=max(0, int(pool_total_all_states)),
+        pool_total_selected_state=max(0, int(selection_stats.get("pool_total_selected_state", 0))),
+        eligible=max(0, int(selection_stats.get("eligible", 0))),
+        selected_count=max(0, int(len(selected))),
+        role_inbox_penalty=max(0, int(selection_stats.get("role_inbox_penalty", 0))),
+        missing_state_pref=max(0, int(selection_stats.get("missing_state_pref", 0))),
+        state=state,
+    )
+    return {
+        "plan_date": run_date.isoformat(),
+        "state": state,
+        "batch_id": batch,
+        "daily_limit": int(daily_limit),
+        "will_send": int(len(selected)),
+        "pool_total_all_states": int(filter_breakdown["pool_total_all_states"]),
+        "pool_total_selected_state": int(filter_breakdown["pool_total_selected_state"]),
+        "skip_breakdown": _plan_skip_breakdown(skipped),
+        "filter_breakdown": filter_breakdown,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _format_top_reasons(counts: Counter, limit: int = 5) -> str:
@@ -614,6 +718,12 @@ def _dry_run_paths(batch: str) -> tuple[Path, Path]:
     return outbox, manifest
 
 
+def _plan_diagnostics_path(batch: str) -> Path:
+    safe_batch = _safe_batch_name(batch)
+    out_dir = (REPO_ROOT / "out" / "outreach" / safe_batch).resolve()
+    return out_dir / "plan_diagnostics.json"
+
+
 def _write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -621,6 +731,15 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+def _write_plan_diagnostics(batch: str, payload: dict) -> Path:
+    path = _plan_diagnostics_path(batch)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write("\n")
+    return path
 
 
 def _write_dry_run_artifacts(batch: str, state: str, selected: list[dict], manifest_rows: list[dict]) -> tuple[Path, Path]:
@@ -699,12 +818,21 @@ def _print_plan_output(
     daily_limit: int,
     selected: list[dict],
     skipped: Counter,
+    diagnostics: dict,
+    diagnostics_path: Path,
 ) -> None:
     breakdown = _plan_skip_breakdown(skipped)
+    filter_breakdown = diagnostics.get("filter_breakdown") or {}
+    pool_total_selected_state = max(0, int(filter_breakdown.get("pool_total_selected_state", 0)))
+    pool_total_all_states = max(0, int(filter_breakdown.get("pool_total_all_states", 0)))
+    filter_breakdown_json = json.dumps(filter_breakdown, separators=(",", ":"), sort_keys=True)
     print(f"OUTREACH_PLAN_DATE={run_date.isoformat()}")
     print(f"OUTREACH_PLAN_STATE={state}")
     print(f"OUTREACH_PLAN_BATCH={batch}")
     print(f"OUTREACH_PLAN_DAILY_LIMIT={daily_limit}")
+    print(f"OUTREACH_PLAN_POOL_TOTAL={pool_total_selected_state}")
+    print(f"OUTREACH_PLAN_POOL_TOTAL_ALL_STATES={pool_total_all_states}")
+    print(f"OUTREACH_PLAN_POOL_TOTAL_SELECTED_STATE={pool_total_selected_state}")
     print(f"OUTREACH_PLAN_WILL_SEND={len(selected)}")
     print(
         "OUTREACH_PLAN_SKIP_BREAKDOWN "
@@ -714,6 +842,8 @@ def _print_plan_output(
         f"already_contacted={breakdown['already_contacted']} "
         f"other={breakdown['other']}"
     )
+    print(f"OUTREACH_PLAN_FILTER_BREAKDOWN={filter_breakdown_json}")
+    print(f"OUTREACH_PLAN_DIAGNOSTICS_PATH={diagnostics_path}")
     print("prospect_id,email,domain,segment,role_or_title,state_pref,rank_reason")
     for candidate in selected:
         print(
@@ -1375,13 +1505,27 @@ def main() -> int:
             print(str(e), file=sys.stderr)
             return 3
 
-        selected, skipped, manifest_rows = _select_candidates(
+        selected, skipped, manifest_rows, selection_stats = _select_candidates(
             conn=conn,
             state=state,
             limit=limit,
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
         )
+        pool_total_all_states = _count_pool_total_all_states(conn)
+        plan_diagnostics = _build_plan_diagnostics(
+            run_date=run_date,
+            state=state,
+            batch=batch,
+            daily_limit=limit,
+            selected=selected,
+            skipped=skipped,
+            pool_total_all_states=pool_total_all_states,
+            selection_stats=selection_stats,
+        )
+        diagnostics_path: Path | None = None
+        if args.plan or args.dry_run:
+            diagnostics_path = _write_plan_diagnostics(batch=batch, payload=plan_diagnostics)
 
         selected_ids = [str(r["prospect_id"]) for r in selected]
         skipped_count = int(sum(skipped.values()))
@@ -1395,6 +1539,8 @@ def main() -> int:
                 daily_limit=limit,
                 selected=selected,
                 skipped=skipped,
+                diagnostics=plan_diagnostics,
+                diagnostics_path=diagnostics_path or _plan_diagnostics_path(batch),
             )
             return 0
 
@@ -1413,6 +1559,7 @@ def main() -> int:
             print(f"{PASS_AUTO_DRY_RUN} summary_to={summary_to}")
             print(f"{PASS_AUTO_DRY_RUN} outbox_path={outbox_path}")
             print(f"{PASS_AUTO_DRY_RUN} manifest_path={manifest_path}")
+            print(f"OUTREACH_PLAN_DIAGNOSTICS_PATH={diagnostics_path or _plan_diagnostics_path(batch)}")
             return 0
 
         one_click_ok, reason = gm._one_click_config_present()

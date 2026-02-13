@@ -287,6 +287,27 @@ class TestProjectContextPack(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, msg=(proc.stderr or "") + "\n" + (proc.stdout or ""))
 
+    def test_root_wrapper_build_with_output_does_not_modify_repo_pack(self) -> None:
+        script = REPO_ROOT / "project_context_pack.py"
+        self.assertTrue(script.exists(), msg=f"missing script: {script}")
+        repo_pack = REPO_ROOT / pcp.PACK_FILENAME
+        self.assertTrue(repo_pack.exists(), msg=f"missing pack: {repo_pack}")
+        before = repo_pack.read_text(encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as td:
+            out_path = Path(td) / "PROJECT_CONTEXT_PACK.md"
+            proc = subprocess.run(
+                [sys.executable, str(script), "--build", "--output", str(out_path)],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, msg=(proc.stderr or "") + "\n" + (proc.stdout or ""))
+            self.assertTrue(out_path.exists(), msg=f"missing output pack: {out_path}")
+
+        after = repo_pack.read_text(encoding="utf-8")
+        self.assertEqual(after, before)
+
 
 if __name__ == "__main__":
     unittest.main()

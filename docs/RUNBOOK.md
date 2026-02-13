@@ -23,6 +23,14 @@ py -3 tools/project_context_pack.py --check
 py -3 tools/project_context_pack.py --mark-uploaded
 ```
 
+Automation/test-only build output override:
+
+```powershell
+py -3 tools/project_context_pack.py --build --output C:\temp\PROJECT_CONTEXT_PACK.md
+```
+
+Use `--output` for tests/automation to avoid mutating repo-root `PROJECT_CONTEXT_PACK.md`. Operator flow remains the default build-to-repo-root command above.
+
 `PROJECT_CONTEXT_PACK.md` is the only upload artifact and includes:
 - `AGENTS.md`
 - `docs/V1_CUSTOMER_VALIDATED.md`
@@ -258,11 +266,21 @@ cd C:\dev\OSHA_Leads
 
 The `--doctor` command must exit `0` with `PASS_DOCTOR_*` lines only before unattended sends. The dry-run command must complete successfully before live send.
 
-Tomorrow confirmation (no send, deterministic candidate list):
+Tomorrow confirmation (canonical no-send deterministic check):
 
 ```powershell
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date 2026-02-14
 ```
+
+`--plan` stdout contract includes:
+
+- `OUTREACH_PLAN_POOL_TOTAL=<n>` (alias of selected-state pool before skip filters)
+- `OUTREACH_PLAN_POOL_TOTAL_ALL_STATES=<n>`
+- `OUTREACH_PLAN_POOL_TOTAL_SELECTED_STATE=<n>`
+- `OUTREACH_PLAN_FILTER_BREAKDOWN=<minified_json>`
+- `OUTREACH_PLAN_DIAGNOSTICS_PATH=<absolute_path>`
+
+When `OUTREACH_PLAN_WILL_SEND=0`, root-cause must be interpreted from `OUTREACH_PLAN_POOL_TOTAL*`, `OUTREACH_PLAN_FILTER_BREAKDOWN`, and `OUTREACH_PLAN_DIAGNOSTICS_PATH` (instead of relying on skip totals alone).
 
 Dry-run (no sends, writes outbox + manifest artifacts):
 
@@ -301,6 +319,7 @@ Expected artifacts:
 - `out/outreach_export_ledger.jsonl` (optional compatibility ledger)
 - `out\outreach\<batch>\outbox_<batch>_dry_run.csv`
 - `out\outreach\<batch>\outbox_<batch>_dry_run_manifest.csv` (includes `domain`, `segment`, `role_or_title`, `state_pref`, and `rank_reason` audit fields)
+- `out\outreach\<batch>\plan_diagnostics.json` (run-level plan/dry-run diagnostics including pool totals and filter breakdown)
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 
