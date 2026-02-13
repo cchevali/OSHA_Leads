@@ -39,10 +39,24 @@ Operator flow:
 3. Run `--mark-uploaded`.
 4. Run strict `--check` at session start to fail fast on stale context.
 
+## Mandatory Session-Start Preflight (Strict)
+
+Start every session/day with strict context-pack check:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools/project_context_pack.py --check
+```
+
+Strict `--check` is a blocker. Resolve any `ERR_CONTEXT_PACK_*` output before operator work.
+
 Doctor behavior:
 
+- `.\run_with_secrets.ps1` runs `tools/project_context_pack.py --check --soft` before invoking wrapped commands.
 - `run_wally_trial.py --doctor` runs `tools/project_context_pack.py --check --soft`.
-- Soft mode prints `WARN_CONTEXT_PACK_*` reminders and upload instructions but does not fail doctor by itself.
+- `run_outreach_auto.py --doctor` runs `tools/project_context_pack.py --check --soft`.
+- Soft checks are reminder-only: silent on success, and they print `WARN_CONTEXT_PACK_*` plus remediation instructions when action is required.
+- Soft checks do not fail wrapper/doctor by themselves.
 
 ## Switch machines: laptop -> PC
 

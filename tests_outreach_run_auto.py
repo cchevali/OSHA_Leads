@@ -340,11 +340,12 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
             }
             with mock.patch.dict(os.environ, env, clear=False):
-                with mock.patch.object(roa, "_doctor_check_secrets_decrypt") as m_secrets, mock.patch.object(
-                    roa, "_doctor_check_unsub"
-                ) as m_unsub, mock.patch.object(roa, "_doctor_check_provider") as m_provider, mock.patch.object(
-                    roa, "_doctor_check_dry_run_artifact"
-                ) as m_dry_run:
+                with mock.patch.object(roa, "_doctor_context_pack_soft_check") as m_context, mock.patch.object(
+                    roa, "_doctor_check_secrets_decrypt"
+                ) as m_secrets, mock.patch.object(roa, "_doctor_check_unsub") as m_unsub, mock.patch.object(
+                    roa, "_doctor_check_provider"
+                ) as m_provider, mock.patch.object(roa, "_doctor_check_dry_run_artifact") as m_dry_run:
+                    m_context.side_effect = lambda: None
                     m_secrets.side_effect = lambda: (print("PASS_DOCTOR_SECRETS_DECRYPT diagnostics=ok"), (True, ""))[1]
                     m_unsub.side_effect = lambda: (print("PASS_DOCTOR_UNSUB version_status=200 unsubscribe_status=400"), (True, ""))[1]
                     m_provider.side_effect = lambda: (print("PASS_DOCTOR_PROVIDER_CONFIG smtp_port=465"), (True, ""))[1]
@@ -378,6 +379,68 @@ class TestOutreachRunAuto(unittest.TestCase):
 
             self.assertEqual(before_events, after_events)
             self.assertEqual(before_last_contacted, after_last_contacted)
+
+    def test_doctor_context_pack_warn_lines_do_not_fail(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_new",
+                        "contact_name": "Alice New",
+                        "firm": "ACME",
+                        "email": "alice@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 2,
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(roa, "_doctor_context_pack_soft_check") as m_context, mock.patch.object(
+                    roa, "_doctor_check_secrets_decrypt"
+                ) as m_secrets, mock.patch.object(roa, "_doctor_check_unsub") as m_unsub, mock.patch.object(
+                    roa, "_doctor_check_provider"
+                ) as m_provider, mock.patch.object(roa, "_doctor_check_dry_run_artifact") as m_dry_run:
+
+                    def _fake_context_warn() -> None:
+                        print("WARN_CONTEXT_PACK_STALE SOURCE_HASHES mismatch")
+                        print("Upload PROJECT_CONTEXT_PACK.md to ChatGPT Project Settings -> Files")
+                        print("Then run: py -3 tools/project_context_pack.py --mark-uploaded")
+
+                    m_context.side_effect = _fake_context_warn
+                    m_secrets.side_effect = lambda: (print("PASS_DOCTOR_SECRETS_DECRYPT diagnostics=ok"), (True, ""))[1]
+                    m_unsub.side_effect = lambda: (print("PASS_DOCTOR_UNSUB version_status=200 unsubscribe_status=400"), (True, ""))[1]
+                    m_provider.side_effect = lambda: (print("PASS_DOCTOR_PROVIDER_CONFIG smtp_port=465"), (True, ""))[1]
+                    m_dry_run.side_effect = lambda allow_repeat=False: (
+                        print("PASS_DOCTOR_DRY_RUN_ARTIFACT dry_run_token=PASS_AUTO_DRY_RUN"),
+                        (True, ""),
+                    )[1]
+
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            self.assertEqual((err.getvalue() or "").strip(), "")
+            text = out.getvalue()
+            self.assertIn("WARN_CONTEXT_PACK_STALE", text)
+            self.assertIn("Upload PROJECT_CONTEXT_PACK.md to ChatGPT Project Settings -> Files", text)
+            self.assertIn("PASS_DOCTOR_COMPLETE", text)
 
 
 if __name__ == "__main__":

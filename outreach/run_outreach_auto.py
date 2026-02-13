@@ -67,6 +67,7 @@ PASS_DOCTOR_COMPLETE = "PASS_DOCTOR_COMPLETE"
 DOCTOR_TIMEOUT_SECRETS_SECONDS = 90
 DOCTOR_TIMEOUT_DRY_RUN_SECONDS = 120
 DOCTOR_HTTP_TIMEOUT_SECONDS = 5.0
+PROJECT_CONTEXT_SOFT_CHECK_CMD = ["--check", "--soft"]
 
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
 STATE_SCORE_BOOST = 3
@@ -604,6 +605,56 @@ def _doctor_check_secrets_decrypt() -> tuple[bool, str]:
     return True, ""
 
 
+def _doctor_context_pack_soft_check() -> None:
+    script_path = REPO_ROOT / "tools" / "project_context_pack.py"
+    if not script_path.exists():
+        print("WARN_CONTEXT_PACK_SCRIPT_MISSING tools/project_context_pack.py")
+        return
+
+    commands = [
+        ["py", "-3", str(script_path)] + PROJECT_CONTEXT_SOFT_CHECK_CMD,
+        [sys.executable, str(script_path)] + PROJECT_CONTEXT_SOFT_CHECK_CMD,
+    ]
+    for idx, cmd in enumerate(commands):
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            if idx == 0:
+                continue
+            print("WARN_CONTEXT_PACK_CHECK_FAILED runner_not_found")
+            return
+        except Exception as e:
+            print(f"WARN_CONTEXT_PACK_CHECK_FAILED error={type(e).__name__}")
+            return
+
+        lines: list[str] = []
+        if proc.stdout:
+            lines.extend([ln.strip() for ln in proc.stdout.splitlines() if ln.strip()])
+        if proc.stderr:
+            lines.extend([ln.strip() for ln in proc.stderr.splitlines() if ln.strip()])
+
+        has_warn = any(ln.startswith("WARN_CONTEXT_PACK_") or ln.startswith("ERR_CONTEXT_PACK_") for ln in lines)
+        if has_warn:
+            for line in lines:
+                if line.startswith("PASS_CONTEXT_PACK_CHECK"):
+                    continue
+                print(line)
+            return
+
+        if proc.returncode != 0:
+            print(f"WARN_CONTEXT_PACK_CHECK_FAILED returncode={proc.returncode}")
+            for line in lines:
+                if line.startswith("PASS_CONTEXT_PACK_CHECK"):
+                    continue
+                print(line)
+        return
+
+
 def _doctor_parse_env() -> tuple[bool, str, dict]:
     ctx: dict[str, object] = {}
 
@@ -843,6 +894,8 @@ def _doctor_check_idempotency(allow_repeat: bool) -> tuple[bool, str]:
 
 
 def _run_doctor(allow_repeat: bool) -> tuple[bool, str]:
+    _doctor_context_pack_soft_check()
+
     ok, msg = _doctor_check_secrets_decrypt()
     if not ok:
         return False, msg
