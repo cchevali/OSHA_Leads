@@ -231,7 +231,31 @@ Run discovery before outreach each day:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input C:\path\to\prospects.csv
+.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
+```
+
+No-arg discovery input resolution order:
+
+1. `PROSPECT_DISCOVERY_INPUT` (preferred)
+2. `DISCOVERY_INPUT_CSV` (legacy compatibility)
+3. `${DATA_DIR}\prospect_discovery\prospects_latest.csv`
+4. `${DATA_DIR}\prospect_discovery\prospects.csv`
+5. `${DATA_DIR}\prospects_latest.csv`
+6. `${DATA_DIR}\prospects.csv`
+
+When `DATA_DIR` is unset, discovery resolves these fallback paths under repo `.\out\...`.
+
+Set preferred discovery input via the canonical no-editor env helper:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 `
+  -OutreachDailyLimit 10 `
+  -OutreachStates TX `
+  -OshaSmokeTo cchevali+oshasmoke@gmail.com `
+  -OutreachSuppressionMaxAgeHours 240 `
+  -TrialSendsLimitDefault 10 `
+  -TrialExpiredBehaviorDefault notify_once `
+  -ProspectDiscoveryInput C:\path\to\prospects.csv
 ```
 
 Dry-run discovery:
@@ -245,6 +269,18 @@ Print resolved discovery config:
 ```powershell
 .\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --print-config --input C:\path\to\prospects.csv
 ```
+
+Discovery emits a fixed-order `DISCOVERY_*` diagnostics block for operator parsing:
+
+- `DISCOVERY_INPUT_PATH`
+- `DISCOVERY_CRM_DB`
+- `DISCOVERY_ROWS_READ`
+- `DISCOVERY_PROSPECTS_UPSERTED`
+- `DISCOVERY_SKIPPED_INVALID_EMAIL`
+- `DISCOVERY_SKIPPED_DUPLICATE_EMAIL`
+- `DISCOVERY_COMPLETE status=<OK|NO_INPUT|DRY_RUN>`
+
+Legacy `PASS_DISCOVERY_*` / `ERR_DISCOVERY_*` tokens remain supported for compatibility.
 
 ### Single Command (Scheduled Daily)
 

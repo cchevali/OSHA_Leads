@@ -7,6 +7,7 @@ param(
   [string] $TrialExpiredBehaviorDefault = '',
   [string] $TrialConversionUrl = '',
   [string] $DataDir = '',
+  [string] $ProspectDiscoveryInput = '',
   [switch] $PrintConfig
 )
 
@@ -180,7 +181,8 @@ try {
     'TrialSendsLimitDefault',
     'TrialExpiredBehaviorDefault',
     'TrialConversionUrl',
-    'DataDir'
+    'DataDir',
+    'ProspectDiscoveryInput'
   )
   $hasMutatingArgs = $false
   foreach ($name in $mutatingArgs) {
@@ -297,6 +299,14 @@ try {
       Set-MapValue -Map $map -Key 'DATA_DIR' -Value $dir -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'DATA_DIR')) {
       Set-MapValue -Map $map -Key 'DATA_DIR' -Value 'out' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectDiscoveryInput')) {
+      $discoveryInput = ($ProspectDiscoveryInput -as [string]).Trim()
+      if (-not $discoveryInput) {
+        Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectDiscoveryInput'
+      }
+      Set-MapValue -Map $map -Key 'PROSPECT_DISCOVERY_INPUT' -Value $discoveryInput -TouchedList $touched
     }
 
     $rendered = Render-DotenvMap $map
