@@ -184,6 +184,31 @@ class TestOutreachDiscovery(unittest.TestCase):
             block = self._assert_discovery_block(out, "DRY_RUN")
             self.assertEqual(block[0], f"DISCOVERY_INPUT_PATH={fallback.resolve()}")
 
+    def test_legacy_env_is_second_priority_after_preferred_env(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            legacy_csv = tmp / "legacy_second_priority.csv"
+            fallback = data_dir / "prospect_discovery" / "prospects_latest.csv"
+            _write_rows(legacy_csv, _rows(1))
+            _write_rows(fallback, _rows(3))
+
+            p = self._run(
+                ["--dry-run"],
+                {
+                    "DATA_DIR": str(data_dir),
+                    "PROSPECT_DISCOVERY_INPUT": str(tmp / "does_not_exist.csv"),
+                    "DISCOVERY_INPUT_CSV": str(legacy_csv),
+                    "DISCOVERY_ALLOW_SAMPLE": None,
+                },
+            )
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn(f"input_path={legacy_csv.resolve()}", out)
+            self.assertNotIn(f"input_path={fallback.resolve()}", out)
+            block = self._assert_discovery_block(out, "DRY_RUN")
+            self.assertEqual(block[0], f"DISCOVERY_INPUT_PATH={legacy_csv.resolve()}")
+
     def test_fallback_order_is_deterministic(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
