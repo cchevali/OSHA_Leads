@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=54c2a3c629aaee1412433f9545ce78f07c9e94a1
-PACK_BUILD_UTC=2026-02-13T03:45:40Z
-SOURCE_HASHES: AGENTS.md=d2938dfe71a714cb52b1e192a68e6da17e6f4a3c55c97f5d65f3c6cabb87b799 docs/ARCHITECTURE.md=00f51d1659f2245e395c6541d5c7c7d64fe22481b51f4f432b0fd1353b690510 docs/DECISIONS.md=5a1fbc744dc2dfb5e4f55a2e8dc8ab23e8d984c4d25d7c6438402a9c090b4e6f docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=da680afdb4d18c12358d816e810ed679fb61c1af3288c60f0e48e747a2e76ccf docs/TODO.md=85c1cd674e0cfe349d9239e88245d6e34e4f8410d59ddd6863262ffeb3adf0e2 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=7ab48ba601047a3ed1a2eeb24b6f8c0beba80d71f17aca87727f73dc28ddc32c
+PACK_GIT_SHA=01d863b6c762490550269fc33caa26a187d3b67c
+PACK_BUILD_UTC=2026-02-13T04:56:25Z
+SOURCE_HASHES: AGENTS.md=b05b37bb26dfcd6d091c0bc021a6975c6929082ac6a3ef91fda246abe624d1f9 docs/ARCHITECTURE.md=00f51d1659f2245e395c6541d5c7c7d64fe22481b51f4f432b0fd1353b690510 docs/DECISIONS.md=5a1fbc744dc2dfb5e4f55a2e8dc8ab23e8d984c4d25d7c6438402a9c090b4e6f docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=9b886e7131fd428ecb7be4259196d4420d8cb85e6cbec73cde075f1c5563a628 docs/TODO.md=21178006edd1cfff599536a5864095e579396e421289c4d43837f67508b12c67 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=6d145f35cf85be7556667299bbd9f2b81ed03628271a73d0b8ca02f50f23c21f
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -597,6 +597,12 @@ cd C:\dev\OSHA_Leads
 
 The `--doctor` command must exit `0` with `PASS_DOCTOR_*` lines only before unattended sends. The dry-run command must complete successfully before live send.
 
+Tomorrow confirmation (no send, deterministic candidate list):
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date 2026-02-14
+```
+
 Dry-run (no sends, writes outbox + manifest artifacts):
 
 ```powershell
@@ -624,12 +630,16 @@ Required outreach env keys (managed by `scripts\set_outreach_env.ps1`):
 - `DATA_DIR=out` (or your runtime path)
 
 `run_outreach_auto.py` deterministically picks today's state from `OUTREACH_STATES` by weekday index and uses batch id `<YYYY-MM-DD>_<STATE>`.
+`--for-date YYYY-MM-DD` is allowed with `--print-config`, `--doctor`, `--dry-run`, and `--plan`.
+If `--for-date` is not today and a live send is attempted, the command hard-fails with `ERR_AUTO_FOR_DATE_LIVE_SEND_BLOCKED` and no partial send effects.
 Normal runs select and prioritize prospects directly from `crm.sqlite`, send outreach emails, then record `outreach_events` and status updates.
 
 Expected artifacts:
 
 - `out/crm.sqlite` (or `${DATA_DIR}\crm.sqlite`)
 - `out/outreach_export_ledger.jsonl` (optional compatibility ledger)
+- `out\outreach\<batch>\outbox_<batch>_dry_run.csv`
+- `out\outreach\<batch>\outbox_<batch>_dry_run_manifest.csv` (includes `domain`, `segment`, `role_or_title`, `state_pref`, and `rank_reason` audit fields)
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 
@@ -677,6 +687,7 @@ Metric scope:
 # Verify dry-run artifacts exist and no-send marker was printed
 Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run.csv
 Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run_manifest.csv
+# Manifest rows include rank audit fields and dropped reasons for QA traceability.
 
 # Ledger exists and is appending
 Test-Path -LiteralPath .\out\outreach_export_ledger.jsonl

@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import os
 import sqlite3
@@ -6,7 +7,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -34,6 +35,8 @@ ERR_AUTO_SUMMARY_TO_MISMATCH = "ERR_AUTO_SUMMARY_TO_MISMATCH"
 ERR_AUTO_SUMMARY_SEND = "ERR_AUTO_SUMMARY_SEND"
 ERR_AUTO_ONE_CLICK_REQUIRED = "ERR_AUTO_ONE_CLICK_REQUIRED"
 ERR_AUTO_CRM_REQUIRED = "ERR_AUTO_CRM_REQUIRED"
+ERR_AUTO_FOR_DATE_INVALID = "ERR_AUTO_FOR_DATE_INVALID"
+ERR_AUTO_FOR_DATE_LIVE_SEND_BLOCKED = "ERR_AUTO_FOR_DATE_LIVE_SEND_BLOCKED"
 
 PASS_AUTO_DRY_RUN = "PASS_AUTO_DRY_RUN"
 PASS_AUTO_PRINT_CONFIG = "PASS_AUTO_PRINT_CONFIG"
@@ -70,19 +73,20 @@ DOCTOR_HTTP_TIMEOUT_SECONDS = 5.0
 PROJECT_CONTEXT_SOFT_CHECK_CMD = ["--check", "--soft"]
 
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
-STATE_SCORE_BOOST = 3
-TITLE_KEYWORD_BOOSTS = {
-    "partner": 4,
-    "owner": 4,
-    "founder": 3,
-    "osha": 2,
-    "safety": 2,
-}
-STATUS_BOOSTS = {
-    "replied": 5,
-    "trial_started": 7,
-}
-TRIAL_BOOST = 6
+ROLE_PRIORITY_RULES: list[tuple[int, tuple[str, ...], str]] = [
+    (0, ("owner", "founder", "partner", "president", "ceo", "chief", "principal", "executive"), "decision_maker"),
+    (1, ("safety manager", "safety director", "ehs", "hse", "osha", "safety"), "safety_leader"),
+    (2, ("operations", "compliance", "plant manager", "general manager"), "operations_compliance"),
+]
+ROLE_INBOX_LOCALS = {"info", "support", "hello", "sales", "contact", "admin", "office"}
+BUYER_SEGMENT_HINTS = ("attorney", "safety consultant", "ehs")
+OPTIONAL_PROSPECT_COLUMNS = (
+    "segment",
+    "state_pref",
+    "role",
+    "contact_role",
+    "buyer_segment",
+)
 
 
 def _norm_email(s: str) -> str:
@@ -160,15 +164,26 @@ def _export_ledger_path() -> Path:
     return _data_dir() / "outreach_export_ledger.jsonl"
 
 
-def _choose_state(states: list[str], today: datetime) -> str:
+def _parse_for_date(raw: str) -> tuple[bool, date, str]:
+    text = (raw or "").strip()
+    if not text:
+        return True, datetime.now().date(), ""
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d").date()
+    except Exception:
+        return False, datetime.now().date(), f"{ERR_AUTO_FOR_DATE_INVALID} value={_compact_detail(text, 64)}"
+    return True, parsed, ""
+
+
+def _choose_state(states: list[str], run_date: date) -> str:
     if not states:
         return ""
-    idx = today.weekday() % len(states)
+    idx = run_date.weekday() % len(states)
     return states[idx]
 
 
-def _batch_id(state: str, today: datetime) -> str:
-    return f"{today.date().isoformat()}_{state}"
+def _batch_id(state: str, run_date: date) -> str:
+    return f"{run_date.isoformat()}_{state}"
 
 
 def _resolve_summary_recipient(explicit_to: str) -> tuple[bool, str, str]:
@@ -256,45 +271,181 @@ def _load_suppression_emails(conn: sqlite3.Connection) -> set[str]:
     return csv_suppressed | db_suppressed
 
 
-def _fetch_trial_boost_ids(conn: sqlite3.Connection) -> set[str]:
-    rows = conn.execute(
-        "SELECT DISTINCT prospect_id FROM trials WHERE LOWER(COALESCE(status,'')) IN ('active','trial_started')"
-    ).fetchall()
-    return {str(r[0]) for r in rows if str(r[0] or "").strip()}
-
-
 def _fetch_prior_sent_ids(conn: sqlite3.Connection) -> set[str]:
     rows = conn.execute("SELECT DISTINCT prospect_id FROM outreach_events WHERE event_type = 'sent'").fetchall()
     return {str(r[0]) for r in rows if str(r[0] or "").strip()}
 
 
-def _title_keyword_score(title: str, firm: str) -> int:
-    text = f"{(title or '').strip()} {(firm or '').strip()}".lower()
-    score = 0
-    for token, points in TITLE_KEYWORD_BOOSTS.items():
-        if token in text:
-            score += points
-    return score
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table_name})") if len(r) > 1}
 
 
-def _priority_score(row: sqlite3.Row, state: str, trial_boost_ids: set[str]) -> int:
+def _prospect_select_columns(conn: sqlite3.Connection) -> list[str]:
+    base = [
+        "prospect_id",
+        "firm",
+        "contact_name",
+        "email",
+        "title",
+        "city",
+        "state",
+        "website",
+        "source",
+        "score",
+        "status",
+        "created_at",
+        "last_contacted_at",
+    ]
+    existing = _table_columns(conn, "prospects")
+    cols = list(base)
+    for col in OPTIONAL_PROSPECT_COLUMNS:
+        if col in existing and col not in cols:
+            cols.append(col)
+    return cols
+
+
+def _norm_domain(email: str) -> str:
+    value = _norm_email(email)
+    if "@" not in value:
+        return ""
+    _local, _sep, domain = value.partition("@")
+    return domain.strip().lower()
+
+
+def _safe_text(value: str) -> str:
+    return str(value or "").replace("\r", " ").replace("\n", " ").strip()
+
+
+def _safe_csv_value(value: str) -> str:
+    return _safe_text(value).replace(",", ";")
+
+
+def _score_tier(score: int) -> str:
+    if score >= 8:
+        return "high"
+    if score >= 6:
+        return "medium"
+    if score >= 4:
+        return "low"
+    return "below_low"
+
+
+def _score_tier_rank(score: int) -> int:
+    tier = _score_tier(score)
+    if tier == "high":
+        return 0
+    if tier == "medium":
+        return 1
+    if tier == "low":
+        return 2
+    return 3
+
+
+def _parse_sort_ts(value: str) -> float:
+    text = (value or "").strip()
+    if not text:
+        return 0.0
+    normalized = text.replace("Z", "+00:00")
     try:
-        base_score = int(row["score"] or 0)
+        dt = datetime.fromisoformat(normalized)
     except Exception:
-        base_score = 0
+        return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return float(dt.timestamp())
 
-    score = base_score
-    score += _title_keyword_score(str(row["title"] or ""), str(row["firm"] or ""))
 
-    row_state = str(row["state"] or "").strip().upper()
-    if row_state and row_state == (state or "").upper():
-        score += STATE_SCORE_BOOST
+def _extract_role_or_title(row: sqlite3.Row) -> str:
+    role = _safe_text(str(row["role"] or "")) if "role" in row.keys() else ""
+    if role:
+        return role
+    contact_role = _safe_text(str(row["contact_role"] or "")) if "contact_role" in row.keys() else ""
+    if contact_role:
+        return contact_role
+    return _safe_text(str(row["title"] or ""))
 
-    status = str(row["status"] or "").strip().lower()
-    score += STATUS_BOOSTS.get(status, 0)
-    if str(row["prospect_id"]) in trial_boost_ids:
-        score += TRIAL_BOOST
-    return score
+
+def _extract_segment(row: sqlite3.Row) -> str:
+    for key in ["segment", "buyer_segment"]:
+        if key in row.keys():
+            value = _safe_text(str(row[key] or ""))
+            if value:
+                return value
+    return ""
+
+
+def _extract_state_pref(row: sqlite3.Row) -> str:
+    if "state_pref" in row.keys():
+        value = _safe_text(str(row["state_pref"] or "")).upper()
+        if value:
+            return value
+    return _safe_text(str(row["state"] or "")).upper()
+
+
+def _role_priority(role_or_title: str) -> tuple[int, str]:
+    text = (role_or_title or "").strip().lower()
+    if not text:
+        return 3, "other"
+    for rank, tokens, label in ROLE_PRIORITY_RULES:
+        if any(token in text for token in tokens):
+            return rank, label
+    return 3, "other"
+
+
+def _role_inbox_penalty(email: str) -> int:
+    local_part = _norm_email(email).split("@", 1)[0] if "@" in _norm_email(email) else ""
+    local = local_part.split("+", 1)[0]
+    return 1 if local in ROLE_INBOX_LOCALS else 0
+
+
+def _segment_penalty(segment: str) -> tuple[int, str]:
+    text = (segment or "").strip().lower()
+    if not text:
+        return 1, "no"
+    for token in BUYER_SEGMENT_HINTS:
+        if token in text:
+            return 0, "yes"
+    return 1, "no"
+
+
+def _rank_tuple_for_candidate(
+    prospect_id: str,
+    email: str,
+    role_priority: int,
+    role_inbox_penalty: int,
+    score: int,
+    segment_penalty: int,
+    created_at: str,
+) -> tuple:
+    created_ts = _parse_sort_ts(created_at)
+    return (
+        int(role_priority),
+        int(role_inbox_penalty),
+        _score_tier_rank(int(score)),
+        int(segment_penalty),
+        -int(score),
+        -created_ts,
+        (created_at or ""),
+        (prospect_id or ""),
+        (email or ""),
+    )
+
+
+def _rank_reason_text(
+    role_bucket_label: str,
+    role_priority: int,
+    role_inbox_penalty: int,
+    score: int,
+    segment_fit: str,
+    created_at: str,
+) -> str:
+    return (
+        f"role_bucket={role_bucket_label};role_priority={role_priority};"
+        f"role_inbox_penalty={role_inbox_penalty};score_tier={_score_tier(score)};"
+        f"score={score};segment_fit={segment_fit};created_at={_safe_text(created_at) or 'none'}"
+    )
 
 
 def _skip_reason(
@@ -305,6 +456,8 @@ def _skip_reason(
 ) -> str:
     status = str(row["status"] or "").strip().lower()
     if status in EXCLUDED_STATUSES:
+        if status == "do_not_contact":
+            return "status_do_not_contact"
         return f"status_{status}"
 
     email = _norm_email(str(row["email"] or ""))
@@ -321,44 +474,123 @@ def _skip_reason(
     return ""
 
 
+def _candidate_from_row(row: sqlite3.Row) -> dict:
+    prospect_id = _safe_text(str(row["prospect_id"] or ""))
+    email = _norm_email(str(row["email"] or ""))
+    role_or_title = _extract_role_or_title(row)
+    segment = _extract_segment(row)
+    state_pref = _extract_state_pref(row)
+    domain = _norm_domain(email)
+    created_at = _safe_text(str(row["created_at"] or ""))
+    try:
+        score = int(row["score"] or 0)
+    except Exception:
+        score = 0
+
+    role_rank, role_bucket_label = _role_priority(role_or_title)
+    inbox_penalty = _role_inbox_penalty(email)
+    segment_rank_penalty, segment_fit = _segment_penalty(segment)
+    rank_tuple = _rank_tuple_for_candidate(
+        prospect_id=prospect_id,
+        email=email,
+        role_priority=role_rank,
+        role_inbox_penalty=inbox_penalty,
+        score=score,
+        segment_penalty=segment_rank_penalty,
+        created_at=created_at,
+    )
+    rank_reason = _rank_reason_text(
+        role_bucket_label=role_bucket_label,
+        role_priority=role_rank,
+        role_inbox_penalty=inbox_penalty,
+        score=score,
+        segment_fit=segment_fit,
+        created_at=created_at,
+    )
+    return {
+        "row": row,
+        "prospect_id": prospect_id,
+        "email": email,
+        "domain": domain,
+        "segment": segment,
+        "role_or_title": role_or_title,
+        "state_pref": state_pref,
+        "score": int(score),
+        "created_at": created_at,
+        "rank_tuple": rank_tuple,
+        "rank_tuple_text": "|".join([str(x) for x in rank_tuple]),
+        "rank_reason": rank_reason,
+    }
+
+
+def _candidate_csv_row(candidate: dict) -> dict:
+    return {
+        "prospect_id": candidate["prospect_id"],
+        "email": candidate["email"],
+        "domain": candidate["domain"],
+        "segment": candidate["segment"],
+        "role_or_title": candidate["role_or_title"],
+        "state_pref": candidate["state_pref"],
+        "rank_reason": candidate["rank_reason"],
+        "rank_tuple": candidate["rank_tuple_text"],
+    }
+
+
 def _select_candidates(
     conn: sqlite3.Connection,
     state: str,
     limit: int,
     suppressed_emails: set[str],
     allow_repeat: bool,
-) -> tuple[list[sqlite3.Row], Counter]:
-    rows = conn.execute(
-        """
-        SELECT
-            prospect_id, firm, contact_name, email, title, city, state, website, source,
-            score, status, created_at, last_contacted_at
-        FROM prospects
-        WHERE UPPER(COALESCE(state, '')) = ?
-        """,
-        ((state or "").upper(),),
-    ).fetchall()
+) -> tuple[list[dict], Counter, list[dict]]:
+    cols = _prospect_select_columns(conn)
+    query = "SELECT " + ", ".join(cols) + " FROM prospects WHERE UPPER(COALESCE(state, '')) = ?"
+    rows = conn.execute(query, ((state or "").upper(),)).fetchall()
 
     sent_ids = _fetch_prior_sent_ids(conn)
-    trial_boost_ids = _fetch_trial_boost_ids(conn)
 
     skipped = Counter()
-    scored: list[tuple[int, str, str, sqlite3.Row]] = []
+    manifest_rows: list[dict] = []
+    ranked: list[dict] = []
     for row in rows:
         reason = _skip_reason(row, suppressed_emails=suppressed_emails, sent_ids=sent_ids, allow_repeat=allow_repeat)
+        candidate = _candidate_from_row(row)
         if reason:
             skipped[reason] += 1
+            dropped = _candidate_csv_row(candidate)
+            dropped.update({"status": "dropped", "reason": reason})
+            manifest_rows.append(dropped)
             continue
-        score = _priority_score(row, state=state, trial_boost_ids=trial_boost_ids)
-        created_at = str(row["created_at"] or "")
-        scored.append((score, created_at, str(row["prospect_id"]), row))
+        ranked.append(candidate)
 
-    scored.sort(key=lambda x: (-x[0], x[1], x[2]))
-    selected = [item[3] for item in scored[:limit]]
-    overflow = max(0, len(scored) - len(selected))
-    if overflow:
-        skipped["daily_limit"] += overflow
-    return selected, skipped
+    ranked.sort(key=lambda item: item["rank_tuple"])
+
+    per_domain: list[dict] = []
+    seen_domains: set[str] = set()
+    for candidate in ranked:
+        domain_key = candidate["domain"] or f"__nodomain__:{candidate['prospect_id']}"
+        if domain_key in seen_domains:
+            skipped["domain_dedup"] += 1
+            dropped = _candidate_csv_row(candidate)
+            dropped.update({"status": "dropped", "reason": "domain_dedup"})
+            manifest_rows.append(dropped)
+            continue
+        seen_domains.add(domain_key)
+        per_domain.append(candidate)
+
+    selected = per_domain[:limit]
+    overflow = per_domain[limit:]
+    for candidate in overflow:
+        skipped["daily_limit"] += 1
+        dropped = _candidate_csv_row(candidate)
+        dropped.update({"status": "dropped", "reason": "daily_limit"})
+        manifest_rows.append(dropped)
+
+    for candidate in selected:
+        selected_row = _candidate_csv_row(candidate)
+        selected_row.update({"status": "selected", "reason": ""})
+        manifest_rows.append(selected_row)
+    return selected, skipped, manifest_rows
 
 
 def _format_top_reasons(counts: Counter, limit: int = 5) -> str:
@@ -366,6 +598,137 @@ def _format_top_reasons(counts: Counter, limit: int = 5) -> str:
         return "none"
     top = counts.most_common(limit)
     return ",".join([f"{k}:{v}" for k, v in top])
+
+
+def _safe_batch_name(batch: str) -> str:
+    raw = (batch or "").strip()
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in raw).strip("_")
+    return safe or "batch"
+
+
+def _dry_run_paths(batch: str) -> tuple[Path, Path]:
+    safe_batch = _safe_batch_name(batch)
+    out_dir = (REPO_ROOT / "out" / "outreach" / safe_batch).resolve()
+    outbox = out_dir / f"outbox_{safe_batch}_dry_run.csv"
+    manifest = out_dir / f"outbox_{safe_batch}_dry_run_manifest.csv"
+    return outbox, manifest
+
+
+def _write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _write_dry_run_artifacts(batch: str, state: str, selected: list[dict], manifest_rows: list[dict]) -> tuple[Path, Path]:
+    outbox_path, manifest_path = _dry_run_paths(batch)
+    outbox_rows: list[dict] = []
+    for candidate in selected:
+        row = _candidate_csv_row(candidate)
+        row.update({"batch": batch, "state": state})
+        outbox_rows.append(row)
+    _write_csv(
+        outbox_path,
+        [
+            "prospect_id",
+            "email",
+            "domain",
+            "segment",
+            "role_or_title",
+            "state_pref",
+            "rank_reason",
+            "rank_tuple",
+            "batch",
+            "state",
+        ],
+        outbox_rows,
+    )
+
+    ts_utc = datetime.now(timezone.utc).isoformat()
+    manifest_out: list[dict] = []
+    for item in manifest_rows:
+        row = dict(item)
+        row["ts_utc"] = ts_utc
+        row["batch"] = batch
+        row["state"] = state
+        manifest_out.append(row)
+    _write_csv(
+        manifest_path,
+        [
+            "ts_utc",
+            "batch",
+            "state",
+            "prospect_id",
+            "email",
+            "domain",
+            "segment",
+            "role_or_title",
+            "state_pref",
+            "status",
+            "reason",
+            "rank_reason",
+            "rank_tuple",
+        ],
+        manifest_out,
+    )
+    return outbox_path, manifest_path
+
+
+def _plan_skip_breakdown(skipped: Counter) -> dict[str, int]:
+    suppressed = int(skipped.get("suppressed", 0))
+    invalid_email = int(skipped.get("invalid_email", 0))
+    do_not_contact = int(skipped.get("status_do_not_contact", 0))
+    already_contacted = int(skipped.get("already_contacted", 0))
+    other = int(sum(skipped.values()) - (suppressed + invalid_email + do_not_contact + already_contacted))
+    return {
+        "suppressed": max(0, suppressed),
+        "invalid_email": max(0, invalid_email),
+        "do_not_contact": max(0, do_not_contact),
+        "already_contacted": max(0, already_contacted),
+        "other": max(0, other),
+    }
+
+
+def _print_plan_output(
+    run_date: date,
+    state: str,
+    batch: str,
+    daily_limit: int,
+    selected: list[dict],
+    skipped: Counter,
+) -> None:
+    breakdown = _plan_skip_breakdown(skipped)
+    print(f"OUTREACH_PLAN_DATE={run_date.isoformat()}")
+    print(f"OUTREACH_PLAN_STATE={state}")
+    print(f"OUTREACH_PLAN_BATCH={batch}")
+    print(f"OUTREACH_PLAN_DAILY_LIMIT={daily_limit}")
+    print(f"OUTREACH_PLAN_WILL_SEND={len(selected)}")
+    print(
+        "OUTREACH_PLAN_SKIP_BREAKDOWN "
+        f"suppressed={breakdown['suppressed']} "
+        f"invalid_email={breakdown['invalid_email']} "
+        f"do_not_contact={breakdown['do_not_contact']} "
+        f"already_contacted={breakdown['already_contacted']} "
+        f"other={breakdown['other']}"
+    )
+    print("prospect_id,email,domain,segment,role_or_title,state_pref,rank_reason")
+    for candidate in selected:
+        print(
+            ",".join(
+                [
+                    _safe_csv_value(candidate["prospect_id"]),
+                    _safe_csv_value(candidate["email"]),
+                    _safe_csv_value(candidate["domain"]),
+                    _safe_csv_value(candidate["segment"]),
+                    _safe_csv_value(candidate["role_or_title"]),
+                    _safe_csv_value(candidate["state_pref"]),
+                    _safe_csv_value(candidate["rank_reason"]),
+                ]
+            )
+        )
 
 
 def _render_outreach_payload(
@@ -553,8 +916,8 @@ def _append_ledger_records(path: Path, batch: str, state: str, results: list[dic
             f.write(json.dumps(rec, separators=(",", ":"), ensure_ascii=True) + "\n")
 
 
-def _event_count_for_today(conn: sqlite3.Connection, event_type: str, today: datetime) -> int:
-    day = today.date().isoformat()
+def _event_count_for_day(conn: sqlite3.Connection, event_type: str, run_date: date) -> int:
+    day = run_date.isoformat()
     row = conn.execute(
         "SELECT COUNT(*) FROM outreach_events WHERE event_type = ? AND substr(ts, 1, 10) = ?",
         (event_type, day),
@@ -829,7 +1192,7 @@ def _doctor_check_provider() -> tuple[bool, str]:
     return True, ""
 
 
-def _doctor_check_dry_run_artifact(allow_repeat: bool) -> tuple[bool, str]:
+def _doctor_check_dry_run_artifact(allow_repeat: bool, run_date: date) -> tuple[bool, str]:
     entrypoint = REPO_ROOT / "run_outreach_auto.py"
     if not entrypoint.exists():
         return _doctor_error(ERR_DOCTOR_DRY_RUN_ARTIFACT, f"entrypoint_missing path={entrypoint}")
@@ -837,6 +1200,7 @@ def _doctor_check_dry_run_artifact(allow_repeat: bool) -> tuple[bool, str]:
     cmd = [sys.executable, str(entrypoint), "--dry-run"]
     if allow_repeat:
         cmd.append("--allow-repeat")
+    cmd.extend(["--for-date", run_date.isoformat()])
     try:
         proc = subprocess.run(
             cmd,
@@ -893,7 +1257,7 @@ def _doctor_check_idempotency(allow_repeat: bool) -> tuple[bool, str]:
     return True, ""
 
 
-def _run_doctor(allow_repeat: bool) -> tuple[bool, str]:
+def _run_doctor(allow_repeat: bool, run_date: date) -> tuple[bool, str]:
     _doctor_context_pack_soft_check()
 
     ok, msg = _doctor_check_secrets_decrypt()
@@ -909,7 +1273,7 @@ def _run_doctor(allow_repeat: bool) -> tuple[bool, str]:
         lambda: _doctor_check_suppression(ctx),
         _doctor_check_unsub,
         _doctor_check_provider,
-        lambda: _doctor_check_dry_run_artifact(allow_repeat=allow_repeat),
+        lambda: _doctor_check_dry_run_artifact(allow_repeat=allow_repeat, run_date=run_date),
         lambda: _doctor_check_idempotency(allow_repeat=allow_repeat),
     ]
     for check in checks:
@@ -927,13 +1291,21 @@ def main() -> int:
     )
     ap.add_argument("--doctor", action="store_true", help="Run non-sending readiness checks and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Select and print actions only. No DB writes, no email.")
+    ap.add_argument("--plan", action="store_true", help="Print deterministic no-send outreach plan and selected prospects.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved config paths/state and exit.")
+    ap.add_argument("--for-date", default="", help="Override run date (YYYY-MM-DD) for doctor/print-config/dry-run/plan.")
     ap.add_argument("--allow-repeat", action="store_true", help="Allow contacting previously contacted prospects.")
     ap.add_argument("--to", default="", help="Optional summary recipient override; must equal OSHA_SMOKE_TO.")
     args = ap.parse_args()
 
+    ok_date, run_date, date_msg = _parse_for_date(str(args.for_date or ""))
+    if not ok_date:
+        print(date_msg, file=sys.stderr)
+        return 2
+    today_local = datetime.now().date()
+
     if args.doctor:
-        ok, msg = _run_doctor(allow_repeat=bool(args.allow_repeat))
+        ok, msg = _run_doctor(allow_repeat=bool(args.allow_repeat), run_date=run_date)
         if not ok:
             print(msg, file=sys.stderr)
             return 2
@@ -944,9 +1316,8 @@ def main() -> int:
         print(f"{ERR_AUTO_ENV} OUTREACH_STATES missing", file=sys.stderr)
         return 2
 
-    today = datetime.now()
-    state = _choose_state(states, today)
-    batch = _batch_id(state, today)
+    state = _choose_state(states, run_date)
+    batch = _batch_id(state, run_date)
     limit = _daily_limit()
     crm_db = _crm_db_path()
     suppression_csv = _suppression_csv_path()
@@ -962,10 +1333,19 @@ def main() -> int:
         print(f"{PASS_AUTO_PRINT_CONFIG} outreach_daily_limit={daily_limit} source={daily_limit_source}")
         print(f"{PASS_AUTO_PRINT_CONFIG} outreach_states={','.join(states)} selected_state={state}")
         print(f"{PASS_AUTO_PRINT_CONFIG} batch_id={batch}")
+        print(f"{PASS_AUTO_PRINT_CONFIG} run_date={run_date.isoformat()}")
         print(f"trial_conversion_url_present={trial_conversion_url_present}")
         return 0
 
-    if not args.dry_run:
+    is_live_send = not bool(args.dry_run or args.plan or args.doctor or args.print_config)
+    if is_live_send and run_date != today_local:
+        print(
+            f"{ERR_AUTO_FOR_DATE_LIVE_SEND_BLOCKED} for_date={run_date.isoformat()} today={today_local.isoformat()}",
+            file=sys.stderr,
+        )
+        return 2
+
+    if is_live_send:
         ok_to, summary_to, msg = _resolve_summary_recipient(args.to)
         if not ok_to:
             print(msg, file=sys.stderr)
@@ -995,7 +1375,7 @@ def main() -> int:
             print(str(e), file=sys.stderr)
             return 3
 
-        selected, skipped = _select_candidates(
+        selected, skipped, manifest_rows = _select_candidates(
             conn=conn,
             state=state,
             limit=limit,
@@ -1007,13 +1387,32 @@ def main() -> int:
         skipped_count = int(sum(skipped.values()))
         top_skip = _format_top_reasons(skipped, limit=5)
 
+        if args.plan:
+            _print_plan_output(
+                run_date=run_date,
+                state=state,
+                batch=batch,
+                daily_limit=limit,
+                selected=selected,
+                skipped=skipped,
+            )
+            return 0
+
         if args.dry_run:
+            outbox_path, manifest_path = _write_dry_run_artifacts(
+                batch=batch,
+                state=state,
+                selected=selected,
+                manifest_rows=manifest_rows,
+            )
             print(
                 f"{PASS_AUTO_DRY_RUN} state={state} batch={batch} daily_limit={limit} crm_db={crm_db} allow_repeat={bool(args.allow_repeat)}"
             )
             print(f"{PASS_AUTO_DRY_RUN} would_contact_prospect_ids={','.join(selected_ids) if selected_ids else '(none)'}")
             print(f"{PASS_AUTO_DRY_RUN} skipped_count={skipped_count} top_skip_reasons={top_skip}")
             print(f"{PASS_AUTO_DRY_RUN} summary_to={summary_to}")
+            print(f"{PASS_AUTO_DRY_RUN} outbox_path={outbox_path}")
+            print(f"{PASS_AUTO_DRY_RUN} manifest_path={manifest_path}")
             return 0
 
         one_click_ok, reason = gm._one_click_config_present()
@@ -1037,7 +1436,8 @@ def main() -> int:
         recent_signals_html = gm._recent_signals_html_from_leads(recent_leads)
 
         send_results: list[dict] = []
-        for row in selected:
+        for selected_candidate in selected:
+            row = selected_candidate["row"]
             send_results.append(
                 _send_outreach_email(
                     row=row,
@@ -1056,9 +1456,9 @@ def main() -> int:
 
         contacted_count = sum(1 for r in send_results if r.get("ok"))
         failed_count = sum(1 for r in send_results if not r.get("ok"))
-        new_replies = _event_count_for_today(conn, "replied", today)
-        new_trials = _event_count_for_today(conn, "trial_started", today)
-        new_conversions = _event_count_for_today(conn, "converted", today)
+        new_replies = _event_count_for_day(conn, "replied", run_date)
+        new_trials = _event_count_for_day(conn, "trial_started", run_date)
+        new_conversions = _event_count_for_day(conn, "converted", run_date)
         next_actions = (
             "Review send failures and retry unresolved prospects."
             if failed_count

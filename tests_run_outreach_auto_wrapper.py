@@ -22,6 +22,8 @@ class TestRunOutreachAutoWrapper(unittest.TestCase):
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         self.assertIn("--doctor", out)
         self.assertIn("--dry-run", out)
+        self.assertIn("--plan", out)
+        self.assertIn("--for-date", out)
         self.assertIn("--print-config", out)
         self.assertIn("--allow-repeat", out)
         self.assertIn("--to", out)

@@ -258,6 +258,12 @@ cd C:\dev\OSHA_Leads
 
 The `--doctor` command must exit `0` with `PASS_DOCTOR_*` lines only before unattended sends. The dry-run command must complete successfully before live send.
 
+Tomorrow confirmation (no send, deterministic candidate list):
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date 2026-02-14
+```
+
 Dry-run (no sends, writes outbox + manifest artifacts):
 
 ```powershell
@@ -285,12 +291,16 @@ Required outreach env keys (managed by `scripts\set_outreach_env.ps1`):
 - `DATA_DIR=out` (or your runtime path)
 
 `run_outreach_auto.py` deterministically picks today's state from `OUTREACH_STATES` by weekday index and uses batch id `<YYYY-MM-DD>_<STATE>`.
+`--for-date YYYY-MM-DD` is allowed with `--print-config`, `--doctor`, `--dry-run`, and `--plan`.
+If `--for-date` is not today and a live send is attempted, the command hard-fails with `ERR_AUTO_FOR_DATE_LIVE_SEND_BLOCKED` and no partial send effects.
 Normal runs select and prioritize prospects directly from `crm.sqlite`, send outreach emails, then record `outreach_events` and status updates.
 
 Expected artifacts:
 
 - `out/crm.sqlite` (or `${DATA_DIR}\crm.sqlite`)
 - `out/outreach_export_ledger.jsonl` (optional compatibility ledger)
+- `out\outreach\<batch>\outbox_<batch>_dry_run.csv`
+- `out\outreach\<batch>\outbox_<batch>_dry_run_manifest.csv` (includes `domain`, `segment`, `role_or_title`, `state_pref`, and `rank_reason` audit fields)
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 
@@ -338,6 +348,7 @@ Metric scope:
 # Verify dry-run artifacts exist and no-send marker was printed
 Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run.csv
 Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run_manifest.csv
+# Manifest rows include rank audit fields and dropped reasons for QA traceability.
 
 # Ledger exists and is appending
 Test-Path -LiteralPath .\out\outreach_export_ledger.jsonl
