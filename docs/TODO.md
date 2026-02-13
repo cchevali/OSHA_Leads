@@ -7,7 +7,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 ## Human-only (UI/credentials)
 
 - [ ] Create Stripe payment link URL and set it.
-  Stripe Dashboard -> Payment Links -> Create payment link -> Select product/price -> Configure recurring monthly billing -> Collect customer email -> Copy Payment Link URL -> Set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` -> Verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
+  Stripe Dashboard -> Payment Links -> Create payment link -> Select product/price -> Configure recurring monthly billing -> Collect customer email -> Copy Payment Link URL -> Set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` -> Verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config` -> After payment redirect: `https://microflowops.com/onboarding`.
 - [ ] Complete outbound sender domain setup and verification (SPF, DKIM, DMARC, domain/DNS alignment, and `FROM_EMAIL`/`SMTP_USER` alignment).
 - [ ] Ensure email provider account/sender credentials are configured for production and validated with daily doctor checks (`run_outreach_auto.py --doctor`).
 

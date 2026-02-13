@@ -7,5 +7,6 @@
   "ctaSampleSubject": "Requesting a trial feed (OSHA Activity Signals)",
   "ctaSampleBody": "Hi MicroFlowOps,\n\nI would like to request a trial feed for my territory.\n\nOrganization:\nTerritory (states / metros / OSHA area offices):\nRecipients:\nPreferred delivery time (optional):\n\nThanks",
   "ctaTerritorySubject": "Territory details",
-  "ctaTerritoryBody": "Hi MicroFlowOps,\n\nOrganization:\nTerritory (states / metros / OSHA area offices):\nRecipients:\nPreferred delivery time (optional):\n\nThanks"
+  "ctaTerritoryBody": "Hi MicroFlowOps,\n\nOrganization:\nTerritory (states / metros / OSHA area offices):\nRecipients:\nPreferred delivery time (optional):\n\nThanks",
+  "stripePaymentLink": "https://buy.stripe.com/..."
 }

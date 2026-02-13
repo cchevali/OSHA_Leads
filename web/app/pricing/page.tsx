@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import SectionHeading from "@/components/SectionHeading";
-import CTAButtons from "@/components/CTAButtons";
 import CopyEmailTemplate from "@/components/CopyEmailTemplate";
 import site from "@/config/site.json";
+import { buildStripeCheckoutUrl } from "@/lib/checkout";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/pricing" }
@@ -48,6 +48,12 @@ const plans = [
 ];
 
 export default function PricingPage() {
+  const stripeCheckoutUrl = buildStripeCheckoutUrl(site.stripePaymentLink);
+  const territoryDetailsMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
+    subject: site.ctaTerritorySubject,
+    body: site.ctaTerritoryBody
+  }).toString()}`;
+
   return (
     <div className="space-y-16 pb-24 pt-12">
       <section className="mx-auto w-full max-w-4xl px-6">
@@ -128,7 +134,22 @@ export default function PricingPage() {
                 We will send a no-commitment sample alert and trial feed so you can evaluate the signal quality.
               </p>
             </div>
-            <CTAButtons variant="dark" />
+            <div className="flex flex-wrap items-center gap-3">
+              <a
+                href={stripeCheckoutUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center rounded-full bg-ocean px-4 py-2 text-sm font-semibold text-white shadow-glow transition hover:bg-oceanDark"
+              >
+                Start Core ($399/mo)
+              </a>
+              <a
+                href={territoryDetailsMailto}
+                className="inline-flex items-center justify-center rounded-full border border-white/30 px-4 py-2 text-sm font-semibold text-white transition hover:border-white/60"
+              >
+                Send territory details
+              </a>
+            </div>
           </div>
         </div>
       </section>
