@@ -15,8 +15,10 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 
 ## Outreach CRM Auto-Run Data Flow
 
-1. Seed/import: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
-2. Daily run: `outreach/run_outreach_auto.py`
+1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).
+2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts the generated CSV into `crm.sqlite`.
+3. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
+4. Daily run: `outreach/run_outreach_auto.py`
    - Resolves daily state from `OUTREACH_STATES` and batch id `<YYYY-MM-DD>_<STATE>`
    - Selects/prioritizes prospects from `prospects` table
    - Enforces suppression + one-click unsubscribe compliance gates
@@ -24,8 +26,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - Sends multipart outreach emails directly via `send_digest_email.send_email`
    - Records `outreach_events` and prospect status transitions atomically
    - Sends ops summary email to `OSHA_SMOKE_TO`
-3. Lifecycle ops: `outreach/crm_admin.py mark` records replied/trial/converted/DNC outcomes.
-4. Optional compatibility: append-only ledger at `out/outreach_export_ledger.jsonl`.
+5. Lifecycle ops: `outreach/crm_admin.py mark` records replied/trial/converted/DNC outcomes.
+6. Optional compatibility: append-only ledger at `out/outreach_export_ledger.jsonl`.
 
 ## Outreach Debug Export Data Flow
 
@@ -35,6 +37,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 ## Operational Artifacts
 
 - `out/crm.sqlite` (or `${DATA_DIR}/crm.sqlite`): prospects/outreach/trials/suppression source of truth
+- `out/prospect_discovery/prospects_latest.csv` (or `${DATA_DIR}/prospect_discovery/prospects_latest.csv`): canonical generated discovery feed input
 - `out/unsub_tokens.csv`: token store for one-click unsubscribe links (when enabled)
 - `out/suppression.csv`: suppression list enforced by exports and sending paths
 - `out/outreach_export_ledger.jsonl`: optional compatibility ledger for contacted records

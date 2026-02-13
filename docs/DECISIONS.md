@@ -153,3 +153,33 @@ Adopt `docs/V1_CUSTOMER_VALIDATED.md` as the canonical V1 requirements capsule a
 - `docs/V1_CUSTOMER_VALIDATED.md` becomes the canonical bridge between historical V1 behavior and current spine docs.
 - `PROJECT_CONTEXT_PACK.md` generation includes the V1 capsule to keep single-file upload workflows complete.
 
+## ADR-0006: Prospect Generation Feed Standardized Before Discovery
+
+Date: 2026-02-13
+Status: Accepted
+
+### Context
+
+Discovery runs were deterministic but frequently had no input file, which left CRM empty and outreach plan pools at zero.
+Legacy Wally-era prospecting existed as pool generators and hygiene scripts, but that output was not standardized into discovery's canonical no-arg input path.
+
+### Decision
+
+Adopt a single upstream feed path:
+
+- `run_prospect_generation.py` generates `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (or `./out/prospect_discovery/prospects_latest.csv` when `DATA_DIR` is unset).
+- `run_prospect_discovery.py` continues to import/upsert from this feed into `crm.sqlite`.
+- Outreach remains CRM-backed (`run_outreach_auto.py`) and unchanged in send/cadence/scoring/compliance behavior.
+
+### Rationale
+
+- Preserves deterministic discovery behavior while making no-arg scheduled runs operationally reliable.
+- Keeps CRM as the authoritative pool and prevents drift back to legacy direct-send CSV workflows.
+- Reuses existing Wally-era pool generation/hygiene logic without embedding scraping or generation into discovery.
+
+### Consequences
+
+- Daily scheduler flow becomes generation -> discovery -> outreach.
+- Operators now monitor both `GENERATOR_*` and `DISCOVERY_*` machine-readable outputs.
+- Suppression and campaign tracking artifacts remain separate from the discovery feed.
+

@@ -225,6 +225,45 @@ cd C:\dev\OSHA_Leads
 
 CSV seed is optional bootstrap/debug only. Ongoing intake should run discovery, not CSV imports.
 
+### Prospect Generation (Scheduled First)
+
+Run canonical prospect generation first each day. This writes the discovery feed CSV that discovery imports into CRM:
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py
+```
+
+No-arg generation output path:
+
+- `${DATA_DIR}\prospect_discovery\prospects_latest.csv`
+- If `DATA_DIR` is unset: `.\out\prospect_discovery\prospects_latest.csv`
+
+Dry-run generation (no writes):
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --dry-run
+```
+
+Print resolved generation config:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config
+```
+
+Generator emits machine-readable lines:
+
+- `GENERATOR_OUTPUT_PATH`
+- `GENERATOR_ROWS_READ`
+- `GENERATOR_ROWS_WRITTEN`
+- `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
+
+Artifact separation (do not mix these):
+
+- Discovery feed CSV: `${DATA_DIR}\prospect_discovery\prospects_latest.csv`
+- Send-time suppression list: `${DATA_DIR}\suppression.csv` (or `.\out\suppression.csv`)
+- Optional campaign tracking logs: `out\campaign_tracking\...`
+
 ### Prospect Discovery (Scheduled First)
 
 Run discovery before outreach each day:
@@ -281,6 +320,12 @@ Discovery emits a fixed-order `DISCOVERY_*` diagnostics block for operator parsi
 - `DISCOVERY_COMPLETE status=<OK|NO_INPUT|DRY_RUN>`
 
 Legacy `PASS_DISCOVERY_*` / `ERR_DISCOVERY_*` tokens remain supported for compatibility.
+
+Canonical daily sequence:
+
+1. `.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py`
+2. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
+3. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
 
 ### Single Command (Scheduled Daily)
 
@@ -457,7 +502,13 @@ $rows | Group-Object { $_.email.ToLowerInvariant().Trim() } | ForEach-Object { $
 
 ### Task Scheduler (PC)
 
-Create/update daily tasks (discovery first, outreach second):
+Create/update daily tasks (generation first, discovery second, outreach third):
+
+```powershell
+schtasks /Create /F /SC DAILY /ST 07:00 /TN "OSHA_Prospect_Generation" `
+  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_prospect_generation.py" `
+  /RL HIGHEST
+```
 
 ```powershell
 schtasks /Create /F /SC DAILY /ST 07:30 /TN "OSHA_Prospect_Discovery" `
@@ -482,9 +533,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_
 ### Minimal Daily Ops Checklist
 
 1. Update `suppression.csv` with yesterday's unsubscribes/bounces.
-2. Confirm discovery run populated/updated prospects in `crm.sqlite`.
-3. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with contacted/skipped/new-replies-trials-conversions.
-4. Use `outreach\crm_admin.py mark` to record `replied`, `trial_started`, `converted`, or `do_not_contact`.
+2. Confirm generation run produced `${DATA_DIR}\prospect_discovery\prospects_latest.csv` (or `.\out\prospect_discovery\prospects_latest.csv`).
+3. Confirm discovery run populated/updated prospects in `crm.sqlite`.
+4. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with contacted/skipped/new-replies-trials-conversions.
+5. Use `outreach\crm_admin.py mark` to record `replied`, `trial_started`, `converted`, or `do_not_contact`.
 
 ## Wally Trial Missed 9:00 AM Catch-Up (SAFE_MODE)
 
@@ -654,3 +706,4 @@ Operator checks:
 - Confirm each run prints a `RUN_DIAGNOSTICS` line.
 - Confirm dry-run output indicates no live send.
 - On the second run, previously observed leads should not be counted as newly observed.
+

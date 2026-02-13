@@ -1,4 +1,19 @@
-﻿# Customer Acquisition Ops
+# Customer Acquisition Ops
+
+## Canonical Pipeline (Wally-Style, CRM-Backed)
+
+Prospect acquisition remains a CSV-driven operation, but now follows one canonical pipeline:
+
+1. Generate candidate pools (Wally-style hygiene/selection logic).
+2. Write discovery feed CSV to `${DATA_DIR}\prospect_discovery\prospects_latest.csv` (or `.\out\prospect_discovery\prospects_latest.csv`).
+3. Run discovery import (`run_prospect_discovery.py`) to upsert `crm.sqlite`.
+4. Run outreach from CRM (`run_outreach_auto.py`).
+
+Important separation:
+
+- Discovery feed CSV is an input pool for CRM.
+- Suppression CSV is a send-time compliance artifact.
+- Campaign tracking CSVs are optional operational logs.
 
 ## Texas Triangle Prospect Target List
 
@@ -118,3 +133,4 @@ Where to write the working copies:
 
 Dedupe rule (ops-level):
 - Before sending any cold email, check `sent.csv` for the normalized email (lowercase). If present with `status=sent`, do not send again.
+
