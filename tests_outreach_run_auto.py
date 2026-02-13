@@ -232,9 +232,29 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn(f"data_dir={data_dir.resolve()}", out)
             self.assertIn(f"crm_db={(data_dir / 'crm.sqlite').resolve()}", out)
             self.assertIn(f"suppression_csv={(data_dir / 'suppression.csv').resolve()}", out)
+            self.assertIn("outreach_daily_limit=200 source=default", out)
             self.assertIn("outreach_states=TX,CA", out)
             self.assertIn("selected_state=", out)
             self.assertIn("batch_id=", out)
+            self.assertIn("trial_conversion_url_present=NO", out)
+
+    def test_print_config_outputs_limit_source_env_and_trial_conversion_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA",
+                "OUTREACH_DAILY_LIMIT": "17",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "TRIAL_CONVERSION_URL": "https://buy.stripe.com/test123",
+            }
+            p = self._run(["--print-config"], env)
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+
+            out = p.stdout or ""
+            self.assertIn("outreach_daily_limit=17 source=env", out)
+            self.assertIn("trial_conversion_url_present=YES", out)
 
     def test_doctor_missing_env_returns_single_err_line(self):
         with tempfile.TemporaryDirectory() as d:

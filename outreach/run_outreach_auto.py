@@ -128,13 +128,19 @@ def _parse_states(raw: str) -> list[str]:
     return states
 
 
-def _daily_limit() -> int:
-    raw = (os.getenv("OUTREACH_DAILY_LIMIT") or "200").strip()
+def _daily_limit_with_source() -> tuple[int, str]:
+    raw = (os.getenv("OUTREACH_DAILY_LIMIT") or "").strip()
+    if not raw:
+        return 200, "default"
     try:
         n = int(raw)
     except Exception:
-        return 200
-    return max(1, n)
+        return 200, "default"
+    return max(1, n), "env"
+
+
+def _daily_limit() -> int:
+    return _daily_limit_with_source()[0]
 
 
 def _data_dir() -> Path:
@@ -894,12 +900,16 @@ def main() -> int:
     export_ledger = _export_ledger_path()
 
     if args.print_config:
+        daily_limit, daily_limit_source = _daily_limit_with_source()
+        trial_conversion_url_present = "YES" if (os.getenv("TRIAL_CONVERSION_URL") or "").strip() else "NO"
         print(f"{PASS_AUTO_PRINT_CONFIG} data_dir={_data_dir().resolve()}")
         print(f"{PASS_AUTO_PRINT_CONFIG} crm_db={crm_db.resolve()}")
         print(f"{PASS_AUTO_PRINT_CONFIG} suppression_csv={suppression_csv.resolve()}")
         print(f"{PASS_AUTO_PRINT_CONFIG} export_ledger={export_ledger.resolve()}")
+        print(f"{PASS_AUTO_PRINT_CONFIG} outreach_daily_limit={daily_limit} source={daily_limit_source}")
         print(f"{PASS_AUTO_PRINT_CONFIG} outreach_states={','.join(states)} selected_state={state}")
         print(f"{PASS_AUTO_PRINT_CONFIG} batch_id={batch}")
+        print(f"trial_conversion_url_present={trial_conversion_url_present}")
         return 0
 
     if not args.dry_run:
