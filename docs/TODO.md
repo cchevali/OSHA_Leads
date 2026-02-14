@@ -8,8 +8,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 - [ ] After any doc/contract change: rebuild + upload `PROJECT_CONTEXT_PACK.md` + mark uploaded (`py -3 tools\project_context_pack.py --build`, upload in ChatGPT Project Settings -> Files, `py -3 tools\project_context_pack.py --mark-uploaded`).
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
-- [ ] Create Stripe payment link URL and set it.
-  Stripe Dashboard -> Payment Links -> Create payment link -> Select product/price -> Configure recurring monthly billing -> Collect customer email -> Copy Payment Link URL -> Set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` -> Verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config` -> After payment redirect: `https://microflowops.com/onboarding`.
+- [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
 - [ ] Complete outbound sender domain setup and verification (SPF, DKIM, DMARC, domain/DNS alignment, and `FROM_EMAIL`/`SMTP_USER` alignment).
 - [ ] Ensure email provider account/sender credentials are configured for production and validated with daily doctor checks (`run_outreach_auto.py --doctor`).
 
@@ -25,4 +24,4 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Done
 
-- [ ] (empty)
+- 2026-02-12: Set website Stripe payment link in `web/config/site.json` (`stripePaymentLink`) and wire it into `web/app/pricing/page.tsx` + `web/app/contact/page.tsx` (commit `54c2a3c6`).
