@@ -12,11 +12,11 @@ EXPECTED_GENERATION_TR = (
 )
 EXPECTED_DISCOVERY_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
-    r"C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_prospect_discovery.py"
+    r"C:\dev\OSHA_Leads\run_with_secrets.ps1 py -3 C:\dev\OSHA_Leads\run_prospect_discovery.py"
 )
 EXPECTED_OUTREACH_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
-    r"C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_outreach_auto.py"
+    r"C:\dev\OSHA_Leads\run_with_secrets.ps1 py -3 C:\dev\OSHA_Leads\run_outreach_auto.py"
 )
 EXPECTED_INBOUND_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
@@ -176,6 +176,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("action_mismatch", text)
         self.assertIn("last_run_result_hex=0x41303", text)
         self.assertNotIn("last_result=0x41303", text)
+        self.assertNotIn(" -- py -3 ", text)
+        self.assertIn(" py -3 ", text)
         self.assertIn("--verify", text)
 
     def test_invalid_args_emit_err_token(self):

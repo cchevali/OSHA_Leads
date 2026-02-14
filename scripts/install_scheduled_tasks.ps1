@@ -37,8 +37,8 @@ function Get-TaskDefinitions([string]$RepoRoot) {
 
   return @(
     (New-TaskDefinition -Name 'OSHA_Prospect_Generation' -ScheduleType 'daily' -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $generationRunner)),
-    (New-TaskDefinition -Name 'OSHA_Prospect_Discovery' -ScheduleType 'daily' -StartTime '07:30' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' -- py -3 ' + $discovery)),
-    (New-TaskDefinition -Name 'OSHA_Outreach_Auto' -ScheduleType 'daily' -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' -- py -3 ' + $outreach)),
+    (New-TaskDefinition -Name 'OSHA_Prospect_Discovery' -ScheduleType 'daily' -StartTime '07:30' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $discovery)),
+    (New-TaskDefinition -Name 'OSHA_Outreach_Auto' -ScheduleType 'daily' -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $outreach)),
     (New-TaskDefinition -Name 'OSHA_Inbound_Triage' -ScheduleType 'minute' -StartTime '' -MinuteInterval 15 -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $inboundRunner))
   )
 }
