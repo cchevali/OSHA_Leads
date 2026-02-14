@@ -112,17 +112,18 @@ function Emit-TaskConfig([array]$Tasks, [string]$Mode) {
 }
 
 function Build-SchtasksPreviewLine([hashtable]$Task) {
+  $taskNameForQuery = '\' + $Task.Name
   if ($Task.ScheduleType -eq 'minute') {
-    return 'schtasks /Create /F /SC MINUTE /MO ' + $Task.MinuteInterval + ' /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $Task.Name + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
+    return 'schtasks /Create /F /SC MINUTE /MO ' + $Task.MinuteInterval + ' /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskNameForQuery + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
   }
-  return 'schtasks /Create /F /SC DAILY /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $Task.Name + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
+  return 'schtasks /Create /F /SC DAILY /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskNameForQuery + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
 }
 
-function Invoke-SchtasksCommand([string[]]$Args) {
+function Invoke-SchtasksCommand([string[]]$SchtasksArgs) {
   $prevErrorAction = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   try {
-    $output = & schtasks.exe @Args 2>&1
+    $output = & schtasks.exe @SchtasksArgs 2>&1
     $code = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $prevErrorAction
@@ -148,7 +149,30 @@ function Invoke-CmdCommand([string]$CommandLine) {
   }
 }
 
+function Get-TaskToRunFromSchtasks([string]$TaskName) {
+  $taskNameForQuery = '\' + $TaskName
+  $queryCmd = 'schtasks.exe /Query /TN ' + $taskNameForQuery + ' /V /FO LIST'
+  $queryResult = Invoke-CmdCommand -CommandLine $queryCmd
+  $queryOut = @($queryResult.Output)
+  if ([int]$queryResult.ExitCode -ne 0) {
+    Fail 'ERR_INSTALL_SCHEDULED_TASKS_APPLY' ('task=' + $TaskName + ' query_failed exit_code=' + [int]$queryResult.ExitCode)
+  }
+  $fields = Parse-TaskQueryOutput -Lines @($queryOut)
+  return Get-TaskQueryField -Fields $fields -Key 'Task To Run'
+}
+
+function Delete-TaskIfExists([string]$TaskName) {
+  $taskNameForQuery = '\' + $TaskName
+  $deleteArgs = @('/Delete', '/TN', $taskNameForQuery, '/F')
+  $deleteResult = Invoke-SchtasksCommand -SchtasksArgs $deleteArgs
+  if ([int]$deleteResult.ExitCode -ne 0) {
+    $text = ((@($deleteResult.Output) | ForEach-Object { [string]$_ }) -join ' ')
+    Fail 'ERR_INSTALL_SCHEDULED_TASKS_APPLY' ('task=' + $TaskName + ' delete_failed exit_code=' + [int]$deleteResult.ExitCode + ' detail=' + $text)
+  }
+}
+
 function Invoke-TaskCreate([hashtable]$Task) {
+  $taskNameForQuery = '\' + $Task.Name
   $taskArgs = @(
     '/Create',
     '/F',
@@ -167,14 +191,14 @@ function Invoke-TaskCreate([hashtable]$Task) {
     '/ST',
     $Task.StartTimeResolved,
     '/TN',
-    $Task.Name,
+    $taskNameForQuery,
     '/TR',
     $Task.TaskRun,
     '/RL',
     $Task.RunLevel
   )
 
-  $createResult = Invoke-SchtasksCommand -Args $taskArgs
+  $createResult = Invoke-SchtasksCommand -SchtasksArgs $taskArgs
   $createOutput = @($createResult.Output)
   $createCode = [int]$createResult.ExitCode
   if ($createCode -eq 0) {
@@ -194,7 +218,7 @@ function Invoke-TaskCreate([hashtable]$Task) {
         break
       }
     }
-    $fallbackResult = Invoke-SchtasksCommand -Args $fallbackArgs
+    $fallbackResult = Invoke-SchtasksCommand -SchtasksArgs $fallbackArgs
     $fallbackOut = @($fallbackResult.Output)
     $fallbackCode = [int]$fallbackResult.ExitCode
     if ($fallbackCode -eq 0) {
@@ -392,9 +416,21 @@ if ($modeArg -eq '--verify') {
 
 Emit-TaskConfig -Tasks $resolvedTasks -Mode 'apply'
 for ($i = 0; $i -lt $resolvedTasks.Count; $i++) {
-  Invoke-TaskCreate -Task $resolvedTasks[$i]
-  Set-TaskOperationalSettings -Task $resolvedTasks[$i]
-  Write-Output ('TASK_APPLIED=' + $resolvedTasks[$i].Name)
+  $task = $resolvedTasks[$i]
+  $actual = Get-TaskToRunFromSchtasks -TaskName $task.Name
+  if (($actual -as [string]).Trim() -ne (($task.TaskRun -as [string]).Trim())) {
+    Write-Output ('WARN_SCHEDTASK_ACTION_MISMATCH task=' + $task.Name + ' will_recreate=YES')
+    Delete-TaskIfExists -TaskName $task.Name
+  }
+
+  Invoke-TaskCreate -Task $task
+  Set-TaskOperationalSettings -Task $task
+
+  $post = Get-TaskToRunFromSchtasks -TaskName $task.Name
+  if (($post -as [string]).Trim() -ne (($task.TaskRun -as [string]).Trim())) {
+    Fail 'ERR_INSTALL_SCHEDULED_TASKS_APPLY_ACTION_STUCK' ('task=' + $task.Name + ' actual=' + $post + ' expected=' + $task.TaskRun)
+  }
+  Write-Output ('TASK_APPLIED=' + $task.Name)
 }
 Write-Output 'PASS_INSTALL_SCHEDULED_TASKS_APPLY'
 exit 0
