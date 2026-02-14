@@ -44,6 +44,7 @@ PASS_AUTO_EXPORT = "PASS_AUTO_EXPORT"
 PASS_AUTO_SUMMARY = "PASS_AUTO_SUMMARY"
 
 ERR_DOCTOR_SECRETS_DECRYPT = "ERR_DOCTOR_SECRETS_DECRYPT"
+ERR_DOCTOR_ENV_MISSING = "ERR_DOCTOR_ENV_MISSING"
 ERR_DOCTOR_ENV_MISSING_PREFIX = "ERR_DOCTOR_ENV_MISSING_"
 ERR_DOCTOR_ENV_INVALID_PREFIX = "ERR_DOCTOR_ENV_INVALID_"
 ERR_DOCTOR_CRM_REQUIRED = "ERR_DOCTOR_CRM_REQUIRED"
@@ -66,6 +67,7 @@ PASS_DOCTOR_PROVIDER_CONFIG = "PASS_DOCTOR_PROVIDER_CONFIG"
 PASS_DOCTOR_DRY_RUN_ARTIFACT = "PASS_DOCTOR_DRY_RUN_ARTIFACT"
 PASS_DOCTOR_IDEMPOTENCY = "PASS_DOCTOR_IDEMPOTENCY"
 PASS_DOCTOR_COMPLETE = "PASS_DOCTOR_COMPLETE"
+DOCTOR_ENV_REMEDIATION = "Remediation: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\\set_outreach_env.ps1"
 
 DOCTOR_TIMEOUT_SECRETS_SECONDS = 90
 DOCTOR_TIMEOUT_DRY_RUN_SECONDS = 120
@@ -1152,16 +1154,27 @@ def _doctor_parse_env() -> tuple[bool, str, dict]:
     ctx: dict[str, object] = {}
 
     raw_states = (os.getenv("OUTREACH_STATES") or "").strip()
+    raw_limit = (os.getenv("OUTREACH_DAILY_LIMIT") or "").strip()
+    smoke_to = (os.getenv("OSHA_SMOKE_TO") or "").strip()
+    raw_max_age = (os.getenv("OUTREACH_SUPPRESSION_MAX_AGE_HOURS") or "").strip()
+
+    missing_keys: list[str] = []
     if not raw_states:
-        return _doctor_error(ERR_DOCTOR_ENV_MISSING_PREFIX + "OUTREACH_STATES") + ({},)
+        missing_keys.append("OUTREACH_STATES")
+    if not raw_limit:
+        missing_keys.append("OUTREACH_DAILY_LIMIT")
+    if not smoke_to:
+        missing_keys.append("OSHA_SMOKE_TO")
+    if not raw_max_age:
+        missing_keys.append("OUTREACH_SUPPRESSION_MAX_AGE_HOURS")
+    if missing_keys:
+        return _doctor_error(ERR_DOCTOR_ENV_MISSING, "keys=" + ",".join(missing_keys)) + ({},)
+
     states = _parse_states(raw_states)
     if not states:
         return _doctor_error(ERR_DOCTOR_ENV_INVALID_PREFIX + "OUTREACH_STATES", f"value={_compact_detail(raw_states)}") + ({},)
     ctx["states"] = states
 
-    raw_limit = (os.getenv("OUTREACH_DAILY_LIMIT") or "").strip()
-    if not raw_limit:
-        return _doctor_error(ERR_DOCTOR_ENV_MISSING_PREFIX + "OUTREACH_DAILY_LIMIT") + ({},)
     try:
         daily_limit = int(raw_limit)
     except Exception:
@@ -1170,16 +1183,10 @@ def _doctor_parse_env() -> tuple[bool, str, dict]:
         return _doctor_error(ERR_DOCTOR_ENV_INVALID_PREFIX + "OUTREACH_DAILY_LIMIT", f"value={daily_limit}") + ({},)
     ctx["daily_limit"] = daily_limit
 
-    smoke_to = (os.getenv("OSHA_SMOKE_TO") or "").strip()
-    if not smoke_to:
-        return _doctor_error(ERR_DOCTOR_ENV_MISSING_PREFIX + "OSHA_SMOKE_TO") + ({},)
     if not _is_valid_email_shape(smoke_to):
         return _doctor_error(ERR_DOCTOR_ENV_INVALID_PREFIX + "OSHA_SMOKE_TO", f"value={_compact_detail(smoke_to, 120)}") + ({},)
     ctx["smoke_to"] = _norm_email(smoke_to)
 
-    raw_max_age = (os.getenv("OUTREACH_SUPPRESSION_MAX_AGE_HOURS") or "").strip()
-    if not raw_max_age:
-        return _doctor_error(ERR_DOCTOR_ENV_MISSING_PREFIX + "OUTREACH_SUPPRESSION_MAX_AGE_HOURS") + ({},)
     try:
         suppression_max_age_hours = float(raw_max_age)
     except Exception:
@@ -1438,6 +1445,8 @@ def main() -> int:
         ok, msg = _run_doctor(allow_repeat=bool(args.allow_repeat), run_date=run_date)
         if not ok:
             print(msg, file=sys.stderr)
+            if (msg or "").startswith(ERR_DOCTOR_ENV_MISSING + " "):
+                print(DOCTOR_ENV_REMEDIATION, file=sys.stderr)
             return 2
         return 0
 

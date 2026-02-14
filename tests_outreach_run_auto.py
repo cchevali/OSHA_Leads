@@ -612,7 +612,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("skip_breakdown", diagnostics)
             self.assertEqual((diagnostics.get("state") or "").strip(), "TX")
 
-    def test_doctor_missing_env_returns_single_err_line(self):
+    def test_doctor_missing_env_returns_aggregated_err_and_remediation(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             data_dir = tmp / "data"
@@ -655,8 +655,58 @@ class TestOutreachRunAuto(unittest.TestCase):
 
             self.assertEqual(rc, 2)
             err_lines = [ln.strip() for ln in (err.getvalue() or "").splitlines() if ln.strip()]
-            self.assertEqual(len(err_lines), 1, msg=err.getvalue())
-            self.assertTrue(err_lines[0].startswith("ERR_DOCTOR_ENV_MISSING_"), msg=err_lines[0])
+            self.assertEqual(len(err_lines), 2, msg=err.getvalue())
+            self.assertEqual(err_lines[0], "ERR_DOCTOR_ENV_MISSING keys=OUTREACH_STATES")
+            self.assertEqual(
+                err_lines[1],
+                "Remediation: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\\set_outreach_env.ps1",
+            )
+
+    def test_doctor_missing_env_multiple_keys_preserves_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "A",
+                        "firm": "F",
+                        "email": "a@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": None,
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": None,
+                "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
+            }
+            with mock.patch.dict(os.environ, {}, clear=False):
+                for key, value in env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+                with mock.patch.object(roa, "_doctor_check_secrets_decrypt", return_value=(True, "")):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+
+            self.assertEqual(rc, 2)
+            err_lines = [ln.strip() for ln in (err.getvalue() or "").splitlines() if ln.strip()]
+            self.assertEqual(len(err_lines), 2, msg=err.getvalue())
+            self.assertEqual(err_lines[0], "ERR_DOCTOR_ENV_MISSING keys=OUTREACH_STATES,OSHA_SMOKE_TO")
 
     def test_doctor_for_date_is_forwarded_to_dry_run_artifact_check(self):
         with tempfile.TemporaryDirectory() as d:
