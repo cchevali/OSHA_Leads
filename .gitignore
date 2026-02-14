@@ -31,6 +31,7 @@ PROJECT_CONTEXT_PACK.md
 !outreach/sample_prospects.csv
 outreach/outbox_*.csv
 outreach/outreach_runs/
+scripts/scheduled/run_prospect_generation.cmd
 
 # OS / IDE
 .DS_Store

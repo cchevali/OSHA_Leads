@@ -502,11 +502,12 @@ $rows | Group-Object { $_.email.ToLowerInvariant().Trim() } | ForEach-Object { $
 
 ### Task Scheduler (PC)
 
-Create/update daily tasks (generation first, discovery second, outreach third):
+Create/update daily tasks (generation first, discovery second, outreach third).
+Operational expectation is America/New_York local time:
 
 ```powershell
-schtasks /Create /F /SC DAILY /ST 07:00 /TN "OSHA_Prospect_Generation" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_prospect_generation.py" `
+schtasks /Create /F /SC DAILY /ST 07:15 /TN "OSHA_Prospect_Generation" `
+  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_generation.ps1" `
   /RL HIGHEST
 ```
 
