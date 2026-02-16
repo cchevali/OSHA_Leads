@@ -933,33 +933,23 @@ def generate_email_body(recipient: dict, sample_leads: list,
         unsub_url=unsub_url or None,
     )
 
-    # Build text body (no Ref line - clean for cold outreach)
+    # Build text body
+    lead_count = len(sample_leads)
     text_body = f"""{greeting}
 
-I'm reaching out because {firm} appears active in safety/construction, and we track new OSHA activity signals in {territory}.
-
-Here are a few recent signals:
-
-Priority is a heuristic based on severity/penalty/recency; not legal advice.
-
-Only the highest-priority signals are included in this sample.
-{(refresh_text + chr(10)) if refresh_text else ''}
+{firm} covers {territory}, so these might be on your radar — {lead_count} new OSHA inspection{"s" if lead_count != 1 else ""} opened in {territory} recently:
 
 {leads_text}
 
-Some OSHA matters can be time-sensitive; deadlines vary by case. We include deadlines only when available.
+I run a small service that surfaces these daily by territory. If a short morning brief like this would be useful, reply "yes" and I'll start a 7-day trial.
 
-If you'd like, I can send a short daily {territory} digest like this. Reply "yes" and I'll set it up.
-
-Not affiliated with OSHA; this is an independent alert service (no legal advice).
-
-Chase Chevalier
-MicroFlowOps - OSHA Alerts
+Chase
+MicroFlowOps
 support@microflowops.com
 
 {footer_text}
 """
-    
+
     # Build HTML body (600px centered, system-ui font stack, dark-mode safe)
     html_body = f'''<!DOCTYPE html>
 <html>
@@ -975,36 +965,19 @@ support@microflowops.com
 <p style="font-size: 14px; line-height: 1.6; margin: 0 0 16px 0;">{greeting}</p>
 
 <p style="font-size: 14px; line-height: 1.6; margin: 0 0 20px 0;">
-I'm reaching out because {firm} appears active in safety/construction, and we track new OSHA activity signals in {territory}.
+{firm} covers {territory}, so these might be on your radar &mdash; {lead_count} new OSHA inspection{"s" if lead_count != 1 else ""} opened in {territory} recently:
 </p>
-
-<p style="font-size: 16px; font-weight: 600; margin: 0 0 12px 0; color: #1a1a1a;">Recent signals:</p>
-<p style="font-size: 13px; color: #666; line-height: 1.5; margin: 0 0 12px 0;">
-Priority is a heuristic based on severity/penalty/recency; not legal advice.
-</p>
-<p style="font-size: 13px; color: #666; line-height: 1.5; margin: 0 0 12px 0;">
-Only the highest-priority signals are included in this sample.
-</p>
-{f'<p style=\"font-size: 12px; color: #888; line-height: 1.5; margin: 0 0 12px 0;\">{refresh_html}</p>' if refresh_html else ''}
 
 <div style="margin-bottom: 20px;">
 {leads_html}
 </div>
 
-<p style="font-size: 13px; color: #666; line-height: 1.5; margin: 0 0 20px 0;">
-Some OSHA matters can be time-sensitive; deadlines vary by case. We include deadlines only when available.
-</p>
-
 <p style="font-size: 14px; line-height: 1.6; margin: 0 0 24px 0;">
-If you'd like, I can send a short daily {territory} digest like this. Reply "yes" and I'll set it up.
+I run a small service that surfaces these daily by territory. If a short morning brief like this would be useful, reply &ldquo;yes&rdquo; and I'll start a 7-day trial.
 </p>
 
-<p style="font-size: 13px; color: #666; line-height: 1.5; margin: 0 0 16px 0;">
-Not affiliated with OSHA; this is an independent alert service (no legal advice).
-</p>
-
-<p style="font-size: 14px; margin: 0 0 2px 0; color: #1a1a1a;">Chase Chevalier</p>
-<p style="font-size: 13px; margin: 0 0 2px 0; color: #1a1a1a;">MicroFlowOps - OSHA Alerts</p>
+<p style="font-size: 14px; margin: 0 0 2px 0; color: #1a1a1a;">Chase</p>
+<p style="font-size: 13px; margin: 0 0 2px 0; color: #1a1a1a;">MicroFlowOps</p>
 <p style="font-size: 13px; margin: 0 0 16px 0;">
   <a href="mailto:support@microflowops.com" style="color: #1a1a1a; text-decoration: none;">support@microflowops.com</a>
 </p>

@@ -26,22 +26,20 @@ export default function ContactPage() {
       <section className="mx-auto w-full max-w-5xl px-6">
         <div className="grid gap-6 md:grid-cols-2">
           <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
-            <h3 className="font-display text-2xl text-ink">Request a trial feed</h3>
+            <h3 className="font-display text-2xl text-ink">Get started</h3>
             <p className="mt-3 text-inkMuted">
               Tell us your organization and territory. We will send a sample alert and start a short
               trial feed.
             </p>
-            <div className="mt-4">
+            <div className="mt-4 flex flex-wrap items-center gap-3">
               <CTAButtons />
-            </div>
-            <div className="mt-3">
               <a
                 href={stripeCheckoutUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center justify-center rounded-full border border-ink/15 px-4 py-2 text-sm font-semibold text-ink transition hover:border-ink/40"
               >
-                Start Core ($399/mo)
+                Subscribe — $399/mo
               </a>
             </div>
           </div>
@@ -60,7 +58,7 @@ export default function ContactPage() {
         <SectionHeading
           eyebrow="Copy/Paste"
           title="Copy/Paste Email Template"
-          description="If you prefer, copy the exact subject/body we use in the buttons above."
+          description="If you prefer, copy the exact subject/body we use in the button above."
         />
         <div className="mt-8 space-y-6">
           <CopyEmailTemplate
@@ -69,13 +67,6 @@ export default function ContactPage() {
             body={site.ctaSampleBody}
             subjectEventName="copy_subject_request_sample"
             bodyEventName="copy_body_request_sample"
-          />
-          <CopyEmailTemplate
-            title="Reply with territory details"
-            subject={site.ctaTerritorySubject}
-            body={site.ctaTerritoryBody}
-            subjectEventName="copy_subject_territory_firm"
-            bodyEventName="copy_body_territory_firm"
           />
         </div>
       </section>
