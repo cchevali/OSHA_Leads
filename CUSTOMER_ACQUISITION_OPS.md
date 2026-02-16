@@ -51,7 +51,7 @@ Texas Triangle coverage: Dallas-Fort Worth, Houston, Austin, San Antonio.
 
 ## Outreach Messages (Cold Tone)
 
-### Initial (Territory-First, Email-Only)
+### Initial (Region-First, Email-Only)
 
 Subject: Texas Triangle OSHA activity — {Firm}
 
@@ -61,10 +61,10 @@ Hi {First},
 
 Sample alert format: https://microflowops.com/sample
 
-I run a small service that surfaces these by territory each morning. If a short daily digest would be useful, reply "yes" with your territory + firm name and I'll start a 7-day trial. No calls; everything is email-only.
+We surface these by region each morning. If a short daily digest would be useful, reply "yes" with your region + firm name and I'll start a 7-day trial. No calls; everything is email-only.
 
 Chase
-MicroFlowOps
+MicroFlowOps · microflowops.com
 support@microflowops.com
 
 ### Follow-Up (3-4 days later)
@@ -73,7 +73,7 @@ Subject: Following up: Texas Triangle OSHA Activity Signals
 
 Hi {First},
 
-Quick follow-up — if a daily Texas Triangle OSHA digest would help your team spot new inspections early, reply with your territory + firm name and I'll start a 7-day sample. Email-only; no calls.
+Quick follow-up — if a daily Texas Triangle OSHA digest would help your team spot new inspections early, reply with your region + firm name and I'll start a 7-day sample. Email-only; no calls.
 
 Chase
 

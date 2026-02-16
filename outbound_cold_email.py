@@ -837,7 +837,7 @@ def generate_email_subject(recipient: dict, sample_leads: list, is_test: bool = 
 
 
 def format_lead_for_text(lead: dict, index: int) -> str:
-    """Format a single lead for plain text (numbered list)."""
+    """Format a single lead for plain text — company on top, metadata below."""
     company = lead.get("establishment_name", "Unknown Company")
     city = lead.get("site_city", "")
     state = lead.get("site_state", "")
@@ -847,10 +847,8 @@ def format_lead_for_text(lead: dict, index: int) -> str:
     insp_type = lead.get("inspection_type", "") or "Inspection"
     priority = get_priority_label(lead.get("lead_score", 0))
     
-    line = (f"Priority: {priority} - {company} - {location} - "
-            f"{insp_type} - Opened: {opened} - Observed: {observed}")
-    
-    lines = [f"{index}. {line}"]
+    lines = [f"{index}. [{priority}] {company}"]
+    lines.append(f"   {location} · {insp_type} · Opened {opened} · Observed {observed}")
     
     osha_url = get_osha_url(lead)
     if osha_url:
@@ -859,8 +857,18 @@ def format_lead_for_text(lead: dict, index: int) -> str:
     return "\n".join(lines)
 
 
+def _priority_border_color(priority: str) -> str:
+    """Return a left-border colour keyed to priority tier."""
+    p = priority.lower()
+    if p == "high":
+        return "#c0392b"   # red
+    if p == "medium":
+        return "#2980b9"   # blue
+    return "#95a5a6"       # gray
+
+
 def format_lead_for_html(lead: dict) -> str:
-    """Format a single lead as HTML mini-card."""
+    """Format a single lead as a styled HTML mini-card with priority border."""
     company = html_escape(lead.get("establishment_name", "Unknown Company"))
     city = html_escape(lead.get("site_city", ""))
     state = html_escape(lead.get("site_state", ""))
@@ -870,17 +878,16 @@ def format_lead_for_html(lead: dict) -> str:
     insp_type = html_escape(lead.get("inspection_type", "") or "Inspection")
     priority = html_escape(get_priority_label(lead.get("lead_score", 0)))
     osha_url = html_escape(get_osha_url(lead))
+    border_color = _priority_border_color(priority)
     
     if osha_url:
-        company_html = f'<a href="{osha_url}" rel="noopener noreferrer" style="color: #1a1a1a; text-decoration: underline;">{company}</a>'
+        company_html = f'<a href="{osha_url}" rel="noopener noreferrer" style="color: #1a1a1a; font-weight: 600; text-decoration: underline;">{company}</a>'
     else:
-        company_html = company
+        company_html = f'<strong>{company}</strong>'
     
-    meta_line = (f"Priority: {priority} &mdash; {company_html} &mdash; {location} &mdash; "
-                 f"{insp_type} &mdash; Opened: {opened} &mdash; Observed: {observed}")
-    
-    return f'''<div style="margin-bottom: 12px;">
-<div style="font-size: 13px; color: #1a1a1a;">{meta_line}</div>
+    return f'''<div style="margin-bottom: 10px; padding: 10px 12px; border-left: 3px solid {border_color}; background: #fafafa; border-radius: 4px;">
+<div style="font-size: 14px; color: #1a1a1a; margin: 0 0 4px 0;">{company_html}</div>
+<div style="font-size: 12px; color: #555;">{priority} &middot; {location} &middot; {insp_type} &middot; Opened {opened} &middot; Observed {observed}</div>
 </div>'''
 
 
@@ -941,10 +948,10 @@ def generate_email_body(recipient: dict, sample_leads: list,
 
 {leads_text}
 
-I run a small service that surfaces these daily by territory. If a short morning brief like this would be useful, reply "yes" and I'll start a 7-day trial.
+We surface these daily by region. If a short morning brief like this would be useful, reply "yes" and I'll start a 7-day trial.
 
 Chase
-MicroFlowOps
+MicroFlowOps · microflowops.com
 support@microflowops.com
 
 {footer_text}
@@ -973,11 +980,11 @@ support@microflowops.com
 </div>
 
 <p style="font-size: 14px; line-height: 1.6; margin: 0 0 24px 0;">
-I run a small service that surfaces these daily by territory. If a short morning brief like this would be useful, reply &ldquo;yes&rdquo; and I'll start a 7-day trial.
+We surface these daily by region. If a short morning brief like this would be useful, reply &ldquo;yes&rdquo; and I&rsquo;ll start a 7-day trial.
 </p>
 
 <p style="font-size: 14px; margin: 0 0 2px 0; color: #1a1a1a;">Chase</p>
-<p style="font-size: 13px; margin: 0 0 2px 0; color: #1a1a1a;">MicroFlowOps</p>
+<p style="font-size: 13px; margin: 0 0 2px 0; color: #1a1a1a;">MicroFlowOps &middot; <a href="https://microflowops.com" style="color: #1a1a1a; text-decoration: none;">microflowops.com</a></p>
 <p style="font-size: 13px; margin: 0 0 16px 0;">
   <a href="mailto:support@microflowops.com" style="color: #1a1a1a; text-decoration: none;">support@microflowops.com</a>
 </p>
