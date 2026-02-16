@@ -59,13 +59,30 @@ export const metadata: Metadata = {
   }
 };
 
+/* Anti-flash script: runs before React hydrates to set the correct theme class
+   immediately, preventing a white flash on dark-mode pages. */
+const themeScript = `
+(function(){
+  try {
+    var s = localStorage.getItem('theme');
+    var d = s === 'light' ? false : true;
+    document.documentElement.classList.toggle('dark', d);
+  } catch(e) {
+    document.documentElement.classList.add('dark');
+  }
+})();
+`;
+
 export default function RootLayout({
   children
 }: {
   children: ReactNode;
 }) {
   return (
-    <html lang="en" className={`${display.variable} ${body.variable}`}>
+    <html lang="en" className={`dark ${display.variable} ${body.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body className="antialiased">
         <PlausibleProvider />
         <Nav />

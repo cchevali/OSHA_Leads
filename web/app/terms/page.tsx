@@ -19,7 +19,7 @@ export default function TermsPage() {
       </section>
 
       <section className="mx-auto w-full max-w-4xl px-6">
-        <div className="space-y-6 rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+        <div className="space-y-6 rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <p className="text-sm text-inkMuted">
             By using {site.legalName || site.brandName} services, you agree to these terms.
           </p>

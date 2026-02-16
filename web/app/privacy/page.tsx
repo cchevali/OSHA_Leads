@@ -19,7 +19,7 @@ export default function PrivacyPage() {
       </section>
 
       <section className="mx-auto w-full max-w-4xl px-6">
-        <div className="space-y-6 rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+        <div className="space-y-6 rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <p className="text-sm text-inkMuted">
             {site.legalName || site.brandName} (&quot;we&quot;, &quot;us&quot;) provides OSHA activity alerts for business
             users. This policy explains what we collect and how we use it.

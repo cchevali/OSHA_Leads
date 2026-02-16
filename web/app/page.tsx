@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import CTAButtons from "@/components/CTAButtons";
 import SectionHeading from "@/components/SectionHeading";
 import site from "@/config/site.json";
-// chore: trigger vercel rebuild (no functional change)
 
 export const metadata: Metadata = {
   alternates: { canonical: "/" }
@@ -44,7 +43,7 @@ export default function HomePage() {
       <section className="mx-auto w-full max-w-6xl px-6">
         <div className="grid gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
           <div className="space-y-6">
-            <p className="inline-flex items-center rounded-full border border-black/10 bg-white/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
+            <p className="inline-flex items-center rounded-full border border-cardBorder bg-card px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
               Nationwide, territory-based OSHA enforcement alerts
             </p>
             <h1 className="font-display text-4xl text-ink md:text-5xl lg:text-6xl">
@@ -60,13 +59,13 @@ export default function HomePage() {
               not weeks.
             </p>
           </div>
-          <div className="bg-paper rounded-3xl border border-black/10 p-6 shadow-soft">
+          <div className="bg-paper rounded-3xl border border-cardBorder p-6 shadow-soft">
             <div className="space-y-4">
               <div className="flex items-center justify-between text-xs font-semibold text-inkMuted">
                 <span>OSHA Activity Signals - Example Territory</span>
                 <span>Daily morning brief</span>
               </div>
-              <div className="space-y-3 rounded-2xl bg-white/80 p-4">
+              <div className="space-y-3 rounded-2xl bg-card p-4">
                 <p className="text-sm font-semibold text-ink">
                   Priority signals (sample)
                 </p>
@@ -84,7 +83,7 @@ export default function HomePage() {
                   ))}
                 </div>
               </div>
-              <div className="flex justify-center rounded-2xl border border-black/10 bg-white/60 p-4">
+              <div className="flex justify-center rounded-2xl border border-cardBorder bg-surface p-4">
                 <img
                   src="/assets/sample-digest-preview.png"
                   alt="Sample OSHA Lead Digest preview"
@@ -104,14 +103,14 @@ export default function HomePage() {
           description="We focus on employer-side defense and safety consulting, where early awareness changes the odds of winning the relationship."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-2">
-          <div className="rounded-3xl border border-black/10 bg-white/80 p-6 shadow-soft">
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-2xl text-ink">OSHA defense attorneys</h3>
             <p className="mt-3 text-inkMuted">
               Know about new inspections early, route them by risk, and get in touch before
               citation timelines compress.
             </p>
           </div>
-          <div className="rounded-3xl border border-black/10 bg-white/80 p-6 shadow-soft">
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-2xl text-ink">Safety consultants</h3>
             <p className="mt-3 text-inkMuted">
               Spot new activity in your patch, prioritize the highest intent signals, and win
@@ -144,7 +143,7 @@ export default function HomePage() {
           ].map((item, index) => (
             <div
               key={item.title}
-              className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft motion-safe:animate-fade-up"
+              className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft motion-safe:animate-fade-up"
               style={{ animationDelay: `${index * 120}ms` }}
             >
               <h3 className="font-display text-xl text-ink">{item.title}</h3>
@@ -183,7 +182,7 @@ export default function HomePage() {
               body: "Send a concise, ranked alert to your team each morning by email."
             }
           ].map((item) => (
-            <div key={item.step} className="rounded-3xl border border-black/10 bg-white/85 p-6">
+            <div key={item.step} className="rounded-3xl border border-cardBorder bg-card p-6">
               <p className="text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
                 {item.step}
               </p>
@@ -201,14 +200,14 @@ export default function HomePage() {
           description="Start with one territory and add more as your coverage grows."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-2">
-          <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-xl text-ink">Example Territory</h3>
             <p className="mt-3 text-inkMuted">
               Define your territory as a set of states, metro areas, or OSHA area offices. Daily
               morning delivery.
             </p>
           </div>
-          <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-xl text-ink">Custom territories</h3>
             <p className="mt-3 text-inkMuted">
               Add any multi-state or metro-focused territory. We configure filters and alert
@@ -224,7 +223,7 @@ export default function HomePage() {
           title="Clear boundaries, clean data handling."
           description="We keep the service useful without crossing legal or privacy lines."
         />
-        <div className="mt-8 rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+        <div className="mt-8 rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <p className="text-sm font-semibold text-ink">Disclaimer</p>
           <ul className="mt-3 space-y-3 text-sm text-inkMuted">
             <li>Not affiliated with OSHA.</li>

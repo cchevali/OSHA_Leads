@@ -25,7 +25,7 @@ export default function ContactPage() {
 
       <section className="mx-auto w-full max-w-5xl px-6">
         <div className="grid gap-6 md:grid-cols-2">
-          <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-2xl text-ink">Get started</h3>
             <p className="mt-3 text-inkMuted">
               Tell us your organization and territory. We will send a sample alert and start a short
@@ -37,13 +37,13 @@ export default function ContactPage() {
                 href={stripeCheckoutUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center justify-center rounded-full border border-ink/15 px-4 py-2 text-sm font-semibold text-ink transition hover:border-ink/40"
+                className="inline-flex items-center justify-center rounded-full border border-cardBorder px-4 py-2 text-sm font-semibold text-ink transition hover:border-ink/40"
               >
                 Subscribe — $399/mo
               </a>
             </div>
           </div>
-          <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-2xl text-ink">Email</h3>
             <p className="mt-3 text-inkMuted">
               We respond same business day. Include your territory, recipients, and any timing
@@ -72,7 +72,7 @@ export default function ContactPage() {
       </section>
 
       <section className="mx-auto w-full max-w-5xl px-6">
-        <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+        <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <h3 className="font-display text-2xl text-ink">Mailing address</h3>
           <p className="mt-3 text-inkMuted">{site.mailingAddress}</p>
         </div>

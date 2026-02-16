@@ -2,9 +2,38 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===== Light palette (default) ===== */
 :root {
   color-scheme: light;
-  background-color: #f6f1e7;
+  --color-ink: #0f172a;
+  --color-ink-muted: #334155;
+  --color-sand: #f6f1e7;
+  --color-sand-strong: #efe6d7;
+  --color-card: rgba(255, 255, 255, 0.85);
+  --color-card-border: rgba(0, 0, 0, 0.1);
+  --color-surface: rgba(255, 255, 255, 0.7);
+  --shadow-color: rgba(15, 23, 42, 0.45);
+  --bg-body: #f6f1e7;
+  --bg-body-end: #fbf9f4;
+  --grad-ocean: rgba(15, 118, 110, 0.18);
+  --grad-sunrise: rgba(245, 158, 11, 0.18);
+}
+
+/* ===== Dark palette ===== */
+.dark {
+  color-scheme: dark;
+  --color-ink: #e2e8f0;
+  --color-ink-muted: #94a3b8;
+  --color-sand: #0f172a;
+  --color-sand-strong: #1e293b;
+  --color-card: rgba(30, 41, 59, 0.85);
+  --color-card-border: rgba(255, 255, 255, 0.1);
+  --color-surface: rgba(30, 41, 59, 0.7);
+  --shadow-color: rgba(0, 0, 0, 0.6);
+  --bg-body: #0f172a;
+  --bg-body-end: #111827;
+  --grad-ocean: rgba(15, 118, 110, 0.25);
+  --grad-sunrise: rgba(245, 158, 11, 0.12);
 }
 
 * {
@@ -13,11 +42,13 @@
 }
 
 body {
-  @apply font-body text-ink;
+  @apply font-body;
+  color: var(--color-ink);
+  background-color: var(--bg-body);
   background-image:
-    radial-gradient(circle at top right, rgba(15, 118, 110, 0.18), transparent 35%),
-    radial-gradient(circle at 20% 20%, rgba(245, 158, 11, 0.18), transparent 45%),
-    linear-gradient(180deg, #f6f1e7 0%, #fbf9f4 50%, #f6f1e7 100%);
+    radial-gradient(circle at top right, var(--grad-ocean), transparent 35%),
+    radial-gradient(circle at 20% 20%, var(--grad-sunrise), transparent 45%),
+    linear-gradient(180deg, var(--bg-body) 0%, var(--bg-body-end) 50%, var(--bg-body) 100%);
   min-height: 100vh;
 }
 
@@ -54,7 +85,7 @@ body {
   }
   .bg-paper {
     background-image:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.75) 100%),
+      linear-gradient(180deg, var(--color-card) 0%, var(--color-surface) 100%),
       repeating-linear-gradient(
         120deg,
         rgba(15, 23, 42, 0.035) 0px,

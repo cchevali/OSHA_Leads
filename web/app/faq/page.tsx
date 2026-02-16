@@ -52,7 +52,7 @@ export default function FaqPage() {
       <section className="mx-auto w-full max-w-5xl px-6">
         <div className="space-y-4">
           {faqs.map((item) => (
-            <div key={item.q} className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+            <div key={item.q} className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-xl text-ink">{item.q}</h3>
               <p className="mt-3 text-inkMuted">{item.a}</p>
             </div>

@@ -87,9 +87,8 @@ export default function PricingPage() {
           {plans.map((plan) => (
             <div
               key={plan.name}
-              className={`flex flex-col rounded-3xl border p-6 shadow-soft ${
-                plan.highlight ? "border-ocean bg-white" : "border-black/10 bg-white/85"
-              }`}
+              className={`flex flex-col rounded-3xl border p-6 shadow-soft ${plan.highlight ? "border-ocean bg-card" : "border-cardBorder bg-card"
+                }`}
             >
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
@@ -114,11 +113,10 @@ export default function PricingPage() {
                 <a
                   href={plan.ctaHref}
                   {...(plan.ctaExternal ? { target: "_blank", rel: "noopener noreferrer" } : {})}
-                  className={`inline-flex w-full items-center justify-center rounded-full px-4 py-2.5 text-sm font-semibold transition ${
-                    plan.ctaStyle === "primary"
+                  className={`inline-flex w-full items-center justify-center rounded-full px-4 py-2.5 text-sm font-semibold transition ${plan.ctaStyle === "primary"
                       ? "bg-ocean text-white shadow-glow hover:bg-oceanDark"
-                      : "border border-ink/15 text-ink hover:border-ink/40"
-                  }`}
+                      : "border border-cardBorder text-ink hover:border-ink/40"
+                    }`}
                 >
                   {plan.ctaLabel}
                 </a>
@@ -129,7 +127,7 @@ export default function PricingPage() {
       </section>
 
       <section className="mx-auto w-full max-w-5xl px-6">
-        <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+        <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <h3 className="font-display text-2xl text-ink">Enterprise and multi-territory</h3>
           <p className="mt-3 text-inkMuted">
             Need multi-state coverage, custom reporting, or CRM integration? We will build a plan

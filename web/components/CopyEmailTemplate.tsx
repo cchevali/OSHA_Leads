@@ -60,7 +60,7 @@ export default function CopyEmailTemplate({
   }, [body, bodyEventName]);
 
   return (
-    <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+    <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <h3 className="font-display text-2xl text-ink">{title}</h3>
@@ -71,7 +71,7 @@ export default function CopyEmailTemplate({
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        <div className="rounded-2xl border border-black/10 bg-white/80 p-4">
+        <div className="rounded-2xl border border-cardBorder bg-surface p-4">
           <div className="flex items-center justify-between gap-4">
             <p className="text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
               Subject
@@ -83,7 +83,7 @@ export default function CopyEmailTemplate({
               <button
                 type="button"
                 onClick={handleCopySubject}
-                className="rounded-full border border-ink/15 px-3 py-1.5 text-xs font-semibold text-ink transition hover:border-ink/40 hover:bg-white/70"
+                className="rounded-full border border-cardBorder px-3 py-1.5 text-xs font-semibold text-ink transition hover:border-ink/40 hover:bg-surface"
               >
                 Copy
               </button>
@@ -94,7 +94,7 @@ export default function CopyEmailTemplate({
           </pre>
         </div>
 
-        <div className="rounded-2xl border border-black/10 bg-white/80 p-4">
+        <div className="rounded-2xl border border-cardBorder bg-surface p-4">
           <div className="flex items-center justify-between gap-4">
             <p className="text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
               Body
@@ -106,7 +106,7 @@ export default function CopyEmailTemplate({
               <button
                 type="button"
                 onClick={handleCopyBody}
-                className="rounded-full border border-ink/15 px-3 py-1.5 text-xs font-semibold text-ink transition hover:border-ink/40 hover:bg-white/70"
+                className="rounded-full border border-cardBorder px-3 py-1.5 text-xs font-semibold text-ink transition hover:border-ink/40 hover:bg-surface"
               >
                 Copy
               </button>

@@ -19,7 +19,7 @@ export default function OnboardingPage() {
       </section>
 
       <section className="mx-auto w-full max-w-5xl px-6">
-        <div className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+        <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <h2 className="font-display text-2xl text-ink">Submit onboarding details</h2>
           <p className="mt-3 text-sm text-inkMuted">
             This sends your onboarding details through your default email client to {site.ctaEmail}.
@@ -37,7 +37,7 @@ export default function OnboardingPage() {
                 required
                 type="text"
                 name="company"
-                className="rounded-xl border border-black/10 bg-white px-3 py-2 text-ink outline-none focus:border-ocean"
+                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
               />
             </label>
             <label className="grid gap-2 text-sm text-inkMuted">
@@ -46,7 +46,7 @@ export default function OnboardingPage() {
                 required
                 type="text"
                 name="contact_name"
-                className="rounded-xl border border-black/10 bg-white px-3 py-2 text-ink outline-none focus:border-ocean"
+                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
               />
             </label>
             <label className="grid gap-2 text-sm text-inkMuted">
@@ -55,7 +55,7 @@ export default function OnboardingPage() {
                 required
                 type="email"
                 name="email"
-                className="rounded-xl border border-black/10 bg-white px-3 py-2 text-ink outline-none focus:border-ocean"
+                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
               />
             </label>
             <label className="grid gap-2 text-sm text-inkMuted">
@@ -64,7 +64,7 @@ export default function OnboardingPage() {
                 required
                 type="text"
                 name="territory"
-                className="rounded-xl border border-black/10 bg-white px-3 py-2 text-ink outline-none focus:border-ocean"
+                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
               />
             </label>
             <label className="grid gap-2 text-sm text-inkMuted">
@@ -73,7 +73,7 @@ export default function OnboardingPage() {
                 required
                 type="text"
                 name="recipients"
-                className="rounded-xl border border-black/10 bg-white px-3 py-2 text-ink outline-none focus:border-ocean"
+                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
               />
             </label>
             <label className="grid gap-2 text-sm text-inkMuted">
@@ -81,7 +81,7 @@ export default function OnboardingPage() {
               <textarea
                 name="notes"
                 rows={5}
-                className="rounded-xl border border-black/10 bg-white px-3 py-2 text-ink outline-none focus:border-ocean"
+                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
               />
             </label>
             <div className="pt-2">

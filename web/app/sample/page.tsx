@@ -19,7 +19,7 @@ export default function SamplePage() {
       </section>
 
       <section className="mx-auto w-full max-w-5xl px-6">
-        <div className="rounded-3xl border border-black/10 bg-white/90 p-6 shadow-soft">
+        <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <p className="text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
             Daily digest preview
           </p>
@@ -34,7 +34,7 @@ export default function SamplePage() {
             <img
               src="/assets/sample-digest-preview.png"
               alt="Sample OSHA Lead Digest preview (dummy data)"
-              className="w-full max-w-[480px] rounded-2xl border border-black/10 bg-white shadow-soft"
+              className="w-full max-w-[480px] rounded-2xl border border-cardBorder bg-card shadow-soft"
               loading="lazy"
             />
           </div>

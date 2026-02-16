@@ -47,7 +47,7 @@ export default function HowItWorksPage() {
       <section className="mx-auto w-full max-w-6xl px-6">
         <div className="grid gap-6 md:grid-cols-2">
           {steps.map((step) => (
-            <div key={step.title} className="rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+            <div key={step.title} className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">{step.title}</h3>
               <p className="mt-3 text-inkMuted">{step.body}</p>
             </div>
@@ -61,7 +61,7 @@ export default function HowItWorksPage() {
           title="Daily by default, tuned for your team."
           description="Set the window, select territories, and we deliver each morning."
         />
-        <div className="mt-8 rounded-3xl border border-black/10 bg-white/85 p-6 shadow-soft">
+        <div className="mt-8 rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <ul className="space-y-3 text-sm text-inkMuted">
             <li>Typical delivery: daily morning brief (timezone and cadence are configurable).</li>
             <li>Daily or weekly summaries supported.</li>
@@ -78,7 +78,7 @@ export default function HowItWorksPage() {
         />
         <div className="mt-8 grid gap-4 md:grid-cols-2">
           {safeguards.map((item) => (
-            <div key={item} className="rounded-3xl border border-black/10 bg-white/85 p-5">
+            <div key={item} className="rounded-3xl border border-cardBorder bg-card p-5">
               <p className="text-sm text-inkMuted">{item}</p>
             </div>
           ))}
