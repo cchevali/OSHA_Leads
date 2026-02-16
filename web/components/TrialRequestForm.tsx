@@ -22,7 +22,7 @@ export default function TrialRequestForm() {
                 ``,
                 `Organization: ${company}`,
                 `Email: ${email}`,
-                `Territory: ${territory}`,
+                `Region: ${territory}`,
                 ``,
                 `Thanks`
             ].join("\n");
@@ -51,7 +51,7 @@ export default function TrialRequestForm() {
                     <a href={`mailto:${site.ctaEmail}`} className="font-semibold text-ocean underline">
                         {site.ctaEmail}
                     </a>{" "}
-                    with your company, email, and territory.
+                    with your company, email, and region.
                 </p>
                 <button
                     type="button"
@@ -89,13 +89,13 @@ export default function TrialRequestForm() {
                 />
             </label>
             <label className="grid gap-1.5 text-sm text-inkMuted">
-                Territory
+                Region (state, metro, or OSHA area office)
                 <input
                     required
                     type="text"
                     value={territory}
                     onChange={(e) => setTerritory(e.target.value)}
-                    placeholder="Ohio, Pennsylvania, or OSHA Area Office"
+                    placeholder="e.g. Ohio, Greater Chicago, OSHA Area Office — Cleveland"
                     className="rounded-xl border border-cardBorder bg-surface px-3 py-2.5 text-ink placeholder:text-inkMuted/50 outline-none transition focus:border-ocean"
                 />
             </label>

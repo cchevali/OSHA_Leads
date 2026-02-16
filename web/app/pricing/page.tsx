@@ -26,7 +26,7 @@ export default function PricingPage() {
       note: "14 days",
       highlight: false,
       features: [
-        "One territory (your choice)",
+        "One region (state, metro, or OSHA area office)",
         "Daily email brief",
         "Priority scoring",
         "Sample alert preview"
@@ -39,11 +39,11 @@ export default function PricingPage() {
     {
       name: "Core",
       price: "$399",
-      note: "per territory / month",
+      note: "per region / month",
       highlight: true,
       features: [
         "Daily email delivery",
-        "Territory-specific filters",
+        "Region-specific filters",
         "Up to 6 recipients",
         "Weekly summary add-on"
       ],
@@ -55,7 +55,7 @@ export default function PricingPage() {
     {
       name: "Growth",
       price: "$699",
-      note: "per territory / month",
+      note: "per region / month",
       highlight: false,
       badge: "Coming Soon",
       features: [
@@ -77,7 +77,7 @@ export default function PricingPage() {
         <SectionHeading
           eyebrow="Pricing"
           title="Simple territory-based pricing."
-          description="Start with one territory and scale as coverage expands."
+          description="Start with one region and scale as coverage expands. A region is a state, metro area, or OSHA area office."
           align="center"
         />
       </section>
@@ -114,8 +114,8 @@ export default function PricingPage() {
                   href={plan.ctaHref}
                   {...(plan.ctaExternal ? { target: "_blank", rel: "noopener noreferrer" } : {})}
                   className={`inline-flex w-full items-center justify-center rounded-full px-4 py-2.5 text-sm font-semibold transition ${plan.ctaStyle === "primary"
-                      ? "bg-ocean text-white shadow-glow hover:bg-oceanDark"
-                      : "border border-cardBorder text-ink hover:border-ink/40"
+                    ? "bg-ocean text-white shadow-glow hover:bg-oceanDark"
+                    : "border border-cardBorder text-ink hover:border-ink/40"
                     }`}
                 >
                   {plan.ctaLabel}
@@ -137,7 +137,7 @@ export default function PricingPage() {
       </section>
 
       <section className="mx-auto w-full max-w-5xl px-6">
-        <div className="rounded-3xl bg-ink px-8 py-10 text-white shadow-soft">
+        <div className="rounded-3xl bg-inkFixed px-8 py-10 text-white shadow-soft">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="font-display text-3xl">Try it free for 14 days.</h2>

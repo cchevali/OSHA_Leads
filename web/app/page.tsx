@@ -44,13 +44,13 @@ export default function HomePage() {
         <div className="grid gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
           <div className="space-y-6">
             <p className="inline-flex items-center rounded-full border border-cardBorder bg-card px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
-              Nationwide, territory-based OSHA enforcement alerts
+              Nationwide, region-based OSHA enforcement alerts
             </p>
             <h1 className="font-display text-4xl text-ink md:text-5xl lg:text-6xl">
               Daily OSHA enforcement signals that surface new inspections before citations post.
             </h1>
             <p className="text-lg text-inkMuted md:text-xl">
-              {site.brandName} delivers nationwide, territory-based OSHA enforcement signal alerts to help
+              {site.brandName} delivers nationwide, region-based OSHA enforcement signal alerts to help
               employer-side attorneys and safety consultants prioritize outreach while the window is still open.
             </p>
             <CTAButtons />
@@ -129,8 +129,8 @@ export default function HomePage() {
               body: "Every alert is scored for urgency, scope, and commercial intent."
             },
             {
-              title: "Territory fit",
-              body: "Signals are filtered to your territory, not a national firehose."
+              title: "Region fit",
+              body: "Signals are filtered to your region — a state, metro, or OSHA area office — not a national firehose."
             }
           ].map((item, index) => (
             <div
@@ -188,8 +188,8 @@ export default function HomePage() {
       <section className="mx-auto w-full max-w-6xl px-6">
         <SectionHeading
           eyebrow="Territories"
-          title="Subscribe by territory, scale by intent."
-          description="Start with one territory and add more as your coverage grows."
+          title="Subscribe by region, scale by intent."
+          description="Start with one region and add more as your coverage grows. A region is a state, metro area, or OSHA area office."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-2">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
@@ -228,13 +228,13 @@ export default function HomePage() {
       </section>
 
       <section className="mx-auto w-full max-w-6xl px-6">
-        <div className="rounded-3xl bg-ink px-8 py-10 text-white shadow-soft">
+        <div className="rounded-3xl bg-inkFixed px-8 py-10 text-white shadow-soft">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.3em] text-white/70">
                 Ready to see signals
               </p>
-              <h2 className="mt-3 font-display text-3xl">Request a trial feed for your territory.</h2>
+              <h2 className="mt-3 font-display text-3xl">Request a trial feed for your region.</h2>
               <p className="mt-3 text-white/70">
                 We will send a sample alert and set up a short trial feed so you can evaluate signal
                 quality.

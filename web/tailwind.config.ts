@@ -14,6 +14,7 @@ const config: Config = {
       },
       colors: {
         ink: "var(--color-ink)",
+        inkFixed: "var(--color-ink-fixed)",
         inkMuted: "var(--color-ink-muted)",
         sand: "var(--color-sand)",
         sandStrong: "var(--color-sand-strong)",

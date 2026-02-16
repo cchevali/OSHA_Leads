@@ -42,7 +42,7 @@ export default function SamplePage() {
       </section>
 
       <section className="mx-auto w-full max-w-5xl px-6">
-        <div className="rounded-3xl bg-ink px-8 py-10 text-white shadow-soft">
+        <div className="rounded-3xl bg-inkFixed px-8 py-10 text-white shadow-soft">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="font-display text-3xl">Want this in your inbox?</h2>
