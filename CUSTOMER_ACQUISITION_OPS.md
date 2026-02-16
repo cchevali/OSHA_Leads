@@ -71,7 +71,7 @@ Opt out anytime: reply "unsubscribe" (we maintain a suppression list and honor i
 
 ### Follow-Up (3-4 days later)
 
-Subject: Re: Texas Triangle OSHA Activity Signals
+Subject: Following up: Texas Triangle OSHA Activity Signals
 
 Hi {First},
 

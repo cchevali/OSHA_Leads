@@ -21,7 +21,7 @@ const steps = [
   },
   {
     title: "Delivery",
-    body: "Your team gets a concise brief by email or SMS at the same time every morning."
+    body: "Your team gets a concise brief by email at the same time every morning."
   }
 ];
 
@@ -65,7 +65,7 @@ export default function HowItWorksPage() {
           <ul className="space-y-3 text-sm text-inkMuted">
             <li>Typical delivery: daily morning brief (timezone and cadence are configurable).</li>
             <li>Daily or weekly summaries supported.</li>
-            <li>SMS available for urgent, high-severity signals.</li>
+            <li>Configurable scoring thresholds for high-severity signals.</li>
           </ul>
         </div>
       </section>

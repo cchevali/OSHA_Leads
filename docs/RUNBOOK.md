@@ -66,6 +66,39 @@ Doctor behavior:
 - Soft checks are reminder-only: silent on success, and they print `WARN_CONTEXT_PACK_*` plus remediation instructions when action is required.
 - Soft checks do not fail wrapper/doctor by themselves.
 
+## Deliverability Preflight (DNS + Header Proof)
+
+Run after any DNS, SMTP, or sender-identity change. No behavior change; verification only.
+
+### DNS Record Checks
+
+```powershell
+# SPF — must include your SMTP provider
+nslookup -type=TXT microflowops.com 8.8.8.8
+# Expect: v=spf1 include:zoho.com ~all (or equivalent)
+
+# DMARC — policy + reporting
+nslookup -type=TXT _dmarc.microflowops.com 8.8.8.8
+# Expect: v=DMARC1; p=none; rua=mailto:... (or p=quarantine/reject)
+
+# DKIM — Zoho selector public key
+nslookup -type=TXT zoho._domainkey.microflowops.com 8.8.8.8
+# Expect: v=DKIM1; k=rsa; p=<public_key>
+```
+
+### Header Fields to Confirm (on a received test email)
+
+Open a test email in Gmail → "Show original" (or equivalent) and verify:
+
+| Header | Expected value |
+|---|---|
+| `Authentication-Results` | `spf=pass`, `dkim=pass`, `dmarc=pass` |
+| `Received-SPF` | `pass` with `microflowops.com` |
+| `DKIM-Signature` | `d=microflowops.com` |
+| `From` / `Return-Path` | Both use `@microflowops.com` (domain alignment) |
+
+If any field shows `fail` or `none`, re-check the DNS records above and the SMTP provider's domain verification panel before sending live outreach.
+
 ## Switch machines: laptop -> PC
 
 Commands:

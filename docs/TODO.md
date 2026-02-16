@@ -9,7 +9,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 - [ ] After any doc/contract change: rebuild + upload `PROJECT_CONTEXT_PACK.md` + mark uploaded (`py -3 tools\project_context_pack.py --build`, upload in ChatGPT Project Settings -> Files, `py -3 tools\project_context_pack.py --mark-uploaded`).
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
 - [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
-- [ ] Complete outbound sender domain setup and verification (SPF, DKIM, DMARC, domain/DNS alignment, and `FROM_EMAIL`/`SMTP_USER` alignment).
+
 - [ ] Ensure email provider account/sender credentials are configured for production and validated with daily doctor checks (`run_outreach_auto.py --doctor`).
 
 ## Codex-owned engineering backlog
@@ -24,4 +24,21 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Done
 
+- 2026-02-15: Completed outbound sender domain verification (SPF, DKIM, DMARC) for `microflowops.com`. DNS records published; test email confirmed `spf=pass`, `dkim=pass`, `dmarc=pass` with aligned domains. Verification commands added to `docs/RUNBOOK.md` under "Deliverability Preflight".
 - 2026-02-12: Set website Stripe payment link in `web/config/site.json` (`stripePaymentLink`) and wire it into `web/app/pricing/page.tsx` + `web/app/contact/page.tsx` (commit `54c2a3c6`).
+
+## Deliverability Verification Snippet (Regression Check)
+
+```powershell
+# SPF
+nslookup -type=TXT microflowops.com 8.8.8.8
+# Expect: v=spf1 include:zoho.com ~all (or equivalent)
+
+# DMARC
+nslookup -type=TXT _dmarc.microflowops.com 8.8.8.8
+# Expect: v=DMARC1; p=none; ... (or p=quarantine/reject)
+
+# DKIM (Zoho selector)
+nslookup -type=TXT zoho._domainkey.microflowops.com 8.8.8.8
+# Expect: v=DKIM1; k=rsa; p=<public_key>
+```

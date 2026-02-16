@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import SectionHeading from "@/components/SectionHeading";
+import CTAButtons from "@/components/CTAButtons";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/faq" }
@@ -56,6 +57,20 @@ export default function FaqPage() {
               <p className="mt-3 text-inkMuted">{item.a}</p>
             </div>
           ))}
+        </div>
+      </section>
+
+      <section className="mx-auto w-full max-w-5xl px-6">
+        <div className="rounded-3xl bg-ink px-8 py-10 text-white shadow-soft">
+          <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="font-display text-3xl">Still have questions?</h2>
+              <p className="mt-3 text-white/70">
+                Email us for a same-day response, or request a trial feed to see the signals firsthand.
+              </p>
+            </div>
+            <CTAButtons variant="dark" />
+          </div>
         </div>
       </section>
     </div>

@@ -16,8 +16,8 @@ export default function HomePage() {
       location: "Example City, ST",
       naics: "236220",
       penaltyRange: "$15k-$55k",
-      observedDate: "2026-02-03",
-      postedDate: "2026-02-05"
+      observedDate: "2026-02-12",
+      postedDate: "2026-02-14"
     },
     {
       severityTier: "Medium",
@@ -25,8 +25,8 @@ export default function HomePage() {
       location: "Example City, ST",
       naics: "238990",
       penaltyRange: "$5k-$25k",
-      observedDate: "2026-02-01",
-      postedDate: "2026-02-04"
+      observedDate: "2026-02-10",
+      postedDate: "2026-02-13"
     },
     {
       severityTier: "Medium",
@@ -34,8 +34,8 @@ export default function HomePage() {
       location: "Example City, ST",
       naics: "332322",
       penaltyRange: "$0-$15k",
-      observedDate: "2026-01-30",
-      postedDate: "2026-02-02"
+      observedDate: "2026-02-08",
+      postedDate: "2026-02-11"
     }
   ];
 
@@ -84,8 +84,13 @@ export default function HomePage() {
                   ))}
                 </div>
               </div>
-              <div className="rounded-2xl border border-dashed border-black/20 bg-white/60 p-5 text-sm text-inkMuted">
-                Screenshot slot for customer-approved sample alert
+              <div className="flex justify-center rounded-2xl border border-black/10 bg-white/60 p-4">
+                <img
+                  src="/assets/sample-digest-preview.png"
+                  alt="Sample OSHA Lead Digest preview"
+                  className="w-full max-w-[400px] rounded-xl"
+                  loading="lazy"
+                />
               </div>
             </div>
           </div>
@@ -175,7 +180,7 @@ export default function HomePage() {
             {
               step: "04",
               title: "Deliver",
-              body: "Send a clean email or SMS alert to your team each morning."
+              body: "Send a concise, ranked alert to your team each morning by email."
             }
           ].map((item) => (
             <div key={item.step} className="rounded-3xl border border-black/10 bg-white/85 p-6">

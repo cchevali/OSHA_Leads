@@ -15,8 +15,8 @@ const sampleSignals = [
     naics: "238990",
     penaltyRange: "$15k-$55k",
     signalType: "Accident",
-    observedDate: "2026-02-03",
-    postedDate: "2026-02-05"
+    observedDate: "2026-02-12",
+    postedDate: "2026-02-14"
   },
   {
     severityTier: "Medium",
@@ -26,8 +26,8 @@ const sampleSignals = [
     naics: "332322",
     penaltyRange: "$5k-$25k",
     signalType: "Complaint",
-    observedDate: "2026-02-01",
-    postedDate: "2026-02-04"
+    observedDate: "2026-02-10",
+    postedDate: "2026-02-13"
   },
   {
     severityTier: "Low",
@@ -37,8 +37,8 @@ const sampleSignals = [
     naics: "484110",
     penaltyRange: "$0-$15k",
     signalType: "Referral",
-    observedDate: "2026-01-30",
-    postedDate: "2026-02-02"
+    observedDate: "2026-02-08",
+    postedDate: "2026-02-11"
   },
   {
     severityTier: "High",
@@ -48,8 +48,8 @@ const sampleSignals = [
     naics: "493120",
     penaltyRange: "$25k-$110k",
     signalType: "Accident",
-    observedDate: "2026-01-29",
-    postedDate: "2026-02-01"
+    observedDate: "2026-02-07",
+    postedDate: "2026-02-10"
   }
 ];
 
