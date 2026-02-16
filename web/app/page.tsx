@@ -83,14 +83,6 @@ export default function HomePage() {
                   ))}
                 </div>
               </div>
-              <div className="flex justify-center rounded-2xl border border-cardBorder bg-surface p-4">
-                <img
-                  src="/assets/sample-digest-preview.png"
-                  alt="Sample OSHA Lead Digest preview"
-                  className="w-full max-w-[400px] rounded-xl"
-                  loading="lazy"
-                />
-              </div>
             </div>
           </div>
         </div>

@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import SectionHeading from "@/components/SectionHeading";
-import CTAButtons from "@/components/CTAButtons";
-import CopyEmailTemplate from "@/components/CopyEmailTemplate";
+import TrialRequestForm from "@/components/TrialRequestForm";
 import site from "@/config/site.json";
 import { buildStripeCheckoutUrl } from "@/lib/checkout";
 
@@ -17,57 +16,47 @@ export default function ContactPage() {
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="Contact"
-          title="Email us for a same-day response."
-          description="Email-only onboarding keeps everything fast and documented."
+          title="Request a trial feed."
+          description="Tell us your territory and we will start a 7-day trial. No credit card needed."
           align="center"
         />
       </section>
 
-      <section className="mx-auto w-full max-w-5xl px-6">
+      <section id="trial" className="mx-auto w-full max-w-5xl px-6">
         <div className="grid gap-6 md:grid-cols-2">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h3 className="font-display text-2xl text-ink">Get started</h3>
-            <p className="mt-3 text-inkMuted">
-              Tell us your organization and territory. We will send a sample alert and start a short
-              trial feed.
+            <h3 className="font-display text-2xl text-ink">Start a free trial</h3>
+            <p className="mt-2 mb-5 text-sm text-inkMuted">
+              We will send a sample alert and set up a trial feed for your territory.
             </p>
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <CTAButtons />
-              <a
-                href={stripeCheckoutUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center justify-center rounded-full border border-cardBorder px-4 py-2 text-sm font-semibold text-ink transition hover:border-ink/40"
-              >
-                Subscribe — $399/mo
-              </a>
+            <TrialRequestForm />
+          </div>
+          <div className="flex flex-col gap-6">
+            <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+              <h3 className="font-display text-2xl text-ink">Email us directly</h3>
+              <p className="mt-3 text-inkMuted">
+                We respond same business day. Include your territory, recipients, and any timing
+                preferences.
+              </p>
+              <p className="mt-4 text-sm font-semibold text-ink">{site.ctaEmail}</p>
+            </div>
+            <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+              <h3 className="font-display text-2xl text-ink">Already decided?</h3>
+              <p className="mt-3 text-inkMuted">
+                Subscribe directly and we will activate your territory within 24 hours.
+              </p>
+              <div className="mt-4">
+                <a
+                  href={stripeCheckoutUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center rounded-full bg-ocean px-4 py-2 text-sm font-semibold text-white shadow-glow transition hover:bg-oceanDark"
+                >
+                  Subscribe — $399/mo
+                </a>
+              </div>
             </div>
           </div>
-          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h3 className="font-display text-2xl text-ink">Email</h3>
-            <p className="mt-3 text-inkMuted">
-              We respond same business day. Include your territory, recipients, and any timing
-              preferences.
-            </p>
-            <p className="mt-4 text-sm font-semibold text-ink">{site.ctaEmail}</p>
-          </div>
-        </div>
-      </section>
-
-      <section className="mx-auto w-full max-w-6xl px-6">
-        <SectionHeading
-          eyebrow="Copy/Paste"
-          title="Copy/Paste Email Template"
-          description="If you prefer, copy the exact subject/body we use in the button above."
-        />
-        <div className="mt-8 space-y-6">
-          <CopyEmailTemplate
-            title="Request a trial feed"
-            subject={site.ctaSampleSubject}
-            body={site.ctaSampleBody}
-            subjectEventName="copy_subject_request_sample"
-            bodyEventName="copy_body_request_sample"
-          />
         </div>
       </section>
 
