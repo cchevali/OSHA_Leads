@@ -918,7 +918,7 @@ def generate_email_body(recipient: dict, sample_leads: list,
     
     footer_disclaimer = "Not affiliated with OSHA; this is an independent alert service (no legal advice)."
     footer_text = build_footer_text(
-        brand_name="Micro Flow Ops",
+        brand_name="MicroFlowOps",
         mailing_address=footer_address,
         disclaimer=footer_disclaimer,
         reply_to=REQUIRED_REPLY_TO,
@@ -926,7 +926,7 @@ def generate_email_body(recipient: dict, sample_leads: list,
         include_separator=True,
     )
     footer_html = build_footer_html(
-        brand_name="Micro Flow Ops",
+        brand_name="MicroFlowOps",
         mailing_address=footer_address,
         disclaimer=footer_disclaimer,
         reply_to=REQUIRED_REPLY_TO,
@@ -954,7 +954,7 @@ If you'd like, I can send a short daily {territory} digest like this. Reply "yes
 Not affiliated with OSHA; this is an independent alert service (no legal advice).
 
 Chase Chevalier
-Micro Flow Ops - OSHA Alerts
+MicroFlowOps - OSHA Alerts
 support@microflowops.com
 
 {footer_text}
@@ -1004,7 +1004,7 @@ Not affiliated with OSHA; this is an independent alert service (no legal advice)
 </p>
 
 <p style="font-size: 14px; margin: 0 0 2px 0; color: #1a1a1a;">Chase Chevalier</p>
-<p style="font-size: 13px; margin: 0 0 2px 0; color: #1a1a1a;">Micro Flow Ops - OSHA Alerts</p>
+<p style="font-size: 13px; margin: 0 0 2px 0; color: #1a1a1a;">MicroFlowOps - OSHA Alerts</p>
 <p style="font-size: 13px; margin: 0 0 16px 0;">
   <a href="mailto:support@microflowops.com" style="color: #1a1a1a; text-decoration: none;">support@microflowops.com</a>
 </p>

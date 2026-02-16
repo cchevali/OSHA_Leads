@@ -6,7 +6,7 @@ from email_footer import build_footer_html, build_footer_text
 class TestEmailFooterWebsite(unittest.TestCase):
     def test_footer_standardizes_microflowops_brand_text(self):
         text = build_footer_text(
-            brand_name="Micro Flow Ops",
+            brand_name="MicroFlowOps",
             mailing_address="11539 Links Dr, Reston, VA 20190",
             disclaimer="Informational only. Not legal advice.",
             reply_to="support@microflowops.com",
@@ -19,7 +19,7 @@ class TestEmailFooterWebsite(unittest.TestCase):
 
     def test_footer_standardizes_microflowops_brand_html(self):
         html = build_footer_html(
-            brand_name="Micro Flow Ops",
+            brand_name="MicroFlowOps",
             mailing_address="11539 Links Dr, Reston, VA 20190",
             disclaimer="Informational only. Not legal advice.",
             reply_to="support@microflowops.com",
