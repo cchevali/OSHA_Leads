@@ -1,0 +1,112 @@
+[
+  {
+    "id": "sig_001",
+    "priorityTier": "High",
+    "signalType": "Accident",
+    "establishmentName": "Harborline Fabrication LLC",
+    "metro": "Houston",
+    "city": "Pasadena",
+    "state": "TX",
+    "openedDate": "2026-02-14",
+    "observedAt": "2026-02-16 08:12 CT"
+  },
+  {
+    "id": "sig_002",
+    "priorityTier": "Medium",
+    "signalType": "Complaint",
+    "establishmentName": "Cedar Ridge Packaging LLC",
+    "metro": "Dallas/Fort Worth",
+    "city": "Irving",
+    "state": "TX",
+    "openedDate": "2026-02-13",
+    "observedAt": "2026-02-16 07:48 CT"
+  },
+  {
+    "id": "sig_003",
+    "priorityTier": "Medium",
+    "signalType": "Referral",
+    "establishmentName": "Red Mesa Logistics LLC",
+    "metro": "Austin",
+    "city": "Round Rock",
+    "state": "TX",
+    "openedDate": "2026-02-12",
+    "observedAt": "2026-02-15 09:05 CT"
+  },
+  {
+    "id": "sig_004",
+    "priorityTier": "Medium",
+    "signalType": "Programmed",
+    "establishmentName": "Prairie Fork Industrial Services LLC",
+    "metro": "San Antonio",
+    "city": "Converse",
+    "state": "TX",
+    "openedDate": "2026-02-12",
+    "observedAt": "2026-02-15 08:22 CT"
+  },
+  {
+    "id": "sig_005",
+    "priorityTier": "Low",
+    "signalType": "Complaint",
+    "establishmentName": "Copperfield Equipment Repair LLC",
+    "metro": "New Orleans",
+    "city": "Kenner",
+    "state": "LA",
+    "openedDate": "2026-02-11",
+    "observedAt": "2026-02-14 10:14 CT"
+  },
+  {
+    "id": "sig_006",
+    "priorityTier": "Low",
+    "signalType": "Referral",
+    "establishmentName": "Bridgeview Recycling & Metals LLC",
+    "metro": "Oklahoma City",
+    "city": "Norman",
+    "state": "OK",
+    "openedDate": "2026-02-10",
+    "observedAt": "2026-02-14 09:31 CT"
+  },
+  {
+    "id": "sig_007",
+    "priorityTier": "Low",
+    "signalType": "Programmed",
+    "establishmentName": "Sunstone Field Services LLC",
+    "metro": "Tulsa",
+    "city": "Broken Arrow",
+    "state": "OK",
+    "openedDate": "2026-02-10",
+    "observedAt": "2026-02-13 08:57 CT"
+  },
+  {
+    "id": "sig_008",
+    "priorityTier": "Low",
+    "signalType": "Complaint",
+    "establishmentName": "Stonegate Warehouse Systems LLC",
+    "metro": "Kansas City",
+    "city": "Overland Park",
+    "state": "KS",
+    "openedDate": "2026-02-09",
+    "observedAt": "2026-02-13 08:09 CT"
+  },
+  {
+    "id": "sig_009",
+    "priorityTier": "Low",
+    "signalType": "Referral",
+    "establishmentName": "Blue Heron Railworks LLC",
+    "metro": "St. Louis",
+    "city": "St. Charles",
+    "state": "MO",
+    "openedDate": "2026-02-09",
+    "observedAt": "2026-02-12 09:44 CT"
+  },
+  {
+    "id": "sig_010",
+    "priorityTier": "Low",
+    "signalType": "Programmed",
+    "establishmentName": "Juniper Valley Construction Services LLC",
+    "metro": "Little Rock",
+    "city": "North Little Rock",
+    "state": "AR",
+    "openedDate": "2026-02-08",
+    "observedAt": "2026-02-12 08:16 CT"
+  }
+]
