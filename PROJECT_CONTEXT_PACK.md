@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=01d863b6c762490550269fc33caa26a187d3b67c
-PACK_BUILD_UTC=2026-02-13T04:56:25Z
-SOURCE_HASHES: AGENTS.md=b05b37bb26dfcd6d091c0bc021a6975c6929082ac6a3ef91fda246abe624d1f9 docs/ARCHITECTURE.md=00f51d1659f2245e395c6541d5c7c7d64fe22481b51f4f432b0fd1353b690510 docs/DECISIONS.md=5a1fbc744dc2dfb5e4f55a2e8dc8ab23e8d984c4d25d7c6438402a9c090b4e6f docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=9b886e7131fd428ecb7be4259196d4420d8cb85e6cbec73cde075f1c5563a628 docs/TODO.md=21178006edd1cfff599536a5864095e579396e421289c4d43837f67508b12c67 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=6d145f35cf85be7556667299bbd9f2b81ed03628271a73d0b8ca02f50f23c21f
+PACK_GIT_SHA=29f9fb3e6eb7a415f1d5b2454e3aef96dbf9607a
+PACK_BUILD_UTC=2026-02-17T04:31:09Z
+SOURCE_HASHES: AGENTS.md=b05b37bb26dfcd6d091c0bc021a6975c6929082ac6a3ef91fda246abe624d1f9 docs/ARCHITECTURE.md=3d8c10ce3c17415297f29a70d81c2d0f36c9541c3ab4c9618ab08decd5f29de8 docs/DECISIONS.md=12a2f46da4a1fb434e7cffd83cee1a9af240dbbc0e6fe183deab6420327014fa docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=7940c8b1fca92f68ba9824fbb23c4a9d44c70db1dc70d1b87f00e974efd164fb docs/TODO.md=b110f42c4616980e6430bf7eceab728840bb5d392acf8f5921418f547465993f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=63a807133947a2486ce2edbdb7378b23c0b4a117851555405fdb1e8f6196c10f
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -102,8 +102,10 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 
 ## Outreach CRM Auto-Run Data Flow
 
-1. Seed/import: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
-2. Daily run: `outreach/run_outreach_auto.py`
+1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).
+2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts the generated CSV into `crm.sqlite`.
+3. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
+4. Daily run: `outreach/run_outreach_auto.py`
    - Resolves daily state from `OUTREACH_STATES` and batch id `<YYYY-MM-DD>_<STATE>`
    - Selects/prioritizes prospects from `prospects` table
    - Enforces suppression + one-click unsubscribe compliance gates
@@ -111,8 +113,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - Sends multipart outreach emails directly via `send_digest_email.send_email`
    - Records `outreach_events` and prospect status transitions atomically
    - Sends ops summary email to `OSHA_SMOKE_TO`
-3. Lifecycle ops: `outreach/crm_admin.py mark` records replied/trial/converted/DNC outcomes.
-4. Optional compatibility: append-only ledger at `out/outreach_export_ledger.jsonl`.
+5. Lifecycle ops: `outreach/crm_admin.py mark` records replied/trial/converted/DNC outcomes.
+6. Optional compatibility: append-only ledger at `out/outreach_export_ledger.jsonl`.
 
 ## Outreach Debug Export Data Flow
 
@@ -122,6 +124,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 ## Operational Artifacts
 
 - `out/crm.sqlite` (or `${DATA_DIR}/crm.sqlite`): prospects/outreach/trials/suppression source of truth
+- `out/prospect_discovery/prospects_latest.csv` (or `${DATA_DIR}/prospect_discovery/prospects_latest.csv`): canonical generated discovery feed input
 - `out/unsub_tokens.csv`: token store for one-click unsubscribe links (when enabled)
 - `out/suppression.csv`: suppression list enforced by exports and sending paths
 - `out/outreach_export_ledger.jsonl`: optional compatibility ledger for contacted records
@@ -292,6 +295,36 @@ Adopt `docs/V1_CUSTOMER_VALIDATED.md` as the canonical V1 requirements capsule a
 - Legacy V1 files remain available only as historical artifacts in `docs/legacy/`.
 - `docs/V1_CUSTOMER_VALIDATED.md` becomes the canonical bridge between historical V1 behavior and current spine docs.
 - `PROJECT_CONTEXT_PACK.md` generation includes the V1 capsule to keep single-file upload workflows complete.
+
+## ADR-0006: Prospect Generation Feed Standardized Before Discovery
+
+Date: 2026-02-13
+Status: Accepted
+
+### Context
+
+Discovery runs were deterministic but frequently had no input file, which left CRM empty and outreach plan pools at zero.
+Legacy Wally-era prospecting existed as pool generators and hygiene scripts, but that output was not standardized into discovery's canonical no-arg input path.
+
+### Decision
+
+Adopt a single upstream feed path:
+
+- `run_prospect_generation.py` generates `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (or `./out/prospect_discovery/prospects_latest.csv` when `DATA_DIR` is unset).
+- `run_prospect_discovery.py` continues to import/upsert from this feed into `crm.sqlite`.
+- Outreach remains CRM-backed (`run_outreach_auto.py`) and unchanged in send/cadence/scoring/compliance behavior.
+
+### Rationale
+
+- Preserves deterministic discovery behavior while making no-arg scheduled runs operationally reliable.
+- Keeps CRM as the authoritative pool and prevents drift back to legacy direct-send CSV workflows.
+- Reuses existing Wally-era pool generation/hygiene logic without embedding scraping or generation into discovery.
+
+### Consequences
+
+- Daily scheduler flow becomes generation -> discovery -> outreach.
+- Operators now monitor both `GENERATOR_*` and `DISCOVERY_*` machine-readable outputs.
+- Suppression and campaign tracking artifacts remain separate from the discovery feed.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -362,6 +395,14 @@ py -3 tools/project_context_pack.py --check
 py -3 tools/project_context_pack.py --mark-uploaded
 ```
 
+Automation/test-only build output override:
+
+```powershell
+py -3 tools/project_context_pack.py --build --output C:\temp\PROJECT_CONTEXT_PACK.md
+```
+
+Use `--output` for tests/automation to avoid mutating repo-root `PROJECT_CONTEXT_PACK.md`. Operator flow remains the default build-to-repo-root command above.
+
 `PROJECT_CONTEXT_PACK.md` is the only upload artifact and includes:
 - `AGENTS.md`
 - `docs/V1_CUSTOMER_VALIDATED.md`
@@ -396,6 +437,39 @@ Doctor behavior:
 - `run_outreach_auto.py --doctor` runs `tools/project_context_pack.py --check --soft`.
 - Soft checks are reminder-only: silent on success, and they print `WARN_CONTEXT_PACK_*` plus remediation instructions when action is required.
 - Soft checks do not fail wrapper/doctor by themselves.
+
+## Deliverability Preflight (DNS + Header Proof)
+
+Run after any DNS, SMTP, or sender-identity change. No behavior change; verification only.
+
+### DNS Record Checks
+
+```powershell
+# SPF — must include your SMTP provider
+nslookup -type=TXT microflowops.com 8.8.8.8
+# Expect: v=spf1 include:zoho.com ~all (or equivalent)
+
+# DMARC — policy + reporting
+nslookup -type=TXT _dmarc.microflowops.com 8.8.8.8
+# Expect: v=DMARC1; p=none; rua=mailto:... (or p=quarantine/reject)
+
+# DKIM — Zoho selector public key
+nslookup -type=TXT zoho._domainkey.microflowops.com 8.8.8.8
+# Expect: v=DKIM1; k=rsa; p=<public_key>
+```
+
+### Header Fields to Confirm (on a received test email)
+
+Open a test email in Gmail → "Show original" (or equivalent) and verify:
+
+| Header | Expected value |
+|---|---|
+| `Authentication-Results` | `spf=pass`, `dkim=pass`, `dmarc=pass` |
+| `Received-SPF` | `pass` with `microflowops.com` |
+| `DKIM-Signature` | `d=microflowops.com` |
+| `From` / `Return-Path` | Both use `@microflowops.com` (domain alignment) |
+
+If any field shows `fail` or `none`, re-check the DNS records above and the SMTP provider's domain verification panel before sending live outreach.
 
 ## Switch machines: laptop -> PC
 
@@ -556,13 +630,76 @@ cd C:\dev\OSHA_Leads
 
 CSV seed is optional bootstrap/debug only. Ongoing intake should run discovery, not CSV imports.
 
+### Prospect Generation (Scheduled First)
+
+Run canonical prospect generation first each day. This writes the discovery feed CSV that discovery imports into CRM:
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py
+```
+
+No-arg generation output path:
+
+- `${DATA_DIR}\prospect_discovery\prospects_latest.csv`
+- If `DATA_DIR` is unset: `.\out\prospect_discovery\prospects_latest.csv`
+
+Dry-run generation (no writes):
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --dry-run
+```
+
+Print resolved generation config:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config
+```
+
+Generator emits machine-readable lines:
+
+- `GENERATOR_OUTPUT_PATH`
+- `GENERATOR_ROWS_READ`
+- `GENERATOR_ROWS_WRITTEN`
+- `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
+
+Artifact separation (do not mix these):
+
+- Discovery feed CSV: `${DATA_DIR}\prospect_discovery\prospects_latest.csv`
+- Send-time suppression list: `${DATA_DIR}\suppression.csv` (or `.\out\suppression.csv`)
+- Optional campaign tracking logs: `out\campaign_tracking\...`
+
 ### Prospect Discovery (Scheduled First)
 
 Run discovery before outreach each day:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input C:\path\to\prospects.csv
+.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
+```
+
+No-arg discovery input resolution order:
+
+1. `PROSPECT_DISCOVERY_INPUT` (preferred)
+2. `DISCOVERY_INPUT_CSV` (legacy compatibility)
+3. `${DATA_DIR}\prospect_discovery\prospects_latest.csv`
+4. `${DATA_DIR}\prospect_discovery\prospects.csv`
+5. `${DATA_DIR}\prospects_latest.csv`
+6. `${DATA_DIR}\prospects.csv`
+
+When `DATA_DIR` is unset, discovery resolves these fallback paths under repo `.\out\...`.
+
+Set preferred discovery input via the canonical no-editor env helper:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 `
+  -OutreachDailyLimit 10 `
+  -OutreachStates TX `
+  -OshaSmokeTo cchevali+oshasmoke@gmail.com `
+  -OutreachSuppressionMaxAgeHours 240 `
+  -TrialSendsLimitDefault 10 `
+  -TrialExpiredBehaviorDefault notify_once `
+  -ProspectDiscoveryInput C:\path\to\prospects.csv
 ```
 
 Dry-run discovery:
@@ -576,6 +713,24 @@ Print resolved discovery config:
 ```powershell
 .\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --print-config --input C:\path\to\prospects.csv
 ```
+
+Discovery emits a fixed-order `DISCOVERY_*` diagnostics block for operator parsing:
+
+- `DISCOVERY_INPUT_PATH`
+- `DISCOVERY_CRM_DB`
+- `DISCOVERY_ROWS_READ`
+- `DISCOVERY_PROSPECTS_UPSERTED`
+- `DISCOVERY_SKIPPED_INVALID_EMAIL`
+- `DISCOVERY_SKIPPED_DUPLICATE_EMAIL`
+- `DISCOVERY_COMPLETE status=<OK|NO_INPUT|DRY_RUN>`
+
+Legacy `PASS_DISCOVERY_*` / `ERR_DISCOVERY_*` tokens remain supported for compatibility.
+
+Canonical daily sequence:
+
+1. `.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py`
+2. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
+3. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
 
 ### Single Command (Scheduled Daily)
 
@@ -597,11 +752,21 @@ cd C:\dev\OSHA_Leads
 
 The `--doctor` command must exit `0` with `PASS_DOCTOR_*` lines only before unattended sends. The dry-run command must complete successfully before live send.
 
-Tomorrow confirmation (no send, deterministic candidate list):
+Tomorrow confirmation (canonical no-send deterministic check):
 
 ```powershell
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date 2026-02-14
 ```
+
+`--plan` stdout contract includes:
+
+- `OUTREACH_PLAN_POOL_TOTAL=<n>` (alias of selected-state pool before skip filters)
+- `OUTREACH_PLAN_POOL_TOTAL_ALL_STATES=<n>`
+- `OUTREACH_PLAN_POOL_TOTAL_SELECTED_STATE=<n>`
+- `OUTREACH_PLAN_FILTER_BREAKDOWN=<minified_json>`
+- `OUTREACH_PLAN_DIAGNOSTICS_PATH=<absolute_path>`
+
+When `OUTREACH_PLAN_WILL_SEND=0`, root-cause must be interpreted from `OUTREACH_PLAN_POOL_TOTAL*`, `OUTREACH_PLAN_FILTER_BREAKDOWN`, and `OUTREACH_PLAN_DIAGNOSTICS_PATH` (instead of relying on skip totals alone).
 
 Dry-run (no sends, writes outbox + manifest artifacts):
 
@@ -640,6 +805,7 @@ Expected artifacts:
 - `out/outreach_export_ledger.jsonl` (optional compatibility ledger)
 - `out\outreach\<batch>\outbox_<batch>_dry_run.csv`
 - `out\outreach\<batch>\outbox_<batch>_dry_run_manifest.csv` (includes `domain`, `segment`, `role_or_title`, `state_pref`, and `rank_reason` audit fields)
+- `out\outreach\<batch>\plan_diagnostics.json` (run-level plan/dry-run diagnostics including pool totals and filter breakdown)
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 
@@ -741,7 +907,14 @@ $rows | Group-Object { $_.email.ToLowerInvariant().Trim() } | ForEach-Object { $
 
 ### Task Scheduler (PC)
 
-Create/update daily tasks (discovery first, outreach second):
+Create/update daily tasks (generation first, discovery second, outreach third).
+Operational expectation is America/New_York local time:
+
+```powershell
+schtasks /Create /F /SC DAILY /ST 07:15 /TN "OSHA_Prospect_Generation" `
+  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_generation.ps1" `
+  /RL HIGHEST
+```
 
 ```powershell
 schtasks /Create /F /SC DAILY /ST 07:30 /TN "OSHA_Prospect_Discovery" `
@@ -766,9 +939,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_
 ### Minimal Daily Ops Checklist
 
 1. Update `suppression.csv` with yesterday's unsubscribes/bounces.
-2. Confirm discovery run populated/updated prospects in `crm.sqlite`.
-3. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with contacted/skipped/new-replies-trials-conversions.
-4. Use `outreach\crm_admin.py mark` to record `replied`, `trial_started`, `converted`, or `do_not_contact`.
+2. Confirm generation run produced `${DATA_DIR}\prospect_discovery\prospects_latest.csv` (or `.\out\prospect_discovery\prospects_latest.csv`).
+3. Confirm discovery run populated/updated prospects in `crm.sqlite`.
+4. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with contacted/skipped/new-replies-trials-conversions.
+5. Use `outreach\crm_admin.py mark` to record `replied`, `trial_started`, `converted`, or `do_not_contact`.
 
 ## Wally Trial Missed 9:00 AM Catch-Up (SAFE_MODE)
 
@@ -951,9 +1125,9 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 ## Human-only (UI/credentials)
 
 - [ ] After any doc/contract change: rebuild + upload `PROJECT_CONTEXT_PACK.md` + mark uploaded (`py -3 tools\project_context_pack.py --build`, upload in ChatGPT Project Settings -> Files, `py -3 tools\project_context_pack.py --mark-uploaded`).
-- [ ] Create Stripe payment link URL and set it.
-  Stripe Dashboard -> Payment Links -> Create payment link -> Select product/price -> Configure recurring monthly billing -> Collect customer email -> Copy Payment Link URL -> Set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` -> Verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config` -> After payment redirect: `https://microflowops.com/onboarding`.
-- [ ] Complete outbound sender domain setup and verification (SPF, DKIM, DMARC, domain/DNS alignment, and `FROM_EMAIL`/`SMTP_USER` alignment).
+- [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
+- [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
+
 - [ ] Ensure email provider account/sender credentials are configured for production and validated with daily doctor checks (`run_outreach_auto.py --doctor`).
 
 ## Codex-owned engineering backlog
@@ -968,7 +1142,24 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Done
 
-- [ ] (empty)
+- 2026-02-15: Completed outbound sender domain verification (SPF, DKIM, DMARC) for `microflowops.com`. DNS records published; test email confirmed `spf=pass`, `dkim=pass`, `dmarc=pass` with aligned domains. Verification commands added to `docs/RUNBOOK.md` under "Deliverability Preflight".
+- 2026-02-12: Set website Stripe payment link in `web/config/site.json` (`stripePaymentLink`) and wire it into `web/app/pricing/page.tsx` + `web/app/contact/page.tsx` (commit `54c2a3c6`).
+
+## Deliverability Verification Snippet (Regression Check)
+
+```powershell
+# SPF
+nslookup -type=TXT microflowops.com 8.8.8.8
+# Expect: v=spf1 include:zoho.com ~all (or equivalent)
+
+# DMARC
+nslookup -type=TXT _dmarc.microflowops.com 8.8.8.8
+# Expect: v=DMARC1; p=none; ... (or p=quarantine/reject)
+
+# DKIM (Zoho selector)
+nslookup -type=TXT zoho._domainkey.microflowops.com 8.8.8.8
+# Expect: v=DKIM1; k=rsa; p=<public_key>
+```
 ```
 
 ## docs/V1_CUSTOMER_VALIDATED.md
