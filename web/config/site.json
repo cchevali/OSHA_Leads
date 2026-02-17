@@ -9,6 +9,6 @@
   "ctaTerritorySubject": "Coverage details",
   "ctaTerritoryBody": "Hi MicroFlowOps,\n\nOrganization:\nMetros to cover (cities or states are fine too):\nRecipients:\nPreferred delivery time (optional):\n\nThanks",
   "stripePaymentLink": "https://buy.stripe.com/28EfZh0aid4Ncup1KD4Ja00",
-  "stripePaymentLinkCore": "https://buy.stripe.com/PLACEHOLDER_CORE_299",
-  "stripePaymentLinkMulti": "https://buy.stripe.com/PLACEHOLDER_MULTI_499"
+  "stripePaymentLinkCore": "https://buy.stripe.com/9B6bJ19KS4yh3XTexp4Ja01",
+  "stripePaymentLinkMulti": "https://buy.stripe.com/5kQ7sL3mu6Gp51XfBt4Ja02"
 }

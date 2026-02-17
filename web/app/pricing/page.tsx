@@ -21,6 +21,10 @@ export default function PricingPage() {
     subject: "Enterprise inquiry",
     body: "Hi MicroFlowOps,\n\nI am interested in enterprise or multi-state coverage.\n\nOrganization:\nMetros or states needed:\n\nThanks"
   }).toString()}`;
+  const confirmFirstMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
+    subject: "Confirm coverage before checkout",
+    body: "Hi MicroFlowOps,\n\nI would rather confirm coverage before checkout.\n\nOrganization:\nMetros/cities to cover:\n\nThanks"
+  }).toString()}`;
 
   const plans = [
     {
@@ -91,6 +95,9 @@ export default function PricingPage() {
 
       {/* Plan cards */}
       <section className="mx-auto w-full max-w-6xl px-6">
+        <p className="mx-auto mb-5 max-w-3xl text-center text-sm text-inkMuted">
+          Checkout takes 30 seconds. After payment, we&apos;ll ask for your metros/cities and confirm fit. We will not increase billing without your approval.
+        </p>
         <div className="grid gap-6 md:grid-cols-3">
           {plans.map((plan) => (
             <div
@@ -121,6 +128,19 @@ export default function PricingPage() {
                 >
                   {plan.ctaLabel}
                 </a>
+                {(plan.name === "Core" || plan.name === "Multi-Territory") && (
+                  <>
+                    <p className="mt-2 text-xs text-inkMuted">
+                      After checkout, you&apos;ll be redirected to onboarding to enter the metros/cities you want covered. We&apos;ll confirm fit before any changes.
+                    </p>
+                    <a
+                      href={confirmFirstMailto}
+                      className="mt-2 inline-flex text-xs font-semibold text-ocean underline transition hover:text-oceanDark"
+                    >
+                      If you&apos;d rather confirm first, email us
+                    </a>
+                  </>
+                )}
               </div>
             </div>
           ))}

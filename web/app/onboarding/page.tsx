@@ -13,7 +13,7 @@ export default function OnboardingPage() {
         <SectionHeading
           eyebrow="Onboarding"
           title="Onboarding"
-          description="Activation within 24 hours. If you already paid, submit details below or reply to your confirmation email."
+          description="Thanks—now tell us the metros/cities you want covered (2 minutes). We'll confirm fit. Activation within 24 hours. If you already paid, submit details below or reply to your confirmation email."
           align="center"
         />
       </section>
