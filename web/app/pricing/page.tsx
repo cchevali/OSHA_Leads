@@ -13,10 +13,7 @@ export const metadata: Metadata = {
 export default function PricingPage() {
   const coreCheckout = resolveCheckoutCta(site.stripePaymentLinkCore, "/contact");
   const multiCheckout = resolveCheckoutCta(site.stripePaymentLinkMulti, "/contact");
-  const trialMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
-    subject: site.ctaSampleSubject,
-    body: site.ctaSampleBody
-  }).toString()}`;
+  const trialContactPath = "/contact?source=pricing&intent=trial";
   const contactMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
     subject: "Enterprise inquiry",
     body: "Hi MicroFlowOps,\n\nI am interested in enterprise or multi-state coverage.\n\nOrganization:\nMetros or states needed:\n\nThanks"
@@ -39,7 +36,7 @@ export default function PricingPage() {
         "Up to 6 recipients"
       ],
       ctaLabel: "Start free pilot",
-      ctaHref: trialMailto,
+      ctaHref: trialContactPath,
       ctaExternal: false,
       ctaStyle: "outline" as const
     },

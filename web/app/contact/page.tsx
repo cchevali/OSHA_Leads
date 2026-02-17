@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import SectionHeading from "@/components/SectionHeading";
 import TrialRequestForm from "@/components/TrialRequestForm";
+import CopyEmailButton from "@/components/CopyEmailButton";
 import site from "@/config/site.json";
 import { resolveCheckoutCta } from "@/lib/checkout";
 
@@ -41,7 +42,16 @@ export default function ContactPage() {
               <p className="mt-3 text-inkMuted">
                 We respond same business day. Include your metros (or cities/states — we will translate), recipients, and any timing preferences.
               </p>
-              <p className="mt-4 text-sm font-semibold text-ink">{site.ctaEmail}</p>
+              <div className="mt-4 flex flex-wrap items-center gap-4">
+                <p className="text-sm font-semibold text-ink">{site.ctaEmail}</p>
+                <CopyEmailButton email={site.ctaEmail} />
+              </div>
+              <a
+                href={`mailto:${site.ctaEmail}`}
+                className="mt-3 inline-flex text-xs font-semibold text-ocean underline transition hover:text-oceanDark"
+              >
+                Open in email app (optional)
+              </a>
             </div>
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">Already decided?</h3>

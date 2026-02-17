@@ -12,11 +12,13 @@
   },
   "dependencies": {
     "next": "latest",
+    "nodemailer": "^8.0.1",
     "react": "latest",
     "react-dom": "latest"
   },
   "devDependencies": {
     "@types/node": "latest",
+    "@types/nodemailer": "^7.0.10",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "autoprefixer": "latest",

@@ -12,6 +12,12 @@
 8. `NEXT_PUBLIC_PLAUSIBLE_ENABLED=true`
 9. `NEXT_PUBLIC_PLAUSIBLE_DOMAIN=microflowops.com`
 10. `NEXT_PUBLIC_SITE_HOST=microflowops.com`
+11. `WEB_SMTP_HOST=<your_smtp_host>`
+12. `WEB_SMTP_PORT=<your_smtp_port>`
+13. `WEB_SMTP_USER=<your_smtp_user>`
+14. `WEB_SMTP_PASS=<your_smtp_password>`
+15. `WEB_SMTP_FROM=support@microflowops.com`
+16. `WEB_TRIAL_TO=support@microflowops.com` (optional, defaults to support@microflowops.com)
 
 Verification note:
 - Successful deploy logs must show Next.js build output (routes/app output), and the Deployment URL must render `/` (not Vercel `NOT_FOUND`).
@@ -26,10 +32,13 @@ Verification note:
 
 ## Post-deploy checks
 
-1. Verify the homepage loads and CTAs open a mail client.
-2. Confirm `/sitemap.xml` and `/robots.txt` resolve.
-3. Validate the OpenGraph card with Vercel’s social preview.
-4. Update `web/config/site.json` if the brand or email address changes.
+1. Verify the homepage loads and CTAs render.
+2. Submit `/contact` trial form and confirm the success message appears.
+3. Confirm support notification and requester confirmation emails are delivered.
+4. Confirm the "Email us directly" copy button works and mailto remains optional.
+5. Confirm `/sitemap.xml` and `/robots.txt` resolve.
+6. Validate the OpenGraph card with Vercel’s social preview.
+7. Update `web/config/site.json` if the brand or email address changes.
 
 ## Go-Live Gate
 
