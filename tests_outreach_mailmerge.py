@@ -509,13 +509,13 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertTrue(text_body.strip())
             self.assertEqual(body, text_body)
             self.assertTrue(html_body.strip())
-            self.assertIn("Recent signals:", html_body)
-            self.assertIn("Last refresh:", html_body)
+            self.assertIn("new OSHA inspections opened in TX", html_body)
+            self.assertIn("&middot; Observed ", html_body)
 
             # Wally-style markers.
-            self.assertIn("Chase Chevalier", html_body)
+            self.assertIn("Chase", html_body)
             self.assertIn("11539 Links Dr, Reston, VA 20190", html_body)
-            self.assertIn("Priority:", html_body)
+            self.assertIn("High &middot;", html_body)
             self.assertIn('href="https://www.osha.gov/', html_body)
             self.assertIn('href="https://microflowops.com"', html_body)
 

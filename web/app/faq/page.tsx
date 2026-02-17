@@ -8,6 +8,30 @@ export const metadata: Metadata = {
 
 const faqs = [
   {
+    q: "Do I need to count metros exactly?",
+    a: "No. List the cities or metros you care about and we map coverage during onboarding. We will not change billing without your explicit approval."
+  },
+  {
+    q: "How do I choose a plan?",
+    a: "If you are unsure, start with Core. It covers up to 4 metros. If your footprint is larger, we can move you to Multi-Territory or Enterprise only with your approval."
+  },
+  {
+    q: "What counts as a metro?",
+    a: "A metro is a major city plus nearby surrounding communities, similar to an MSA-style boundary. You can list city names and we will confirm the exact mapping."
+  },
+  {
+    q: "Can I change my metros later?",
+    a: "Yes. You can swap your metro selections once per billing cycle at no charge. Just email us with the change."
+  },
+  {
+    q: "Do you support OSHA Area Office alignment?",
+    a: "Yes. If you prefer OSHA Area Office alignment, we support that on Enterprise or can confirm the mapping during onboarding. Self-serve plans are metro-based."
+  },
+  {
+    q: "Will my price change?",
+    a: "Founding customer rate locked for 12 months while your subscription remains active. We will not increase your billing without explicit approval."
+  },
+  {
     q: "Is onboarding handled over email only?",
     a: "Yes. Email-only onboarding keeps everything documented. No calls are required."
   },
@@ -22,10 +46,6 @@ const faqs = [
   {
     q: "Do you provide legal advice or citation deadlines?",
     a: "No. Alerts are informational only. We include deadlines only when the public record explicitly supports them."
-  },
-  {
-    q: "Can we choose which territories to monitor?",
-    a: "Yes. Each subscription is territory-based and can be tuned to specific states or metro areas."
   },
   {
     q: "How do unsubscribe requests work?",

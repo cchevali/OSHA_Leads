@@ -28,7 +28,7 @@ const steps = [
 const safeguards = [
   "Suppression and unsubscribe enforcement on every send.",
   "Audit logs for every delivery attempt.",
-  "Territory-specific filtering and hard caps per territory.",
+  "Metro-based filtering with plan-level coverage caps.",
   "Optional pilot mode before live delivery."
 ];
 
@@ -59,7 +59,7 @@ export default function HowItWorksPage() {
         <SectionHeading
           eyebrow="Delivery cadence"
           title="Daily by default, tuned for your team."
-          description="Set the window, select territories, and we deliver each morning."
+          description="Set the window, select your metros, and we deliver each morning."
         />
         <div className="mt-8 rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <ul className="space-y-3 text-sm text-inkMuted">
@@ -89,9 +89,9 @@ export default function HowItWorksPage() {
         <div className="rounded-3xl bg-inkFixed px-8 py-10 text-white shadow-soft">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="font-display text-3xl">Ready to pilot your territory?</h2>
+              <h2 className="font-display text-3xl">Ready to pilot your metro coverage?</h2>
               <p className="mt-3 text-white/70">
-                We can send a sample alert within 24 hours and tune the filters to match your needs.
+                We can send a sample alert within 24 hours and tune coverage to match your metros.
               </p>
             </div>
             <CTAButtons variant="dark" />

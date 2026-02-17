@@ -1,22 +1,25 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import SectionHeading from "@/components/SectionHeading";
 import CTAButtons from "@/components/CTAButtons";
+import CoverageEstimator from "@/components/CoverageEstimator";
 import site from "@/config/site.json";
-import { buildStripeCheckoutUrl } from "@/lib/checkout";
+import { resolveCheckoutCta } from "@/lib/checkout";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/pricing" }
 };
 
 export default function PricingPage() {
-  const stripeCheckoutUrl = buildStripeCheckoutUrl(site.stripePaymentLink);
+  const coreCheckout = resolveCheckoutCta(site.stripePaymentLinkCore, "/contact");
+  const multiCheckout = resolveCheckoutCta(site.stripePaymentLinkMulti, "/contact");
   const trialMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
     subject: site.ctaSampleSubject,
     body: site.ctaSampleBody
   }).toString()}`;
   const contactMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
-    subject: "Growth plan inquiry",
-    body: "Hi MicroFlowOps,\n\nI am interested in the Growth plan. Can you share more details?\n\nOrganization:\nTerritory:\n\nThanks"
+    subject: "Enterprise inquiry",
+    body: "Hi MicroFlowOps,\n\nI am interested in enterprise or multi-state coverage.\n\nOrganization:\nMetros or states needed:\n\nThanks"
   }).toString()}`;
 
   const plans = [
@@ -26,10 +29,10 @@ export default function PricingPage() {
       note: "14 days",
       highlight: false,
       features: [
-        "One region (state, metro, or OSHA area office)",
+        "Up to 4 metros",
         "Daily email brief",
         "Priority scoring",
-        "Sample alert preview"
+        "Up to 6 recipients"
       ],
       ctaLabel: "Start free pilot",
       ctaHref: trialMailto,
@@ -38,50 +41,55 @@ export default function PricingPage() {
     },
     {
       name: "Core",
-      price: "$399",
-      note: "per region / month",
+      price: "$299",
+      note: "per month",
       highlight: true,
       features: [
+        "Up to 4 metros",
         "Daily email delivery",
-        "Region-specific filters",
+        "Coverage filters tuned to your metros",
         "Up to 6 recipients",
-        "Weekly summary add-on"
+        "Weekly summary included"
       ],
-      ctaLabel: "Subscribe — $399/mo",
-      ctaHref: stripeCheckoutUrl,
-      ctaExternal: true,
+      ctaLabel: "Subscribe — $299/mo",
+      ctaHref: coreCheckout.href,
+      ctaExternal: coreCheckout.isExternal,
       ctaStyle: "primary" as const
     },
     {
-      name: "Growth",
-      price: "$699",
-      note: "per region / month",
+      name: "Multi-Territory",
+      price: "$499",
+      note: "per month",
       highlight: false,
-      badge: "Coming Soon",
       features: [
+        "Up to 10 metros",
         "Everything in Core",
-        "Expanded enrichment",
-        "Custom scoring rules",
+        "Up to 15 recipients",
         "Priority support"
       ],
-      ctaLabel: "Contact us",
-      ctaHref: contactMailto,
-      ctaExternal: false,
+      ctaLabel: "Subscribe — $499/mo",
+      ctaHref: multiCheckout.href,
+      ctaExternal: multiCheckout.isExternal,
       ctaStyle: "outline" as const
     }
   ];
 
   return (
     <div className="space-y-16 pb-24 pt-12">
+      {/* Hero */}
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="Pricing"
-          title="Simple territory-based pricing."
-          description="Start with one region and scale as coverage expands. A region is a state, metro area, or OSHA area office."
+          title="Pick a plan. Tell us your metros. We handle the rest."
+          description="Coverage is based on metro areas. Choose the plan that fits your footprint — we confirm everything during onboarding. No per-metro billing, no surprises."
           align="center"
         />
+        <p className="mx-auto mt-4 max-w-2xl text-center text-sm font-semibold text-ocean">
+          Founding customer rate locked for 12 months while your subscription remains active.
+        </p>
       </section>
 
+      {/* Plan cards */}
       <section className="mx-auto w-full max-w-6xl px-6">
         <div className="grid gap-6 md:grid-cols-3">
           {plans.map((plan) => (
@@ -91,16 +99,9 @@ export default function PricingPage() {
                 }`}
             >
               <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <p className="text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
-                    {plan.name}
-                  </p>
-                  {"badge" in plan && plan.badge && (
-                    <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700">
-                      {plan.badge}
-                    </span>
-                  )}
-                </div>
+                <p className="text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
+                  {plan.name}
+                </p>
                 <p className="font-display text-4xl text-ink">{plan.price}</p>
                 <p className="text-sm text-inkMuted">{plan.note}</p>
               </div>
@@ -126,13 +127,80 @@ export default function PricingPage() {
         </div>
       </section>
 
+      {/* Enterprise */}
       <section className="mx-auto w-full max-w-5xl px-6">
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-          <h3 className="font-display text-2xl text-ink">Enterprise and multi-territory</h3>
+          <h3 className="font-display text-2xl text-ink">Enterprise</h3>
           <p className="mt-3 text-inkMuted">
-            Need multi-state coverage, custom reporting, or CRM integration? We will build a plan
-            around your footprint.
+            Need 10+ metros, statewide coverage, OSHA area office alignment, or CRM integration?
+            We will build a plan around your footprint.
           </p>
+          <div className="mt-4">
+            <a
+              href={contactMailto}
+              className="inline-flex items-center justify-center rounded-full border border-cardBorder px-4 py-2.5 text-sm font-semibold text-ink transition hover:border-ink/40"
+            >
+              Contact us
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* How it works */}
+      <section className="mx-auto w-full max-w-5xl px-6">
+        <SectionHeading
+          eyebrow="How coverage works"
+          title="Coverage is based on metro areas."
+          description="A metro area is a major city and its surrounding suburbs — roughly aligned with Census MSA boundaries. Tell us your metros during onboarding and we will configure your alerts."
+        />
+
+        <div className="mt-8 space-y-4">
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+            <h4 className="font-display text-lg text-ink">Trust flow</h4>
+            <p className="mt-3 text-sm text-inkMuted">
+              1) Pick a plan → 2) Tell us your metros → 3) We confirm fit. We will not increase billing without your explicit approval.
+            </p>
+          </div>
+
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+            <h4 className="font-display text-lg text-ink">Example: Florida major metros (4)</h4>
+            <ul className="mt-3 space-y-2 text-sm text-inkMuted">
+              <li>Miami–Fort Lauderdale–West Palm Beach</li>
+              <li>Orlando</li>
+              <li>Tampa–St. Petersburg</li>
+              <li>Jacksonville</li>
+            </ul>
+            <p className="mt-3 text-sm font-semibold text-ink">→ 4 metros → Core at $299/mo</p>
+          </div>
+
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+            <h4 className="font-display text-lg text-ink">OSHA Area Office alignment</h4>
+            <p className="mt-3 text-sm text-inkMuted">
+              If you prefer OSHA Area Office alignment, we support that on Enterprise or can confirm the mapping during onboarding.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Coverage Estimator */}
+      <section className="mx-auto w-full max-w-5xl px-6">
+        <CoverageEstimator />
+      </section>
+
+      <section className="mx-auto w-full max-w-5xl px-6">
+        <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+          <h3 className="font-display text-2xl text-ink">Questions before subscribing?</h3>
+          <p className="mt-3 text-inkMuted">
+            See plan selection, metro definitions, coverage changes, and OSHA Area Office alignment details.
+          </p>
+          <div className="mt-4">
+            <Link
+              href="/faq"
+              className="inline-flex items-center justify-center rounded-full border border-cardBorder px-4 py-2.5 text-sm font-semibold text-ink transition hover:border-ink/40"
+            >
+              Read the FAQ
+            </Link>
+          </div>
         </div>
       </section>
 
@@ -142,7 +210,7 @@ export default function PricingPage() {
             <div>
               <h2 className="font-display text-3xl">Try it free for 14 days.</h2>
               <p className="mt-3 text-white/70">
-                We will send a no-commitment sample alert and trial feed so you can evaluate the signal quality before subscribing.
+                Up to 4 metros included. We will send a sample alert and configure a trial feed so you can evaluate signal quality.
               </p>
             </div>
             <CTAButtons variant="dark" />

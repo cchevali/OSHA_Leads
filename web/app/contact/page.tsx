@@ -2,14 +2,18 @@ import type { Metadata } from "next";
 import SectionHeading from "@/components/SectionHeading";
 import TrialRequestForm from "@/components/TrialRequestForm";
 import site from "@/config/site.json";
-import { buildStripeCheckoutUrl } from "@/lib/checkout";
+import { resolveCheckoutCta } from "@/lib/checkout";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/contact" }
 };
 
 export default function ContactPage() {
-  const stripeCheckoutUrl = buildStripeCheckoutUrl(site.stripePaymentLink);
+  const coreFallbackMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
+    subject: "Core plan inquiry",
+    body: "Hi MicroFlowOps,\n\nI want to start Core at $299/mo.\n\nOrganization:\nMetros to cover:\nRecipients:\n\nThanks"
+  }).toString()}`;
+  const stripeCheckout = resolveCheckoutCta(site.stripePaymentLinkCore, coreFallbackMailto);
 
   return (
     <div className="space-y-16 pb-24 pt-12">
@@ -17,7 +21,7 @@ export default function ContactPage() {
         <SectionHeading
           eyebrow="Contact"
           title="Request a trial feed."
-          description="Tell us your territory and we will start a 7-day trial. No credit card needed."
+          description="Tell us your metros and we will start a 14-day trial — up to 4 metros included. No credit card needed."
           align="center"
         />
       </section>
@@ -27,7 +31,7 @@ export default function ContactPage() {
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-2xl text-ink">Start a free trial</h3>
             <p className="mt-2 mb-5 text-sm text-inkMuted">
-              We will send a sample alert and set up a trial feed for your territory.
+              We will send a sample alert and set up a trial feed for your metros.
             </p>
             <TrialRequestForm />
           </div>
@@ -35,24 +39,22 @@ export default function ContactPage() {
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">Email us directly</h3>
               <p className="mt-3 text-inkMuted">
-                We respond same business day. Include your territory, recipients, and any timing
-                preferences.
+                We respond same business day. Include your metros (or cities/states — we will translate), recipients, and any timing preferences.
               </p>
               <p className="mt-4 text-sm font-semibold text-ink">{site.ctaEmail}</p>
             </div>
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">Already decided?</h3>
               <p className="mt-3 text-inkMuted">
-                Subscribe directly and we will activate your territory within 24 hours.
+                Subscribe directly and we will activate your coverage within 24 hours.
               </p>
               <div className="mt-4">
                 <a
-                  href={stripeCheckoutUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  href={stripeCheckout.href}
+                  {...(stripeCheckout.isExternal ? { target: "_blank", rel: "noopener noreferrer" } : {})}
                   className="inline-flex items-center justify-center rounded-full bg-ocean px-4 py-2 text-sm font-semibold text-white shadow-glow transition hover:bg-oceanDark"
                 >
-                  Subscribe — $399/mo
+                  Subscribe — $299/mo
                 </a>
               </div>
             </div>

@@ -33,9 +33,9 @@ class TestOutboundEmailContent(unittest.TestCase):
         self.assertIn("https://www.osha.gov/ords/imis/establishment.inspection_detail?id=123456789", html_body)
         
         # Priority + observed freshness
-        self.assertIn("Priority: High", text_body)
-        self.assertIn("Observed: 2025-01-06", text_body)
-        self.assertIn("Priority: High", html_body)
+        self.assertIn("[High]", text_body)
+        self.assertIn("Observed 2025-01-06", text_body)
+        self.assertIn("High", html_body)
 
         # Address only after footer separator
         addr = "11539 Links Dr, Reston, VA 20190"

@@ -13,7 +13,7 @@ export default function SamplePage() {
         <SectionHeading
           eyebrow="Sample"
           title="See a real OSHA Activity Signals alert."
-          description="This is a realistic preview using dummy data. Each morning, you get a brief like this filtered to your territory."
+          description="This is a realistic preview using dummy data. Each morning, you get a brief like this filtered to your metro coverage."
           align="center"
         />
       </section>
@@ -24,7 +24,7 @@ export default function SamplePage() {
             Daily digest preview
           </p>
           <h3 className="mt-2 font-display text-2xl text-ink">
-            Example Territory — Morning Brief
+            Example Coverage — Morning Brief
           </h3>
           <p className="mt-2 text-sm text-inkMuted">
             Cropped from a real digest render showing the header, scored signals, and compliance
@@ -47,7 +47,7 @@ export default function SamplePage() {
             <div>
               <h2 className="font-display text-3xl">Want this in your inbox?</h2>
               <p className="mt-3 text-white/70">
-                Request a trial feed and we will tailor the signals to your territory.
+                Request a trial feed and we will tailor the signals to your metros.
               </p>
             </div>
             <CTAButtons variant="dark" />

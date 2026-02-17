@@ -59,11 +59,12 @@ export default function OnboardingPage() {
               />
             </label>
             <label className="grid gap-2 text-sm text-inkMuted">
-              Territory (state/region)
+              Metros to cover (cities or states are fine too — we will translate)
               <input
                 required
                 type="text"
-                name="territory"
+                name="metros_or_cities"
+                placeholder="e.g. Miami–Fort Lauderdale, Orlando, Tampa–St. Petersburg, Jacksonville"
                 className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
               />
             </label>
