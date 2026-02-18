@@ -24,7 +24,8 @@ TERRITORY_ALIASES: dict[str, str] = {
     "TX_TRI": "TX_TRIANGLE_V1",
     "TX_TRIANGLE": "TX_TRIANGLE_V1",
 }
-DEFAULT_SENDS_LIMIT = 10
+DEFAULT_SENDS_LIMIT = 14
+TRIAL_SENDS_TARGET = 14
 
 
 @dataclass(frozen=True)
@@ -383,7 +384,7 @@ def build_trial_status(
 ) -> tuple[dict[str, str], int]:
     sk = _validate_subscriber_key(subscriber_key)
     as_of_date = _resolve_status_as_of(as_of)
-    path = Path(crm_db_path) if crm_db_path is not None else crm_light.crm_light_db_path()
+    path = crm_light.resolve_crm_db_path(crm_db_path)
     if not path.exists():
         raise RuntimeError(f"CONFIG_ERROR crm_db missing path={path}")
 
@@ -411,15 +412,15 @@ def build_trial_status(
 
     days_since = (as_of_date - start).days
     expired_by_sends = 1 if sends_used >= sends_limit else 0
-    elapsed_14 = 1 if days_since >= 14 else 0
+    # Backward-compatible key: now means "14 successful sends elapsed".
+    elapsed_14 = 1 if sends_used >= TRIAL_SENDS_TARGET else 0
+    trial_expired = expired_by_sends
 
     conversion_artifact = crm_light.data_dir() / "trials" / sk / "conversion_email.txt"
     conversion_exists = conversion_artifact.exists()
-    if expired_by_sends and conversion_exists:
+    if trial_expired and conversion_exists:
         next_hint = "manual_followup"
-    elif expired_by_sends and not conversion_exists:
-        next_hint = "send_conversion"
-    elif not expired_by_sends and days_since >= 14:
+    elif trial_expired and not conversion_exists:
         next_hint = "send_conversion"
     else:
         next_hint = "continue_trial"
@@ -435,6 +436,7 @@ def build_trial_status(
         "TRIAL_EXPIRED_BY_SENDS": str(expired_by_sends),
         "TRIAL_14_DAY_ELAPSED": str(elapsed_14),
         "TRIAL_NEXT_ACTION_HINT": next_hint,
+        "TRIAL_EXPIRED": str(trial_expired),
     }
     return ordered, 0
 
@@ -478,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     add.add_argument("--tz", default="America/Chicago")
     add.add_argument("--start-date", required=True, help="YYYY-MM-DD")
-    add.add_argument("--sends-limit", type=int, required=True)
+    add.add_argument("--sends-limit", type=int, default=DEFAULT_SENDS_LIMIT)
     add.add_argument("--db", default="data/osha.sqlite", help="Leads SQLite database path (default: data/osha.sqlite)")
     add.add_argument("--schema", default="schema.sql", help="Schema SQL path (default: schema.sql)")
     add.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
@@ -507,9 +509,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = ap.parse_args(argv)
 
-    crm_db: Path | None = None
-    if hasattr(args, "crm_db") and (args.crm_db or "").strip():
-        crm_db = Path(args.crm_db).expanduser()
+    crm_db: Path | None = crm_light.resolve_crm_db_path(None)
+    if hasattr(args, "crm_db"):
+        crm_db = crm_light.resolve_crm_db_path(str(args.crm_db or "").strip() or None)
 
     if args.cmd == "show":
         try:

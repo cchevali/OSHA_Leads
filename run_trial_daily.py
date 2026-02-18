@@ -14,8 +14,13 @@ from typing import Any
 import crm_light
 from lead_filters import load_territory_definitions
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore[assignment]
+
 _RE_SUBSCRIBER_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
-DEFAULT_SENDS_LIMIT = 10
+DEFAULT_SENDS_LIMIT = 14
 DEFAULT_EXPIRED_BEHAVIOR = "notify_once"
 
 
@@ -80,6 +85,69 @@ def _resolve_start_date(trial_state: dict[str, Any] | None) -> str:
     if raw:
         return raw
     return ""
+
+
+def _resolve_trial_timezone(tz_name: str) -> Any:
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo((tz_name or "").strip() or "America/Chicago")
+        except Exception:
+            try:
+                return ZoneInfo("America/Chicago")
+            except Exception:
+                pass
+    return timezone.utc
+
+
+def _parse_aware_utc(value: str) -> datetime | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    candidate = raw[:-1] + "+00:00" if raw.upper().endswith("Z") else raw
+    try:
+        dt = datetime.fromisoformat(candidate)
+    except Exception:
+        return None
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _sent_successfully_on_local_date(
+    conn: Any,
+    subscriber_key: str,
+    start_date: str,
+    tz_name: str,
+    local_date_text: str,
+) -> bool:
+    sk = (subscriber_key or "").strip().lower()
+    if not sk:
+        return False
+    sd = (start_date or "").strip()
+    if not sd:
+        return False
+    target = (local_date_text or "").strip()
+    if not target:
+        return False
+    zone = _resolve_trial_timezone(tz_name)
+    rows = conn.execute(
+        """
+        SELECT ts_utc
+        FROM send_events
+        WHERE subscriber_key = ?
+          AND status = 'SENT'
+          AND ts_utc >= ?
+        ORDER BY ts_utc DESC
+        """,
+        (sk, f"{sd}T00:00:00+00:00"),
+    ).fetchall()
+    for row in rows:
+        dt = _parse_aware_utc(str(row["ts_utc"] if hasattr(row, "keys") else row[0]))
+        if dt is None:
+            continue
+        if dt.astimezone(zone).date().isoformat() == target:
+            return True
+    return False
 
 
 def _resolve_conversion_url() -> str:
@@ -349,7 +417,8 @@ def _resolve_policy(subscriber_key: str, crm_db_path: str | Path | None) -> Tria
         sends_limit = _resolve_sends_limit(trial)
         behavior = _resolve_expired_behavior()
         successful = crm_light.count_successful_sends(conn, subscriber_key, start_date)
-        expired = bool(successful >= sends_limit)
+        expired_by_sends = bool(successful >= sends_limit)
+        expired = expired_by_sends
         return TrialPolicy(
             subscriber_key=subscriber_key,
             email=str(sub.get("email") or "").strip().lower(),
@@ -374,12 +443,13 @@ def run_trial_daily(
     print_config: bool,
 ) -> int:
     sk = _validate_subscriber_key(subscriber_key)
-    policy = _resolve_policy(sk, crm_db)
+    resolved_crm_db = crm_light.resolve_crm_db_path(crm_db)
+    policy = _resolve_policy(sk, resolved_crm_db)
     out_root = crm_light.data_dir()
     run_id = f"trial_{sk}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
 
     print(f"subscriber_key={policy.subscriber_key}")
-    print(f"crm_db={str(Path(crm_db)) if crm_db else str(crm_light.crm_light_db_path())}")
+    print(f"crm_db={resolved_crm_db}")
     print(f"leads_db={leads_db}")
     print(f"start_date={policy.start_date}")
     print(f"sends_limit={policy.sends_limit}")
@@ -393,8 +463,8 @@ def run_trial_daily(
     if print_config:
         return 0
 
-    crm_light.ensure_database(crm_db)
-    with crm_light.open_conn(crm_db) as conn:
+    crm_light.ensure_database(resolved_crm_db)
+    with crm_light.open_conn(resolved_crm_db) as conn:
         crm_light.init_schema(conn)
 
         if policy.expired:
@@ -420,6 +490,29 @@ def run_trial_daily(
                     crm_light.set_trial_notified_at(conn, policy.subscriber_key, _now_utc_iso())
                     print(f"CONVERSION_ARTIFACT text_path={text_artifact}")
                     print(f"CONVERSION_ARTIFACT html_path={html_artifact}")
+            return 0
+
+        local_today = datetime.now(_resolve_trial_timezone(policy.tz)).date().isoformat()
+        if send_live and not dry_run and _sent_successfully_on_local_date(
+            conn,
+            subscriber_key=policy.subscriber_key,
+            start_date=policy.start_date,
+            tz_name=policy.tz,
+            local_date_text=local_today,
+        ):
+            crm_light.append_send_event(
+                conn,
+                subscriber_key=policy.subscriber_key,
+                variant="daily",
+                status="SKIP_ALREADY_SENT_LOCAL_DATE",
+                run_id=run_id,
+                meta={
+                    "local_date": local_today,
+                    "timezone": policy.tz,
+                },
+                ts_utc="",
+            )
+            print(f"TRIAL_EVENT status=SKIP_ALREADY_SENT_LOCAL_DATE local_date={local_today}")
             return 0
 
         customer_path = _resolve_customer_config_path(policy.subscriber_key, customer_arg, out_root)
@@ -498,9 +591,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = ap.parse_args(argv)
-    crm_db: Path | None = None
-    if (args.crm_db or "").strip():
-        crm_db = Path(args.crm_db).expanduser()
+    crm_db = crm_light.resolve_crm_db_path(str(args.crm_db or "").strip() or None)
     try:
         return run_trial_daily(
             args.subscriber_key,

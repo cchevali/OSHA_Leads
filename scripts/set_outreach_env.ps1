@@ -349,7 +349,7 @@ try {
     if ($PSBoundParameters.ContainsKey('TrialSendsLimitDefault')) {
       Set-MapValue -Map $map -Key 'TRIAL_SENDS_LIMIT_DEFAULT' -Value ([string]$TrialSendsLimitDefault) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'TRIAL_SENDS_LIMIT_DEFAULT')) {
-      Set-MapValue -Map $map -Key 'TRIAL_SENDS_LIMIT_DEFAULT' -Value '10' -TouchedList $touched
+      Set-MapValue -Map $map -Key 'TRIAL_SENDS_LIMIT_DEFAULT' -Value '14' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('TrialExpiredBehaviorDefault')) {

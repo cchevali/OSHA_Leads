@@ -238,7 +238,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
-  -TrialSendsLimitDefault 10 `
+  -TrialSendsLimitDefault 14 `
   -TrialExpiredBehaviorDefault notify_once
 ```
 
@@ -361,7 +361,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachStates TX,CA,FL `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
-  -TrialSendsLimitDefault 10 `
+  -TrialSendsLimitDefault 14 `
   -TrialExpiredBehaviorDefault notify_once `
   -ProspectDiscoveryInput C:\path\to\prospects.csv
 ```
@@ -681,6 +681,7 @@ Important:
 ## Trial Framework (Subscriber-Keyed)
 
 Trial daily sends are now subscriber-keyed and backed by a minimal SQLite CRM-light registry plus an append-only send ledger.
+Trial policy is 14 weekday sends (Mon-Fri); send-limit is the trial target and weekend/holiday skips extend calendar duration naturally.
 
 Source of truth:
 
@@ -695,11 +696,13 @@ cd C:\dev\OSHA_Leads
 py -3 run_wally_trial.py --status
 ```
 
+Status field note: `TRIAL_14_DAY_ELAPSED` is a compatibility key and now means "14 successful sends elapsed" (not calendar days).
+
 One-time historical backfill for prior successful Wally scheduled runs from `out\wally_trial_task.log`:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-py -3 scripts\backfill_wally_trial_send_events.py
+py -3 backfill_wally_trial_send_events.py
 ```
 
 ### Add a Trial Participant (No Secrets Required)
