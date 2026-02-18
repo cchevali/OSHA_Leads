@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -275,6 +275,30 @@ def run_preview_send(db_path: str, customer_config: str, chase_email: str) -> No
     subprocess.run(cmd, check=True)
 
 
+def _append_wally_trial_sent_event(run_id_prefix: str) -> None:
+    ts_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    run_id = f"{run_id_prefix}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    try:
+        code = run_trial_admin.append_event(
+            subscriber_key=WALLY_TRIAL_SUBSCRIBER_KEY,
+            ts_utc=ts_utc,
+            status="SENT",
+            variant="DAILY",
+            run_id=run_id,
+            crm_db_path=None,
+        )
+        if code != 0:
+            print(
+                f"WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key={WALLY_TRIAL_SUBSCRIBER_KEY} code={code}",
+                flush=True,
+            )
+    except Exception as exc:
+        print(
+            f"WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key={WALLY_TRIAL_SUBSCRIBER_KEY} detail={exc}",
+            flush=True,
+        )
+
+
 def run_live_send(db_path: str, customer_config: str, admin_email: str, send_live: bool) -> None:
     cmd = [
         sys.executable,
@@ -293,6 +317,8 @@ def run_live_send(db_path: str, customer_config: str, admin_email: str, send_liv
     if send_live:
         cmd.append("--send-live")
     subprocess.run(cmd, check=True)
+    if send_live:
+        _append_wally_trial_sent_event(run_id_prefix="manual_wally_trial")
 
 
 def _load_subscriber_last_sent_at(db_path: str, subscriber_key: str) -> str | None:
@@ -424,6 +450,12 @@ def write_batch_runner(batch_path: Path, project_root: Path, customer_config: st
         "type \"%RUN_TMP%\" >> out\\wally_trial_task.log",
         "findstr /C:\"CONFIG_ERROR\" \"%RUN_TMP%\" >nul",
         "if %ERRORLEVEL%==0 echo [%date% %time%] CONFIG_ERROR detected >> out\\wally_trial_task.log",
+        "if %RUN_EXIT% EQU 0 (",
+        "  for /f \"delims=\" %%t in ('powershell -NoProfile -Command \"(Get-Date).ToUniversalTime().ToString(\\\"yyyy-MM-ddTHH:mm:ssK\\\")\"') do set TRIAL_TS_UTC=%%t",
+        "  for /f \"delims=\" %%r in ('powershell -NoProfile -Command \"(Get-Date).ToUniversalTime().ToString(\\\"yyyyMMddTHHmmssZ\\\")\"') do set TRIAL_RUN_ID=scheduler_wally_trial_%%r",
+        "  py -3 run_trial_admin.py append-event --subscriber-key wally_trial --status SENT --variant DAILY --ts-utc \"%TRIAL_TS_UTC%\" --run-id \"%TRIAL_RUN_ID%\" >> out\\wally_trial_task.log 2>&1",
+        "  if errorlevel 1 echo [%date% %time%] WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key=wally_trial run_id=%TRIAL_RUN_ID% >> out\\wally_trial_task.log",
+        ")",
         "if %RUN_EXIT% NEQ 0 echo [%date% %time%] ERROR: Wally trial run failed >> out\\wally_trial_task.log",
         "if %RUN_EXIT% EQU 0 echo [%date% %time%] SUCCESS: Wally trial run completed >> out\\wally_trial_task.log",
         "exit /b %RUN_EXIT%",

@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=77724554651133f2b404a61ff820bdba41be10a0
-PACK_BUILD_UTC=2026-02-18T04:10:59Z
-SOURCE_HASHES: AGENTS.md=b05b37bb26dfcd6d091c0bc021a6975c6929082ac6a3ef91fda246abe624d1f9 docs/ARCHITECTURE.md=f6bfd62cbe56a1becf3f9c9afd0c5e18389f74671929e467b09383252d9b8de7 docs/DECISIONS.md=12a2f46da4a1fb434e7cffd83cee1a9af240dbbc0e6fe183deab6420327014fa docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=b5df34adae1edea4e031182f5c8b9a4dbe807f7289d7d37176b9742eb536017d docs/TODO.md=b110f42c4616980e6430bf7eceab728840bb5d392acf8f5921418f547465993f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=d3ff6af24d4c32d521c29b76dda793ad50ec14d07c9698b33e94f1c8f46c85d0
+PACK_GIT_SHA=8a2d231b09410670bb64802e32afbfbe91341429
+PACK_BUILD_UTC=2026-02-18T16:57:55Z
+SOURCE_HASHES: AGENTS.md=b05b37bb26dfcd6d091c0bc021a6975c6929082ac6a3ef91fda246abe624d1f9 docs/ARCHITECTURE.md=f6bfd62cbe56a1becf3f9c9afd0c5e18389f74671929e467b09383252d9b8de7 docs/DECISIONS.md=12a2f46da4a1fb434e7cffd83cee1a9af240dbbc0e6fe183deab6420327014fa docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=edc358f585452c20d0f96dd55d0bee6a05c49ef0fd0a763d7a52c8b0b7ca58c3 docs/TODO.md=86ae3401d05623a8ab8b0fb98fcdc5da9abfe53ef34d5fee0f8c3c5e3f470c35 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=7664136180625d14bd17eeae95c3e2a0c1cc83e4c988e211b0ec220c67a6d886
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -396,8 +396,10 @@ Use one generated upload file to keep Project Files current:
 ```powershell
 cd C:\dev\OSHA_Leads
 py -3 tools/project_context_pack.py --build
-py -3 tools/project_context_pack.py --check
+py -3 tools/project_context_pack.py --fingerprint
+# Upload PROJECT_CONTEXT_PACK.md to ChatGPT Project Settings -> Files (replace prior)
 py -3 tools/project_context_pack.py --mark-uploaded
+py -3 tools/project_context_pack.py --check
 ```
 
 Automation/test-only build output override:
@@ -1062,6 +1064,13 @@ Source of truth:
 - Subscriber registry + trial latches: `out/crm_light.sqlite` (or `${env:DATA_DIR}\crm_light.sqlite` when `DATA_DIR` is set)
 - Send ledger: `send_events` (counts successful sends where `status=SENT`)
 
+Check trial days-since-start and sends-used (single command, no sends/no writes):
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 run_wally_trial.py --status
+```
+
 ### Add a Trial Participant (No Secrets Required)
 
 ```powershell
@@ -1208,7 +1217,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Human-only (UI/credentials)
 
-- [ ] After any doc/contract change: rebuild + upload `PROJECT_CONTEXT_PACK.md` + mark uploaded (`py -3 tools\project_context_pack.py --build`, upload in ChatGPT Project Settings -> Files, `py -3 tools\project_context_pack.py --mark-uploaded`).
+- [ ] After any PR/commit that changes docs/contracts/templates/workflow (or any time `WARN_CONTEXT_PACK_STALE` appears): run build + fingerprint + upload + mark-uploaded + check (in that order).
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
 - [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
 

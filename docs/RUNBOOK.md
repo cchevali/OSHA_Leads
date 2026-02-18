@@ -686,12 +686,20 @@ Source of truth:
 
 - Subscriber registry + trial latches: `out/crm_light.sqlite` (or `${env:DATA_DIR}\crm_light.sqlite` when `DATA_DIR` is set)
 - Send ledger: `send_events` (counts successful sends where `status=SENT`)
+- Wally scheduled live runs now mirror successful sends into `send_events` automatically (best-effort, no send-path change)
 
 Check trial days-since-start and sends-used (single command, no sends/no writes):
 
 ```powershell
 cd C:\dev\OSHA_Leads
 py -3 run_wally_trial.py --status
+```
+
+One-time historical backfill for prior successful Wally scheduled runs from `out\wally_trial_task.log`:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 scripts\backfill_wally_trial_send_events.py
 ```
 
 ### Add a Trial Participant (No Secrets Required)

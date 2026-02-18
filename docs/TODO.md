@@ -6,7 +6,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Human-only (UI/credentials)
 
-- [ ] After any doc/contract change: rebuild + upload `PROJECT_CONTEXT_PACK.md` + mark uploaded (`py -3 tools\project_context_pack.py --build`, upload in ChatGPT Project Settings -> Files, `py -3 tools\project_context_pack.py --mark-uploaded`).
+- [ ] After any PR/commit that changes docs/contracts/templates/workflow (or any time `WARN_CONTEXT_PACK_STALE` appears): run build + fingerprint + upload + mark-uploaded + check (in that order).
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
 - [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
 

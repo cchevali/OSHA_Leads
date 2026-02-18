@@ -269,3 +269,93 @@ class TestWallyTrialDoctor(unittest.TestCase):
                         os.environ.pop(k, None)
                     else:
                         os.environ[k] = v
+
+    def test_write_batch_runner_contains_deliver_tokens_and_ledger_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            batch_path = root / "run_wally_trial_daily.bat"
+            run_wally_trial.write_batch_runner(
+                batch_path=batch_path,
+                project_root=root,
+                customer_config=str(root / "customers" / "wally_trial_tx_triangle_v1.json"),
+                db_path="data/osha.sqlite",
+                admin_email="support@microflowops.com",
+            )
+            text = batch_path.read_text(encoding="utf-8")
+
+            self.assertIn(
+                "python deliver_daily.py --db \"data/osha.sqlite\" --customer \"%~dp0customers\\wally_trial_tx_triangle_v1.json\" --mode daily --since-days 14 --admin-email \"support@microflowops.com\" --send-live",
+                text,
+            )
+            self.assertIn("if %RUN_EXIT% EQU 0 (", text)
+            self.assertIn("py -3 run_trial_admin.py append-event --subscriber-key wally_trial --status SENT --variant DAILY --ts-utc \"%TRIAL_TS_UTC%\" --run-id \"%TRIAL_RUN_ID%\"", text)
+            self.assertIn("WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key=wally_trial", text)
+
+    def test_run_live_send_appends_trial_event_once_on_success(self) -> None:
+        captured: dict[str, object] = {}
+        calls = {"append": 0}
+        orig_run = run_wally_trial.subprocess.run
+        orig_append = run_wally_trial.run_trial_admin.append_event
+
+        def _fake_run(cmd, check=True):  # type: ignore[no-untyped-def]
+            captured["cmd"] = list(cmd)
+            class _Done:
+                returncode = 0
+            return _Done()
+
+        def _fake_append(**kwargs):  # type: ignore[no-untyped-def]
+            calls["append"] += 1
+            captured["append_kwargs"] = dict(kwargs)
+            return 0
+
+        run_wally_trial.subprocess.run = _fake_run  # type: ignore[assignment]
+        run_wally_trial.run_trial_admin.append_event = _fake_append  # type: ignore[assignment]
+        try:
+            run_wally_trial.run_live_send(
+                db_path="data/osha.sqlite",
+                customer_config="customers/wally_trial_tx_triangle_v1.json",
+                admin_email="support@microflowops.com",
+                send_live=True,
+            )
+        finally:
+            run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]
+            run_wally_trial.run_trial_admin.append_event = orig_append  # type: ignore[assignment]
+
+        cmd = captured.get("cmd", [])
+        self.assertIn("deliver_daily.py", cmd)
+        self.assertIn("--send-live", cmd)
+        self.assertEqual(calls["append"], 1)
+        kwargs = captured.get("append_kwargs", {})
+        self.assertEqual(kwargs.get("subscriber_key"), "wally_trial")
+        self.assertEqual(kwargs.get("status"), "SENT")
+        self.assertEqual(kwargs.get("variant"), "DAILY")
+        self.assertTrue(str(kwargs.get("run_id", "")).startswith("manual_wally_trial_"))
+        self.assertIn("+00:00", str(kwargs.get("ts_utc", "")))
+
+    def test_run_live_send_does_not_append_event_on_failure(self) -> None:
+        calls = {"append": 0}
+        orig_run = run_wally_trial.subprocess.run
+        orig_append = run_wally_trial.run_trial_admin.append_event
+
+        def _fake_run(_cmd, check=True):  # type: ignore[no-untyped-def]
+            raise run_wally_trial.subprocess.CalledProcessError(returncode=1, cmd=["deliver_daily.py"])
+
+        def _fake_append(**_kwargs):  # type: ignore[no-untyped-def]
+            calls["append"] += 1
+            return 0
+
+        run_wally_trial.subprocess.run = _fake_run  # type: ignore[assignment]
+        run_wally_trial.run_trial_admin.append_event = _fake_append  # type: ignore[assignment]
+        try:
+            with self.assertRaises(run_wally_trial.subprocess.CalledProcessError):
+                run_wally_trial.run_live_send(
+                    db_path="data/osha.sqlite",
+                    customer_config="customers/wally_trial_tx_triangle_v1.json",
+                    admin_email="support@microflowops.com",
+                    send_live=True,
+                )
+        finally:
+            run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]
+            run_wally_trial.run_trial_admin.append_event = orig_append  # type: ignore[assignment]
+
+        self.assertEqual(calls["append"], 0)

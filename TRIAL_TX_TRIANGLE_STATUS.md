@@ -137,6 +137,46 @@ Email/suppression/unsubscribe append-only logs:
 Trial counts output (when using `run_wally_trial.py` workflow modes):
 - `out/wally_trial_daily_counts_<YYYY-MM-DD>.csv`
 
+## 2026-02-18 Zero-New Triage (Closed: Expected Behavior)
+
+Incident summary:
+- Wally daily digest subject showed `0 new` on `2026-02-18`.
+- This was investigated as a potential signal pull failure.
+
+Findings from artifacts (`out/run_log_2026-02-18.txt` + `out/tier_audit_2026-02-18_TX_TRIANGLE_V1_daily.json`):
+- Ingestion succeeded for TX:
+  - `results_found=67`
+  - `rows_inserted=1`
+  - `rows_updated=66`
+  - `errors_count=0`
+- Daily selection window started at prior send timestamp:
+  - `window_start=2026-02-17T14:01:21.295363+00:00`
+- Exactly one inspection was new since `window_start`:
+  - `activity_nr=1874368`
+  - `site_city=Big Spring`
+  - `lead_score=0`
+- That inspection did not match `TX_TRIANGLE_V1` territory patterns, so:
+  - `after_time_window=1`
+  - `after_territory=0`
+  - `selected_for_digest=0`
+- Low preferences (`lows_enabled=false`) were not the root cause of zero-new; the zero occurred before low rendering because no records remained after territory filtering.
+
+Disposition:
+- Closed as expected `daily new-since-last-send + territory-filter` behavior.
+- No send-path, cadence, suppression, unsubscribe, or trial logic changes required.
+
+Repeatable verification checklist for future `0 new` reports:
+1. Confirm ingestion in per-day run log:
+   - `out/run_log_YYYY-MM-DD.txt`
+   - verify non-zero `results_found` and `errors_count=0`.
+2. Confirm filter stages in the same run log:
+   - `RUN_DIAGNOSTICS ... selected_for_digest=<n>`
+   - summary block: `After time-window`, `After territory`, `Final leads`.
+3. Confirm tier audit artifact for that day:
+   - `out/tier_audit_YYYY-MM-DD_TX_TRIANGLE_V1_daily.json`
+   - verify `window_start` and `tier_counts`.
+4. If `after_time_window > 0` and `after_territory = 0`, treat as territory exclusion (not pull failure).
+
 ## YES Reply Onboarding (Email-Only Provisioning)
 
 Provision a new subscriber (no manual DB edits) from a prospect's copy/paste reply block:
