@@ -1,10 +1,4 @@
-<!-- Outreach HTML "Wally" card (Indigo Compliance style).
-
-This is a plain HTML fragment intended for email clients.
-Template tokens (string replace, no templating engine):
-- FIRST_NAME, FIRM, STATE, RECENT_SIGNALS_HTML, LAST_REFRESH_ET
-- UNSUBSCRIBE_URL, PREFS_URL, MAILING_ADDRESS, MICROFLOWOPS_URL
--->
+<!-- Outreach HTML card template. -->
 
 <div
   style="margin: 0; padding: 0; background-color: #f5f5f5; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;">
@@ -16,20 +10,46 @@ Template tokens (string replace, no templating engine):
       <p style="font-size: 14px; line-height: 1.6; margin: 0 0 16px 0;">Hi {{FIRST_NAME}},</p>
 
       <p style="font-size: 14px; line-height: 1.6; margin: 0 0 12px 0;">
-        {{FIRM}} covers {{STATE}}, so these might be on your radar &mdash; new OSHA inspections opened in {{STATE}}
-        recently:
+        I'm Chase at MicroFlowOps. We monitor public OSHA inspection activity daily and send a short "new opens"
+        brief by region to safety consultants, OSHA defense, and compliance service providers.
       </p>
 
-      <div style="margin-bottom: 20px;">
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 16px 0;">
+        You're getting this because your firm appears to serve {{STATE_FULL_NAME}}. If that's wrong, ignore this or
+        unsubscribe below.
+      </p>
+
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 8px 0;">
+        Recent OSHA inspections opened in {{STATE}}:
+      </p>
+
+      <p style="font-size: 13px; line-height: 1.6; margin: 0 0 12px 0; color: #555;">
+        {{SIGNALS_WINDOW_NOTE_HTML}}
+      </p>
+
+      <div style="margin-bottom: 12px;">
         {{RECENT_SIGNALS_HTML}}
       </div>
 
-      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 24px 0;">
-        We surface these daily by region. If a short morning brief like this would be
-        useful, reply &ldquo;yes&rdquo; and I'll start a 7-day trial.
+      <div style="margin-bottom: 16px;">
+        {{SIGNALS_FALLBACK_HTML}}
+      </div>
+
+      <p style="font-size: 13px; line-height: 1.6; margin: 0 0 16px 0; color: #555;">
+        Last refresh: {{LAST_REFRESH_ET}}
       </p>
 
-      <p style="font-size: 14px; margin: 0 0 2px 0; color: rgb(26, 26, 26);">Chase</p>
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 24px 0;">
+        Reply with your metros (e.g., {{STATE_METRO_EXAMPLES}}) and I'll start a free 14-day trial (no card).
+      </p>
+
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 24px 0;">
+        See a sample:
+        <a href="https://microflowops.com/sample" style="color: rgb(26, 26, 26); text-decoration: underline;"
+          target="_blank" rel="noopener noreferrer">https://microflowops.com/sample</a>
+      </p>
+
+      <p style="font-size: 14px; margin: 0 0 2px 0; color: rgb(26, 26, 26);">Chase Chevalier, Founder</p>
       <p style="font-size: 13px; margin: 0 0 2px 0; color: rgb(26, 26, 26);">MicroFlowOps &middot;
         <a href="{{MICROFLOWOPS_URL}}" style="color: rgb(26, 26, 26); text-decoration: none;" target="_blank"
           rel="noopener noreferrer">microflowops.com</a>

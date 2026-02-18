@@ -35,6 +35,11 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "OutreachStates",
             "OshaSmokeTo",
             "OutreachSuppressionMaxAgeHours",
+            "ProspectAutoGrowEnabled",
+            "ProspectAutoGrowSources",
+            "ProspectAutoGrowBacklogTarget",
+            "ProspectAutoGrowMaxFetchPagesPerRun",
+            "ProspectAutoGrowHttpSleepMs",
             "TrialSendsLimitDefault",
             "TrialExpiredBehaviorDefault",
             "TrialConversionUrl",
@@ -62,6 +67,11 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
 
         self.assertIn("git -C $repoRoot diff --cached --name-only -- .env.sops", text)
         self.assertIn("ERR_ENV_SOPS_STAGED", text)
+        self.assertIn("PROSPECT_AUTOGROW_ENABLED", text)
+        self.assertIn("PROSPECT_AUTOGROW_SOURCES", text)
+        self.assertIn("PROSPECT_AUTOGROW_BACKLOG_TARGET", text)
+        self.assertNotIn("PROSPECT_AUTOGROWTH_ENABLED", text)
+        self.assertNotIn("PROSPECT_AUTOGROWTH_SOURCES", text)
 
     def test_doctor_and_installer_flows_do_not_stage_env_sops(self):
         before = _cached_env_sops()

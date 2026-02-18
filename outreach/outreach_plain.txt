@@ -1,13 +1,19 @@
 Hi FIRST_NAME,
 
-I run MicroFlowOps. We track recent OSHA inspection activity and send concise, plain-English heads-ups to safety and ops teams in STATE.
+I'm Chase at MicroFlowOps. We monitor public OSHA inspection activity daily and send a short "new opens" brief by region to safety consultants, OSHA defense, and compliance service providers.
 
-Recent signals:
+You're getting this because your firm appears to serve STATE_FULL_NAME. If that's wrong, ignore this or unsubscribe below.
+
+Recent OSHA inspections opened in STATE:
+SIGNALS_WINDOW_NOTE_TEXT
 RECENT_SIGNALS_LINES
+SIGNALS_FALLBACK_TEXT
 
 Last refresh: LAST_REFRESH_ET
 
-If you'd like a sample digest, reply "yes" and I'll send one.
+Reply with your metros (e.g., STATE_METRO_EXAMPLES) and I'll start a free 14-day trial (no card).
+
+See a sample: https://microflowops.com/sample
 
 Notes:
 - Accident, Complaint, and Referral describe OSHA activity signals (not citations).
@@ -18,4 +24,6 @@ UNSUBSCRIBE_URL
 PREFS_URL
 
 Thanks,
-MicroFlowOps
+Chase Chevalier, Founder
+MicroFlowOps - https://microflowops.com
+support@microflowops.com

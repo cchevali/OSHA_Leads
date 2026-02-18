@@ -1,11 +1,14 @@
 import csv
+import gc
 import io
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -58,6 +61,34 @@ def _seed_crm(path: Path, rows: list[dict]) -> None:
                     row.get("status", "new"),
                     row.get("created_at", "2026-01-01T00:00:00+00:00"),
                     row.get("last_contacted_at"),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_signal_db(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inspections (
+                site_state TEXT,
+                date_opened TEXT,
+                parse_invalid INTEGER
+            )
+            """
+        )
+        conn.execute("DELETE FROM inspections")
+        for row in rows:
+            conn.execute(
+                "INSERT INTO inspections(site_state, date_opened, parse_invalid) VALUES(?, ?, ?)",
+                (
+                    str(row.get("site_state", "")),
+                    str(row.get("date_opened", "")),
+                    int(row.get("parse_invalid", 0)),
                 ),
             )
         conn.commit()
@@ -478,6 +509,132 @@ class TestOutreachRunAuto(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_dry_run_ca_fl_rendered_content_has_no_texas_copy(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_tx",
+                        "contact_name": "Alice TX",
+                        "firm": "Northwind Safety",
+                        "email": "alice.tx@example.com",
+                        "title": "Owner",
+                        "city": "Dallas",
+                        "state": "TX",
+                        "score": 7,
+                    },
+                    {
+                        "prospect_id": "p_ca",
+                        "contact_name": "Casey CA",
+                        "firm": "Pacific Compliance",
+                        "email": "casey.ca@example.com",
+                        "title": "Safety Director",
+                        "city": "Irvine",
+                        "state": "CA",
+                        "score": 8,
+                    },
+                    {
+                        "prospect_id": "p_fl",
+                        "contact_name": "Fran FL",
+                        "firm": "Coastal Risk",
+                        "email": "fran.fl@example.com",
+                        "title": "Managing Partner",
+                        "city": "Tampa",
+                        "state": "FL",
+                        "score": 8,
+                    },
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA,FL",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+
+            template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt")
+            html_template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html")
+            banned_patterns = [
+                r"\btexas triangle\b",
+                r"serve texas",
+                r"opened in tx",
+                r"houston,\s*dfw",
+            ]
+
+            with mock.patch.object(
+                roa.gm,
+                "_build_urls",
+                return_value=("https://unsubscribe.example/u", "https://unsubscribe.example/prefs"),
+            ):
+                for run_date, expected_state in [("2026-02-17", "CA"), ("2026-02-18", "FL")]:
+                    dry_run = self._run(["--dry-run", "--for-date", run_date], env)
+                    gc.collect()
+                    dry_run_stdout = dry_run.stdout or ""
+                    dry_run_stderr = dry_run.stderr or ""
+                    self.assertEqual(dry_run.returncode, 0, msg=dry_run_stderr + "\n" + dry_run_stdout)
+                    self.assertIn(f"state={expected_state}", dry_run_stdout or "")
+                    self.assertIn("outbox_path=", dry_run_stdout or "")
+
+                    outbox_line = next(
+                        (ln.strip() for ln in (dry_run_stdout or "").splitlines() if "outbox_path=" in ln),
+                        "",
+                    )
+                    self.assertTrue(outbox_line, msg=dry_run_stdout)
+                    outbox_path = Path(outbox_line.split("outbox_path=", 1)[1].strip())
+                    self.assertTrue(outbox_path.exists(), msg=f"missing outbox: {outbox_path}")
+
+                    with open(outbox_path, "r", newline="", encoding="utf-8") as f:
+                        outbox_rows = list(csv.DictReader(f))
+                    self.assertGreater(len(outbox_rows), 0, msg=f"empty outbox: {outbox_path}")
+
+                    batch = f"{run_date}_{expected_state}"
+                    conn = sqlite3.connect(str(crm_db))
+                    try:
+                        conn.row_factory = sqlite3.Row
+                        for outbox_row in outbox_rows:
+                            prospect_id = (outbox_row.get("prospect_id") or "").strip()
+                            self.assertTrue(prospect_id, msg=f"missing prospect_id row: {outbox_row}")
+                            row = conn.execute("SELECT * FROM prospects WHERE prospect_id = ?", (prospect_id,)).fetchone()
+                            self.assertIsNotNone(row, msg=f"missing prospect in crm: {prospect_id}")
+
+                            subject, text_body, html_body, _unsub = roa._render_outreach_payload(
+                                row=row,
+                                state=expected_state,
+                                batch=batch,
+                                template_text=template_text,
+                                html_template_text=html_template_text,
+                                recent_signals_lines="- Example Co (Miami, FL) | Programmed | Opened 2026-02-18 | Observed 2026-02-18",
+                                recent_signals_html="<div>Example Co &middot; Observed 2026-02-18</div>",
+                                last_refresh_et="2026-02-18 08:00 ET",
+                                signal_tokens={
+                                    "STATE_FULL_NAME": "California" if expected_state == "CA" else "Florida",
+                                    "STATE_METRO_EXAMPLES": "Los Angeles, Inland Empire"
+                                    if expected_state == "CA"
+                                    else "Miami, Orlando",
+                                    "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
+                                    "SIGNALS_WINDOW_NOTE_HTML": "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+                                    "SIGNALS_FALLBACK_TEXT": "",
+                                    "SIGNALS_FALLBACK_HTML": "",
+                                },
+                            )
+                            self.assertEqual(subject, f"{expected_state} OSHA inspection signals (daily brief)")
+                            self.assertIn(f"Recent OSHA inspections opened in {expected_state}:", text_body)
+                            rendered = "\n".join([subject, text_body, html_body]).lower()
+                            for pattern in banned_patterns:
+                                self.assertIsNone(
+                                    re.search(pattern, rendered),
+                                    msg=f"unexpected texas-centric copy pattern={pattern} state={expected_state}",
+                                )
+                    finally:
+                        conn.close()
+                    gc.collect()
+                    time.sleep(0.05)
+
     def test_domain_dedupe_and_role_inbox_penalty_ordering_is_deterministic(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -742,11 +899,14 @@ class TestOutreachRunAuto(unittest.TestCase):
                     roa, "_doctor_check_secrets_decrypt"
                 ) as m_secrets, mock.patch.object(roa, "_doctor_check_unsub") as m_unsub, mock.patch.object(
                     roa, "_doctor_check_provider"
-                ) as m_provider, mock.patch.object(roa, "_doctor_check_dry_run_artifact") as m_dry_run:
+                ) as m_provider, mock.patch.object(roa, "_doctor_check_signal_freshness") as m_signals, mock.patch.object(
+                    roa, "_doctor_check_dry_run_artifact"
+                ) as m_dry_run:
                     m_context.side_effect = lambda: None
                     m_secrets.side_effect = lambda: (print("PASS_DOCTOR_SECRETS_DECRYPT diagnostics=ok"), (True, ""))[1]
                     m_unsub.side_effect = lambda: (print("PASS_DOCTOR_UNSUB version_status=200 unsubscribe_status=400"), (True, ""))[1]
                     m_provider.side_effect = lambda: (print("PASS_DOCTOR_PROVIDER_CONFIG smtp_port=465"), (True, ""))[1]
+                    m_signals.side_effect = lambda ctx, run_date: (print("DOCTOR_SIGNALS_STATE=TX recent_14d=1 max_date=2026-02-17 status=OK"), (True, ""))[1]
 
                     def _capture_dry_run(allow_repeat: bool = False, run_date=None):
                         captured["run_date"] = str(getattr(run_date, "isoformat", lambda: "")())
@@ -806,11 +966,14 @@ class TestOutreachRunAuto(unittest.TestCase):
                     roa, "_doctor_check_secrets_decrypt"
                 ) as m_secrets, mock.patch.object(roa, "_doctor_check_unsub") as m_unsub, mock.patch.object(
                     roa, "_doctor_check_provider"
-                ) as m_provider, mock.patch.object(roa, "_doctor_check_dry_run_artifact") as m_dry_run:
+                ) as m_provider, mock.patch.object(roa, "_doctor_check_signal_freshness") as m_signals, mock.patch.object(
+                    roa, "_doctor_check_dry_run_artifact"
+                ) as m_dry_run:
                     m_context.side_effect = lambda: None
                     m_secrets.side_effect = lambda: (print("PASS_DOCTOR_SECRETS_DECRYPT diagnostics=ok"), (True, ""))[1]
                     m_unsub.side_effect = lambda: (print("PASS_DOCTOR_UNSUB version_status=200 unsubscribe_status=400"), (True, ""))[1]
                     m_provider.side_effect = lambda: (print("PASS_DOCTOR_PROVIDER_CONFIG smtp_port=465"), (True, ""))[1]
+                    m_signals.side_effect = lambda ctx, run_date: (print("DOCTOR_SIGNALS_STATE=TX recent_14d=1 max_date=2026-02-17 status=OK"), (True, ""))[1]
                     m_dry_run.side_effect = lambda allow_repeat=False, run_date=None: (
                         print("PASS_DOCTOR_DRY_RUN_ARTIFACT dry_run_token=PASS_AUTO_DRY_RUN"),
                         (True, ""),
@@ -827,8 +990,9 @@ class TestOutreachRunAuto(unittest.TestCase):
             out_lines = [ln.strip() for ln in (out.getvalue() or "").splitlines() if ln.strip()]
             self.assertGreater(len(out_lines), 0)
             for line in out_lines:
-                self.assertTrue(line.startswith("PASS_DOCTOR_"), msg=line)
+                self.assertFalse(line.startswith("ERR_DOCTOR_"), msg=line)
             self.assertTrue(any(line.startswith("PASS_DOCTOR_COMPLETE") for line in out_lines))
+            self.assertTrue(any(line.startswith("DOCTOR_SIGNALS_STATE=") for line in out_lines))
 
             conn = sqlite3.connect(str(crm_db))
             try:
@@ -875,7 +1039,9 @@ class TestOutreachRunAuto(unittest.TestCase):
                     roa, "_doctor_check_secrets_decrypt"
                 ) as m_secrets, mock.patch.object(roa, "_doctor_check_unsub") as m_unsub, mock.patch.object(
                     roa, "_doctor_check_provider"
-                ) as m_provider, mock.patch.object(roa, "_doctor_check_dry_run_artifact") as m_dry_run:
+                ) as m_provider, mock.patch.object(roa, "_doctor_check_signal_freshness") as m_signals, mock.patch.object(
+                    roa, "_doctor_check_dry_run_artifact"
+                ) as m_dry_run:
 
                     def _fake_context_warn() -> None:
                         print("WARN_CONTEXT_PACK_STALE SOURCE_HASHES mismatch")
@@ -886,6 +1052,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                     m_secrets.side_effect = lambda: (print("PASS_DOCTOR_SECRETS_DECRYPT diagnostics=ok"), (True, ""))[1]
                     m_unsub.side_effect = lambda: (print("PASS_DOCTOR_UNSUB version_status=200 unsubscribe_status=400"), (True, ""))[1]
                     m_provider.side_effect = lambda: (print("PASS_DOCTOR_PROVIDER_CONFIG smtp_port=465"), (True, ""))[1]
+                    m_signals.side_effect = lambda ctx, run_date: (print("DOCTOR_SIGNALS_STATE=TX recent_14d=1 max_date=2026-02-17 status=OK"), (True, ""))[1]
                     m_dry_run.side_effect = lambda allow_repeat=False, run_date=None: (
                         print("PASS_DOCTOR_DRY_RUN_ARTIFACT dry_run_token=PASS_AUTO_DRY_RUN"),
                         (True, ""),
@@ -903,6 +1070,166 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("WARN_CONTEXT_PACK_STALE", text)
             self.assertIn("Upload PROJECT_CONTEXT_PACK.md to ChatGPT Project Settings -> Files", text)
             self.assertIn("PASS_DOCTOR_COMPLETE", text)
+
+    def test_doctor_signals_fresh_and_stale_emit_warn_only_and_exit_zero(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            signal_db = tmp / "signals.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_new",
+                        "contact_name": "Alice New",
+                        "firm": "ACME",
+                        "email": "alice@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    }
+                ],
+            )
+            _seed_signal_db(
+                signal_db,
+                [
+                    {"site_state": "TX", "date_opened": "2026-02-17", "parse_invalid": 0},
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
+                "OUTREACH_SIGNAL_DB": str(signal_db),
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(roa, "_doctor_context_pack_soft_check", return_value=None), mock.patch.object(
+                    roa, "_doctor_check_secrets_decrypt", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_unsub", return_value=(True, "")), mock.patch.object(
+                    roa, "_doctor_check_provider", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_dry_run_artifact", return_value=(True, "")):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor", "--for-date", "2026-02-18"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            text = out.getvalue()
+            self.assertIn("DOCTOR_SIGNALS_DB_PATH=", text)
+            self.assertIn("DOCTOR_SIGNALS_LOOKBACK_DAYS=14", text)
+            self.assertIn("DOCTOR_SIGNALS_STATE=TX recent_14d=1 max_date=2026-02-17 status=OK", text)
+            self.assertIn("DOCTOR_SIGNALS_STATE=CA recent_14d=0 max_date=NONE status=STALE", text)
+            self.assertIn("WARN_SIGNALS_STALE states=CA", text)
+            self.assertIn("WARN_SIGNALS_REMEDIATION run_ingest=", text)
+            self.assertIn("WARN_SIGNALS_REMEDIATION verify_task=schtasks.exe /Query /TN \\OSHA_Osha_Ingest_Daily /V /FO LIST", text)
+            self.assertIn("PASS_DOCTOR_COMPLETE", text)
+
+    def test_doctor_signals_missing_db_warn_only_and_exit_zero(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            missing_db = tmp / "missing_signals.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_new",
+                        "contact_name": "Alice New",
+                        "firm": "ACME",
+                        "email": "alice@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
+                "OUTREACH_SIGNAL_DB": str(missing_db),
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(roa, "_doctor_context_pack_soft_check", return_value=None), mock.patch.object(
+                    roa, "_doctor_check_secrets_decrypt", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_unsub", return_value=(True, "")), mock.patch.object(
+                    roa, "_doctor_check_provider", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_dry_run_artifact", return_value=(True, "")):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            text = out.getvalue()
+            self.assertIn("DOCTOR_SIGNALS_STATE=TX recent_14d=0 max_date=NONE status=MISSING_DB", text)
+            self.assertIn("WARN_SIGNALS_STALE states=TX", text)
+            self.assertIn("PASS_DOCTOR_COMPLETE", text)
+
+    def test_doctor_signals_for_date_controls_window(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            signal_db = tmp / "signals.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_new",
+                        "contact_name": "Alice New",
+                        "firm": "ACME",
+                        "email": "alice@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    }
+                ],
+            )
+            _seed_signal_db(
+                signal_db,
+                [
+                    {"site_state": "TX", "date_opened": "2001-01-02", "parse_invalid": 0},
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
+                "OUTREACH_SIGNAL_DB": str(signal_db),
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(roa, "_doctor_context_pack_soft_check", return_value=None), mock.patch.object(
+                    roa, "_doctor_check_secrets_decrypt", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_unsub", return_value=(True, "")), mock.patch.object(
+                    roa, "_doctor_check_provider", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_dry_run_artifact", return_value=(True, "")):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor", "--for-date", "2001-01-10"]):
+                        out_1 = io.StringIO()
+                        err_1 = io.StringIO()
+                        with redirect_stdout(out_1), redirect_stderr(err_1):
+                            rc_1 = roa.main()
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor", "--for-date", "2001-02-10"]):
+                        out_2 = io.StringIO()
+                        err_2 = io.StringIO()
+                        with redirect_stdout(out_2), redirect_stderr(err_2):
+                            rc_2 = roa.main()
+
+            self.assertEqual(rc_1, 0, msg=err_1.getvalue() + "\n" + out_1.getvalue())
+            self.assertEqual(rc_2, 0, msg=err_2.getvalue() + "\n" + out_2.getvalue())
+            self.assertIn("DOCTOR_SIGNALS_STATE=TX recent_14d=1 max_date=2001-01-02 status=OK", out_1.getvalue())
+            self.assertIn("DOCTOR_SIGNALS_STATE=TX recent_14d=0 max_date=2001-01-02 status=STALE", out_2.getvalue())
+            self.assertIn("WARN_SIGNALS_STALE states=TX", out_2.getvalue())
 
 
 if __name__ == "__main__":

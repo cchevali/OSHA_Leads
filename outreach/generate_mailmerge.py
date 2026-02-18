@@ -175,8 +175,8 @@ def _read_template_text(path: Path) -> str:
 
 def _render_template(template_text: str, mapping: dict[str, str]) -> str:
     body = template_text
-    for k, v in mapping.items():
-        body = body.replace(k, v)
+    for k in sorted(mapping.keys(), key=len, reverse=True):
+        body = body.replace(k, mapping[k])
     return body
 
 
@@ -191,12 +191,87 @@ def _truncate_text(s: str, max_len: int) -> str:
     return text[: max(0, max_len - 1)].rstrip() + "…"
 
 
+STATE_FULL_NAMES = {
+    "TX": "Texas",
+    "CA": "California",
+    "FL": "Florida",
+}
+
+STATE_METRO_EXAMPLES = {
+    "TX": "Houston, DFW",
+    "CA": "Los Angeles, Inland Empire",
+    "FL": "Miami, Orlando",
+}
+
+SAMPLE_SIGNALS = [
+    {
+        "establishment_name": "Sample Industrial Services",
+        "site_city": "Example City",
+        "site_state": "",
+        "inspection_type": "Accident",
+        "date_opened": "2026-02-01",
+        "first_seen_at": "2026-02-02T00:00:00Z",
+        "lead_score": 10,
+    },
+    {
+        "establishment_name": "Sample Roofing Group",
+        "site_city": "Example City",
+        "site_state": "",
+        "inspection_type": "Complaint",
+        "date_opened": "2026-01-28",
+        "first_seen_at": "2026-01-29T00:00:00Z",
+        "lead_score": 8,
+    },
+    {
+        "establishment_name": "Sample Mechanical LLC",
+        "site_city": "Example City",
+        "site_state": "",
+        "inspection_type": "Referral",
+        "date_opened": "2026-01-24",
+        "first_seen_at": "2026-01-25T00:00:00Z",
+        "lead_score": 6,
+    },
+]
+
+
+def _state_full_name(state: str) -> str:
+    s = _norm_state(state)
+    return STATE_FULL_NAMES.get(s, s or "your state")
+
+
+def _state_metro_examples(state: str) -> str:
+    s = _norm_state(state)
+    return STATE_METRO_EXAMPLES.get(s, "your target metros")
+
+
+def _date_str(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    try:
+        normalized = text.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).date().isoformat()
+    except Exception:
+        return ""
+
+
+def _observed_date(lead: dict) -> str:
+    for key in ["first_seen_at", "changed_at", "last_seen_at"]:
+        observed = _date_str(lead.get(key))
+        if observed:
+            return observed
+    return _date_str(lead.get("date_opened"))
+
+
 def _format_recent_signal_line(lead: dict) -> str:
     est = _truncate_text((lead.get("establishment_name") or "").strip() or "Unknown establishment", 52)
     city = (lead.get("site_city") or "").strip()
     state = (lead.get("site_state") or "").strip()
     itype = (lead.get("inspection_type") or "").strip()
     opened = (lead.get("date_opened") or "").strip()
+    observed = _observed_date(lead)
 
     parts = [est]
     loc = ", ".join([p for p in [city, state] if p])
@@ -206,6 +281,8 @@ def _format_recent_signal_line(lead: dict) -> str:
         parts.append(f"| {itype}")
     if opened:
         parts.append(f"| Opened {opened}")
+    if observed:
+        parts.append(f"| Observed {observed}")
     return " ".join(parts).strip()
 
 
@@ -311,16 +388,16 @@ def _best_effort_recent_leads_and_refresh(db_path: str, state: str, limit: int =
 
 def _recent_signals_text_lines_from_leads(leads: list[dict]) -> str:
     if not leads:
-        return "- (no recent signals found)"
+        return ""
     out = []
     for lead in leads:
         out.append("- " + _format_recent_signal_line(lead))
-    return "\n".join([line for line in out if line.strip()]) or "- (no recent signals found)"
+    return "\n".join([line for line in out if line.strip()])
 
 
 def _recent_signals_html_from_leads(leads: list[dict]) -> str:
     if not leads:
-        return "<div style=\"font-size: 13px; color: #666;\">(no recent signals found)</div>"
+        return ""
     try:
         import outbound_cold_email as oce
 
@@ -334,9 +411,164 @@ def _recent_signals_html_from_leads(leads: list[dict]) -> str:
             line = _format_recent_signal_line(lead)
             if line:
                 items.append(line)
-        if not items:
-            items = ["(no recent signals found)"]
         return "\n".join(f"<div style=\"font-size: 13px; color: #1a1a1a;\">{_html_escape(i)}</div>" for i in items)
+
+
+def _inspections_columns(conn) -> set[str]:
+    try:
+        rows = conn.execute("PRAGMA table_info(inspections)").fetchall()
+    except Exception:
+        return set()
+    return {str(r[1]) for r in rows if len(r) > 1}
+
+
+def _history_rows_for_state(db_path: str, state: str, limit: int = 3) -> tuple[list[dict], str]:
+    try:
+        p = Path(db_path)
+        if not p.exists():
+            return [], "NONE"
+
+        import sqlite3
+
+        conn = sqlite3.connect(str(p))
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='inspections' LIMIT 1"
+            ).fetchone()
+            if not row:
+                return [], "NONE"
+
+            cols = _inspections_columns(conn)
+            if "site_state" not in cols:
+                return [], "NONE"
+
+            select_cols = []
+            for col in [
+                "establishment_name",
+                "site_city",
+                "site_state",
+                "inspection_type",
+                "date_opened",
+                "first_seen_at",
+                "last_seen_at",
+                "changed_at",
+                "lead_score",
+                "source_url",
+                "activity_nr",
+            ]:
+                if col in cols:
+                    select_cols.append(col)
+                else:
+                    select_cols.append(f"'' AS {col}")
+
+            where_parts = ["UPPER(COALESCE(site_state, '')) = ?"]
+            if "parse_invalid" in cols:
+                where_parts.append("COALESCE(parse_invalid, 0) = 0")
+            where_clause = " AND ".join(where_parts)
+            query = (
+                "SELECT "
+                + ", ".join(select_cols)
+                + " FROM inspections WHERE "
+                + where_clause
+                + " ORDER BY COALESCE(date_opened, '') DESC, COALESCE(last_seen_at, '') DESC LIMIT ?"
+            )
+            rows = conn.execute(query, (_norm_state(state), max(1, int(limit)))).fetchall()
+            out = [dict(r) for r in rows]
+            max_date = "NONE"
+            if "date_opened" in cols:
+                max_row = conn.execute(
+                    "SELECT MAX(date_opened) FROM inspections WHERE " + where_clause,
+                    (_norm_state(state),),
+                ).fetchone()
+                max_date = str((max_row[0] if max_row else "") or "").strip() or "NONE"
+            return out, max_date
+        finally:
+            conn.close()
+    except Exception:
+        return [], "NONE"
+
+
+def _sample_rows() -> list[dict]:
+    return [dict(r) for r in SAMPLE_SIGNALS]
+
+
+def _build_signal_template_tokens(db_path: str, state: str, recent_leads: list[dict], lookback_days: int = 14) -> dict[str, str]:
+    state_code = _norm_state(state)
+    state_name = _state_full_name(state_code)
+
+    recent_text = _recent_signals_text_lines_from_leads(recent_leads)
+    recent_html = _recent_signals_html_from_leads(recent_leads)
+
+    tokens = {
+        "STATE_FULL_NAME": state_name,
+        "STATE_METRO_EXAMPLES": _state_metro_examples(state_code),
+        "RECENT_SIGNALS_LINES": recent_text,
+        "RECENT_SIGNALS_HTML": recent_html,
+        "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
+        "SIGNALS_WINDOW_NOTE_HTML": (
+            "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>"
+        ),
+        "SIGNALS_FALLBACK_TEXT": "",
+        "SIGNALS_FALLBACK_HTML": "",
+    }
+    if recent_leads:
+        return tokens
+
+    historical_rows, max_opened = _history_rows_for_state(db_path=db_path, state=state_code, limit=3)
+    if historical_rows:
+        historical_text = _recent_signals_text_lines_from_leads(historical_rows)
+        historical_html = _recent_signals_html_from_leads(historical_rows)
+        tokens["RECENT_SIGNALS_LINES"] = f"- No recent signals in the last {lookback_days} days for {state_name}."
+        tokens["RECENT_SIGNALS_HTML"] = (
+            f"<div style=\"font-size: 13px; color: #555;\">No recent signals in the last {lookback_days} days for "
+            f"{_html_escape(state_name)}.</div>"
+        )
+        latest_line = f" Latest opened date in our data: {max_opened}." if max_opened and max_opened != "NONE" else ""
+        tokens["SIGNALS_WINDOW_NOTE_TEXT"] = (
+            f"14-day window is currently empty for {state_name}.{latest_line}".strip()
+        )
+        tokens["SIGNALS_WINDOW_NOTE_HTML"] = (
+            f"<span>14-day window is currently empty for {_html_escape(state_name)}.{_html_escape(latest_line)}</span>"
+        )
+        tokens["SIGNALS_FALLBACK_TEXT"] = (
+            f"Most recent signals we have for {state_name} (outside the {lookback_days}-day window):\n"
+            f"{historical_text}"
+        ).strip()
+        tokens["SIGNALS_FALLBACK_HTML"] = (
+            f"<p style=\"font-size: 13px; line-height: 1.6; margin: 12px 0 8px 0; color: #444;\">"
+            f"Most recent signals we have for {_html_escape(state_name)} (outside the {lookback_days}-day window):"
+            f"</p><div>{historical_html}</div>"
+        )
+        return tokens
+
+    sample_rows = _sample_rows()[:3]
+    sample_text = _recent_signals_text_lines_from_leads(sample_rows)
+    sample_html = _recent_signals_html_from_leads(sample_rows)
+    tokens["RECENT_SIGNALS_LINES"] = f"- No recent signals in the last {lookback_days} days for {state_name}."
+    tokens["RECENT_SIGNALS_HTML"] = (
+        f"<div style=\"font-size: 13px; color: #555;\">No recent signals in the last {lookback_days} days for "
+        f"{_html_escape(state_name)}.</div>"
+    )
+    tokens["SIGNALS_WINDOW_NOTE_TEXT"] = (
+        f"14-day window is currently empty for {state_name}. We can backfill the last 45 days during trial."
+    )
+    tokens["SIGNALS_WINDOW_NOTE_HTML"] = (
+        f"<span>14-day window is currently empty for {_html_escape(state_name)}. "
+        "We can backfill the last 45 days during trial.</span>"
+    )
+    tokens["SIGNALS_FALLBACK_TEXT"] = (
+        "Example signals (sample, not state-specific):\n"
+        f"{sample_text}"
+    ).strip()
+    tokens["SIGNALS_FALLBACK_HTML"] = (
+        "<p style=\"font-size: 13px; line-height: 1.6; margin: 12px 0 8px 0; color: #444;\">"
+        "Example signals (sample, not state-specific):"
+        "</p><div>"
+        + sample_html
+        + "</div>"
+    )
+    return tokens
 
 
 def _resolve_outreach_mailing_address() -> str:
@@ -579,8 +811,12 @@ def main() -> int:
         state=state_filter,
         limit=5,
     )
-    recent_signals_lines = _recent_signals_text_lines_from_leads(recent_leads)
-    recent_signals_html = _recent_signals_html_from_leads(recent_leads)
+    signal_tokens = _build_signal_template_tokens(
+        db_path=str(args.db),
+        state=state_filter,
+        recent_leads=recent_leads,
+        lookback_days=14,
+    )
     try:
         # Compliance gate: must be present before we write any outputs.
         local_suppression = _load_local_suppression_set()
@@ -716,15 +952,19 @@ def main() -> int:
         firm = (r.get("firm") or "").strip() or "your firm"
         prefs_link = prefs_url or unsub_url or ""
 
-        subject = f"{state_filter} OSHA activity signals - {firm}".strip()
+        subject = f"{state_filter} OSHA inspection signals (daily brief)"
         text_body = _render_template(
             template_text,
             {
                 "FIRST_NAME": first_name or "there",
                 "FIRM": firm,
                 "STATE": state_filter,
+                "STATE_FULL_NAME": signal_tokens["STATE_FULL_NAME"],
+                "STATE_METRO_EXAMPLES": signal_tokens["STATE_METRO_EXAMPLES"],
                 "TERRITORY_CODE": territory_code,
-                "RECENT_SIGNALS_LINES": recent_signals_lines,
+                "RECENT_SIGNALS_LINES": signal_tokens["RECENT_SIGNALS_LINES"],
+                "SIGNALS_WINDOW_NOTE_TEXT": signal_tokens["SIGNALS_WINDOW_NOTE_TEXT"],
+                "SIGNALS_FALLBACK_TEXT": signal_tokens["SIGNALS_FALLBACK_TEXT"],
                 "LAST_REFRESH_ET": last_refresh_et,
                 "UNSUBSCRIBE_URL": unsub_url or "",
                 "PREFS_URL": prefs_url or prefs_link,
@@ -742,7 +982,11 @@ def main() -> int:
                     "{{FIRST_NAME}}": _html_escape(first_name or "there"),
                     "{{FIRM}}": _html_escape(firm),
                     "{{STATE}}": _html_escape(state_filter),
-                    "{{RECENT_SIGNALS_HTML}}": recent_signals_html,
+                    "{{STATE_FULL_NAME}}": _html_escape(signal_tokens["STATE_FULL_NAME"]),
+                    "{{STATE_METRO_EXAMPLES}}": _html_escape(signal_tokens["STATE_METRO_EXAMPLES"]),
+                    "{{RECENT_SIGNALS_HTML}}": signal_tokens["RECENT_SIGNALS_HTML"],
+                    "{{SIGNALS_WINDOW_NOTE_HTML}}": signal_tokens["SIGNALS_WINDOW_NOTE_HTML"],
+                    "{{SIGNALS_FALLBACK_HTML}}": signal_tokens["SIGNALS_FALLBACK_HTML"],
                     "{{LAST_REFRESH_ET}}": _html_escape(last_refresh_et),
                     "{{UNSUBSCRIBE_URL}}": _html_escape(unsub_url or prefs_link),
                     "{{PREFS_URL}}": _html_escape(prefs_url or prefs_link),

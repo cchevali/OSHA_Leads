@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -73,6 +73,7 @@ DOCTOR_TIMEOUT_SECRETS_SECONDS = 90
 DOCTOR_TIMEOUT_DRY_RUN_SECONDS = 120
 DOCTOR_HTTP_TIMEOUT_SECONDS = 5.0
 PROJECT_CONTEXT_SOFT_CHECK_CMD = ["--check", "--soft"]
+DOCTOR_SIGNALS_LOOKBACK_DAYS = 14
 
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
 ROLE_PRIORITY_RULES: list[tuple[int, tuple[str, ...], str]] = [
@@ -631,6 +632,80 @@ def _count_pool_total_all_states(conn: sqlite3.Connection) -> int:
         return 0
 
 
+def _crm_uncontacted_by_state(
+    conn: sqlite3.Connection,
+    states: list[str],
+    suppressed_emails: set[str],
+    allow_repeat: bool,
+) -> dict[str, int]:
+    normalized_states = [str(s or "").strip().upper() for s in states if str(s or "").strip()]
+    counts: dict[str, int] = {s: 0 for s in normalized_states}
+    if not normalized_states:
+        return counts
+
+    placeholders = ",".join("?" for _ in normalized_states)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT prospect_id, email, status, last_contacted_at, state
+            FROM prospects
+            WHERE UPPER(TRIM(state)) IN ({placeholders})
+            """,
+            tuple(normalized_states),
+        ).fetchall()
+    except Exception:
+        return counts
+
+    sent_ids = _fetch_prior_sent_ids(conn)
+    for row in rows:
+        row_state = _safe_text(str(row["state"] or "")).upper()
+        if row_state not in counts:
+            continue
+        reason = _skip_reason(
+            row=row,
+            suppressed_emails=suppressed_emails,
+            sent_ids=sent_ids,
+            allow_repeat=allow_repeat,
+        )
+        if reason:
+            continue
+        counts[row_state] = int(counts.get(row_state, 0)) + 1
+    return counts
+
+
+def _format_state_counts(states: list[str], counts: dict[str, int]) -> str:
+    ordered: list[str] = []
+    for state in states:
+        s = str(state or "").strip().upper()
+        if not s:
+            continue
+        ordered.append(f"{s}={max(0, int(counts.get(s, 0)))}")
+    if ordered:
+        return " ".join(ordered)
+    return "(none)"
+
+
+def _state_rotation_hint(state: str, states: list[str], counts: dict[str, int]) -> str:
+    selected_state = str(state or "").strip().upper()
+    if max(0, int(counts.get(selected_state, 0))) > 0:
+        return ""
+
+    other_with_backlog: list[str] = []
+    for item in states:
+        s = str(item or "").strip().upper()
+        if not s or s == selected_state:
+            continue
+        c = max(0, int(counts.get(s, 0)))
+        if c > 0:
+            other_with_backlog.append(f"{s}={c}")
+    if not other_with_backlog:
+        return ""
+    return (
+        "selected_state_uncontacted=0 while other configured states have backlog "
+        f"({', '.join(other_with_backlog)})"
+    )
+
+
 def _build_filter_breakdown(
     skipped: Counter,
     pool_total_all_states: int,
@@ -872,6 +947,7 @@ def _render_outreach_payload(
     recent_signals_lines: str,
     recent_signals_html: str,
     last_refresh_et: str,
+    signal_tokens: dict[str, str] | None = None,
 ) -> tuple[str, str, str, str]:
     first_name = (str(row["contact_name"] or "").split(" ")[:1] or [""])[0].strip() or "there"
     firm = str(row["firm"] or "").strip() or "your firm"
@@ -889,7 +965,20 @@ def _render_outreach_payload(
         allow_mailto_fallback=False,
     )
     prefs_link = prefs_url or unsub_url
-    subject = f"{state} OSHA activity signals - {firm}".strip()
+    token_map = dict(signal_tokens or {})
+    state_full_name = token_map.get("STATE_FULL_NAME") or gm._state_full_name(state)
+    state_metro_examples = token_map.get("STATE_METRO_EXAMPLES") or gm._state_metro_examples(state)
+    signals_window_note_text = token_map.get(
+        "SIGNALS_WINDOW_NOTE_TEXT",
+        "Opened = inspection opened date; Observed = first day it appeared in our feed.",
+    )
+    signals_window_note_html = token_map.get(
+        "SIGNALS_WINDOW_NOTE_HTML",
+        "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+    )
+    signals_fallback_text = token_map.get("SIGNALS_FALLBACK_TEXT", "")
+    signals_fallback_html = token_map.get("SIGNALS_FALLBACK_HTML", "")
+    subject = f"{state} OSHA inspection signals (daily brief)"
 
     text_body = (
         gm._render_template(
@@ -898,8 +987,12 @@ def _render_outreach_payload(
                 "FIRST_NAME": first_name,
                 "FIRM": firm,
                 "STATE": state,
+                "STATE_FULL_NAME": state_full_name,
+                "STATE_METRO_EXAMPLES": state_metro_examples,
                 "TERRITORY_CODE": territory_code,
                 "RECENT_SIGNALS_LINES": recent_signals_lines,
+                "SIGNALS_WINDOW_NOTE_TEXT": signals_window_note_text,
+                "SIGNALS_FALLBACK_TEXT": signals_fallback_text,
                 "LAST_REFRESH_ET": last_refresh_et,
                 "UNSUBSCRIBE_URL": unsub_url,
                 "PREFS_URL": prefs_link,
@@ -915,7 +1008,11 @@ def _render_outreach_payload(
                 "{{FIRST_NAME}}": gm._html_escape(first_name),
                 "{{FIRM}}": gm._html_escape(firm),
                 "{{STATE}}": gm._html_escape(state),
+                "{{STATE_FULL_NAME}}": gm._html_escape(state_full_name),
+                "{{STATE_METRO_EXAMPLES}}": gm._html_escape(state_metro_examples),
                 "{{RECENT_SIGNALS_HTML}}": recent_signals_html,
+                "{{SIGNALS_WINDOW_NOTE_HTML}}": signals_window_note_html,
+                "{{SIGNALS_FALLBACK_HTML}}": signals_fallback_html,
                 "{{LAST_REFRESH_ET}}": gm._html_escape(last_refresh_et),
                 "{{UNSUBSCRIBE_URL}}": gm._html_escape(unsub_url),
                 "{{PREFS_URL}}": gm._html_escape(prefs_link),
@@ -945,6 +1042,7 @@ def _send_outreach_email(
     recent_signals_lines: str,
     recent_signals_html: str,
     last_refresh_et: str,
+    signal_tokens: dict[str, str] | None = None,
 ) -> dict:
     import send_digest_email as sde
 
@@ -957,6 +1055,7 @@ def _send_outreach_email(
         recent_signals_lines=recent_signals_lines,
         recent_signals_html=recent_signals_html,
         last_refresh_et=last_refresh_et,
+        signal_tokens=signal_tokens,
     )
 
     branding = sde.resolve_branding({})
@@ -1329,6 +1428,128 @@ def _doctor_check_provider() -> tuple[bool, str]:
     return True, ""
 
 
+def _doctor_signal_db_path() -> Path:
+    raw = (os.getenv("OUTREACH_SIGNAL_DB") or "").strip()
+    if raw:
+        return Path(raw)
+    return REPO_ROOT / "data" / "osha.sqlite"
+
+
+def _doctor_state_signal_snapshot(
+    conn: sqlite3.Connection,
+    state: str,
+    run_date: date,
+    lookback_days: int,
+) -> tuple[int, str]:
+    max_date_value = "NONE"
+    try:
+        row = conn.execute(
+            """
+            SELECT COALESCE(MAX(date_opened), '')
+            FROM inspections
+            WHERE UPPER(COALESCE(site_state, '')) = ?
+              AND COALESCE(parse_invalid, 0) = 0
+            """,
+            ((state or "").upper(),),
+        ).fetchone()
+        max_raw = str((row[0] if row else "") or "").strip()
+        if max_raw:
+            max_date_value = max_raw
+    except Exception:
+        max_date_value = "NONE"
+
+    try:
+        import send_digest_email as sde
+
+        window_start = datetime.combine(run_date, datetime.min.time()) - timedelta(days=int(lookback_days))
+        leads, low_fallback, _stats = sde.get_leads_for_period(
+            conn=conn,
+            states=[state],
+            since_days=int(lookback_days),
+            new_only_days=36500,
+            skip_first_seen_filter=True,
+            territory_code=None,
+            content_filter="high_medium",
+            include_low_fallback=True,
+            window_start=window_start,
+            new_only_cutoff=None,
+            include_changed=True,
+            use_opened_window=False,
+        )
+        shown = leads if leads else low_fallback
+        return int(len(shown)), max_date_value
+    except Exception:
+        cutoff = (run_date - timedelta(days=int(lookback_days))).isoformat()
+        row = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM inspections
+            WHERE UPPER(COALESCE(site_state, '')) = ?
+              AND COALESCE(parse_invalid, 0) = 0
+              AND COALESCE(date_opened, '') >= ?
+            """,
+            ((state or "").upper(), cutoff),
+        ).fetchone()
+        count = int((row[0] if row else 0) or 0)
+        return count, max_date_value
+
+
+def _doctor_check_signal_freshness(ctx: dict[str, object], run_date: date) -> tuple[bool, str]:
+    states = [str(s or "").strip().upper() for s in (ctx.get("states") or []) if str(s or "").strip()]
+    db_path = _doctor_signal_db_path()
+    print(f"DOCTOR_SIGNALS_DB_PATH={db_path.resolve()}")
+    print(f"DOCTOR_SIGNALS_LOOKBACK_DAYS={DOCTOR_SIGNALS_LOOKBACK_DAYS}")
+
+    stale_states: list[str] = []
+    if not states:
+        return True, ""
+
+    if not db_path.exists():
+        for state in states:
+            print(f"DOCTOR_SIGNALS_STATE={state} recent_14d=0 max_date=NONE status=MISSING_DB")
+            stale_states.append(state)
+    else:
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            if not _table_exists(conn, "inspections"):
+                for state in states:
+                    print(f"DOCTOR_SIGNALS_STATE={state} recent_14d=0 max_date=NONE status=MISSING_DB")
+                    stale_states.append(state)
+            else:
+                for state in states:
+                    recent_count, max_date = _doctor_state_signal_snapshot(
+                        conn=conn,
+                        state=state,
+                        run_date=run_date,
+                        lookback_days=DOCTOR_SIGNALS_LOOKBACK_DAYS,
+                    )
+                    status = "OK" if recent_count > 0 else "STALE"
+                    print(f"DOCTOR_SIGNALS_STATE={state} recent_14d={recent_count} max_date={max_date} status={status}")
+                    if status != "OK":
+                        stale_states.append(state)
+        except Exception:
+            for state in states:
+                print(f"DOCTOR_SIGNALS_STATE={state} recent_14d=0 max_date=NONE status=MISSING_DB")
+                stale_states.append(state)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    if stale_states:
+        stale_list = ",".join(stale_states)
+        print(f"WARN_SIGNALS_STALE states={stale_list}")
+        print(
+            "WARN_SIGNALS_REMEDIATION run_ingest=.\\run_with_secrets.ps1 -- py -3 "
+            f"run_osha_ingest_daily.py --since-days 45 --states {stale_list}"
+        )
+        print("WARN_SIGNALS_REMEDIATION verify_task=schtasks.exe /Query /TN \\OSHA_Osha_Ingest_Daily /V /FO LIST")
+    return True, ""
+
+
 def _doctor_check_dry_run_artifact(allow_repeat: bool, run_date: date) -> tuple[bool, str]:
     entrypoint = REPO_ROOT / "run_outreach_auto.py"
     if not entrypoint.exists():
@@ -1407,6 +1628,7 @@ def _run_doctor(allow_repeat: bool, run_date: date) -> tuple[bool, str]:
 
     checks = [
         _doctor_check_crm,
+        lambda: _doctor_check_signal_freshness(ctx, run_date),
         lambda: _doctor_check_suppression(ctx),
         _doctor_check_unsub,
         _doctor_check_provider,
@@ -1588,8 +1810,14 @@ def main() -> int:
             state=state,
             limit=5,
         )
-        recent_signals_lines = gm._recent_signals_text_lines_from_leads(recent_leads)
-        recent_signals_html = gm._recent_signals_html_from_leads(recent_leads)
+        signal_tokens = gm._build_signal_template_tokens(
+            db_path=osha_db,
+            state=state,
+            recent_leads=recent_leads,
+            lookback_days=14,
+        )
+        recent_signals_lines = signal_tokens["RECENT_SIGNALS_LINES"]
+        recent_signals_html = signal_tokens["RECENT_SIGNALS_HTML"]
 
         send_results: list[dict] = []
         for selected_candidate in selected:
@@ -1604,6 +1832,7 @@ def main() -> int:
                     recent_signals_lines=recent_signals_lines,
                     recent_signals_html=recent_signals_html,
                     last_refresh_et=last_refresh_et,
+                    signal_tokens=signal_tokens,
                 )
             )
 
@@ -1612,6 +1841,14 @@ def main() -> int:
 
         contacted_count = sum(1 for r in send_results if r.get("ok"))
         failed_count = sum(1 for r in send_results if not r.get("ok"))
+        uncontacted_by_state = _crm_uncontacted_by_state(
+            conn=conn,
+            states=states,
+            suppressed_emails=suppressed_emails,
+            allow_repeat=bool(args.allow_repeat),
+        )
+        uncontacted_by_state_text = _format_state_counts(states=states, counts=uncontacted_by_state)
+        rotation_hint = _state_rotation_hint(state=state, states=states, counts=uncontacted_by_state)
         new_replies = _event_count_for_day(conn, "replied", run_date)
         new_trials = _event_count_for_day(conn, "trial_started", run_date)
         new_conversions = _event_count_for_day(conn, "converted", run_date)
@@ -1629,12 +1866,18 @@ def main() -> int:
         )
         print(f"{PASS_AUTO_EXPORT} contacted_prospect_ids={','.join([r['prospect_id'] for r in send_results if r.get('ok')]) or '(none)'}")
         print(f"{PASS_AUTO_EXPORT} skipped_top_reasons={top_skip}")
+        print(
+            f"{PASS_AUTO_EXPORT} outreach_states_config={','.join(states)} "
+            f"crm_uncontacted_by_state={uncontacted_by_state_text}"
+        )
 
         subject = f"[AUTO] Outreach {batch} contacted={contacted_count} skipped={skipped_count} failed={failed_count}"
         text_body = (
             "Outreach auto-run summary\n"
             f"- state: {state}\n"
             f"- batch: {batch}\n"
+            f"- outreach_states_config: {','.join(states)}\n"
+            f"- crm_uncontacted_by_state: {uncontacted_by_state_text}\n"
             f"- contacted_count: {contacted_count}\n"
             f"- skipped_count: {skipped_count}\n"
             f"- skipped_top_reasons: {top_skip}\n"
@@ -1643,11 +1886,15 @@ def main() -> int:
             f"- new_conversions: {new_conversions}\n"
             f"- next_actions: {next_actions}\n"
         )
+        if rotation_hint:
+            text_body += f"- state_rotation_hint: {rotation_hint}\n"
         html_body = (
             "<div style=\"font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;\">"
             "<h3>Outreach Auto-Run Summary</h3>"
             f"<p><strong>state:</strong> {state}<br>"
             f"<strong>batch:</strong> {batch}<br>"
+            f"<strong>outreach_states_config:</strong> {','.join(states)}<br>"
+            f"<strong>crm_uncontacted_by_state:</strong> {uncontacted_by_state_text}<br>"
             f"<strong>contacted_count:</strong> {contacted_count}<br>"
             f"<strong>skipped_count:</strong> {skipped_count}<br>"
             f"<strong>skipped_top_reasons:</strong> {top_skip}<br>"
@@ -1657,6 +1904,8 @@ def main() -> int:
             f"<strong>next_actions:</strong> {next_actions}</p>"
             "</div>"
         )
+        if rotation_hint:
+            html_body = html_body.replace("</p>", f"<br><strong>state_rotation_hint:</strong> {rotation_hint}</p>")
         ok_send, err = _send_summary_email(summary_to, subject, text_body, html_body)
         if not ok_send:
             print(f"{ERR_AUTO_SUMMARY_SEND} {err}", file=sys.stderr)

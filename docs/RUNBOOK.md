@@ -228,9 +228,14 @@ Use only:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 `
   -OutreachDailyLimit 10 `
-  -OutreachStates TX `
+  -OutreachStates TX,CA,FL `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
+  -ProspectAutoGrowEnabled 1 `
+  -ProspectAutoGrowSources AIHA `
+  -ProspectAutoGrowBacklogTarget 60 `
+  -ProspectAutoGrowMaxFetchPagesPerRun 6 `
+  -ProspectAutoGrowHttpSleepMs 800 `
   -TrialSendsLimitDefault 10 `
   -TrialExpiredBehaviorDefault notify_once
 ```
@@ -271,6 +276,25 @@ No-arg generation output path:
 
 - `${DATA_DIR}\prospect_discovery\prospects_latest.csv`
 - If `DATA_DIR` is unset: `.\out\prospect_discovery\prospects_latest.csv`
+- Canonical optional inbox path: `${DATA_DIR}\prospect_generation\inbox\*.csv`
+- If `DATA_DIR` is unset: `.\out\prospect_generation\inbox\*.csv`
+- One-release compatibility path (deprecated): `${DATA_DIR}\prospect_discovery\inbox\*.csv`
+
+Drop-folder behavior:
+
+- Generator scans canonical inbox first, then deprecated inbox, each in deterministic filename order.
+- Inbox rows are merged first, then seeded pool rows; inbox wins on duplicate email.
+- On live runs, processed inbox files are moved to `<inbox_dir>\processed\YYYY-MM-DD\`.
+- On `--dry-run`, inbox files are never moved.
+- If deprecated inbox files are used, generator emits `WARN_INBOX_PATH_DEPRECATED`.
+
+Auto-growth (env-gated, optional):
+
+- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
+- Source scope v1: `AIHA` only.
+- Cache path: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`.
+- Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
+- `--for-date YYYY-MM-DD` controls `selected_state`, backlog check, and `new_needed` preview in `--print-config` and `--dry-run`.
 
 Dry-run generation (no writes):
 
@@ -282,6 +306,7 @@ Print resolved generation config:
 
 ```powershell
 .\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config
+.\\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config --for-date 2026-02-18
 ```
 
 Generator emits machine-readable lines:
@@ -289,6 +314,15 @@ Generator emits machine-readable lines:
 - `GENERATOR_OUTPUT_PATH`
 - `GENERATOR_ROWS_READ`
 - `GENERATOR_ROWS_WRITTEN`
+- `GENERATOR_INBOX_DIR`
+- `GENERATOR_INBOX_FILES_FOUND`
+- `GENERATOR_INBOX_ROWS_READ`
+- `GENERATOR_INBOX_ROWS_ACCEPTED`
+- `GENERATOR_INBOX_ROWS_MISSING_STATE`
+- `GENERATOR_INBOX_FILES_ARCHIVED` (live runs only)
+- `GENERATOR_AUTOGROW_*`
+- `GENERATOR_AIHA_*`
+- `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
 
 Artifact separation (do not mix these):
@@ -322,7 +356,7 @@ Set preferred discovery input via the canonical no-editor env helper:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 `
   -OutreachDailyLimit 10 `
-  -OutreachStates TX `
+  -OutreachStates TX,CA,FL `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
   -TrialSendsLimitDefault 10 `
@@ -356,9 +390,17 @@ Legacy `PASS_DISCOVERY_*` / `ERR_DISCOVERY_*` tokens remain supported for compat
 
 Canonical daily sequence:
 
-1. `.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py`
-2. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
-3. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
+1. `.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py`
+2. `.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py`
+3. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
+4. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
+
+Context pack hygiene (when docs/contracts changed or WARN_CONTEXT_PACK_STALE appears):
+
+1. `py -3 tools/project_context_pack.py --build`
+2. Upload `PROJECT_CONTEXT_PACK.md` in ChatGPT Project Settings -> Files
+3. `py -3 tools/project_context_pack.py --mark-uploaded`
+4. `py -3 tools/project_context_pack.py --check`
 
 ### Single Command (Scheduled Daily)
 
@@ -378,7 +420,7 @@ cd C:\dev\OSHA_Leads
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py
 ```
 
-The `--doctor` command must exit `0` with `PASS_DOCTOR_*` lines only before unattended sends. The dry-run command must complete successfully before live send.
+The `--doctor` command must exit `0` before unattended sends. Expected output includes `PASS_DOCTOR_*` plus signal freshness diagnostics (`DOCTOR_SIGNALS_*`, and optional `WARN_SIGNALS_STALE` when data is stale/missing). The dry-run command must complete successfully before live send.
 
 Tomorrow confirmation (canonical no-send deterministic check):
 
@@ -416,7 +458,7 @@ Print resolved paths/state:
 
 Required outreach env keys (managed by `scripts\set_outreach_env.ps1`):
 
-- `OUTREACH_STATES=TX`
+- `OUTREACH_STATES=TX,CA,FL`
 - `OUTREACH_DAILY_LIMIT=10`
 - `OSHA_SMOKE_TO=cchevali+oshasmoke@gmail.com`
 - `OUTREACH_SUPPRESSION_MAX_AGE_HOURS=240`
@@ -535,8 +577,14 @@ $rows | Group-Object { $_.email.ToLowerInvariant().Trim() } | ForEach-Object { $
 
 ### Task Scheduler (PC)
 
-Create/update daily tasks (generation first, discovery second, outreach third).
+Create/update daily tasks (OSHA ingest first, then generation, discovery, outreach).
 Operational expectation is America/New_York local time:
+
+```powershell
+schtasks /Create /F /SC DAILY /ST 06:45 /TN "OSHA_Osha_Ingest_Daily" `
+  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_osha_ingest_daily.ps1" `
+  /RL HIGHEST
+```
 
 ```powershell
 schtasks /Create /F /SC DAILY /ST 07:15 /TN "OSHA_Prospect_Generation" `
@@ -562,6 +610,37 @@ Deterministic installer (preferred):
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --print-config
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --dry-run
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
+```
+
+### Recent Signals Troubleshooting
+
+If cold outreach renders `(no recent signals found)`, outreach is working but `data\osha.sqlite` has no records in the state/last-14-day window used by `outreach\generate_mailmerge.py`.
+
+One-time Florida catch-up:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 ingest_osha.py --db data\osha.sqlite --since-days 45 --states FL
+```
+
+Confirm Florida freshness:
+
+```powershell
+@'
+import sqlite3
+conn = sqlite3.connect("data/osha.sqlite")
+cur = conn.cursor()
+cur.execute("SELECT MAX(date_opened) FROM inspections WHERE site_state='FL'")
+print(cur.fetchone()[0])
+conn.close()
+'@ | py -3 -
+```
+
+Confirm ongoing automation:
+
+```powershell
+schtasks.exe /Query /TN \OSHA_Osha_Ingest_Daily /V /FO LIST
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --print-config
 ```
 
 ### Minimal Daily Ops Checklist

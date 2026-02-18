@@ -3,6 +3,11 @@ param(
   [string] $OutreachStates = '',
   [string] $OshaSmokeTo = '',
   [Nullable[int]] $OutreachSuppressionMaxAgeHours = $null,
+  [Nullable[int]] $ProspectAutoGrowEnabled = $null,
+  [string] $ProspectAutoGrowSources = '',
+  [Nullable[int]] $ProspectAutoGrowBacklogTarget = $null,
+  [Nullable[int]] $ProspectAutoGrowMaxFetchPagesPerRun = $null,
+  [Nullable[int]] $ProspectAutoGrowHttpSleepMs = $null,
   [Nullable[int]] $TrialSendsLimitDefault = $null,
   [string] $TrialExpiredBehaviorDefault = '',
   [string] $TrialConversionUrl = '',
@@ -178,6 +183,11 @@ try {
     'OutreachStates',
     'OshaSmokeTo',
     'OutreachSuppressionMaxAgeHours',
+    'ProspectAutoGrowEnabled',
+    'ProspectAutoGrowSources',
+    'ProspectAutoGrowBacklogTarget',
+    'ProspectAutoGrowMaxFetchPagesPerRun',
+    'ProspectAutoGrowHttpSleepMs',
     'TrialSendsLimitDefault',
     'TrialExpiredBehaviorDefault',
     'TrialConversionUrl',
@@ -201,6 +211,18 @@ try {
   if ($PSBoundParameters.ContainsKey('OutreachSuppressionMaxAgeHours') -and $OutreachSuppressionMaxAgeHours -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachSuppressionMaxAgeHours'
   }
+  if ($PSBoundParameters.ContainsKey('ProspectAutoGrowEnabled') -and $ProspectAutoGrowEnabled -notin @(0, 1)) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowEnabled'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectAutoGrowBacklogTarget') -and $ProspectAutoGrowBacklogTarget -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowBacklogTarget'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectAutoGrowMaxFetchPagesPerRun') -and $ProspectAutoGrowMaxFetchPagesPerRun -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowMaxFetchPagesPerRun'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectAutoGrowHttpSleepMs') -and $ProspectAutoGrowHttpSleepMs -lt 0) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowHttpSleepMs'
+  }
   if ($PSBoundParameters.ContainsKey('TrialSendsLimitDefault') -and $TrialSendsLimitDefault -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TrialSendsLimitDefault'
   }
@@ -220,6 +242,20 @@ try {
     $beh = ($TrialExpiredBehaviorDefault -as [string]).Trim()
     if (-not $beh) {
       Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TrialExpiredBehaviorDefault'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSources')) {
+    $rawSources = ($ProspectAutoGrowSources -as [string])
+    $srcTokens = @()
+    foreach ($part in ($rawSources -split ',')) {
+      $src = ($part -as [string]).Trim().ToUpperInvariant()
+      if (-not $src) { continue }
+      if ($src -ne 'AIHA') {
+        Fail-Token $ERR_SET_OUTREACH_ENV_ARGS ('invalid_ProspectAutoGrowSources value=' + $src)
+      }
+      if ($srcTokens -notcontains $src) {
+        $srcTokens += $src
+      }
     }
   }
 
@@ -270,6 +306,44 @@ try {
       Set-MapValue -Map $map -Key 'OUTREACH_SUPPRESSION_MAX_AGE_HOURS' -Value ([string]$OutreachSuppressionMaxAgeHours) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'OUTREACH_SUPPRESSION_MAX_AGE_HOURS')) {
       Set-MapValue -Map $map -Key 'OUTREACH_SUPPRESSION_MAX_AGE_HOURS' -Value '240' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAutoGrowEnabled')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_ENABLED' -Value ([string]$ProspectAutoGrowEnabled) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_ENABLED')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_ENABLED' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSources')) {
+      $srcTokens = @()
+      foreach ($part in (($ProspectAutoGrowSources -as [string]) -split ',')) {
+        $src = ($part -as [string]).Trim().ToUpperInvariant()
+        if (-not $src) { continue }
+        if ($srcTokens -notcontains $src) {
+          $srcTokens += $src
+        }
+      }
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SOURCES' -Value ($srcTokens -join ',') -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_SOURCES')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SOURCES' -Value '' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAutoGrowBacklogTarget')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_BACKLOG_TARGET' -Value ([string]$ProspectAutoGrowBacklogTarget) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_BACKLOG_TARGET')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_BACKLOG_TARGET' -Value '60' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAutoGrowMaxFetchPagesPerRun')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN' -Value ([string]$ProspectAutoGrowMaxFetchPagesPerRun) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN' -Value '6' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAutoGrowHttpSleepMs')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_HTTP_SLEEP_MS' -Value ([string]$ProspectAutoGrowHttpSleepMs) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_HTTP_SLEEP_MS')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_HTTP_SLEEP_MS' -Value '800' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('TrialSendsLimitDefault')) {

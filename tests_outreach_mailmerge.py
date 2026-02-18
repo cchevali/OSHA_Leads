@@ -509,7 +509,7 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertTrue(text_body.strip())
             self.assertEqual(body, text_body)
             self.assertTrue(html_body.strip())
-            self.assertIn("new OSHA inspections opened in TX", html_body)
+            self.assertIn("Recent OSHA inspections opened in TX", html_body)
             self.assertIn("&middot; Observed ", html_body)
 
             # Wally-style markers.
@@ -531,7 +531,182 @@ class TestOutreachMailmerge(unittest.TestCase):
             pre_footer = html_body[:addr_idx]
             self.assertNotIn("unsub.example.internal/unsubscribe?token=", pre_footer)
             self.assertNotIn("unsub.example.internal/prefs?token=", pre_footer)
-            self.assertEqual(subject, "TX OSHA activity signals - Co")
+            self.assertEqual(subject, "TX OSHA inspection signals (daily brief)")
+
+    def test_fallback_uses_older_state_rows_when_recent_window_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            _write_suppression(tmp / "suppression.csv", [])
+
+            db_path = tmp / "db.sqlite"
+            import sqlite3
+
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute(
+                """
+                CREATE TABLE inspections (
+                    activity_nr TEXT,
+                    date_opened TEXT,
+                    inspection_type TEXT,
+                    establishment_name TEXT,
+                    site_city TEXT,
+                    site_state TEXT,
+                    lead_score INTEGER,
+                    first_seen_at TEXT,
+                    last_seen_at TEXT,
+                    source_url TEXT,
+                    parse_invalid INTEGER
+                )
+                """
+            )
+            cur.executemany(
+                """
+                INSERT INTO inspections (
+                    activity_nr, date_opened, inspection_type, establishment_name,
+                    site_city, site_state, lead_score, first_seen_at, last_seen_at, source_url, parse_invalid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                [
+                    (
+                        "2001",
+                        "2025-12-15",
+                        "Complaint",
+                        "Legacy FL Co",
+                        "Tampa",
+                        "FL",
+                        8,
+                        "2025-12-16T12:00:00Z",
+                        "2025-12-16T12:00:00Z",
+                        "https://www.osha.gov/ords/imis/establishment.inspection_detail?id=2001",
+                    ),
+                    (
+                        "2002",
+                        "2025-12-01",
+                        "Referral",
+                        "Older FL Co",
+                        "Orlando",
+                        "FL",
+                        6,
+                        "2025-12-02T12:00:00Z",
+                        "2025-12-02T12:00:00Z",
+                        "https://www.osha.gov/ords/imis/establishment.inspection_detail?id=2002",
+                    ),
+                ],
+            )
+            conn.commit()
+            conn.close()
+
+            in_csv = tmp / "in.csv"
+            out_csv = tmp / "outbox.csv"
+            _write_csv(
+                in_csv,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "first_name": "Alex",
+                        "last_name": "One",
+                        "firm": "Co",
+                        "title": "Ops",
+                        "email": "a@example.com",
+                        "state": "FL",
+                        "city": "Miami",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    }
+                ],
+            )
+
+            env = {"UNSUB_ENDPOINT_BASE": "https://unsub.example.internal/unsubscribe", "UNSUB_SECRET": "test_secret"}
+            p = self._run_export(
+                tmp,
+                input_csv=in_csv,
+                out_csv=out_csv,
+                template=REPO_ROOT / "outreach" / "outreach_plain.txt",
+                html_template=REPO_ROOT / "outreach" / "outreach_card.html",
+                db_path=db_path,
+                state="FL",
+                batch="TEST_FL",
+                env_overrides=env,
+            )
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out_rows = _read_csv(out_csv)
+            self.assertEqual(len(out_rows), 1)
+            body = out_rows[0].get("body") or ""
+            html_body = out_rows[0].get("html_body") or ""
+            self.assertIn("No recent signals in the last 14 days for Florida.", body)
+            self.assertIn("Most recent signals we have for Florida", body)
+            self.assertIn("Legacy FL Co", body)
+            self.assertIn("outside the 14-day window", html_body)
+            self.assertIn("Legacy FL Co", html_body)
+            self.assertEqual((out_rows[0].get("subject") or "").strip(), "FL OSHA inspection signals (daily brief)")
+
+    def test_fallback_uses_deterministic_sample_when_state_has_no_history(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            _write_suppression(tmp / "suppression.csv", [])
+
+            db_path = tmp / "db.sqlite"
+            import sqlite3
+
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute(
+                """
+                CREATE TABLE inspections (
+                    site_state TEXT,
+                    date_opened TEXT,
+                    parse_invalid INTEGER
+                )
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            in_csv = tmp / "in.csv"
+            out_csv = tmp / "outbox.csv"
+            _write_csv(
+                in_csv,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "first_name": "Alex",
+                        "last_name": "One",
+                        "firm": "Co",
+                        "title": "Ops",
+                        "email": "a@example.com",
+                        "state": "FL",
+                        "city": "Miami",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    }
+                ],
+            )
+
+            env = {"UNSUB_ENDPOINT_BASE": "https://unsub.example.internal/unsubscribe", "UNSUB_SECRET": "test_secret"}
+            p = self._run_export(
+                tmp,
+                input_csv=in_csv,
+                out_csv=out_csv,
+                template=REPO_ROOT / "outreach" / "outreach_plain.txt",
+                html_template=REPO_ROOT / "outreach" / "outreach_card.html",
+                db_path=db_path,
+                state="FL",
+                batch="TEST_FL",
+                env_overrides=env,
+            )
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out_rows = _read_csv(out_csv)
+            self.assertEqual(len(out_rows), 1)
+            body = out_rows[0].get("body") or ""
+            html_body = out_rows[0].get("html_body") or ""
+            self.assertIn("No recent signals in the last 14 days for Florida.", body)
+            self.assertIn("Example signals (sample, not state-specific):", body)
+            self.assertIn("Sample Industrial Services", body)
+            self.assertIn("Example signals (sample, not state-specific):", html_body)
+            self.assertIn("Sample Industrial Services", html_body)
 
 
 if __name__ == "__main__":
