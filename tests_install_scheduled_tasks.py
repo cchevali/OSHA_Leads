@@ -10,6 +10,10 @@ EXPECTED_GENERATION_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
     r"C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_generation.ps1"
 )
+EXPECTED_INGEST_TR = (
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
+    r"C:\dev\OSHA_Leads\scripts\scheduled\run_osha_ingest_daily.ps1"
+)
 EXPECTED_DISCOVERY_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
     r"C:\dev\OSHA_Leads\run_with_secrets.ps1 py -3 C:\dev\OSHA_Leads\run_prospect_discovery.py"
@@ -95,7 +99,18 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_PRINT_CONFIG", out)
 
         tasks = _parse_task_config(out)
-        self.assertEqual(len(tasks), 4, msg=out)
+        self.assertEqual(len(tasks), 5, msg=out)
+
+        ingest = [t for t in tasks.values() if t.get("NAME") == "OSHA_Osha_Ingest_Daily"]
+        self.assertEqual(len(ingest), 1, msg=out)
+        ingest_task = ingest[0]
+        self.assertEqual(ingest_task.get("SCHEDULE"), "daily", msg=out)
+        self.assertEqual(ingest_task.get("TIME"), "06:45", msg=out)
+        self.assertEqual(ingest_task.get("RL"), "HIGHEST", msg=out)
+        self.assertEqual(ingest_task.get("TR"), EXPECTED_INGEST_TR, msg=out)
+        self.assertLess(len(EXPECTED_INGEST_TR), 261)
+        self.assertEqual(int(ingest_task.get("TR_LENGTH", "0")), len(EXPECTED_INGEST_TR), msg=out)
+        self._assert_future_boundary(ingest_task.get("START_BOUNDARY_LOCAL", ""), out)
 
         generation = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Generation"]
         self.assertEqual(len(generation), 1, msg=out)
@@ -134,10 +149,12 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("DRY_RUN_COMMAND_2=", out)
         self.assertIn("DRY_RUN_COMMAND_3=", out)
         self.assertIn("DRY_RUN_COMMAND_4=", out)
+        self.assertIn("DRY_RUN_COMMAND_5=", out)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_DRY_RUN", out)
         self.assertNotIn("PASS_INSTALL_SCHEDULED_TASKS_APPLY", out)
         self.assertIn("/SC MINUTE /MO 15", out)
         self.assertIn(EXPECTED_INBOUND_TR, out)
+        self.assertIn(EXPECTED_INGEST_TR, out)
         self.assertNotIn(r"C:\dev\OSHA_Leads\run_inbound_triage.ps1", out)
 
     def test_print_config_has_single_inbound_task(self):
@@ -166,12 +183,16 @@ class TestInstallScheduledTasks(unittest.TestCase):
     def test_verify_contract_tokens_present(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("WARN_SCHEDTASK_NEVER_RUN", text)
+        self.assertIn("WARN_INSTALL_SCHEDULED_TASKS_APPLY_ACCESS_DENIED", text)
+        self.assertIn("WARN_INSTALL_SCHEDULED_TASKS_REMEDIATION Re-run in elevated PowerShell to repair task permissions.", text)
         self.assertIn("PASS_SCHEDTASK_INSTALL_OK", text)
         self.assertIn("ERR_INSTALL_SCHEDULED_TASKS_VERIFY", text)
         self.assertIn("Task To Run", text)
         self.assertIn("TASK_TO_RUN=", text)
         self.assertIn("Schedule Type", text)
         self.assertIn("Start Time", text)
+        self.assertIn("start_time_mismatch", text)
+        self.assertIn("function Convert-StartTimeTo24Hour([string]$Raw)", text)
         self.assertIn("Scheduled Task State", text)
         self.assertIn("action_mismatch", text)
         self.assertIn("WARN_SCHEDTASK_ACTION_MISMATCH", text)

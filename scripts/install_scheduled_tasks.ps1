@@ -19,16 +19,17 @@ function New-TaskDefinition(
   [int]$MinuteInterval = 0
 ) {
   return @{
-    Name = $Name
-    ScheduleType = $ScheduleType
-    StartTime = $StartTime
+    Name           = $Name
+    ScheduleType   = $ScheduleType
+    StartTime      = $StartTime
     MinuteInterval = $MinuteInterval
-    TaskRun = $TaskRun
-    RunLevel = 'HIGHEST'
+    TaskRun        = $TaskRun
+    RunLevel       = 'HIGHEST'
   }
 }
 
 function Get-TaskDefinitions([string]$RepoRoot) {
+  $ingestRunner = Join-Path $RepoRoot 'scripts\scheduled\run_osha_ingest_daily.ps1'
   $generationRunner = Join-Path $RepoRoot 'scripts\scheduled\run_prospect_generation.ps1'
   $inboundRunner = Join-Path $RepoRoot 'scripts\scheduled\run_inbound_triage.ps1'
   $wrapper = Join-Path $RepoRoot 'run_with_secrets.ps1'
@@ -36,6 +37,7 @@ function Get-TaskDefinitions([string]$RepoRoot) {
   $outreach = Join-Path $RepoRoot 'run_outreach_auto.py'
 
   return @(
+    (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Daily' -ScheduleType 'daily' -StartTime '06:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestRunner)),
     (New-TaskDefinition -Name 'OSHA_Prospect_Generation' -ScheduleType 'daily' -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $generationRunner)),
     (New-TaskDefinition -Name 'OSHA_Prospect_Discovery' -ScheduleType 'daily' -StartTime '07:30' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $discovery)),
     (New-TaskDefinition -Name 'OSHA_Outreach_Auto' -ScheduleType 'daily' -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $outreach)),
@@ -125,11 +127,12 @@ function Invoke-SchtasksCommand([string[]]$SchtasksArgs) {
   try {
     $output = & schtasks.exe @SchtasksArgs 2>&1
     $code = $LASTEXITCODE
-  } finally {
+  }
+  finally {
     $ErrorActionPreference = $prevErrorAction
   }
   return @{
-    Output = @($output)
+    Output   = @($output)
     ExitCode = [int]$code
   }
 }
@@ -140,11 +143,12 @@ function Invoke-CmdCommand([string]$CommandLine) {
   try {
     $output = & cmd.exe /c $CommandLine 2>&1
     $code = $LASTEXITCODE
-  } finally {
+  }
+  finally {
     $ErrorActionPreference = $prevErrorAction
   }
   return @{
-    Output = @($output)
+    Output   = @($output)
     ExitCode = [int]$code
   }
 }
@@ -155,7 +159,14 @@ function Get-TaskToRunFromSchtasks([string]$TaskName) {
   $queryResult = Invoke-CmdCommand -CommandLine $queryCmd
   $queryOut = @($queryResult.Output)
   if ([int]$queryResult.ExitCode -ne 0) {
-    Fail 'ERR_INSTALL_SCHEDULED_TASKS_APPLY' ('task=' + $TaskName + ' query_failed exit_code=' + [int]$queryResult.ExitCode)
+    # If the task does not exist, schtasks returns error code 1 and a specific message.
+    # In this case, we return $null to indicate the task is missing, which triggers creation.
+    $outputString = ($queryOut -join ' ')
+    Write-Output ("DEBUG: Check-Task-Failure task=" + $TaskName + " output=" + $outputString)
+    if ($outputString -like '*system cannot find the file specified*') {
+      return $null
+    }
+    Fail 'ERR_INSTALL_SCHEDULED_TASKS_APPLY' ('task=' + $TaskName + ' query_failed exit_code=' + [int]$queryResult.ExitCode + ' output=' + $outputString)
   }
   $fields = Parse-TaskQueryOutput -Lines @($queryOut)
   return Get-TaskQueryField -Fields $fields -Key 'Task To Run'
@@ -166,7 +177,10 @@ function Delete-TaskIfExists([string]$TaskName) {
   $deleteArgs = @('/Delete', '/TN', $taskNameForQuery, '/F')
   $deleteResult = Invoke-SchtasksCommand -SchtasksArgs $deleteArgs
   if ([int]$deleteResult.ExitCode -ne 0) {
-    $text = ((@($deleteResult.Output) | ForEach-Object { [string]$_ }) -join ' ')
+    $text = ((@($deleteResult.Output) | ForEach-Object { [string]$_ }) -join ' ').Trim()
+    if ($text -match 'The system cannot find the file specified') {
+      return
+    }
     Fail 'ERR_INSTALL_SCHEDULED_TASKS_APPLY' ('task=' + $TaskName + ' delete_failed exit_code=' + [int]$deleteResult.ExitCode + ' detail=' + $text)
   }
 }
@@ -181,7 +195,8 @@ function Invoke-TaskCreate([hashtable]$Task) {
 
   if ($Task.ScheduleType -eq 'minute') {
     $taskArgs += @('MINUTE', '/MO', ([string]$Task.MinuteInterval))
-  } else {
+  }
+  else {
     $taskArgs += @('DAILY')
   }
 
@@ -202,7 +217,11 @@ function Invoke-TaskCreate([hashtable]$Task) {
   $createOutput = @($createResult.Output)
   $createCode = [int]$createResult.ExitCode
   if ($createCode -eq 0) {
-    return
+    return @{
+      Applied = $true
+      AccessDenied = $false
+      Detail = ''
+    }
   }
 
   $createText = (($createOutput | ForEach-Object { [string]$_ }) -join ' ')
@@ -222,18 +241,60 @@ function Invoke-TaskCreate([hashtable]$Task) {
     $fallbackOut = @($fallbackResult.Output)
     $fallbackCode = [int]$fallbackResult.ExitCode
     if ($fallbackCode -eq 0) {
-      Write-Output ('WARN_INSTALL_SCHEDULED_TASKS_RUNLEVEL_FALLBACK task=' + $Task.Name + ' run_level=LIMITED')
-      return
+      return @{
+        Applied = $true
+        AccessDenied = $false
+        Detail = 'runlevel_fallback_limited'
+      }
     }
     $fallbackText = (($fallbackOut | ForEach-Object { [string]$_ }) -join ' ')
+    if ($fallbackText -match 'Access is denied') {
+      return @{
+        Applied = $false
+        AccessDenied = $true
+        Detail = $fallbackText
+      }
+    }
     Fail 'ERR_INSTALL_SCHEDULED_TASKS_APPLY' (
       'task=' + $Task.Name + ' exit_code=' + $fallbackCode + ' detail=' + $fallbackText
     )
   }
 
+  if ($accessDenied) {
+    return @{
+      Applied = $false
+      AccessDenied = $true
+      Detail = $createText
+    }
+  }
+
   Fail 'ERR_INSTALL_SCHEDULED_TASKS_APPLY' (
     'task=' + $Task.Name + ' exit_code=' + $createCode + ' detail=' + $createText
   )
+}
+
+function Convert-StartTimeTo24Hour([string]$Raw) {
+  $text = ([string]$Raw).Trim()
+  if (-not $text -or $text -eq 'N/A') {
+    return ''
+  }
+
+  $m = [regex]::Match($text, '^(?<h>\d{1,2}):(?<m>\d{2})(?::\d{2})?\s*(?<ampm>[AaPp][Mm])?$')
+  if (-not $m.Success) {
+    return ''
+  }
+
+  $hour = [int]$m.Groups['h'].Value
+  $minute = [int]$m.Groups['m'].Value
+  $ampm = ($m.Groups['ampm'].Value -as [string]).ToUpperInvariant()
+
+  if ($ampm -eq 'AM') {
+    if ($hour -eq 12) { $hour = 0 }
+  } elseif ($ampm -eq 'PM') {
+    if ($hour -lt 12) { $hour += 12 }
+  }
+
+  return ('{0:D2}:{1:D2}' -f $hour, $minute)
 }
 
 function Set-TaskOperationalSettings([hashtable]$Task) {
@@ -247,7 +308,8 @@ function Set-TaskOperationalSettings([hashtable]$Task) {
   try {
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Set-ScheduledTask -TaskName $Task.Name -Settings $settings | Out-Null
-  } catch {
+  }
+  catch {
     $errType = $_.Exception.GetType().Name
     $errText = ([string]$_.Exception.Message)
     if ($errText -match 'Access is denied' -or $errType -eq 'CimException') {
@@ -294,7 +356,8 @@ function Convert-LastResultToHex([string]$Raw) {
     try {
       $num = [Convert]::ToInt64($text.Substring(2), 16)
       return '0x' + ([Convert]::ToString($num, 16).ToUpperInvariant())
-    } catch {
+    }
+    catch {
       return 'UNKNOWN'
     }
   }
@@ -344,6 +407,15 @@ function Invoke-Verify([array]$Tasks) {
     if (-not $startTimeRaw -or $startTimeRaw -eq 'N/A') {
       $failures += ('task=' + $task.Name + ' start_time_unavailable')
     }
+    if ($task.ScheduleType -eq 'daily') {
+      $actualStart = Convert-StartTimeTo24Hour -Raw $startTimeRaw
+      $expectedStart = ([string]$task.StartTimeResolved).Trim()
+      if (-not $actualStart) {
+        $failures += ('task=' + $task.Name + ' start_time_unparseable value=' + $startTimeRaw)
+      } elseif ($actualStart -ne $expectedStart) {
+        $failures += ('task=' + $task.Name + ' start_time_mismatch expected=' + $expectedStart + ' actual=' + $actualStart)
+      }
+    }
     if ($taskState -match 'Disabled') {
       $failures += ('task=' + $task.Name + ' disabled=true')
     }
@@ -378,6 +450,7 @@ if ($modeArg -notin $modes) {
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $requiredPaths = @(
+  (Join-Path $repoRoot 'scripts\scheduled\run_osha_ingest_daily.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_prospect_generation.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_inbound_triage.ps1'),
   (Join-Path $repoRoot 'run_with_secrets.ps1'),
@@ -415,6 +488,7 @@ if ($modeArg -eq '--verify') {
 }
 
 Emit-TaskConfig -Tasks $resolvedTasks -Mode 'apply'
+$applyAccessDeniedCount = 0
 for ($i = 0; $i -lt $resolvedTasks.Count; $i++) {
   $task = $resolvedTasks[$i]
   $actual = Get-TaskToRunFromSchtasks -TaskName $task.Name
@@ -423,7 +497,17 @@ for ($i = 0; $i -lt $resolvedTasks.Count; $i++) {
     Delete-TaskIfExists -TaskName $task.Name
   }
 
-  Invoke-TaskCreate -Task $task
+  $createState = Invoke-TaskCreate -Task $task
+  if (([string]$createState.Detail).Trim() -eq 'runlevel_fallback_limited') {
+    Write-Output ('WARN_INSTALL_SCHEDULED_TASKS_RUNLEVEL_FALLBACK task=' + $task.Name + ' run_level=LIMITED')
+  }
+  if ([bool]$createState.AccessDenied) {
+    $applyAccessDeniedCount += 1
+    Write-Output ('WARN_INSTALL_SCHEDULED_TASKS_APPLY_ACCESS_DENIED task=' + $task.Name + ' detail=' + (([string]$createState.Detail).Trim()))
+    Write-Output 'WARN_INSTALL_SCHEDULED_TASKS_REMEDIATION Re-run in elevated PowerShell to repair task permissions.'
+    continue
+  }
+
   Set-TaskOperationalSettings -Task $task
 
   $post = Get-TaskToRunFromSchtasks -TaskName $task.Name
@@ -432,5 +516,9 @@ for ($i = 0; $i -lt $resolvedTasks.Count; $i++) {
   }
   Write-Output ('TASK_APPLIED=' + $task.Name)
 }
+if ($applyAccessDeniedCount -gt 0) {
+  Write-Output ('WARN_INSTALL_SCHEDULED_TASKS_APPLY_ACCESS_DENIED_COUNT=' + $applyAccessDeniedCount)
+}
+Invoke-Verify -Tasks $resolvedTasks
 Write-Output 'PASS_INSTALL_SCHEDULED_TASKS_APPLY'
 exit 0
