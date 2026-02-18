@@ -19,8 +19,10 @@ Use one generated upload file to keep Project Files current:
 ```powershell
 cd C:\dev\OSHA_Leads
 py -3 tools/project_context_pack.py --build
-py -3 tools/project_context_pack.py --check
+py -3 tools/project_context_pack.py --fingerprint
+# Upload PROJECT_CONTEXT_PACK.md to ChatGPT Project Settings -> Files (replace prior)
 py -3 tools/project_context_pack.py --mark-uploaded
+py -3 tools/project_context_pack.py --check
 ```
 
 Automation/test-only build output override:
@@ -684,6 +686,13 @@ Source of truth:
 
 - Subscriber registry + trial latches: `out/crm_light.sqlite` (or `${env:DATA_DIR}\crm_light.sqlite` when `DATA_DIR` is set)
 - Send ledger: `send_events` (counts successful sends where `status=SENT`)
+
+Check trial days-since-start and sends-used (single command, no sends/no writes):
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 run_wally_trial.py --status
+```
 
 ### Add a Trial Participant (No Secrets Required)
 

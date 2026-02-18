@@ -18,10 +18,12 @@ except Exception:  # pragma: no cover
     load_dotenv = None
 
 from export_daily import export_daily
+import run_trial_admin
 
 DEFAULT_TRIAL_TARGET_LOCAL_HHMM = "09:00"
 DEFAULT_TRIAL_CATCHUP_MAX_MINUTES = 180
 PROJECT_CONTEXT_SOFT_CHECK_CMD = ["--check", "--soft"]
+WALLY_TRIAL_SUBSCRIBER_KEY = "wally_trial"
 
 
 def load_environment(repo_root: Path) -> None:
@@ -615,6 +617,16 @@ def main() -> None:
     parser.add_argument("customer_path", nargs="?", default="", help="Customer config path or name (optional)")
     parser.add_argument("--db", default="data/osha.sqlite")
     parser.add_argument("--customer", default="customers/wally_trial_tx_triangle_v1.json")
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Print deterministic trial status block for canonical Wally subscriber and exit.",
+    )
+    parser.add_argument(
+        "--as-of",
+        default="",
+        help="Optional as-of date YYYY-MM-DD for --status (default: America/New_York today).",
+    )
     parser.add_argument("--out-dir", default="out")
     parser.add_argument("--territory-code", default="TX_TRIANGLE_V1")
     parser.add_argument("--content-filter", default="high_medium")
@@ -661,6 +673,14 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.status:
+        raise SystemExit(
+            run_trial_admin.print_trial_status(
+                subscriber_key=WALLY_TRIAL_SUBSCRIBER_KEY,
+                as_of=str(args.as_of or ""),
+            )
+        )
 
     repo_root = Path(__file__).resolve().parent
     load_environment(repo_root)
