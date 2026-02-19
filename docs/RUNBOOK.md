@@ -35,6 +35,7 @@ Status output contract:
 - `WIP_AUTOSAVE_HOURLY_INSTALLED=0|1`
 - `WIP_AUTOSAVE_LOGON_INSTALLED=0|1`
 - `WIP_AUTOSAVE_EFFECTIVE=0|1`
+- `WIP_AUTOSAVE_MODE=WORKTREE`
 - `WIP_AUTOSAVE_NEXT_ACTION=<none|run_elevated_cmd>`
 
 ## AGENTS Workflow + Re-Upload Guidance

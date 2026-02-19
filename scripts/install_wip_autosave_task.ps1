@@ -353,6 +353,7 @@ function Emit-Status([array]$Tasks, [bool]$IsElevated) {
     Write-Output 'WIP_AUTOSAVE_EFFECTIVE=0'
   }
 
+  Write-Output 'WIP_AUTOSAVE_MODE=WORKTREE'
   Write-Output ('WIP_AUTOSAVE_NEXT_ACTION=' + $nextAction)
   if ($nextAction -eq 'run_elevated_cmd') {
     Write-Output ('WIP_AUTOSAVE_LOGON_INSTALL_ELEVATED_CMD=' + (Build-LogonElevatedCommand -Task $logonTask))
