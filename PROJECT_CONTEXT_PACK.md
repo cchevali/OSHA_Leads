@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=2ffb58ae0d0107f63446a782eca85902685175b3
-PACK_BUILD_UTC=2026-02-19T19:08:31Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=733dd12e9e3b680309a96cc8579552afd4574d24a289e5186c89cb6cc9e77ed6 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=9e7157980007a6637935b8f507c067d5f00f2aa2b5e702ced4e75cffec1cd526 docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=bc0eebe9bf8ef05d8e7b2952682e9f27b596387025f31dca205b91723fb5f270
+PACK_GIT_SHA=45ab8c941fc5219b1ad4c253f34506c8d0d7c037
+PACK_BUILD_UTC=2026-02-19T19:57:27Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=733dd12e9e3b680309a96cc8579552afd4574d24a289e5186c89cb6cc9e77ed6 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=64b713a6f5105569d9db5c2874b40d667a8cb733a49e7f17323ba75f4f6ac237 docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=dbf49bbbfa094724f9ad3f7d69b37aa64b4e689656f0201a12d57de1608dd43c
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1192,6 +1192,43 @@ py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_c
 ```
 
 Operator note: if `data\geo\SOURCES.md` dataset label indicates `seed`/`incomplete`, rebuild from a full nationwide HUD USPS crosswalk file before relying on metro matching for new customers.
+
+## Stripe + Metro Entitlements (CBSA)
+
+Deterministic Stripe plan mapping uses Stripe **price IDs** (no heuristics):
+
+- `STRIPE_PRICE_ID_CORE` -> `plan_code=core` -> `max_metros=4`
+- `STRIPE_PRICE_ID_MULTI` -> `plan_code=multi` -> `max_metros=10`
+- `STRIPE_PRICE_ID_PILOT` -> `plan_code=pilot` -> `max_metros=4`
+
+Webhook/payload ingestion command (idempotent by Stripe `event_id`):
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 scripts\subscription_registry_ops.py stripe-ingest --print-config
+.\run_with_secrets.ps1 -- py -3 scripts\subscription_registry_ops.py stripe-ingest --stdin-json --dry-run
+```
+
+Onboarding entitlement + CBSA allowlist persistence:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 scripts\subscription_registry_ops.py onboarding-submit --print-config
+py -3 scripts\subscription_registry_ops.py onboarding-submit --stdin-json --dry-run
+```
+
+Metro match audit command ("present?", "matched?", "if not, why?"):
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 --subscriber-key sub_example --print-config
+py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 --subscriber-key sub_example
+```
+
+Safety gate:
+
+- Trial subscribers: incomplete ZIP->CBSA dataset emits warning and continues.
+- Paid entitlements (`core`/`multi`): send path hard-fails with `ERR_PAID_SEND_DATASET_INCOMPLETE`.
 
 ### Add a Trial Participant (No Secrets Required)
 

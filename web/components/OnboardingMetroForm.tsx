@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import MetroPicker from "@/components/MetroPicker";
 import type { CbsaOption } from "@/lib/cbsa";
@@ -75,7 +75,7 @@ export default function OnboardingMetroForm({
     });
   }
 
-  async function submit(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+  async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (selectedCodes.length > maxMetros) {
       setSubmitState({

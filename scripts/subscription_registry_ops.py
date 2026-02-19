@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -32,6 +33,7 @@ def _print_json(payload: dict[str, Any]) -> None:
 
 
 def _print_config(subscriber_db: Path, command: str) -> None:
+    price_map = crm_light.resolve_stripe_price_map_from_env()
     payload = {
         "command": command,
         "crm_db": str(subscriber_db),
@@ -41,7 +43,12 @@ def _print_config(subscriber_db: Path, command: str) -> None:
             "core": crm_light.PLAN_MAX_METROS.get("core"),
             "multi": crm_light.PLAN_MAX_METROS.get("multi"),
         },
-        "stripe_price_id_mapping": crm_light.resolve_stripe_price_map_from_env(),
+        "stripe_price_id_mapping": price_map,
+        "stripe_price_id_core_present": bool(str(os.getenv("STRIPE_PRICE_ID_CORE", "")).strip()),
+        "stripe_price_id_multi_present": bool(str(os.getenv("STRIPE_PRICE_ID_MULTI", "")).strip()),
+        "stripe_price_id_pilot_present": bool(str(os.getenv("STRIPE_PRICE_ID_PILOT", "")).strip()),
+        "web_stripe_webhook_secret_present": bool(str(os.getenv("WEB_STRIPE_WEBHOOK_SECRET", "")).strip()),
+        "stripe_webhook_secret_present": bool(str(os.getenv("STRIPE_WEBHOOK_SECRET", "")).strip()),
     }
     _print_json(payload)
 

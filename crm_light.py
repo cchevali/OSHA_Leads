@@ -686,7 +686,24 @@ def get_schema_version(conn: sqlite3.Connection) -> int:
     return _get_schema_version(conn)
 
 
-def record_stripe_event_once(conn: sqlite3.Connection, event_id: str, event_type: str) -> bool:
+def has_stripe_event(conn: sqlite3.Connection, event_id: str) -> bool:
+    normalized_event_id = str(event_id or "").strip()
+    if not normalized_event_id:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM stripe_event_log WHERE event_id = ? LIMIT 1",
+        (normalized_event_id,),
+    ).fetchone()
+    return row is not None
+
+
+def record_stripe_event_once(
+    conn: sqlite3.Connection,
+    event_id: str,
+    event_type: str,
+    *,
+    commit: bool = True,
+) -> bool:
     normalized_event_id = str(event_id or "").strip()
     if not normalized_event_id:
         raise ValueError("event_id required")
@@ -697,7 +714,8 @@ def record_stripe_event_once(conn: sqlite3.Connection, event_id: str, event_type
         """,
         (normalized_event_id, str(event_type or "").strip(), utc_now_iso()),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return int(cur.rowcount or 0) > 0
 
 
@@ -711,6 +729,7 @@ def upsert_subscription(
     customer_email: str = "",
     stripe_customer_id: str = "",
     source_event_id: str = "",
+    commit: bool = True,
 ) -> None:
     subscription_id = str(stripe_subscription_id or "").strip()
     if not subscription_id:
@@ -756,7 +775,8 @@ def upsert_subscription(
             ts,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def upsert_subscriber_entitlement(
@@ -768,6 +788,7 @@ def upsert_subscriber_entitlement(
     max_metros: int,
     active: bool,
     source: str,
+    commit: bool = True,
 ) -> None:
     sk = normalize_subscriber_key(subscriber_key)
     if not sk:
@@ -810,7 +831,8 @@ def upsert_subscriber_entitlement(
             ts,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_subscriber_entitlement(
@@ -905,22 +927,20 @@ def resolve_stripe_price_map_from_env() -> dict[str, str]:
 def resolve_plan_from_stripe_payload(
     *,
     price_id: str | None,
-    metadata: dict[str, Any] | None = None,
 ) -> tuple[str, int]:
     normalized_price = str(price_id or "").strip()
     mapping = resolve_stripe_price_map_from_env()
-    if normalized_price and normalized_price in mapping:
-        code = normalize_plan_code(mapping[normalized_price])
-        metros = plan_max_metros(code)
-        if metros is None:
-            raise ValueError(f"unmapped_plan_code={code}")
-        return code, metros
-
-    metadata_plan = normalize_plan_code(str((metadata or {}).get("plan_code") or ""))
-    if metadata_plan in PLAN_MAX_METROS:
-        return metadata_plan, int(PLAN_MAX_METROS[metadata_plan])
-
-    raise ValueError("ERR_STRIPE_PLAN_MAP_UNRESOLVED")
+    if not mapping:
+        raise ValueError("ERR_STRIPE_PRICE_MAP_MISSING")
+    if not normalized_price:
+        raise ValueError("ERR_STRIPE_PRICE_ID_MISSING")
+    if normalized_price not in mapping:
+        raise ValueError("ERR_STRIPE_PRICE_ID_UNMAPPED")
+    code = normalize_plan_code(mapping[normalized_price])
+    metros = plan_max_metros(code)
+    if metros is None:
+        raise ValueError("ERR_STRIPE_PLAN_CODE_UNMAPPED")
+    return code, metros
 
 
 def ingest_stripe_subscription_event(
@@ -952,16 +972,6 @@ def ingest_stripe_subscription_event(
             "event_type": event_type,
         }
 
-    if not dry_run:
-        inserted = record_stripe_event_once(conn, event_id, event_type)
-        if not inserted:
-            return {
-                "ok": True,
-                "token": "STRIPE_EVENT_DUPLICATE",
-                "event_id": event_id,
-                "event_type": event_type,
-            }
-
     subscription_id = str(data_object.get("id") or "").strip()
     customer_id = str(data_object.get("customer") or "").strip()
     status = str(data_object.get("status") or "").strip().lower()
@@ -985,7 +995,6 @@ def ingest_stripe_subscription_event(
     try:
         plan_code, max_metros = resolve_plan_from_stripe_payload(
             price_id=price_id,
-            metadata=metadata,
         )
     except Exception as exc:
         return {
@@ -1011,26 +1020,61 @@ def ingest_stripe_subscription_event(
     active = status not in {"canceled", "incomplete_expired", "unpaid"}
 
     if not dry_run:
-        upsert_subscription(
-            conn,
-            stripe_subscription_id=subscription_id,
-            plan_code=plan_code,
-            max_metros=max_metros,
-            status=status or "unknown",
-            customer_email=email,
-            stripe_customer_id=customer_id,
-            source_event_id=event_id,
-        )
-        if subscriber_key:
-            upsert_subscriber_entitlement(
+        if has_stripe_event(conn, event_id):
+            return {
+                "ok": True,
+                "token": "STRIPE_EVENT_DUPLICATE",
+                "event_id": event_id,
+                "event_type": event_type,
+            }
+        try:
+            conn.execute("BEGIN")
+            inserted = record_stripe_event_once(conn, event_id, event_type, commit=False)
+            if not inserted:
+                conn.rollback()
+                return {
+                    "ok": True,
+                    "token": "STRIPE_EVENT_DUPLICATE",
+                    "event_id": event_id,
+                    "event_type": event_type,
+                }
+            upsert_subscription(
                 conn,
-                subscriber_key=subscriber_key,
-                email=email,
+                stripe_subscription_id=subscription_id,
                 plan_code=plan_code,
                 max_metros=max_metros,
-                active=active,
-                source="stripe_webhook_price_id",
+                status=status or "unknown",
+                customer_email=email,
+                stripe_customer_id=customer_id,
+                source_event_id=event_id,
+                commit=False,
             )
+            if subscriber_key:
+                upsert_subscriber_entitlement(
+                    conn,
+                    subscriber_key=subscriber_key,
+                    email=email,
+                    plan_code=plan_code,
+                    max_metros=max_metros,
+                    active=active,
+                    source="stripe_webhook_price_id",
+                    commit=False,
+                )
+            conn.commit()
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                "token": "ERR_STRIPE_INGEST_WRITE_FAILED",
+                "event_id": event_id,
+                "event_type": event_type,
+                "stripe_subscription_id": subscription_id,
+                "stripe_price_id": price_id,
+                "detail": str(exc),
+            }
 
     return {
         "ok": True,
