@@ -183,3 +183,35 @@ Adopt a single upstream feed path:
 - Operators now monitor both `GENERATOR_*` and `DISCOVERY_*` machine-readable outputs.
 - Suppression and campaign tracking artifacts remain separate from the discovery feed.
 
+## ADR-0007: Multi-State Backlog Targeting With Safety-Net Auto-Grow
+
+Date: 2026-02-19
+Status: Accepted
+
+### Context
+
+Configured outreach state rotation can select a state whose CRM uncontacted backlog is depleted (`contacted=0`, skips dominated by `already_contacted`) while other states still have backlog.
+Generation previously targeted only one selected state for optional autogrow and discovery feed composition was tied to fixed TX/CA/FL ordering.
+
+### Decision
+
+Adopt multi-state prospect generation behavior:
+
+- Evaluate backlog deficits for every state in `OUTREACH_STATES` each run.
+- When autogrow is enabled, attempt AIHA growth for each configured state with deficit.
+- Add safety-net forcing (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, default `1`): when autogrow is disabled and a configured state is depleted (zero uncontacted with existing pool rows), force AIHA growth for that state.
+- Keep outreach send-state rotation unchanged and deterministic in `run_outreach_auto.py`.
+- Keep legacy recipient pool CSV outputs for compatibility, but build discovery feed from in-memory state-filtered rows instead of legacy write->read roundtrip.
+
+### Rationale
+
+- Prevents silent depletion of one configured state from stalling outreach despite healthy backlog elsewhere.
+- Supports onboarding additional states without hardcoded feed assembly logic.
+- Preserves compliance/sending invariants and deterministic state selection behavior.
+
+### Consequences
+
+- New generator telemetry includes safety-net and per-state growth lines (`GENERATOR_AUTOGROW_SAFETY_NET_*`, `GENERATOR_AUTOGROW_STATE=...`).
+- `scripts/set_outreach_env.ps1` now manages `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED` in the canonical no-editor flow.
+- Operators continue to run generation -> discovery -> outreach, with stronger machine-readable visibility into per-state replenishment.
+

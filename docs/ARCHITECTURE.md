@@ -16,7 +16,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 ## Outreach CRM Auto-Run Data Flow
 
 1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).
-   - Optional env-gated auto-growth source: AIHA (`PROSPECT_AUTOGROW_*` keys).
+   - Optional env-gated auto-growth source: AIHA (`PROSPECT_AUTOGROW_*` keys), evaluated per configured state in `OUTREACH_STATES`.
+   - Safety-net mode (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`) can force AIHA growth for depleted configured states even when `PROSPECT_AUTOGROW_ENABLED=0`.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Optional one-release inbox migration dual-read:
      - canonical inbox: `${DATA_DIR}/prospect_generation/inbox/*.csv`

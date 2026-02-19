@@ -267,6 +267,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
   -ProspectAutoGrowEnabled 1 `
+  -ProspectAutoGrowSafetyNetEnabled 1 `
   -ProspectAutoGrowSources AIHA `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
@@ -325,11 +326,13 @@ Drop-folder behavior:
 
 Auto-growth (env-gated, optional):
 
-- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
+- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
 - Source scope v1: `AIHA` only.
 - Cache path: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`.
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
-- `--for-date YYYY-MM-DD` controls `selected_state`, backlog check, and `new_needed` preview in `--print-config` and `--dry-run`.
+- Backlog targeting is evaluated per configured state in `OUTREACH_STATES`.
+- Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
+- `--for-date YYYY-MM-DD` controls `selected_state` plus per-state backlog/new-needed previews in `--print-config` and `--dry-run`.
 
 Dry-run generation (no writes):
 
@@ -356,6 +359,9 @@ Generator emits machine-readable lines:
 - `GENERATOR_INBOX_ROWS_MISSING_STATE`
 - `GENERATOR_INBOX_FILES_ARCHIVED` (live runs only)
 - `GENERATOR_AUTOGROW_*`
+- `GENERATOR_AUTOGROW_SAFETY_NET_FORCED`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
+- `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
+- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n>`
 - `GENERATOR_AIHA_*`
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`

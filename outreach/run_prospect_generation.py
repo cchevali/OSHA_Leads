@@ -32,6 +32,7 @@ PASS_GENERATOR_PRINT_CONFIG = "PASS_GENERATOR_PRINT_CONFIG"
 WARN_GENERATOR_INBOX_ARCHIVE = "WARN_GENERATOR_INBOX_ARCHIVE"
 WARN_INBOX_PATH_DEPRECATED = "WARN_INBOX_PATH_DEPRECATED"
 WARN_AUTOGROWTH_SOURCE_FAILED = "WARN_AUTOGROWTH_SOURCE_FAILED"
+WARN_AUTOGROW_SAFETY_NET_FORCED = "WARN_AUTOGROW_SAFETY_NET_FORCED"
 
 OUTPUT_SUBDIR = ("prospect_discovery",)
 OUTPUT_FILENAME = "prospects_latest.csv"
@@ -45,6 +46,12 @@ GENERATION_DIAGNOSTICS_SUBDIR = ("prospect_generation", "diagnostics")
 
 AUTOGROW_ALLOWED_SOURCES = {"AIHA"}
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
+
+POOL_ROWS_BY_STATE = {
+    "TX": pools.TX_POOL,
+    "CA": pools.CA_POOL,
+    "FL": pools.FL_POOL,
+}
 
 
 def _valid_email(value: str) -> bool:
@@ -163,6 +170,7 @@ def _choose_state(states: list[str], run_date: date) -> str:
 
 def _parse_autogrow_config() -> dict:
     enabled = _bool_env(os.getenv("PROSPECT_AUTOGROW_ENABLED", "0"))
+    safety_net_enabled = _bool_env(os.getenv("PROSPECT_AUTOGROW_SAFETY_NET_ENABLED", "1"))
 
     source_tokens: list[str] = []
     for token in str(os.getenv("PROSPECT_AUTOGROW_SOURCES", "") or "").split(","):
@@ -182,6 +190,7 @@ def _parse_autogrow_config() -> dict:
 
     return {
         "enabled": enabled,
+        "safety_net_enabled": safety_net_enabled,
         "sources": source_tokens,
         "backlog_target": backlog_target,
         "max_fetch_pages": max_fetch_pages,
@@ -189,20 +198,22 @@ def _parse_autogrow_config() -> dict:
     }
 
 
-def _build_clean_state_rows() -> tuple[dict[str, list[dict[str, str]]], int]:
+def _build_clean_state_rows(states: list[str]) -> tuple[dict[str, list[dict[str, str]]], int]:
     state_rows: dict[str, list[dict[str, str]]] = {}
-    rows_read = 0
-    pools_by_state = {
-        "TX": pools.TX_POOL,
-        "CA": pools.CA_POOL,
-        "FL": pools.FL_POOL,
-    }
-
-    for state, seed_rows in pools_by_state.items():
+    for state, seed_rows in POOL_ROWS_BY_STATE.items():
         deduped = pools.dedupe_rows(seed_rows)
         cleaned, _stats = pools.apply_hygiene(deduped)
         state_rows[state] = cleaned
-        rows_read += len(cleaned)
+
+    rows_read = 0
+    seen_states: set[str] = set()
+    for state in states:
+        s = _normalize_state(state)
+        if not s or s in seen_states:
+            continue
+        seen_states.add(s)
+        rows_read += int(len(state_rows.get(s, [])))
+        state_rows.setdefault(s, [])
     return state_rows, rows_read
 
 
@@ -226,10 +237,15 @@ def _read_legacy_pool_files() -> list[dict[str, str]]:
     return out
 
 
-def _state_rows_to_combined_input(state_rows: dict[str, list[dict[str, str]]]) -> list[dict[str, str]]:
+def _state_rows_to_combined_input(state_rows: dict[str, list[dict[str, str]]], states: list[str]) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
-    for state in ["TX", "CA", "FL"]:
-        out.extend(state_rows.get(state, []))
+    seen_states: set[str] = set()
+    for state in states:
+        s = _normalize_state(state)
+        if not s or s in seen_states:
+            continue
+        seen_states.add(s)
+        out.extend(state_rows.get(s, []))
     return out
 
 
@@ -497,6 +513,54 @@ def compute_uncontacted_backlog(conn: sqlite3.Connection | None, state: str, sup
     return count
 
 
+def _pool_totals_by_state(conn: sqlite3.Connection | None, states: list[str]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    unique_states: list[str] = []
+    for state in states:
+        s = _normalize_state(state)
+        if not s or s in unique_states:
+            continue
+        unique_states.append(s)
+        totals[s] = 0
+
+    if conn is None or not unique_states or not _table_exists(conn, "prospects"):
+        return totals
+
+    placeholders = ",".join("?" for _ in unique_states)
+    rows = conn.execute(
+        f"""
+        SELECT UPPER(TRIM(COALESCE(state, ''))) AS state_key, COUNT(*) AS row_count
+        FROM prospects
+        WHERE UPPER(TRIM(COALESCE(state, ''))) IN ({placeholders})
+        GROUP BY UPPER(TRIM(COALESCE(state, '')))
+        """,
+        tuple(unique_states),
+    ).fetchall()
+    for row in rows:
+        state_key = _normalize_state(str(row["state_key"] or ""))
+        if not state_key:
+            continue
+        totals[state_key] = max(0, int(row["row_count"] or 0))
+    return totals
+
+
+def _default_state_autogrow_report(state: str, backlog_current: int, new_needed: int, cache_dir: Path) -> dict:
+    return {
+        "state": _normalize_state(state),
+        "backlog_current": max(0, int(backlog_current)),
+        "new_needed": max(0, int(new_needed)),
+        "aiha_candidate": 0,
+        "aiha_accepted": 0,
+        "aiha_cache_path": prospect_sources_aiha._cache_path(cache_dir, _normalize_state(state)),
+        "aiha_cache_used": False,
+        "aiha_cache_age_days": -1,
+        "aiha_pages_fetched": 0,
+        "aiha_parse_mode": "FAILED",
+        "aiha_rejected": Counter(),
+        "diagnostics_path": None,
+    }
+
+
 def _filter_autogrow_candidates(
     rows: list[dict[str, str]],
     target_state: str,
@@ -566,8 +630,8 @@ def _print_tokens(
     inbox_rows_accepted: int,
     inbox_rows_missing_state: int,
     autogrow: dict,
-    aiha_result: dict,
-    aiha_rejected: Counter,
+    selected_report: dict,
+    state_reports: list[dict],
     diagnostics_path: Path | None,
     inbox_files_archived: int | None = None,
 ) -> None:
@@ -590,22 +654,39 @@ def _print_tokens(
     print(f"GENERATOR_AUTOGROW_NEW_NEEDED={autogrow['new_needed']}")
     print(f"GENERATOR_AUTOGROW_MAX_FETCH_PAGES_PER_RUN={autogrow['max_fetch_pages']}")
     print(f"GENERATOR_AUTOGROW_HTTP_SLEEP_MS={autogrow['sleep_ms']}")
+    print(f"GENERATOR_AUTOGROW_SAFETY_NET_FORCED={1 if autogrow['safety_net_forced'] else 0}")
+    print(f"GENERATOR_AUTOGROW_SAFETY_NET_STATES={','.join(autogrow['safety_net_states']) if autogrow['safety_net_states'] else 'none'}")
+    print(f"GENERATOR_AUTOGROW_TOTAL_STATES={int(autogrow['total_states'])}")
+    print(f"GENERATOR_AUTOGROW_TOTAL_ACCEPTED={int(autogrow['total_accepted'])}")
 
-    print(f"GENERATOR_AIHA_CACHE_PATH={Path(aiha_result['cache_path']).resolve()}")
-    print(f"GENERATOR_AIHA_CACHE_USED={'YES' if aiha_result.get('cache_used') else 'NO'}")
-    cache_age = aiha_result.get("cache_age_days")
+    print(f"GENERATOR_AIHA_CACHE_PATH={Path(selected_report['aiha_cache_path']).resolve()}")
+    print(f"GENERATOR_AIHA_CACHE_USED={'YES' if selected_report.get('aiha_cache_used') else 'NO'}")
+    cache_age = selected_report.get("aiha_cache_age_days")
     print(f"GENERATOR_AIHA_CACHE_AGE_DAYS={cache_age if cache_age is not None else -1}")
-    print(f"GENERATOR_AIHA_PAGES_FETCHED={int(aiha_result.get('pages_fetched') or 0)}")
-    print(f"GENERATOR_AIHA_PAGE_PARSE_MODE={aiha_result.get('parse_mode') or 'FAILED'}")
-    print(f"GENERATOR_AIHA_ROWS_CANDIDATE={int(aiha_result.get('rows_candidate') or 0)}")
-    print(f"GENERATOR_AIHA_ROWS_ACCEPTED={int(aiha_result.get('rows_accepted') or 0)}")
+    print(f"GENERATOR_AIHA_PAGES_FETCHED={int(selected_report.get('aiha_pages_fetched') or 0)}")
+    print(f"GENERATOR_AIHA_PAGE_PARSE_MODE={selected_report.get('aiha_parse_mode') or 'FAILED'}")
+    print(f"GENERATOR_AIHA_ROWS_CANDIDATE={int(selected_report.get('aiha_candidate') or 0)}")
+    print(f"GENERATOR_AIHA_ROWS_ACCEPTED={int(selected_report.get('aiha_accepted') or 0)}")
 
+    aiha_rejected = selected_report.get("aiha_rejected") or Counter()
     print(f"GENERATOR_AIHA_REJECTED_INVALID_EMAIL={int(aiha_rejected.get('invalid_email', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_FREE_DOMAIN={int(aiha_rejected.get('free_domain', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_SUPPRESSED={int(aiha_rejected.get('suppressed', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_ALREADY_IN_CRM={int(aiha_rejected.get('already_in_crm', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_STATE_MISMATCH={int(aiha_rejected.get('state_mismatch', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_DUPLICATE_IN_BATCH={int(aiha_rejected.get('duplicate_in_batch', 0))}")
+
+    for report in state_reports:
+        state = _normalize_state(str(report.get("state") or ""))
+        if not state:
+            continue
+        print(
+            "GENERATOR_AUTOGROW_STATE="
+            f"{state} backlog_current={int(report.get('backlog_current') or 0)} "
+            f"new_needed={int(report.get('new_needed') or 0)} "
+            f"aiha_candidate={int(report.get('aiha_candidate') or 0)} "
+            f"aiha_accepted={int(report.get('aiha_accepted') or 0)}"
+        )
 
     if diagnostics_path is not None:
         print(f"GENERATOR_DIAGNOSTICS_PATH={diagnostics_path.resolve()}")
@@ -648,39 +729,90 @@ def main(argv: list[str] | None = None) -> int:
     conn = _connect_crm_if_exists(crm_db)
     try:
         suppressed_emails = _load_suppression_set(data_dir=data_dir, conn=conn)
-        backlog_current = compute_uncontacted_backlog(conn=conn, state=selected_state, suppressed_emails=suppressed_emails)
         existing_crm_emails = _existing_crm_emails(conn)
+        backlog_by_state = {
+            _normalize_state(state): compute_uncontacted_backlog(
+                conn=conn,
+                state=state,
+                suppressed_emails=suppressed_emails,
+            )
+            for state in states
+        }
+        pool_totals_by_state = _pool_totals_by_state(conn=conn, states=states)
     finally:
         if conn is not None:
             conn.close()
 
-    new_needed = 0
-    if autogrow_cfg["enabled"]:
-        new_needed = max(0, int(autogrow_cfg["backlog_target"]) - int(backlog_current))
+    backlog_target = int(autogrow_cfg["backlog_target"])
+    deficits_by_state = {
+        _normalize_state(state): max(0, int(backlog_target) - int(backlog_by_state.get(_normalize_state(state), 0)))
+        for state in states
+    }
+
+    effective_sources = list(autogrow_cfg["sources"])
+    safety_net_states: list[str] = []
+    safety_net_forced = False
+    autogrow_enabled = bool(autogrow_cfg["enabled"])
+    if not autogrow_enabled and bool(autogrow_cfg.get("safety_net_enabled")):
+        for state in states:
+            s = _normalize_state(state)
+            if not s:
+                continue
+            backlog_current = int(backlog_by_state.get(s, 0))
+            pool_total = int(pool_totals_by_state.get(s, 0))
+            if backlog_current <= 0 and pool_total > 0:
+                safety_net_states.append(s)
+        if safety_net_states:
+            safety_net_forced = True
+            autogrow_enabled = True
+            if not effective_sources:
+                effective_sources = ["AIHA"]
+            print(
+                f"{WARN_AUTOGROW_SAFETY_NET_FORCED} states={','.join(safety_net_states)} "
+                f"sources={','.join(effective_sources) if effective_sources else '(none)'}"
+            )
+
+    state_reports: list[dict] = []
+    state_report_by_state: dict[str, dict] = {}
+    for state in states:
+        s = _normalize_state(state)
+        report = _default_state_autogrow_report(
+            state=s,
+            backlog_current=int(backlog_by_state.get(s, 0)),
+            new_needed=int(deficits_by_state.get(s, 0)),
+            cache_dir=cache_dir,
+        )
+        state_reports.append(report)
+        state_report_by_state[s] = report
+
+    selected_report = state_report_by_state.get(
+        _normalize_state(selected_state),
+        _default_state_autogrow_report(
+            state=selected_state,
+            backlog_current=0,
+            new_needed=0,
+            cache_dir=cache_dir,
+        ),
+    )
 
     autogrow_state = {
-        "enabled": bool(autogrow_cfg["enabled"]),
-        "sources": list(autogrow_cfg["sources"]),
+        "enabled": bool(autogrow_enabled),
+        "sources": list(effective_sources),
         "selected_state": selected_state,
-        "backlog_target": int(autogrow_cfg["backlog_target"]),
-        "backlog_current": int(backlog_current),
-        "new_needed": int(new_needed),
+        "backlog_target": int(backlog_target),
+        "backlog_current": int(selected_report["backlog_current"]),
+        "new_needed": int(selected_report["new_needed"]),
         "max_fetch_pages": int(autogrow_cfg["max_fetch_pages"]),
         "sleep_ms": int(autogrow_cfg["sleep_ms"]),
+        "safety_net_forced": bool(safety_net_forced),
+        "safety_net_states": list(safety_net_states),
+        "total_states": int(len(states)),
+        "total_accepted": 0,
     }
-
-    aiha_result = {
-        "cache_path": prospect_sources_aiha._cache_path(cache_dir, selected_state),
-        "cache_used": False,
-        "cache_age_days": None,
-        "pages_fetched": 0,
-        "parse_mode": "FAILED",
-        "rows_candidate": 0,
-        "rows_accepted": 0,
-    }
-    aiha_rejected: Counter = Counter()
     diagnostics_path: Path | None = None
     autogrow_rows: list[dict[str, str]] = []
+    rows_read_autogrow = 0
+    existing_email_reservoir = set(existing_crm_emails)
 
     if args.print_config:
         print(f"{PASS_GENERATOR_PRINT_CONFIG} data_dir={data_dir.resolve()}")
@@ -702,15 +834,15 @@ def main(argv: list[str] | None = None) -> int:
             inbox_rows_accepted=0,
             inbox_rows_missing_state=0,
             autogrow=autogrow_state,
-            aiha_result=aiha_result,
-            aiha_rejected=aiha_rejected,
+            selected_report=selected_report,
+            state_reports=state_reports,
             diagnostics_path=None,
             inbox_files_archived=None,
         )
         return 0
 
     try:
-        state_rows, rows_read_seed = _build_clean_state_rows()
+        state_rows, rows_read_seed = _build_clean_state_rows(states=states)
     except Exception as exc:
         print(f"{ERR_GENERATOR_FAILED} stage=build_rows err={exc}", file=sys.stderr)
         return 2
@@ -727,41 +859,77 @@ def main(argv: list[str] | None = None) -> int:
             f"new={generation_inbox_dir.resolve()} files={deprecated_file_count}"
         )
 
-    if autogrow_cfg["enabled"] and "AIHA" in autogrow_cfg["sources"] and new_needed > 0:
-        result = prospect_sources_aiha.fetch_aiha_state_rows(
-            state=selected_state,
-            run_date=run_date,
-            max_pages=int(autogrow_cfg["max_fetch_pages"]),
-            sleep_ms=int(autogrow_cfg["sleep_ms"]),
-            cache_dir=cache_dir,
-            diagnostics_dir=diagnostics_dir,
-            allow_cache_write=not bool(args.dry_run),
-        )
-        aiha_result.update(result)
-        aiha_result["rows_candidate"] = len(result.get("rows") or [])
+    if autogrow_enabled and "AIHA" in effective_sources:
+        for state in states:
+            s = _normalize_state(state)
+            report = state_report_by_state.get(s)
+            if report is None:
+                continue
+            if int(report["new_needed"]) <= 0:
+                continue
+            if safety_net_forced and s not in safety_net_states:
+                continue
+            if len(s) != 2:
+                print(f"{WARN_AUTOGROWTH_SOURCE_FAILED} source=aiha state={s} err=unsupported_state_code")
+                continue
 
-        filtered_rows, aiha_rejected = _filter_autogrow_candidates(
-            rows=list(result.get("rows") or []),
-            target_state=selected_state,
-            suppressed_emails=suppressed_emails,
-            existing_crm_emails=existing_crm_emails,
-        )
-        autogrow_rows = filtered_rows[:new_needed]
-        aiha_result["rows_accepted"] = len(autogrow_rows)
+            result = prospect_sources_aiha.fetch_aiha_state_rows(
+                state=s,
+                run_date=run_date,
+                max_pages=int(autogrow_cfg["max_fetch_pages"]),
+                sleep_ms=int(autogrow_cfg["sleep_ms"]),
+                cache_dir=cache_dir,
+                diagnostics_dir=diagnostics_dir,
+                allow_cache_write=not bool(args.dry_run),
+            )
 
-        diag = result.get("diagnostics_path")
-        if isinstance(diag, Path):
-            diagnostics_path = diag
-        elif diag:
-            diagnostics_path = Path(str(diag))
+            candidate_rows = list(result.get("rows") or [])
+            report["aiha_candidate"] = int(len(candidate_rows))
+            report["aiha_cache_used"] = bool(result.get("cache_used"))
+            cache_age = result.get("cache_age_days")
+            report["aiha_cache_age_days"] = int(cache_age) if isinstance(cache_age, int) else -1
+            report["aiha_pages_fetched"] = max(0, int(result.get("pages_fetched") or 0))
+            report["aiha_parse_mode"] = str(result.get("parse_mode") or "FAILED")
 
-        if result.get("error"):
-            print(f"{WARN_AUTOGROWTH_SOURCE_FAILED} source=aiha err={result.get('error')}")
+            filtered_rows, aiha_rejected = _filter_autogrow_candidates(
+                rows=candidate_rows,
+                target_state=s,
+                suppressed_emails=suppressed_emails,
+                existing_crm_emails=existing_email_reservoir,
+            )
+            accepted_rows = filtered_rows[: int(report["new_needed"])]
+            report["aiha_accepted"] = int(len(accepted_rows))
+            report["aiha_rejected"] = aiha_rejected
+            autogrow_rows.extend(accepted_rows)
+            rows_read_autogrow += int(report["aiha_candidate"])
+            for row in accepted_rows:
+                email = _normalize_email(row.get("contact_email") or row.get("email") or "")
+                if email:
+                    existing_email_reservoir.add(email)
 
-    rows_read_total = rows_read_seed + inbox_rows_read + int(aiha_result.get("rows_candidate") or 0)
+            diag = result.get("diagnostics_path")
+            if isinstance(diag, Path):
+                report["diagnostics_path"] = diag
+            elif diag:
+                report["diagnostics_path"] = Path(str(diag))
+
+            if result.get("error"):
+                print(f"{WARN_AUTOGROWTH_SOURCE_FAILED} source=aiha state={s} err={result.get('error')}")
+
+    autogrow_state["total_accepted"] = int(sum(int(r.get("aiha_accepted") or 0) for r in state_reports))
+    if isinstance(selected_report.get("diagnostics_path"), Path):
+        diagnostics_path = selected_report.get("diagnostics_path")
+    else:
+        for report in state_reports:
+            diag = report.get("diagnostics_path")
+            if isinstance(diag, Path):
+                diagnostics_path = diag
+                break
+
+    rows_read_total = rows_read_seed + inbox_rows_read + rows_read_autogrow
 
     if args.dry_run:
-        seed_rows = _state_rows_to_combined_input(state_rows)
+        seed_rows = _state_rows_to_combined_input(state_rows=state_rows, states=states)
         rows = _to_discovery_rows(inbox_rows + seed_rows + autogrow_rows)
         _print_tokens(
             path=output_path,
@@ -774,16 +942,16 @@ def main(argv: list[str] | None = None) -> int:
             inbox_rows_accepted=inbox_rows_accepted,
             inbox_rows_missing_state=inbox_rows_missing_state,
             autogrow=autogrow_state,
-            aiha_result=aiha_result,
-            aiha_rejected=aiha_rejected,
+            selected_report=selected_report,
+            state_reports=state_reports,
             diagnostics_path=diagnostics_path,
         )
         return 0
 
     try:
         _write_legacy_pool_files(state_rows)
-        generated_rows = _read_legacy_pool_files()
-        rows = _to_discovery_rows(inbox_rows + generated_rows + autogrow_rows)
+        seed_rows = _state_rows_to_combined_input(state_rows=state_rows, states=states)
+        rows = _to_discovery_rows(inbox_rows + seed_rows + autogrow_rows)
         _write_output_atomic(path=output_path, rows=rows)
         archived_count = _archive_inbox_files(items=inbox_items, run_date=run_date)
     except Exception as exc:
@@ -802,8 +970,8 @@ def main(argv: list[str] | None = None) -> int:
         inbox_rows_missing_state=inbox_rows_missing_state,
         inbox_files_archived=archived_count,
         autogrow=autogrow_state,
-        aiha_result=aiha_result,
-        aiha_rejected=aiha_rejected,
+        selected_report=selected_report,
+        state_reports=state_reports,
         diagnostics_path=diagnostics_path,
     )
     return 0
