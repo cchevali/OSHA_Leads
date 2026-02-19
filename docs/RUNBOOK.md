@@ -5,6 +5,30 @@
 `AGENTS.md` at repo root is the canonical operator + Codex instruction contract.
 Use this runbook for executable commands, but resolve policy conflicts in favor of `AGENTS.md`.
 
+## WIP Autosave Discipline
+
+Rules:
+
+- Start-of-session: if the working tree is dirty, run `scripts\autosave_wip.ps1` before any scoped task work (or rely on scheduled autosave).
+- Treat WIP branches as the safety net for drift so "only intended changes" remains enforceable.
+- All nontrivial work happens on a task branch; `main` stays clean.
+
+Manual autosave command:
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\autosave_wip.ps1
+```
+
+Install scheduled autosave tasks (logon + every 60 minutes):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --print-config
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --dry-run
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --apply
+```
+
 ## AGENTS Workflow + Re-Upload Guidance
 
 1. Update `AGENTS.md` first when process or instruction policy changes.

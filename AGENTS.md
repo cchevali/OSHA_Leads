@@ -14,6 +14,9 @@ Primary buyers are operators and safety-facing teams that need timely OSHA-relat
 - Prefer minimal, non-breaking changes.
 - Keep durable context in repo docs, not chat history.
 - Choose one highest-odds execution path; no forks/options in planner output.
+- Start-of-session rule: if the working tree is dirty, run `scripts\autosave_wip.ps1` before any scoped task work (or rely on scheduled autosave).
+- Treat WIP branches as the safety net for drift so "only intended changes" remains enforceable.
+- All nontrivial work happens on a task branch; `main` stays clean.
 
 ## Guardrails
 - No legal advice content.
