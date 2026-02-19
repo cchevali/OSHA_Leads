@@ -1,8 +1,21 @@
 {
-  "TX_TRIANGLE_V1": {
-    "description": "Texas Triangle OSHA area offices: Austin, Dallas/Fort Worth, Houston, San Antonio",
+  "TX_TRI": {
+    "label": "Texas Triangle (DFW + Houston + San Antonio + Austin)",
+    "description": "Texas Triangle metros resolved by ZIP->CBSA with fallback city matching when CBSA cannot be resolved.",
+    "kind": "CBSA_SET",
     "states": [
       "TX"
+    ],
+    "cbsas": [
+      "19100",
+      "26420",
+      "41700",
+      "12420"
+    ],
+    "aliases": [
+      "TX_TRIANGLE_V1",
+      "TX_TRIANGLE",
+      "TX_TRI_V1"
     ],
     "office_patterns": [
       "\\baustin\\b",
@@ -16,6 +29,9 @@
       "\\baustin\\b",
       "\\bdallas\\b",
       "\\bfort[\\s-]*worth\\b",
+      "\\bfrisco\\b",
+      "\\bplano\\b",
+      "\\birving\\b",
       "\\bhouston\\b",
       "\\bpasadena\\b",
       "\\bpearland\\b",
@@ -25,5 +41,14 @@
       "\\bbaytown\\b",
       "\\bsan[\\s-]*antonio\\b"
     ]
+  },
+  "TX_TRIANGLE_V1": {
+    "canonical_code": "TX_TRI"
+  },
+  "TX_TRIANGLE": {
+    "canonical_code": "TX_TRI"
+  },
+  "TX_TRI_V1": {
+    "canonical_code": "TX_TRI"
   }
 }
