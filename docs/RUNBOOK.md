@@ -610,6 +610,40 @@ $rows | Group-Object { $_.email.ToLowerInvariant().Trim() } | ForEach-Object { $
   Export-Csv -NoTypeInformation -Encoding utf8 .\out\suppression.csv
 ```
 
+### Bounce Import (IMAP Member Mailbox)
+
+Use this importer to ingest DSN bounces (including Zoho moderation notifications) from the mailbox
+that actually receives the moderation notices.
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 outreach\import_bounces_imap.py --print-config
+.\run_with_secrets.ps1 -- py -3 outreach\import_bounces_imap.py --dry-run
+.\run_with_secrets.ps1 -- py -3 outreach\import_bounces_imap.py
+```
+
+Notes:
+
+- `--print-config` is side-effect free and can run without IMAP secrets.
+- Real IMAP runs (`--dry-run` and live apply) should be executed via `.\run_with_secrets.ps1`.
+
+Environment keys:
+
+- `BOUNCE_IMAP_HOST` (default `imappro.zoho.com`)
+- `BOUNCE_IMAP_PORT` (default `993`)
+- `BOUNCE_IMAP_USER` (default `cchevali@zohomail.com`)
+- `BOUNCE_IMAP_PASS` (required; falls back to `IMAP_PASS`)
+- `BOUNCE_IMAP_FOLDER` (default `INBOX`)
+
+Idempotency and state behavior:
+
+- Uses a DATA_DIR-aware state file:
+  `${DATA_DIR}\bounce_import_state.json` (or `.\out\bounce_import_state.json` when `DATA_DIR` is unset)
+- Uses a lock file:
+  `${DATA_DIR}\bounce_import.lock` (or `.\out\bounce_import.lock`)
+- Does **not** mutate IMAP flags/folders (`Seen`/move is not used).
+- Emits `BOUNCE_IMPORT_MODERATION_NOTICE_SEEN=1` when a moderation notice is parsed as a hard bounce.
+
 ### Task Scheduler (PC)
 
 Create/update daily tasks (OSHA ingest first, then generation, discovery, outreach).
