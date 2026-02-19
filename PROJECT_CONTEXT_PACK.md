@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=8a2d231b09410670bb64802e32afbfbe91341429
-PACK_BUILD_UTC=2026-02-18T16:57:55Z
-SOURCE_HASHES: AGENTS.md=b05b37bb26dfcd6d091c0bc021a6975c6929082ac6a3ef91fda246abe624d1f9 docs/ARCHITECTURE.md=f6bfd62cbe56a1becf3f9c9afd0c5e18389f74671929e467b09383252d9b8de7 docs/DECISIONS.md=12a2f46da4a1fb434e7cffd83cee1a9af240dbbc0e6fe183deab6420327014fa docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=edc358f585452c20d0f96dd55d0bee6a05c49ef0fd0a763d7a52c8b0b7ca58c3 docs/TODO.md=86ae3401d05623a8ab8b0fb98fcdc5da9abfe53ef34d5fee0f8c3c5e3f470c35 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=7664136180625d14bd17eeae95c3e2a0c1cc83e4c988e211b0ec220c67a6d886
+PACK_GIT_SHA=757795bbac01f8346541e19b625bbe3b160b8d28
+PACK_BUILD_UTC=2026-02-19T04:14:06Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=f6bfd62cbe56a1becf3f9c9afd0c5e18389f74671929e467b09383252d9b8de7 docs/DECISIONS.md=12a2f46da4a1fb434e7cffd83cee1a9af240dbbc0e6fe183deab6420327014fa docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=f8b6a7fce6b09a542bffad328b3a12274daff807145850858e1de5809f0446aa docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=5fbfbed234909c40557c85440802bfeb0a3939f4291c713e22c3bd79c5b1fd9a
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -25,6 +25,10 @@ Primary buyers are operators and safety-facing teams that need timely OSHA-relat
 - Prefer minimal, non-breaking changes.
 - Keep durable context in repo docs, not chat history.
 - Choose one highest-odds execution path; no forks/options in planner output.
+- Start-of-session rule: if the working tree is dirty, run `.\scripts\autosave_wip.ps1` before any scoped task work (or rely on scheduled autosave).
+- Install scheduled autosave tasks from repo root with `.\scripts\install_wip_autosave_task.ps1 --apply`.
+- Treat WIP branches as the safety net for drift so "only intended changes" remains enforceable.
+- All nontrivial work happens on a task branch; `main` stays clean.
 
 ## Guardrails
 - No legal advice content.
@@ -382,6 +386,39 @@ Success metric (funnel): **reply -> call -> paid** (track conversion per batch).
 `AGENTS.md` at repo root is the canonical operator + Codex instruction contract.
 Use this runbook for executable commands, but resolve policy conflicts in favor of `AGENTS.md`.
 
+## WIP Autosave Discipline
+
+Rules:
+
+- Start-of-session: if the working tree is dirty, run `.\scripts\autosave_wip.ps1` before any scoped task work (or rely on scheduled autosave).
+- Treat WIP branches as the safety net for drift so "only intended changes" remains enforceable.
+- All nontrivial work happens on a task branch; `main` stays clean.
+
+Manual autosave command:
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\autosave_wip.ps1
+```
+
+Install scheduled autosave tasks (logon + every 15 minutes):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --print-config
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --dry-run
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --apply
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --status
+```
+
+Status output contract:
+
+- `WIP_AUTOSAVE_HOURLY_INSTALLED=0|1`
+- `WIP_AUTOSAVE_LOGON_INSTALLED=0|1`
+- `WIP_AUTOSAVE_EFFECTIVE=0|1`
+- `WIP_AUTOSAVE_MODE=WORKTREE`
+- `WIP_AUTOSAVE_NEXT_ACTION=<none|run_elevated_cmd>`
+
 ## AGENTS Workflow + Re-Upload Guidance
 
 1. Update `AGENTS.md` first when process or instruction policy changes.
@@ -615,7 +652,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
-  -TrialSendsLimitDefault 10 `
+  -TrialSendsLimitDefault 14 `
   -TrialExpiredBehaviorDefault notify_once
 ```
 
@@ -738,7 +775,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachStates TX,CA,FL `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
-  -TrialSendsLimitDefault 10 `
+  -TrialSendsLimitDefault 14 `
   -TrialExpiredBehaviorDefault notify_once `
   -ProspectDiscoveryInput C:\path\to\prospects.csv
 ```
@@ -954,6 +991,40 @@ $rows | Group-Object { $_.email.ToLowerInvariant().Trim() } | ForEach-Object { $
   Export-Csv -NoTypeInformation -Encoding utf8 .\out\suppression.csv
 ```
 
+### Bounce Import (IMAP Member Mailbox)
+
+Use this importer to ingest DSN bounces (including Zoho moderation notifications) from the mailbox
+that actually receives the moderation notices.
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 outreach\import_bounces_imap.py --print-config
+.\run_with_secrets.ps1 -- py -3 outreach\import_bounces_imap.py --dry-run
+.\run_with_secrets.ps1 -- py -3 outreach\import_bounces_imap.py
+```
+
+Notes:
+
+- `--print-config` is side-effect free and can run without IMAP secrets.
+- Real IMAP runs (`--dry-run` and live apply) should be executed via `.\run_with_secrets.ps1`.
+
+Environment keys:
+
+- `BOUNCE_IMAP_HOST` (default `imappro.zoho.com`)
+- `BOUNCE_IMAP_PORT` (default `993`)
+- `BOUNCE_IMAP_USER` (default `cchevali@zohomail.com`)
+- `BOUNCE_IMAP_PASS` (required; falls back to `IMAP_PASS`)
+- `BOUNCE_IMAP_FOLDER` (default `INBOX`)
+
+Idempotency and state behavior:
+
+- Uses a DATA_DIR-aware state file:
+  `${DATA_DIR}\bounce_import_state.json` (or `.\out\bounce_import_state.json` when `DATA_DIR` is unset)
+- Uses a lock file:
+  `${DATA_DIR}\bounce_import.lock` (or `.\out\bounce_import.lock`)
+- Does **not** mutate IMAP flags/folders (`Seen`/move is not used).
+- Emits `BOUNCE_IMPORT_MODERATION_NOTICE_SEEN=1` when a moderation notice is parsed as a hard bounce.
+
 ### Task Scheduler (PC)
 
 Create/update daily tasks (OSHA ingest first, then generation, discovery, outreach).
@@ -1058,17 +1129,41 @@ Important:
 ## Trial Framework (Subscriber-Keyed)
 
 Trial daily sends are now subscriber-keyed and backed by a minimal SQLite CRM-light registry plus an append-only send ledger.
+Trial policy is 14 weekday sends (Mon-Fri); send-limit is the trial target and weekend/holiday skips extend calendar duration naturally.
 
 Source of truth:
 
 - Subscriber registry + trial latches: `out/crm_light.sqlite` (or `${env:DATA_DIR}\crm_light.sqlite` when `DATA_DIR` is set)
-- Send ledger: `send_events` (counts successful sends where `status=SENT`)
+- Send ledger: `send_events` (`TRIAL_SENDS_USED` counts distinct subscriber-local weekday dates for `status=SENT` daily LIVE events to the primary recipient; raw `status=SENT` row count remains telemetry via `TRIAL_EXPIRED_BY_SENDS`)
+- Wally scheduled live runs now mirror successful sends into `send_events` automatically (best-effort, no send-path change)
 
 Check trial days-since-start and sends-used (single command, no sends/no writes):
 
 ```powershell
 cd C:\dev\OSHA_Leads
 py -3 run_wally_trial.py --status
+```
+
+Preview the exact conversion text before expiry (writes draft artifact only; no sends, no DB writes):
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 run_trial_admin.py conversion-draft --subscriber-key wally_trial
+```
+
+The system auto-generates the conversion draft on the first scheduled run after the trial reaches the send target.
+On live trial runs (`--send-live`, not `--dry-run`), that same first expired run also auto-sends the conversion email once and latches `notified_at_utc`.
+Non-live or dry-run expiry checks keep the draft pending and do not consume the conversion latch.
+Auto-send is hard-gated: if the draft still contains an unresolved Stripe placeholder (for example `{stripe_link}` or `<stripe_link>`), send is blocked (`ERR_CONVERSION_LINK_MISSING`) and `notified_at_utc` is not set.
+If `conversion_email.txt` already exists, it is treated as review-locked and sent as-is (operator edits are preserved).
+
+Status field note: `TRIAL_14_DAY_ELAPSED` is a compatibility key and now means "14 successful sends elapsed" (not calendar days).
+
+One-time historical backfill for prior successful Wally scheduled runs from `out\wally_trial_task.log`:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 backfill_wally_trial_send_events.py
 ```
 
 ### Add a Trial Participant (No Secrets Required)
@@ -1098,8 +1193,9 @@ cd C:\dev\OSHA_Leads
 py -3 run_trial_admin.py add-trial --subscriber-key test_sub --email test@example.com --territory TX_TRI --start-date 2026-02-04 --sends-limit 1
 ```
 
-Unit test covers the expiry behavior:
-- When a single `SENT` exists at/after `start_date` and `sends_limit=1`, the next run must emit `SKIP_TRIAL_EXPIRED` and generate exactly one conversion artifact at `out\trials\<subscriber_key>\conversion_email.txt` (notify_once).
+Unit tests cover expiry behavior:
+- When a single `SENT` exists at/after `start_date` and `sends_limit=1`, the next live run emits `SKIP_TRIAL_EXPIRED`, writes `out\trials\<subscriber_key>\conversion_email.txt`, auto-sends conversion once, and latches notify_once.
+- Non-live expiry runs still write the draft but keep conversion pending until the next live run.
 
 ### Backfill a Historical Send Event
 
