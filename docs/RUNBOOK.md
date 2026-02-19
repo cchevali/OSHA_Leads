@@ -812,6 +812,43 @@ py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_c
 
 Operator note: if `data\geo\SOURCES.md` dataset label indicates `seed`/`incomplete`, rebuild from a full nationwide HUD USPS crosswalk file before relying on metro matching for new customers.
 
+## Stripe + Metro Entitlements (CBSA)
+
+Deterministic Stripe plan mapping uses Stripe **price IDs** (no heuristics):
+
+- `STRIPE_PRICE_ID_CORE` -> `plan_code=core` -> `max_metros=4`
+- `STRIPE_PRICE_ID_MULTI` -> `plan_code=multi` -> `max_metros=10`
+- `STRIPE_PRICE_ID_PILOT` -> `plan_code=pilot` -> `max_metros=4`
+
+Webhook/payload ingestion command (idempotent by Stripe `event_id`):
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 scripts\subscription_registry_ops.py stripe-ingest --print-config
+.\run_with_secrets.ps1 -- py -3 scripts\subscription_registry_ops.py stripe-ingest --stdin-json --dry-run
+```
+
+Onboarding entitlement + CBSA allowlist persistence:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 scripts\subscription_registry_ops.py onboarding-submit --print-config
+py -3 scripts\subscription_registry_ops.py onboarding-submit --stdin-json --dry-run
+```
+
+Metro match audit command ("present?", "matched?", "if not, why?"):
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 --subscriber-key sub_example --print-config
+py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 --subscriber-key sub_example
+```
+
+Safety gate:
+
+- Trial subscribers: incomplete ZIP->CBSA dataset emits warning and continues.
+- Paid entitlements (`core`/`multi`): send path hard-fails with `ERR_PAID_SEND_DATASET_INCOMPLETE`.
+
 ### Add a Trial Participant (No Secrets Required)
 
 ```powershell

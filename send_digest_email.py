@@ -32,6 +32,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, make_msgid
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
 try:
@@ -43,11 +44,13 @@ import crm_light
 from lead_filters import (
     apply_content_filter,
     dedupe_by_activity_nr,
+    filter_by_cbsa_allowlist,
     filter_by_territory,
     load_territory_definitions,
     normalize_content_filter,
     resolve_territory_code,
 )
+from geo.zip_cbsa import zip_cbsa_dataset_status
 from unsubscribe_utils import create_unsub_token, sign_registration
 from email_footer import build_footer_html, build_footer_text
 
@@ -1271,6 +1274,56 @@ def _load_subscriber_profile(db_path: str, subscriber_key: str | None) -> dict:
     }
 
 
+def _load_subscriber_entitlement_and_allowlist(
+    subscriber_key: str | None,
+    email: str | None,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    sk = crm_light.normalize_subscriber_key(subscriber_key)
+    em = crm_light.normalize_email(email)
+    db_path = crm_light.resolve_crm_db_path(None)
+    if not db_path.exists():
+        return None, []
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        entitlement = crm_light.get_subscriber_entitlement(
+            conn,
+            subscriber_key=sk,
+            email=em,
+            active_only=True,
+        )
+        resolved_key = sk
+        if not resolved_key and entitlement:
+            resolved_key = crm_light.normalize_subscriber_key(str(entitlement.get("subscriber_key") or ""))
+        allowlist = crm_light.get_subscriber_cbsa_allowlist(conn, resolved_key)
+        return entitlement, allowlist
+    except Exception:
+        return None, []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _enforce_zip_cbsa_dataset_gate(
+    *,
+    subscriber_key: str | None,
+    entitlement: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    status = zip_cbsa_dataset_status()
+    dataset_incomplete = bool(status.get("dataset_incomplete"))
+    source_label = str(status.get("source_label") or "unknown")
+    plan_code = crm_light.normalize_plan_code(str((entitlement or {}).get("plan_code") or ""))
+    if not dataset_incomplete:
+        return True, "ZIP_CBSA_DATASET_READY"
+    if plan_code and crm_light.is_paid_plan(plan_code):
+        return False, f'ERR_PAID_SEND_DATASET_INCOMPLETE plan_code={plan_code} source_label="{source_label}"'
+    if _is_trial_subscriber(subscriber_key):
+        print(f'WARN_TRIAL_SEND_DATASET_INCOMPLETE source_label="{source_label}"')
+    return True, "ZIP_CBSA_DATASET_INCOMPLETE_WARN_ONLY"
+
+
 def _is_trial_subscriber(subscriber_key: str | None) -> bool:
     sk = str(subscriber_key or "").strip().lower()
     if not sk:
@@ -1376,6 +1429,7 @@ def get_leads_for_period(
     include_changed: bool = False,
     use_opened_window: bool = False,
     reference_now: datetime | None = None,
+    subscriber_cbsa_allowlist: list[str] | None = None,
     return_debug: bool = False,
 ) -> tuple[list[dict], list[dict], dict] | tuple[list[dict], list[dict], dict, list[dict], list[dict]]:
     today = reference_now or datetime.now()
@@ -1509,12 +1563,20 @@ def get_leads_for_period(
         time_filtered.append(lead)
 
     territory_debug: list[dict] = []
+    use_cbsa_allowlist = bool(subscriber_cbsa_allowlist)
     if return_debug:
-        territory_filtered, territory_stats, territory_debug = filter_by_territory(
-            time_filtered,
-            territory_code,
-            include_debug=True,
-        )
+        if use_cbsa_allowlist:
+            territory_filtered, territory_stats, territory_debug = filter_by_cbsa_allowlist(
+                time_filtered,
+                subscriber_cbsa_allowlist or [],
+                include_debug=True,
+            )
+        else:
+            territory_filtered, territory_stats, territory_debug = filter_by_territory(
+                time_filtered,
+                territory_code,
+                include_debug=True,
+            )
         for item in territory_debug:
             if str(item.get("matched") or "").upper() == "N":
                 exclusion_rows.append(
@@ -1531,7 +1593,14 @@ def get_leads_for_period(
                     }
                 )
     else:
-        territory_filtered, territory_stats = filter_by_territory(time_filtered, territory_code)
+        if use_cbsa_allowlist:
+            territory_filtered, territory_stats = filter_by_cbsa_allowlist(
+                time_filtered,
+                subscriber_cbsa_allowlist or [],
+                include_debug=False,
+            )
+        else:
+            territory_filtered, territory_stats = filter_by_territory(time_filtered, territory_code)
 
     content_filtered, excluded_content = apply_content_filter(territory_filtered, content_filter)
 
@@ -2710,6 +2779,20 @@ def main() -> None:
     last_sent_at = subscriber_profile.get("last_sent_at") if subscriber_profile else None
     allow_live_send = bool(config.get("allow_live_send", False))
     subscriber_key = config.get("subscriber_key") or ""
+    config_recipients = config.get("email_recipients") if isinstance(config.get("email_recipients"), list) else []
+    first_config_recipient = config_recipients[0] if config_recipients else ""
+    subscriber_email = subscriber_profile.get("email") or first_config_recipient or ""
+    entitlement, subscriber_cbsa_allowlist = _load_subscriber_entitlement_and_allowlist(
+        subscriber_key=subscriber_key,
+        email=subscriber_email,
+    )
+    dataset_gate_ok, dataset_gate_message = _enforce_zip_cbsa_dataset_gate(
+        subscriber_key=subscriber_key,
+        entitlement=entitlement,
+    )
+    if not dataset_gate_ok:
+        print(dataset_gate_message, file=sys.stderr)
+        raise SystemExit(1)
     send_enabled_ok = True
     if subscriber_key:
         send_enabled_ok = bool(subscriber_profile.get("send_enabled"))
@@ -2892,6 +2975,7 @@ def main() -> None:
             strict_first_seen_after=strict_first_seen_after,
             include_changed=include_changed,
             use_opened_window=use_opened_window,
+            subscriber_cbsa_allowlist=subscriber_cbsa_allowlist,
             return_debug=True,
         )
     else:
@@ -2909,6 +2993,7 @@ def main() -> None:
             strict_first_seen_after=strict_first_seen_after,
             include_changed=include_changed,
             use_opened_window=use_opened_window,
+            subscriber_cbsa_allowlist=subscriber_cbsa_allowlist,
         )
 
     # Tier counts must include low signals even when the default content filter hides them.
@@ -2935,6 +3020,7 @@ def main() -> None:
             strict_first_seen_after=strict_first_seen_after,
             include_changed=include_changed,
             use_opened_window=use_opened_window,
+            subscriber_cbsa_allowlist=subscriber_cbsa_allowlist,
         )
         tier_counts = _tier_counts(all_leads_deduped)
         medium_min = int(TIER_THRESHOLDS.get("medium_min", 6))
@@ -2959,6 +3045,7 @@ def main() -> None:
                 strict_first_seen_after=None,
                 include_changed=False,
                 use_opened_window=True,
+                subscriber_cbsa_allowlist=subscriber_cbsa_allowlist,
             )
             snapshot_tier_counts = _tier_counts(snapshot_all)
             snapshot_all_0_new = snapshot_all

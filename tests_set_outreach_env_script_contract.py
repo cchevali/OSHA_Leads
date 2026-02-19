@@ -43,6 +43,10 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "TrialSendsLimitDefault",
             "TrialExpiredBehaviorDefault",
             "TrialConversionUrl",
+            "StripePriceIdCore",
+            "StripePriceIdMulti",
+            "StripePriceIdPilot",
+            "WebStripeWebhookSecret",
             "PrintConfig",
         ]
         required_tokens = [
@@ -70,6 +74,12 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("PROSPECT_AUTOGROW_ENABLED", text)
         self.assertIn("PROSPECT_AUTOGROW_SOURCES", text)
         self.assertIn("PROSPECT_AUTOGROW_BACKLOG_TARGET", text)
+        self.assertIn("STRIPE_PRICE_ID_CORE", text)
+        self.assertIn("STRIPE_PRICE_ID_MULTI", text)
+        self.assertIn("STRIPE_PRICE_ID_PILOT", text)
+        self.assertIn("WEB_STRIPE_WEBHOOK_SECRET", text)
+        self.assertIn("STRIPE_WEBHOOK_SECRET", text)
+        self.assertIn("scripts\\subscription_registry_ops.py stripe-ingest --print-config", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_ENABLED", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_SOURCES", text)
 
