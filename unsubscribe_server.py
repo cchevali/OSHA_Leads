@@ -192,14 +192,15 @@ def _load_recent_low_priority_preview(
         return [], 0, "db_missing", None
 
     try:
-        from lead_filters import load_territory_definitions
+        from lead_filters import load_territory_definitions, resolve_territory_code
     except Exception as e:
         return [], 0, "territory_defs_import_error", e
 
     root = Path(__file__).resolve().parent
     try:
         defs = load_territory_definitions(str(root / "territories.json"))
-        terr = defs.get(territory_code)
+        canonical_code = resolve_territory_code(territory_code, defs)
+        terr = defs.get(canonical_code)
         if not isinstance(terr, dict):
             return [], 0, "unknown_territory", None
         states = [str(s or "").strip().upper() for s in (terr.get("states") or []) if str(s or "").strip()]
@@ -226,7 +227,7 @@ def _load_recent_low_priority_preview(
             since_days=int(days),
             new_only_days=int(days),
             skip_first_seen_filter=True,
-            territory_code=territory_code,
+            territory_code=canonical_code,
             content_filter="all",
             include_low_fallback=False,
             window_start=None,

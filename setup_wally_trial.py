@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Set up Wally's TX_TRIANGLE_V1 trial subscriber and customer config."""
+"""Set up Wally's TX_TRI trial subscriber and customer config."""
 
 import argparse
 import json
@@ -10,11 +10,15 @@ from pathlib import Path
 
 from lead_filters import merge_territory_definition
 
-TERRITORY_CODE = "TX_TRIANGLE_V1"
+TERRITORY_CODE = "TX_TRI"
 
 TERRITORY_DEF = {
-    "description": "Texas Triangle OSHA area offices: Austin, Dallas/Fort Worth, Houston, San Antonio",
+    "label": "Texas Triangle (DFW + Houston + San Antonio + Austin)",
+    "description": "Texas Triangle metros resolved by ZIP->CBSA with fallback city matching when CBSA cannot be resolved.",
+    "kind": "CBSA_SET",
     "states": ["TX"],
+    "cbsas": ["19100", "26420", "41700", "12420"],
+    "aliases": ["TX_TRIANGLE_V1", "TX_TRIANGLE", "TX_TRI_V1"],
     "office_patterns": [
         r"\baustin\b",
         r"\bdallas\b",
@@ -27,6 +31,9 @@ TERRITORY_DEF = {
         r"\baustin\b",
         r"\bdallas\b",
         r"\bfort[\s-]*worth\b",
+        r"\bfrisco\b",
+        r"\bplano\b",
+        r"\birving\b",
         r"\bhouston\b",
         r"\bpasadena\b",
         r"\bpearland\b",

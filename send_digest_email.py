@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import smtplib
 import sqlite3
 import sys
@@ -599,7 +600,9 @@ def resolve_timezone(config: dict, territory_code: str | None) -> ZoneInfo:
     tz_name = (config.get("timezone") or "").strip()
     if not tz_name and territory_code:
         try:
-            territory = load_territory_definitions().get(territory_code, {})
+            definitions = load_territory_definitions()
+            canonical_code = resolve_territory_code(str(territory_code or ""), definitions)
+            territory = definitions.get(canonical_code, {})
             tz_name = (territory.get("timezone") or "").strip()
         except Exception:
             tz_name = ""
@@ -3766,10 +3769,10 @@ def main() -> None:
         print(f"  Final leads:            {filter_stats['final_leads']}")
         print(f"  Excl. time-window:      {filter_stats['excluded_by_time_window']}")
         print(f"  Excl. new-only window:  {filter_stats['excluded_by_new_only']}")
-    print(f"  Excl. territory:        {filter_stats['excluded_by_territory']}")
-    print(f"  Matched CBSA:           {filter_stats.get('matched_by_cbsa', 0)}")
-    print(f"  Matched area_office:    {filter_stats['matched_by_office']}")
-    print(f"  Matched fallback city:  {filter_stats['matched_by_fallback']}")
+        print(f"  Excl. territory:        {filter_stats['excluded_by_territory']}")
+        print(f"  Matched CBSA:           {filter_stats.get('matched_by_cbsa', 0)}")
+        print(f"  Matched area_office:    {filter_stats['matched_by_office']}")
+        print(f"  Matched fallback city:  {filter_stats['matched_by_fallback']}")
         print(f"  Excl. content filter:   {filter_stats['excluded_by_content_filter']}")
         print(f"  Dedupe removed:         {filter_stats['dedupe_removed']}")
         print(f"  Fallback lows used:     {filter_stats['low_fallback_count']}")

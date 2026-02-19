@@ -10,6 +10,7 @@ from geo.zip_cbsa import extract_zip5_from_text, resolve_lead_cbsa
 
 DEFAULT_TERRITORIES = {
     "TX_TRI": {
+        "display_name": "Texas Triangle",
         "label": "Texas Triangle (DFW + Houston + San Antonio + Austin)",
         "description": "Texas Triangle metros resolved by ZIP->CBSA with fallback city matching when CBSA cannot be resolved.",
         "kind": "CBSA_SET",
@@ -96,6 +97,23 @@ def load_territory_definitions(path: str = "territories.json") -> dict[str, dict
             for code, cfg in loaded.items():
                 if isinstance(cfg, dict):
                     definitions[code] = cfg
+
+    # Backward compatibility: alias entries that only define canonical_code should still
+    # behave like the canonical territory when callers access defs[alias] directly.
+    for code in list(definitions.keys()):
+        cfg = definitions.get(code)
+        if not isinstance(cfg, dict):
+            continue
+        canonical_code = str(cfg.get("canonical_code") or "").strip().upper()
+        if not canonical_code:
+            continue
+        canonical_cfg = definitions.get(canonical_code)
+        if not isinstance(canonical_cfg, dict):
+            continue
+        merged = dict(canonical_cfg)
+        merged.update(cfg)
+        merged.setdefault("label", canonical_cfg.get("label") or canonical_cfg.get("description"))
+        definitions[code] = merged
 
     return definitions
 
@@ -299,23 +317,43 @@ def filter_by_territory(
                 if resolution.cbsa in cbsa_set:
                     filtered.append(lead)
                     stats["matched_by_cbsa"] += 1
+                    match_reason = "CBSA_MATCH"
+                    if resolution.used_mail_fallback:
+                        match_reason = "FALLBACK_USED|CBSA_MATCH"
                     _add_debug_row(
                         lead,
                         matched=True,
-                        match_reason="CBSA_MATCH",
+                        match_reason=match_reason,
                         resolved_cbsa=resolution.cbsa,
                     )
                     continue
                 stats["excluded_territory"] += 1
+                no_match_reason = "CBSA_NO_MATCH"
+                if resolution.used_mail_fallback:
+                    no_match_reason = "FALLBACK_USED|CBSA_NO_MATCH"
                 _add_debug_row(
                     lead,
                     matched=False,
-                    match_reason="CBSA_NO_MATCH",
+                    match_reason=no_match_reason,
                     resolved_cbsa=resolution.cbsa,
                 )
                 continue
 
             # CBSA unavailable. Fall back to legacy pattern matching only in this case.
+            office_text = " ".join(
+                str(lead.get(field) or "")
+                for field in ("area_office", "office", "osha_office")
+            )
+            if office_text.strip() and office_patterns and _matches_any(office_text, office_patterns):
+                filtered.append(lead)
+                stats["matched_by_office"] += 1
+                _add_debug_row(
+                    lead,
+                    matched=True,
+                    match_reason=f"FALLBACK_USED|OFFICE_MATCH|{resolution.reason}",
+                )
+                continue
+
             fallback_fields = [
                 lead.get("site_city"),
                 lead.get("mail_city"),
