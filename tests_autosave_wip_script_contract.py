@@ -31,11 +31,16 @@ class TestAutosaveWipScriptContract(unittest.TestCase):
         required_tokens = [
             "WARN_WIP_AUTOSAVE_LOGON_NOT_INSTALLED access_denied=1",
             "WIP_AUTOSAVE_LOGON_INSTALL_ELEVATED_CMD=",
+            "WIP_AUTOSAVE_HOURLY_INSTALLED=",
+            "WIP_AUTOSAVE_LOGON_INSTALLED=",
+            "WIP_AUTOSAVE_EFFECTIVE=",
+            "WIP_AUTOSAVE_NEXT_ACTION=",
             "WIP_AUTOSAVE_RUN_FROM_REPO_ROOT=powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\autosave_wip.ps1",
             "WIP_AUTOSAVE_INSTALL_FROM_REPO_ROOT_APPLY=powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\install_wip_autosave_task.ps1 --apply",
         ]
         for token in required_tokens:
             self.assertIn(token, text)
+        self.assertIn("MinuteInterval 15", text)
 
     def test_docs_reference_correct_scripts_paths(self):
         agents = AGENTS_PATH.read_text(encoding="utf-8")

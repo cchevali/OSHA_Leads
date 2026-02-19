@@ -20,14 +20,22 @@ cd C:\dev\OSHA_Leads
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\autosave_wip.ps1
 ```
 
-Install scheduled autosave tasks (logon + every 60 minutes):
+Install scheduled autosave tasks (logon + every 15 minutes):
 
 ```powershell
 cd C:\dev\OSHA_Leads
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --print-config
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --dry-run
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --apply
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --status
 ```
+
+Status output contract:
+
+- `WIP_AUTOSAVE_HOURLY_INSTALLED=0|1`
+- `WIP_AUTOSAVE_LOGON_INSTALLED=0|1`
+- `WIP_AUTOSAVE_EFFECTIVE=0|1`
+- `WIP_AUTOSAVE_NEXT_ACTION=<none|run_elevated_cmd>`
 
 ## AGENTS Workflow + Re-Upload Guidance
 
