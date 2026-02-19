@@ -24,6 +24,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Done
 
+- 2026-02-19: Implemented WIP autosave hardening: 15-minute scheduled autosave, installer `--status` contract (`WIP_AUTOSAVE_*` tokens), and non-elevated logon self-heal reminder task/log path (`out/wip_autosave_logon_reminder.log`) with elevated remediation command output (commit `762b5856`).
 - 2026-02-15: Completed outbound sender domain verification (SPF, DKIM, DMARC) for `microflowops.com`. DNS records published; test email confirmed `spf=pass`, `dkim=pass`, `dmarc=pass` with aligned domains. Verification commands added to `docs/RUNBOOK.md` under "Deliverability Preflight".
 - 2026-02-12: Set website Stripe payment link in `web/config/site.json` (`stripePaymentLink`) and wire it into `web/app/pricing/page.tsx` + `web/app/contact/page.tsx` (commit `54c2a3c6`).
 
