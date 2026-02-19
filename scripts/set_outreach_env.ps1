@@ -4,7 +4,6 @@ param(
   [string] $OshaSmokeTo = '',
   [Nullable[int]] $OutreachSuppressionMaxAgeHours = $null,
   [Nullable[int]] $ProspectAutoGrowEnabled = $null,
-  [Nullable[int]] $ProspectAutoGrowSafetyNetEnabled = $null,
   [string] $ProspectAutoGrowSources = '',
   [Nullable[int]] $ProspectAutoGrowBacklogTarget = $null,
   [Nullable[int]] $ProspectAutoGrowMaxFetchPagesPerRun = $null,
@@ -192,7 +191,6 @@ try {
     'OshaSmokeTo',
     'OutreachSuppressionMaxAgeHours',
     'ProspectAutoGrowEnabled',
-    'ProspectAutoGrowSafetyNetEnabled',
     'ProspectAutoGrowSources',
     'ProspectAutoGrowBacklogTarget',
     'ProspectAutoGrowMaxFetchPagesPerRun',
@@ -229,9 +227,6 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowEnabled') -and $ProspectAutoGrowEnabled -notin @(0, 1)) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowEnabled'
-  }
-  if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSafetyNetEnabled') -and $ProspectAutoGrowSafetyNetEnabled -notin @(0, 1)) {
-    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowSafetyNetEnabled'
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowBacklogTarget') -and $ProspectAutoGrowBacklogTarget -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowBacklogTarget'
@@ -396,12 +391,6 @@ try {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_ENABLED' -Value ([string]$ProspectAutoGrowEnabled) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_ENABLED')) {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_ENABLED' -Value '0' -TouchedList $touched
-    }
-
-    if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSafetyNetEnabled')) {
-      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SAFETY_NET_ENABLED' -Value ([string]$ProspectAutoGrowSafetyNetEnabled) -TouchedList $touched
-    } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_SAFETY_NET_ENABLED')) {
-      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SAFETY_NET_ENABLED' -Value '1' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSources')) {

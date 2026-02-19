@@ -3,7 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from geo.zip_cbsa import resolve_metro_label
 from lead_filters import load_territory_definitions, resolve_territory_code
@@ -79,4 +85,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

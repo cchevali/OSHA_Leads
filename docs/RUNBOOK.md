@@ -791,6 +791,18 @@ cd C:\dev\OSHA_Leads
 py -3 backfill_wally_trial_send_events.py
 ```
 
+Territory definition and deterministic audit commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\print_territory.py --code TX_TRI
+py -3 run_wally_trial.py --audit --check-inspection 1874533.015
+```
+
+Notes:
+- Canonical territory code is `TX_TRI` (`kind=CBSA_SET`, CBSAs `19100,26420,41700,12420`).
+- Legacy aliases remain accepted and resolve to the same canonical matcher: `TX_TRIANGLE_V1`, `TX_TRIANGLE`, `TX_TRI_V1`.
+
 ### Add a Trial Participant (No Secrets Required)
 
 ```powershell

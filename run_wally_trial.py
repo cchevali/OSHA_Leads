@@ -28,7 +28,7 @@ from export_daily import export_daily
 import crm_light
 import run_trial_admin
 from send_digest_email import get_leads_for_period
-from lead_filters import filter_by_territory, load_territory_definitions, normalize_content_filter
+from lead_filters import filter_by_territory, load_territory_definitions, normalize_content_filter, resolve_territory_code
 
 DEFAULT_TRIAL_TARGET_LOCAL_HHMM = "09:00"
 DEFAULT_TRIAL_CATCHUP_MAX_MINUTES = 180
@@ -416,6 +416,7 @@ def _check_inspection_status(db_path: str, territory_code: str, inspection_value
     if not lead:
         return {
             "input": inspection_value,
+            "present_in_db": False,
             "present_in_data": False,
             "activity_nr": "",
             "inspection_nr": inspection_value,
@@ -439,6 +440,7 @@ def _check_inspection_status(db_path: str, territory_code: str, inspection_value
     legacy_row = legacy_debug[0] if legacy_debug else {}
     return {
         "input": inspection_value,
+        "present_in_db": True,
         "present_in_data": True,
         "activity_nr": str(lead.get("activity_nr") or ""),
         "inspection_nr": _extract_inspection_nr(lead),
@@ -568,7 +570,8 @@ def run_wally_audit(
     content_filter = normalize_content_filter(str(customer_cfg.get("content_filter") or "high_medium"))
     include_low_fallback = bool(customer_cfg.get("include_low_fallback", True))
     baseline_on_first_send = bool(customer_cfg.get("baseline_on_first_send", True))
-    territory_for_audit = territory_code or str(customer_cfg.get("territory_code") or "TX_TRI")
+    territory_for_audit_raw = territory_code or str(customer_cfg.get("territory_code") or "TX_TRI")
+    territory_for_audit = resolve_territory_code(territory_for_audit_raw, load_territory_definitions())
     since_days = int(customer_cfg.get("opened_window_days") or 14)
     new_only_days = int(customer_cfg.get("new_only_days") or 1)
 
