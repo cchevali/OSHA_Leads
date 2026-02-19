@@ -34,7 +34,7 @@ try:
 except Exception:  # pragma: no cover
     load_dotenv = None
 
-from lead_filters import load_territory_definitions, normalize_content_filter
+from lead_filters import load_territory_definitions, normalize_content_filter, resolve_territory_code as resolve_canonical_territory_code
 
 
 DEFAULT_DB = "data/osha.sqlite"
@@ -48,7 +48,9 @@ DEFAULT_TRIAL_LENGTH_DAYS = 7
 
 
 TERRITORY_ALIASES = {
-    "TX_TRIANGLE": "TX_TRIANGLE_V1",
+    "TX_TRIANGLE": "TX_TRI",
+    "TX_TRIANGLE_V1": "TX_TRI",
+    "TX_TRI_V1": "TX_TRI",
 }
 
 
@@ -175,14 +177,13 @@ def _resolve_territory_code(tag: str) -> tuple[str, str]:
         raise OnboardingError("TERRITORY is required (e.g. TX_TRIANGLE)")
 
     normalized = raw.strip().upper()
-    code = TERRITORY_ALIASES.get(normalized, normalized)
-
     defs = load_territory_definitions()
+    code = TERRITORY_ALIASES.get(normalized, normalized)
+    canonical = resolve_canonical_territory_code(code, defs)
+    if canonical in defs:
+        return normalized, canonical
     if code in defs:
         return normalized, code
-    # Convenience: accept tags without a version suffix when *_V1 exists.
-    if f"{code}_V1" in defs:
-        return normalized, f"{code}_V1"
     raise OnboardingError(f"Unknown territory '{raw}'. Expected one of: {', '.join(sorted(defs.keys()))}")
 
 

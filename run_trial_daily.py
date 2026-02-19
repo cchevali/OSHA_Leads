@@ -16,7 +16,7 @@ from typing import Any
 
 import crm_light
 import run_trial_admin
-from lead_filters import load_territory_definitions
+from lead_filters import load_territory_definitions, resolve_territory_code
 
 try:
     from zoneinfo import ZoneInfo
@@ -238,7 +238,8 @@ def _send_conversion_email_from_artifact(
 
 def _territory_states(territory_code: str) -> list[str]:
     defs = load_territory_definitions()
-    terr = defs.get((territory_code or "").strip().upper(), {})
+    canonical = resolve_territory_code((territory_code or "").strip().upper(), defs)
+    terr = defs.get(canonical, {})
     states = terr.get("states") or []
     if isinstance(states, list):
         out: list[str] = []

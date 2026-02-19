@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import smtplib
 import sqlite3
 import sys
@@ -31,6 +32,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, make_msgid
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
 try:
@@ -38,13 +40,17 @@ try:
 except Exception:  # pragma: no cover
     load_dotenv = None
 
+import crm_light
 from lead_filters import (
     apply_content_filter,
     dedupe_by_activity_nr,
+    filter_by_cbsa_allowlist,
     filter_by_territory,
     load_territory_definitions,
     normalize_content_filter,
+    resolve_territory_code,
 )
+from geo.zip_cbsa import zip_cbsa_dataset_status
 from unsubscribe_utils import create_unsub_token, sign_registration
 from email_footer import build_footer_html, build_footer_text
 
@@ -65,6 +71,7 @@ DEFAULT_TRIAL_CATCHUP_MAX_MINUTES = 180
 WALLY_TRIAL_CUSTOMER_ID = "wally_trial_tx_triangle_v1"
 WALLY_TRIAL_SUBSCRIBER_KEY = "wally_trial"
 HEALTH_ANCHORS_BY_TERRITORY = {
+    "TX_TRI": ["Houston", "Dallas/Fort Worth", "Austin", "San Antonio"],
     "TX_TRIANGLE_V1": ["Houston", "Dallas/Fort Worth", "Austin", "San Antonio"],
 }
 
@@ -596,7 +603,9 @@ def resolve_timezone(config: dict, territory_code: str | None) -> ZoneInfo:
     tz_name = (config.get("timezone") or "").strip()
     if not tz_name and territory_code:
         try:
-            territory = load_territory_definitions().get(territory_code, {})
+            definitions = load_territory_definitions()
+            canonical_code = resolve_territory_code(str(territory_code or ""), definitions)
+            territory = definitions.get(canonical_code, {})
             tz_name = (territory.get("timezone") or "").strip()
         except Exception:
             tz_name = ""
@@ -1265,6 +1274,124 @@ def _load_subscriber_profile(db_path: str, subscriber_key: str | None) -> dict:
     }
 
 
+def _load_subscriber_entitlement_and_allowlist(
+    subscriber_key: str | None,
+    email: str | None,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    sk = crm_light.normalize_subscriber_key(subscriber_key)
+    em = crm_light.normalize_email(email)
+    db_path = crm_light.resolve_crm_db_path(None)
+    if not db_path.exists():
+        return None, []
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        entitlement = crm_light.get_subscriber_entitlement(
+            conn,
+            subscriber_key=sk,
+            email=em,
+            active_only=True,
+        )
+        resolved_key = sk
+        if not resolved_key and entitlement:
+            resolved_key = crm_light.normalize_subscriber_key(str(entitlement.get("subscriber_key") or ""))
+        allowlist = crm_light.get_subscriber_cbsa_allowlist(conn, resolved_key)
+        return entitlement, allowlist
+    except Exception:
+        return None, []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _enforce_zip_cbsa_dataset_gate(
+    *,
+    subscriber_key: str | None,
+    entitlement: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    status = zip_cbsa_dataset_status()
+    dataset_incomplete = bool(status.get("dataset_incomplete"))
+    source_label = str(status.get("source_label") or "unknown")
+    plan_code = crm_light.normalize_plan_code(str((entitlement or {}).get("plan_code") or ""))
+    if not dataset_incomplete:
+        return True, "ZIP_CBSA_DATASET_READY"
+    if plan_code and crm_light.is_paid_plan(plan_code):
+        return False, f'ERR_PAID_SEND_DATASET_INCOMPLETE plan_code={plan_code} source_label="{source_label}"'
+    if _is_trial_subscriber(subscriber_key):
+        print(f'WARN_TRIAL_SEND_DATASET_INCOMPLETE source_label="{source_label}"')
+    return True, "ZIP_CBSA_DATASET_INCOMPLETE_WARN_ONLY"
+
+
+def _is_trial_subscriber(subscriber_key: str | None) -> bool:
+    sk = str(subscriber_key or "").strip().lower()
+    if not sk:
+        return False
+    db_path = crm_light.resolve_crm_db_path(None)
+    if not db_path.exists():
+        return False
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM trial_state WHERE subscriber_key = ? LIMIT 1",
+            (sk,),
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def write_trial_territory_debug_artifact(
+    *,
+    subscriber_key: str,
+    gen_date: str,
+    territory_debug_rows: list[dict],
+) -> str | None:
+    sk = str(subscriber_key or "").strip().lower()
+    if not sk:
+        return None
+    out_dir = crm_light.data_dir() / "trials" / sk
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"territory_debug_{gen_date.replace('-', '')}.csv"
+    fieldnames = [
+        "inspection_nr",
+        "lead_key",
+        "site_city",
+        "site_zip",
+        "resolved_cbsa",
+        "territory_code",
+        "matched",
+        "match_reason",
+        "dataset_incomplete",
+    ]
+    with open(out_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in territory_debug_rows:
+            writer.writerow(
+                {
+                    "inspection_nr": str(row.get("inspection_nr") or "").strip(),
+                    "lead_key": str(row.get("lead_key") or "").strip(),
+                    "site_city": str(row.get("site_city") or "").strip(),
+                    "site_zip": str(row.get("site_zip") or "").strip(),
+                    "resolved_cbsa": str(row.get("resolved_cbsa") or "").strip(),
+                    "territory_code": str(row.get("territory_code") or "").strip(),
+                    "matched": str(row.get("matched") or "").strip(),
+                    "match_reason": str(row.get("match_reason") or "").strip(),
+                    "dataset_incomplete": str(
+                        str(row.get("dataset_incomplete") or "").strip().lower() in {"1", "true", "yes", "y"}
+                    ).lower(),
+                }
+            )
+    return str(out_path)
+
+
 def check_suppression(db_path: str, email: str) -> bool:
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -1301,8 +1428,11 @@ def get_leads_for_period(
     strict_first_seen_after: datetime | None = None,
     include_changed: bool = False,
     use_opened_window: bool = False,
-) -> tuple[list[dict], list[dict], dict]:
-    today = datetime.now()
+    reference_now: datetime | None = None,
+    subscriber_cbsa_allowlist: list[str] | None = None,
+    return_debug: bool = False,
+) -> tuple[list[dict], list[dict], dict] | tuple[list[dict], list[dict], dict, list[dict], list[dict]]:
+    today = reference_now or datetime.now()
     window_cutoff = window_start or (today - timedelta(days=since_days))
     effective_new_only = new_only_cutoff or (today - timedelta(days=new_only_days))
     window_cutoff = _to_naive(window_cutoff)
@@ -1361,6 +1491,30 @@ def get_leads_for_period(
     time_filtered = []
     excluded_by_time_window = 0
     excluded_by_new_only = 0
+    exclusion_rows: list[dict] = []
+
+    def _inspection_nr(lead_row: dict) -> str:
+        url = str(lead_row.get("source_url") or "").strip()
+        match = re.search(r"id=([0-9.]+)", url, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return str(lead_row.get("inspection_nr") or lead_row.get("activity_nr") or "").strip()
+
+    def _append_exclusion(lead_row: dict, stage: str, reason: str) -> None:
+        if not return_debug:
+            return
+        exclusion_rows.append(
+            {
+                "inspection_nr": _inspection_nr(lead_row),
+                "lead_key": str(lead_row.get("lead_key") or lead_row.get("activity_nr") or "").strip(),
+                "activity_nr": str(lead_row.get("activity_nr") or "").strip(),
+                "site_city": str(lead_row.get("site_city") or "").strip(),
+                "site_state": str(lead_row.get("site_state") or "").strip().upper(),
+                "site_zip": str(lead_row.get("site_zip") or "").strip(),
+                "stage": stage,
+                "reason": reason,
+            }
+        )
 
     for lead in all_results:
         first_seen_dt = _to_naive(_parse_timestamp(lead.get("first_seen_at")))
@@ -1392,6 +1546,7 @@ def get_leads_for_period(
 
         if not in_window:
             excluded_by_time_window += 1
+            _append_exclusion(lead, "TIME_WINDOW", "TIME_WINDOW_EXCLUDE")
             continue
 
         if not skip_first_seen_filter and effective_new_only:
@@ -1402,14 +1557,71 @@ def get_leads_for_period(
                 is_recent = True
             if not is_recent:
                 excluded_by_new_only += 1
+                _append_exclusion(lead, "NEW_ONLY", "NEW_ONLY_EXCLUDE")
                 continue
 
         time_filtered.append(lead)
 
-    territory_filtered, territory_stats = filter_by_territory(time_filtered, territory_code)
+    territory_debug: list[dict] = []
+    use_cbsa_allowlist = bool(subscriber_cbsa_allowlist)
+    if return_debug:
+        if use_cbsa_allowlist:
+            territory_filtered, territory_stats, territory_debug = filter_by_cbsa_allowlist(
+                time_filtered,
+                subscriber_cbsa_allowlist or [],
+                include_debug=True,
+            )
+        else:
+            territory_filtered, territory_stats, territory_debug = filter_by_territory(
+                time_filtered,
+                territory_code,
+                include_debug=True,
+            )
+        for item in territory_debug:
+            if str(item.get("matched") or "").upper() == "N":
+                exclusion_rows.append(
+                    {
+                        "inspection_nr": str(item.get("inspection_nr") or "").strip(),
+                        "lead_key": str(item.get("lead_key") or "").strip(),
+                        "activity_nr": str(item.get("lead_key") or "").strip(),
+                        "site_city": str(item.get("site_city") or "").strip(),
+                        "site_state": "",
+                        "site_zip": str(item.get("site_zip") or "").strip(),
+                        "stage": "TERRITORY",
+                        "reason": str(item.get("match_reason") or "TERRITORY_NO_MATCH"),
+                        "dataset_incomplete": str(bool(item.get("dataset_incomplete"))).lower(),
+                    }
+                )
+    else:
+        if use_cbsa_allowlist:
+            territory_filtered, territory_stats = filter_by_cbsa_allowlist(
+                time_filtered,
+                subscriber_cbsa_allowlist or [],
+                include_debug=False,
+            )
+        else:
+            territory_filtered, territory_stats = filter_by_territory(time_filtered, territory_code)
+
     content_filtered, excluded_content = apply_content_filter(territory_filtered, content_filter)
+
+    mode = normalize_content_filter(content_filter)
+    if return_debug and mode != "all":
+        min_score = 10 if mode == "high_only" else 6
+        for lead in territory_filtered:
+            if int(lead.get("lead_score") or 0) < min_score:
+                _append_exclusion(lead, "CONTENT_FILTER", "CONTENT_FILTER_EXCLUDE")
+
     deduped, dedupe_removed = dedupe_by_activity_nr(content_filtered)
     final_leads = deduped
+    if return_debug and dedupe_removed > 0:
+        keep_keys = {
+            str(item.get("lead_key") or item.get("activity_nr") or item.get("lead_id") or "").strip()
+            for item in deduped
+        }
+        for lead in content_filtered:
+            key = str(lead.get("lead_key") or lead.get("activity_nr") or lead.get("lead_id") or "").strip()
+            if key and key not in keep_keys:
+                _append_exclusion(lead, "DEDUPE", "DEDUPE_EXCLUDE")
 
     low_fallback = []
     if (
@@ -1447,6 +1659,7 @@ def get_leads_for_period(
         "excluded_by_time_window": excluded_by_time_window,
         "excluded_by_new_only": excluded_by_new_only,
         "excluded_by_territory": territory_stats["excluded_state"] + territory_stats["excluded_territory"],
+        "matched_by_cbsa": territory_stats.get("matched_by_cbsa", 0),
         "matched_by_office": territory_stats["matched_by_office"],
         "matched_by_fallback": territory_stats["matched_by_fallback"],
         "excluded_by_content_filter": excluded_content,
@@ -1456,6 +1669,8 @@ def get_leads_for_period(
         "shown_priority_counts": _priority_counts(final_leads),
     }
 
+    if return_debug:
+        return final_leads, low_fallback, stats, territory_debug, exclusion_rows
     return final_leads, low_fallback, stats
 
 
@@ -2547,7 +2762,8 @@ def main() -> None:
         print("CONFIG_ERROR subscriber inactive", file=sys.stderr)
         raise SystemExit(1)
 
-    territory_code = subscriber_profile.get("territory_code") or config.get("territory_code")
+    territory_code_raw = subscriber_profile.get("territory_code") or config.get("territory_code")
+    territory_code = resolve_territory_code(territory_code_raw, load_territory_definitions())
     tz = resolve_timezone(config, territory_code)
     now_local = datetime.now(tz)
     gen_date = now_local.strftime("%Y-%m-%d")
@@ -2563,6 +2779,20 @@ def main() -> None:
     last_sent_at = subscriber_profile.get("last_sent_at") if subscriber_profile else None
     allow_live_send = bool(config.get("allow_live_send", False))
     subscriber_key = config.get("subscriber_key") or ""
+    config_recipients = config.get("email_recipients") if isinstance(config.get("email_recipients"), list) else []
+    first_config_recipient = config_recipients[0] if config_recipients else ""
+    subscriber_email = subscriber_profile.get("email") or first_config_recipient or ""
+    entitlement, subscriber_cbsa_allowlist = _load_subscriber_entitlement_and_allowlist(
+        subscriber_key=subscriber_key,
+        email=subscriber_email,
+    )
+    dataset_gate_ok, dataset_gate_message = _enforce_zip_cbsa_dataset_gate(
+        subscriber_key=subscriber_key,
+        entitlement=entitlement,
+    )
+    if not dataset_gate_ok:
+        print(dataset_gate_message, file=sys.stderr)
+        raise SystemExit(1)
     send_enabled_ok = True
     if subscriber_key:
         send_enabled_ok = bool(subscriber_profile.get("send_enabled"))
@@ -2728,22 +2958,43 @@ def main() -> None:
     elif args.mode == "daily":
         include_changed = False
     # summary_label set after leads computed
-
-    leads, low_fallback, filter_stats = get_leads_for_period(
-        conn=conn,
-        states=states,
-        since_days=int(config["opened_window_days"]),
-        new_only_days=int(config["new_only_days"]),
-        skip_first_seen_filter=skip_first_seen_filter,
-        territory_code=territory_code,
-        content_filter=content_filter,
-        include_low_fallback=include_low_fallback,
-        window_start=window_start,
-        new_only_cutoff=new_only_cutoff,
-        strict_first_seen_after=strict_first_seen_after,
-        include_changed=include_changed,
-        use_opened_window=use_opened_window,
-    )
+    trial_territory_debug_enabled = _is_trial_subscriber(config.get("subscriber_key"))
+    territory_debug_rows: list[dict] = []
+    if trial_territory_debug_enabled:
+        leads, low_fallback, filter_stats, territory_debug_rows, _exclude_rows = get_leads_for_period(
+            conn=conn,
+            states=states,
+            since_days=int(config["opened_window_days"]),
+            new_only_days=int(config["new_only_days"]),
+            skip_first_seen_filter=skip_first_seen_filter,
+            territory_code=territory_code,
+            content_filter=content_filter,
+            include_low_fallback=include_low_fallback,
+            window_start=window_start,
+            new_only_cutoff=new_only_cutoff,
+            strict_first_seen_after=strict_first_seen_after,
+            include_changed=include_changed,
+            use_opened_window=use_opened_window,
+            subscriber_cbsa_allowlist=subscriber_cbsa_allowlist,
+            return_debug=True,
+        )
+    else:
+        leads, low_fallback, filter_stats = get_leads_for_period(
+            conn=conn,
+            states=states,
+            since_days=int(config["opened_window_days"]),
+            new_only_days=int(config["new_only_days"]),
+            skip_first_seen_filter=skip_first_seen_filter,
+            territory_code=territory_code,
+            content_filter=content_filter,
+            include_low_fallback=include_low_fallback,
+            window_start=window_start,
+            new_only_cutoff=new_only_cutoff,
+            strict_first_seen_after=strict_first_seen_after,
+            include_changed=include_changed,
+            use_opened_window=use_opened_window,
+            subscriber_cbsa_allowlist=subscriber_cbsa_allowlist,
+        )
 
     # Tier counts must include low signals even when the default content filter hides them.
     tier_counts = None
@@ -2769,6 +3020,7 @@ def main() -> None:
             strict_first_seen_after=strict_first_seen_after,
             include_changed=include_changed,
             use_opened_window=use_opened_window,
+            subscriber_cbsa_allowlist=subscriber_cbsa_allowlist,
         )
         tier_counts = _tier_counts(all_leads_deduped)
         medium_min = int(TIER_THRESHOLDS.get("medium_min", 6))
@@ -2793,6 +3045,7 @@ def main() -> None:
                 strict_first_seen_after=None,
                 include_changed=False,
                 use_opened_window=True,
+                subscriber_cbsa_allowlist=subscriber_cbsa_allowlist,
             )
             snapshot_tier_counts = _tier_counts(snapshot_all)
             snapshot_all_0_new = snapshot_all
@@ -2833,6 +3086,18 @@ def main() -> None:
             logger.warning("Territory health diagnostics failed: %s", exc)
 
     conn.close()
+
+    if trial_territory_debug_enabled:
+        try:
+            debug_path = write_trial_territory_debug_artifact(
+                subscriber_key=str(config.get("subscriber_key") or ""),
+                gen_date=gen_date,
+                territory_debug_rows=territory_debug_rows,
+            )
+            if debug_path:
+                print(f"TERRITORY_DEBUG_WRITTEN path={debug_path} rows={len(territory_debug_rows)}")
+        except Exception as exc:
+            logger.warning("Territory debug artifact write failed: %s", exc)
 
     logger.info("Leads after filters: %d", len(leads))
     logger.info(
@@ -3597,6 +3862,7 @@ def main() -> None:
         print(f"  Excl. time-window:      {filter_stats['excluded_by_time_window']}")
         print(f"  Excl. new-only window:  {filter_stats['excluded_by_new_only']}")
         print(f"  Excl. territory:        {filter_stats['excluded_by_territory']}")
+        print(f"  Matched CBSA:           {filter_stats.get('matched_by_cbsa', 0)}")
         print(f"  Matched area_office:    {filter_stats['matched_by_office']}")
         print(f"  Matched fallback city:  {filter_stats['matched_by_fallback']}")
         print(f"  Excl. content filter:   {filter_stats['excluded_by_content_filter']}")

@@ -267,6 +267,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
   -ProspectAutoGrowEnabled 1 `
+  -ProspectAutoGrowSafetyNetEnabled 1 `
   -ProspectAutoGrowSources AIHA `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
@@ -325,11 +326,13 @@ Drop-folder behavior:
 
 Auto-growth (env-gated, optional):
 
-- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
+- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
 - Source scope v1: `AIHA` only.
 - Cache path: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`.
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
-- `--for-date YYYY-MM-DD` controls `selected_state`, backlog check, and `new_needed` preview in `--print-config` and `--dry-run`.
+- Backlog targeting is evaluated per configured state in `OUTREACH_STATES`.
+- Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
+- `--for-date YYYY-MM-DD` controls `selected_state` plus per-state backlog/new-needed previews in `--print-config` and `--dry-run`.
 
 Dry-run generation (no writes):
 
@@ -356,6 +359,9 @@ Generator emits machine-readable lines:
 - `GENERATOR_INBOX_ROWS_MISSING_STATE`
 - `GENERATOR_INBOX_FILES_ARCHIVED` (live runs only)
 - `GENERATOR_AUTOGROW_*`
+- `GENERATOR_AUTOGROW_SAFETY_NET_FORCED`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
+- `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
+- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n>`
 - `GENERATOR_AIHA_*`
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
@@ -784,6 +790,64 @@ One-time historical backfill for prior successful Wally scheduled runs from `out
 cd C:\dev\OSHA_Leads
 py -3 backfill_wally_trial_send_events.py
 ```
+
+Territory definition and deterministic audit commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\print_territory.py --code TX_TRI
+py -3 run_wally_trial.py --audit --check-inspection 1874533.015
+```
+
+Notes:
+- Canonical territory code is `TX_TRI` (`kind=CBSA_SET`, CBSAs `19100,26420,41700,12420`).
+- Legacy aliases remain accepted and resolve to the same canonical matcher: `TX_TRIANGLE_V1`, `TX_TRIANGLE`, `TX_TRI_V1`.
+
+Deterministic ZIP->CBSA rebuild command (from HUD USPS ZIP-CBSA CSV extract):
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --zip-meta-json data\geo\zip_to_cbsa.meta.json --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA <MONTH_OR_QUARTER>"
+```
+
+Operator note: if `data\geo\SOURCES.md` dataset label indicates `seed`/`incomplete`, rebuild from a full nationwide HUD USPS crosswalk file before relying on metro matching for new customers.
+
+## Stripe + Metro Entitlements (CBSA)
+
+Deterministic Stripe plan mapping uses Stripe **price IDs** (no heuristics):
+
+- `STRIPE_PRICE_ID_CORE` -> `plan_code=core` -> `max_metros=4`
+- `STRIPE_PRICE_ID_MULTI` -> `plan_code=multi` -> `max_metros=10`
+- `STRIPE_PRICE_ID_PILOT` -> `plan_code=pilot` -> `max_metros=4`
+
+Webhook/payload ingestion command (idempotent by Stripe `event_id`):
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 scripts\subscription_registry_ops.py stripe-ingest --print-config
+.\run_with_secrets.ps1 -- py -3 scripts\subscription_registry_ops.py stripe-ingest --stdin-json --dry-run
+```
+
+Onboarding entitlement + CBSA allowlist persistence:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 scripts\subscription_registry_ops.py onboarding-submit --print-config
+py -3 scripts\subscription_registry_ops.py onboarding-submit --stdin-json --dry-run
+```
+
+Metro match audit command ("present?", "matched?", "if not, why?"):
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 --subscriber-key sub_example --print-config
+py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 --subscriber-key sub_example
+```
+
+Safety gate:
+
+- Trial subscribers: incomplete ZIP->CBSA dataset emits warning and continues.
+- Paid entitlements (`core`/`multi`): send path hard-fails with `ERR_PAID_SEND_DATASET_INCOMPLETE`.
 
 ### Add a Trial Participant (No Secrets Required)
 

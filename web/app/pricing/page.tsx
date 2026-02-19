@@ -168,8 +168,9 @@ export default function PricingPage() {
         <SectionHeading
           eyebrow="How coverage works"
           title="Coverage is based on metro areas."
-          description="A metro area is a major city and its surrounding suburbs — roughly aligned with Census MSA boundaries. Tell us your metros during onboarding and we will configure your alerts."
+          description="A metro area is a Census CBSA/MSA (city + suburbs). Tell us your metros during onboarding and we will configure your alerts."
         />
+        <p className="mt-3 text-sm text-inkMuted">DFW metro includes Dallas, Fort Worth, Frisco, Plano, Arlington…</p>
 
         <div className="mt-8 space-y-4">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">

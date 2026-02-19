@@ -11,6 +11,10 @@ param(
   [Nullable[int]] $TrialSendsLimitDefault = $null,
   [string] $TrialExpiredBehaviorDefault = '',
   [string] $TrialConversionUrl = '',
+  [string] $StripePriceIdCore = '',
+  [string] $StripePriceIdMulti = '',
+  [string] $StripePriceIdPilot = '',
+  [string] $WebStripeWebhookSecret = '',
   [string] $DataDir = '',
   [string] $ProspectDiscoveryInput = '',
   [string] $BounceImapHost = '',
@@ -164,7 +168,14 @@ function Ensure-ToolsAndFiles([string]$EnvSopsPath) {
   }
 }
 
-function Run-PrintConfigCheck([string]$RunWithSecretsPath, [string]$RepoRoot) {
+function Run-PrintConfigCheck(
+  [string]$RunWithSecretsPath,
+  [string]$RepoRoot,
+  [string]$ExpectedStripePriceIdCore = '',
+  [string]$ExpectedStripePriceIdMulti = '',
+  [string]$ExpectedStripePriceIdPilot = '',
+  [bool]$ExpectWebhookSecret = $false
+) {
   $out = & $RunWithSecretsPath py -3 run_outreach_auto.py --print-config 2>&1
   $code = $LASTEXITCODE
   $joined = (($out | ForEach-Object { $_.ToString() }) -join "`n")
@@ -176,6 +187,28 @@ function Run-PrintConfigCheck([string]$RunWithSecretsPath, [string]$RepoRoot) {
   }
   if ($joined -notmatch 'outreach_states=') {
     Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG 'missing_outreach_states'
+  }
+
+  $stripeOut = & $RunWithSecretsPath py -3 scripts\subscription_registry_ops.py stripe-ingest --print-config 2>&1
+  $stripeCode = $LASTEXITCODE
+  $stripeJoined = (($stripeOut | ForEach-Object { $_.ToString() }) -join "`n")
+  if ($stripeCode -ne 0) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG ('stripe_print_config_failed code=' + $stripeCode + ' detail=' + (Compact-Detail $stripeJoined))
+  }
+  if ($stripeJoined -notmatch '"command"\s*:\s*"stripe-ingest"') {
+    Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG 'missing_stripe_command'
+  }
+  if ($ExpectedStripePriceIdCore -and $stripeJoined -notmatch [Regex]::Escape($ExpectedStripePriceIdCore)) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG 'missing_stripe_price_id_core'
+  }
+  if ($ExpectedStripePriceIdMulti -and $stripeJoined -notmatch [Regex]::Escape($ExpectedStripePriceIdMulti)) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG 'missing_stripe_price_id_multi'
+  }
+  if ($ExpectedStripePriceIdPilot -and $stripeJoined -notmatch [Regex]::Escape($ExpectedStripePriceIdPilot)) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG 'missing_stripe_price_id_pilot'
+  }
+  if ($ExpectWebhookSecret -and $stripeJoined -notmatch '"web_stripe_webhook_secret_present"\s*:\s*true') {
+    Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG 'missing_web_stripe_webhook_secret'
   }
   Pass-Token $PASS_SET_OUTREACH_ENV_PRINT_CONFIG 'print_config_ok=YES'
 }
@@ -198,6 +231,10 @@ try {
     'TrialSendsLimitDefault',
     'TrialExpiredBehaviorDefault',
     'TrialConversionUrl',
+    'StripePriceIdCore',
+    'StripePriceIdMulti',
+    'StripePriceIdPilot',
+    'WebStripeWebhookSecret',
     'DataDir',
     'ProspectDiscoveryInput',
     'BounceImapHost',
@@ -265,6 +302,30 @@ try {
     $beh = ($TrialExpiredBehaviorDefault -as [string]).Trim()
     if (-not $beh) {
       Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TrialExpiredBehaviorDefault'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('StripePriceIdCore')) {
+    $corePrice = ($StripePriceIdCore -as [string]).Trim()
+    if (-not $corePrice) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_StripePriceIdCore'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('StripePriceIdMulti')) {
+    $multiPrice = ($StripePriceIdMulti -as [string]).Trim()
+    if (-not $multiPrice) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_StripePriceIdMulti'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('StripePriceIdPilot')) {
+    $pilotPrice = ($StripePriceIdPilot -as [string]).Trim()
+    if (-not $pilotPrice) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_StripePriceIdPilot'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('WebStripeWebhookSecret')) {
+    $webhookSecret = ($WebStripeWebhookSecret -as [string]).Trim()
+    if (-not $webhookSecret) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_WebStripeWebhookSecret'
     }
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSources')) {
@@ -444,6 +505,24 @@ try {
       }
     }
 
+    if ($PSBoundParameters.ContainsKey('StripePriceIdCore')) {
+      Set-MapValue -Map $map -Key 'STRIPE_PRICE_ID_CORE' -Value (($StripePriceIdCore -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('StripePriceIdMulti')) {
+      Set-MapValue -Map $map -Key 'STRIPE_PRICE_ID_MULTI' -Value (($StripePriceIdMulti -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('StripePriceIdPilot')) {
+      Set-MapValue -Map $map -Key 'STRIPE_PRICE_ID_PILOT' -Value (($StripePriceIdPilot -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('WebStripeWebhookSecret')) {
+      $secret = ($WebStripeWebhookSecret -as [string]).Trim()
+      Set-MapValue -Map $map -Key 'WEB_STRIPE_WEBHOOK_SECRET' -Value $secret -TouchedList $touched
+      Set-MapValue -Map $map -Key 'STRIPE_WEBHOOK_SECRET' -Value $secret -TouchedList $touched
+    }
+
     if ($PSBoundParameters.ContainsKey('DataDir')) {
       $dir = ($DataDir -as [string]).Trim()
       if (-not $dir) {
@@ -504,7 +583,24 @@ try {
     }
     Pass-Token $PASS_SET_OUTREACH_ENV_VERIFY ('verified_keys=' + $touched.Count)
 
-    Run-PrintConfigCheck -RunWithSecretsPath $runWithSecretsPath -RepoRoot $repoRoot
+    $expectedCore = ''
+    if ($map.Contains('STRIPE_PRICE_ID_CORE')) { $expectedCore = [string]$map['STRIPE_PRICE_ID_CORE'] }
+    $expectedMulti = ''
+    if ($map.Contains('STRIPE_PRICE_ID_MULTI')) { $expectedMulti = [string]$map['STRIPE_PRICE_ID_MULTI'] }
+    $expectedPilot = ''
+    if ($map.Contains('STRIPE_PRICE_ID_PILOT')) { $expectedPilot = [string]$map['STRIPE_PRICE_ID_PILOT'] }
+    $expectWebhookSecret = $false
+    if ($map.Contains('WEB_STRIPE_WEBHOOK_SECRET')) {
+      $expectWebhookSecret = -not [string]::IsNullOrWhiteSpace([string]$map['WEB_STRIPE_WEBHOOK_SECRET'])
+    }
+
+    Run-PrintConfigCheck `
+      -RunWithSecretsPath $runWithSecretsPath `
+      -RepoRoot $repoRoot `
+      -ExpectedStripePriceIdCore $expectedCore `
+      -ExpectedStripePriceIdMulti $expectedMulti `
+      -ExpectedStripePriceIdPilot $expectedPilot `
+      -ExpectWebhookSecret:$expectWebhookSecret
     Pass-Token $PASS_SET_OUTREACH_ENV_COMPLETE ('updated_keys=' + $touched.Count)
     exit 0
   } finally {
