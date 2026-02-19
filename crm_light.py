@@ -8,21 +8,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore[assignment]
+
 REPO_ROOT = Path(__file__).resolve().parent
 
 
+def resolve_crm_db_path(db_path: str | Path | None = None) -> Path:
+    raw_override = str(db_path or "").strip()
+    if raw_override:
+        return Path(raw_override).expanduser().resolve(strict=False)
+
+    raw_data_dir = (os.getenv("DATA_DIR") or "").strip()
+    if raw_data_dir:
+        return (Path(raw_data_dir).expanduser().resolve(strict=False) / "crm_light.sqlite").resolve(strict=False)
+
+    return (REPO_ROOT / "out" / "crm_light.sqlite").resolve(strict=False)
+
+
 def data_dir() -> Path:
-    raw = (os.getenv("DATA_DIR") or "").strip()
-    if raw:
-        p = Path(raw)
-        if p.is_absolute():
-            return p
-        return REPO_ROOT / p
-    return REPO_ROOT / "out"
+    return resolve_crm_db_path().parent
 
 
 def crm_light_db_path() -> Path:
-    return data_dir() / "crm_light.sqlite"
+    return resolve_crm_db_path()
 
 
 def utc_now_iso() -> str:
@@ -30,7 +41,7 @@ def utc_now_iso() -> str:
 
 
 def connect(db_path: str | Path | None = None) -> sqlite3.Connection:
-    path = Path(db_path) if db_path is not None else crm_light_db_path()
+    path = resolve_crm_db_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -92,7 +103,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
 
 def ensure_database(db_path: str | Path | None = None) -> Path:
-    path = Path(db_path) if db_path is not None else crm_light_db_path()
+    path = resolve_crm_db_path(db_path)
     with open_conn(path) as conn:
         init_schema(conn)
     return path
@@ -258,6 +269,169 @@ def count_successful_sends(conn: sqlite3.Connection, subscriber_key: str, start_
         (sk, start_iso),
     ).fetchone()
     return int(row["c"] if row else 0)
+
+
+def _safe_meta_dict(raw_meta_json: str) -> dict[str, Any]:
+    text = (raw_meta_json or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _parse_utc_ts(ts_utc: str) -> datetime | None:
+    raw = (ts_utc or "").strip()
+    if not raw:
+        return None
+    candidate = raw[:-1] + "+00:00" if raw.upper().endswith("Z") else raw
+    try:
+        dt = datetime.fromisoformat(candidate)
+    except Exception:
+        return None
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _resolve_tz(tz_name: str) -> Any:
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo((tz_name or "").strip() or "America/Chicago")
+        except Exception:
+            try:
+                return ZoneInfo("America/Chicago")
+            except Exception:
+                pass
+    return timezone.utc
+
+
+def _is_trial_delivery_event(
+    *,
+    variant: str,
+    meta: dict[str, Any],
+    primary_recipient: str,
+) -> bool:
+    normalized_variant = (variant or "").strip().upper()
+    if normalized_variant and normalized_variant != "DAILY":
+        return False
+
+    normalized_primary = (primary_recipient or "").strip().lower()
+    event_recipient = (
+        str(meta.get("primary_recipient") or meta.get("recipient") or meta.get("to") or "")
+        .strip()
+        .lower()
+    )
+    if event_recipient and normalized_primary and event_recipient != normalized_primary:
+        return False
+
+    send_mode = str(meta.get("send_mode") or meta.get("mode") or "").strip().upper()
+    if send_mode and send_mode != "LIVE":
+        return False
+
+    return True
+
+
+def count_trial_delivery_days(
+    conn: sqlite3.Connection,
+    subscriber_key: str,
+    start_date: str,
+    tz_name: str,
+    primary_recipient: str,
+    weekdays_only: bool = True,
+) -> int:
+    sk = (subscriber_key or "").strip().lower()
+    if not sk:
+        return 0
+    sd = (start_date or "").strip()
+    if not sd:
+        return 0
+    zone = _resolve_tz(tz_name)
+    start_iso = f"{sd}T00:00:00+00:00"
+    rows = conn.execute(
+        """
+        SELECT ts_utc, variant, meta_json
+        FROM send_events
+        WHERE subscriber_key = ?
+          AND status = 'SENT'
+          AND ts_utc >= ?
+        ORDER BY ts_utc ASC, id ASC
+        """,
+        (sk, start_iso),
+    ).fetchall()
+
+    local_dates: set[str] = set()
+    for row in rows:
+        ts_utc = str(row["ts_utc"] or "").strip()
+        variant = str(row["variant"] or "").strip()
+        meta = _safe_meta_dict(str(row["meta_json"] or ""))
+        if not _is_trial_delivery_event(
+            variant=variant,
+            meta=meta,
+            primary_recipient=primary_recipient,
+        ):
+            continue
+        dt_utc = _parse_utc_ts(ts_utc)
+        if dt_utc is None:
+            continue
+        local_date = dt_utc.astimezone(zone).date()
+        if weekdays_only and local_date.weekday() >= 5:
+            continue
+        local_dates.add(local_date.isoformat())
+
+    return len(local_dates)
+
+
+def has_trial_delivery_on_local_date(
+    conn: sqlite3.Connection,
+    subscriber_key: str,
+    start_date: str,
+    tz_name: str,
+    primary_recipient: str,
+    local_date_text: str,
+) -> bool:
+    sk = (subscriber_key or "").strip().lower()
+    if not sk:
+        return False
+    sd = (start_date or "").strip()
+    if not sd:
+        return False
+    target = (local_date_text or "").strip()
+    if not target:
+        return False
+    zone = _resolve_tz(tz_name)
+    start_iso = f"{sd}T00:00:00+00:00"
+    rows = conn.execute(
+        """
+        SELECT ts_utc, variant, meta_json
+        FROM send_events
+        WHERE subscriber_key = ?
+          AND status = 'SENT'
+          AND ts_utc >= ?
+        ORDER BY ts_utc ASC, id ASC
+        """,
+        (sk, start_iso),
+    ).fetchall()
+    for row in rows:
+        ts_utc = str(row["ts_utc"] or "").strip()
+        variant = str(row["variant"] or "").strip()
+        meta = _safe_meta_dict(str(row["meta_json"] or ""))
+        if not _is_trial_delivery_event(
+            variant=variant,
+            meta=meta,
+            primary_recipient=primary_recipient,
+        ):
+            continue
+        dt_utc = _parse_utc_ts(ts_utc)
+        if dt_utc is None:
+            continue
+        if dt_utc.astimezone(zone).date().isoformat() == target:
+            return True
+    return False
 
 
 def get_last_sent_at(conn: sqlite3.Connection, subscriber_key: str, start_date: str | None = None) -> str | None:

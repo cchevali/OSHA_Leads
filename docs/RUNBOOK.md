@@ -686,7 +686,7 @@ Trial policy is 14 weekday sends (Mon-Fri); send-limit is the trial target and w
 Source of truth:
 
 - Subscriber registry + trial latches: `out/crm_light.sqlite` (or `${env:DATA_DIR}\crm_light.sqlite` when `DATA_DIR` is set)
-- Send ledger: `send_events` (counts successful sends where `status=SENT`)
+- Send ledger: `send_events` (`TRIAL_SENDS_USED` counts distinct subscriber-local weekday dates for `status=SENT` daily LIVE events to the primary recipient; raw `status=SENT` row count remains telemetry via `TRIAL_EXPIRED_BY_SENDS`)
 - Wally scheduled live runs now mirror successful sends into `send_events` automatically (best-effort, no send-path change)
 
 Check trial days-since-start and sends-used (single command, no sends/no writes):
@@ -695,6 +695,19 @@ Check trial days-since-start and sends-used (single command, no sends/no writes)
 cd C:\dev\OSHA_Leads
 py -3 run_wally_trial.py --status
 ```
+
+Preview the exact conversion text before expiry (writes draft artifact only; no sends, no DB writes):
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 run_trial_admin.py conversion-draft --subscriber-key wally_trial
+```
+
+The system auto-generates the conversion draft on the first scheduled run after the trial reaches the send target.
+On live trial runs (`--send-live`, not `--dry-run`), that same first expired run also auto-sends the conversion email once and latches `notified_at_utc`.
+Non-live or dry-run expiry checks keep the draft pending and do not consume the conversion latch.
+Auto-send is hard-gated: if the draft still contains an unresolved Stripe placeholder (for example `{stripe_link}` or `<stripe_link>`), send is blocked (`ERR_CONVERSION_LINK_MISSING`) and `notified_at_utc` is not set.
+If `conversion_email.txt` already exists, it is treated as review-locked and sent as-is (operator edits are preserved).
 
 Status field note: `TRIAL_14_DAY_ELAPSED` is a compatibility key and now means "14 successful sends elapsed" (not calendar days).
 
@@ -732,8 +745,9 @@ cd C:\dev\OSHA_Leads
 py -3 run_trial_admin.py add-trial --subscriber-key test_sub --email test@example.com --territory TX_TRI --start-date 2026-02-04 --sends-limit 1
 ```
 
-Unit test covers the expiry behavior:
-- When a single `SENT` exists at/after `start_date` and `sends_limit=1`, the next run must emit `SKIP_TRIAL_EXPIRED` and generate exactly one conversion artifact at `out\trials\<subscriber_key>\conversion_email.txt` (notify_once).
+Unit tests cover expiry behavior:
+- When a single `SENT` exists at/after `start_date` and `sends_limit=1`, the next live run emits `SKIP_TRIAL_EXPIRED`, writes `out\trials\<subscriber_key>\conversion_email.txt`, auto-sends conversion once, and latches notify_once.
+- Non-live expiry runs still write the draft but keep conversion pending until the next live run.
 
 ### Backfill a Historical Send Event
 

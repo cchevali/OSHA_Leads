@@ -26,6 +26,21 @@ TERRITORY_ALIASES: dict[str, str] = {
 }
 DEFAULT_SENDS_LIMIT = 14
 TRIAL_SENDS_TARGET = 14
+CONVERSION_TEMPLATE_TEXT = (
+    "To: {primary_recipient}\n\n"
+    "Subject: Keep your OSHA signal digest running - {territory_label}\n\n"
+    "Hi {recipient_name},\n\n"
+    "Thanks for trying MicroFlowOps. Over the trial you've been receiving the weekday OSHA activity digest for {territory_label}.\n\n"
+    "Quick note on \"0 new\": it simply means nothing new was first-seen since the prior weekday send, so there's nothing to report that day.\n\n"
+    "If you'd like to keep the feed running without interruption:\n"
+    "• Reply \"go\" and confirm the metros/cities you want covered (current default: {territory_label}), and I'll switch you to the paid feed the same day.\n"
+    "• Or activate via Stripe here: {stripe_link}\n\n"
+    "If you'd rather confirm fit before paying, reply with your target metros/cities and I'll confirm coverage first.\n\n"
+    "Want any tweaks (add/remove metros, add recipients, different send time)? Just reply with what you want and I'll tune it.\n\n"
+    "— Chase\n"
+    "MicroFlowOps\n\n"
+    "P.S. If it's not a fit, just reply \"stop\" and I'll close it out.\n"
+)
 
 
 @dataclass(frozen=True)
@@ -82,6 +97,101 @@ def _resolve_sends_limit_from_state(trial_state: dict[str, Any] | None) -> int:
         except Exception:
             return DEFAULT_SENDS_LIMIT
     return DEFAULT_SENDS_LIMIT
+
+
+def _resolve_conversion_url() -> str:
+    return (os.getenv("TRIAL_CONVERSION_URL") or "").strip()
+
+
+def _resolve_territory_label(territory_code: str) -> str:
+    code = (territory_code or "").strip().upper()
+    if not code:
+        return "{territory_label}"
+    terr = load_territory_definitions().get(code) or {}
+    label = str(terr.get("description") or "").strip()
+    return label or code or "{territory_label}"
+
+
+def _derive_recipient_name(email: str, subscriber_key: str) -> str:
+    local = str(email or "").strip().split("@", 1)[0].strip()
+    if local:
+        text = local.replace(".", " ").replace("_", " ").replace("-", " ")
+        cleaned = " ".join(part for part in text.split() if part)
+        if cleaned:
+            return cleaned.title()
+    sk = (subscriber_key or "").strip()
+    return sk or "{recipient_name}"
+
+
+def render_conversion_email_text(
+    *,
+    recipient_name: str,
+    primary_recipient: str,
+    territory_label: str,
+    stripe_link: str,
+) -> str:
+    return CONVERSION_TEMPLATE_TEXT.format(
+        recipient_name=(recipient_name or "").strip() or "{recipient_name}",
+        primary_recipient=(primary_recipient or "").strip().lower() or "{primary_recipient}",
+        territory_label=(territory_label or "").strip() or "{territory_label}",
+        stripe_link=(stripe_link or "").strip() or "{stripe_link}",
+    )
+
+
+def _load_conversion_context(
+    subscriber_key: str,
+    crm_db_path: str | Path | None,
+) -> tuple[Path, dict[str, Any], dict[str, Any], str, str, str]:
+    sk = _validate_subscriber_key(subscriber_key)
+    path = crm_light.resolve_crm_db_path(crm_db_path)
+    if not path.exists():
+        raise RuntimeError(f"CONFIG_ERROR crm_db missing path={path}")
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        sub = crm_light.get_subscriber(conn, sk)
+        if not sub:
+            raise RuntimeError(f"CONFIG_ERROR subscriber not found subscriber_key={sk}")
+        trial = crm_light.get_trial_state(conn, sk)
+        if not trial:
+            raise RuntimeError(f"CONFIG_ERROR trial_state not found subscriber_key={sk}")
+    finally:
+        conn.close()
+    recipient_email = str(sub.get("email") or "").strip().lower()
+    recipient_name = _derive_recipient_name(recipient_email, sk)
+    territory_label = _resolve_territory_label(str(sub.get("territory_code") or ""))
+    return path, sub, trial, recipient_name, recipient_email, territory_label
+
+
+def write_conversion_draft(
+    subscriber_key: str,
+    crm_db_path: str | Path | None,
+    emit_stdout: bool = True,
+) -> Path:
+    path, sub, trial, recipient_name, recipient_email, territory_label = _load_conversion_context(
+        subscriber_key=subscriber_key,
+        crm_db_path=crm_db_path,
+    )
+    stripe_link = _resolve_conversion_url()
+    body = render_conversion_email_text(
+        recipient_name=recipient_name,
+        primary_recipient=recipient_email,
+        territory_label=territory_label,
+        stripe_link=stripe_link,
+    )
+    artifact_path = crm_light.data_dir() / "trials" / _validate_subscriber_key(subscriber_key) / "conversion_email.txt"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(body, encoding="utf-8")
+    if emit_stdout:
+        print("OK conversion-draft")
+        print(f"subscriber_key={_validate_subscriber_key(subscriber_key)}")
+        print(f"crm_db={path}")
+        print(f"start_date={str(trial.get('start_date') or '').strip()}")
+        print(f"recipient_name={recipient_name}")
+        print(f"territory_label={territory_label}")
+        print(f"stripe_link={stripe_link or '{stripe_link}'}")
+        print(f"conversion_path={artifact_path}")
+    return artifact_path
 
 
 def _parse_ts_utc(value: str) -> str:
@@ -245,6 +355,10 @@ def append_event(
     variant: str,
     run_id: str,
     crm_db_path: str | Path | None,
+    primary_recipient: str = "",
+    send_mode: str = "",
+    local_date: str = "",
+    meta_source: str = "trial_admin_backfill",
 ) -> int:
     sk = _validate_subscriber_key(subscriber_key)
     normalized_ts_utc = _parse_ts_utc(ts_utc)
@@ -254,19 +368,43 @@ def append_event(
         (run_id or "").strip()
         or datetime.now(timezone.utc).strftime("backfill_%Y%m%d%H%M%S")
     )
+    normalized_send_mode = (send_mode or "").strip().upper()
+    normalized_primary_recipient = (primary_recipient or "").strip().lower()
+    normalized_local_date = (local_date or "").strip()
+    normalized_meta_source = (meta_source or "").strip() or "trial_admin_backfill"
 
     crm_light.ensure_database(crm_db_path)
     with crm_light.open_conn(crm_db_path) as conn:
         crm_light.init_schema(conn)
-        if not crm_light.get_subscriber(conn, sk):
+        sub = crm_light.get_subscriber(conn, sk)
+        if not sub:
             raise ValueError(f"subscriber not found subscriber_key={sk}")
+        if not normalized_primary_recipient:
+            normalized_primary_recipient = str(sub.get("email") or "").strip().lower()
+        if normalized_send_mode == "LIVE" and not normalized_local_date:
+            tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
+            dt_utc = datetime.fromisoformat(normalized_ts_utc)
+            if ZoneInfo is not None:
+                try:
+                    normalized_local_date = dt_utc.astimezone(ZoneInfo(tz_name)).date().isoformat()
+                except Exception:
+                    normalized_local_date = dt_utc.date().isoformat()
+            else:
+                normalized_local_date = dt_utc.date().isoformat()
+        event_meta: dict[str, Any] = {"source": normalized_meta_source}
+        if normalized_send_mode:
+            event_meta["send_mode"] = normalized_send_mode
+        if normalized_primary_recipient:
+            event_meta["primary_recipient"] = normalized_primary_recipient
+        if normalized_local_date:
+            event_meta["local_date"] = normalized_local_date
         event_id = crm_light.append_send_event(
             conn,
             subscriber_key=sk,
             variant=normalized_variant,
             status=normalized_status,
             run_id=normalized_run_id,
-            meta={"source": "trial_admin_backfill"},
+            meta=event_meta,
             ts_utc=normalized_ts_utc,
         )
 
@@ -276,6 +414,12 @@ def append_event(
     print(f"ts_utc={normalized_ts_utc}")
     print(f"variant={normalized_variant}")
     print(f"run_id={normalized_run_id}")
+    if normalized_send_mode:
+        print(f"send_mode={normalized_send_mode}")
+    if normalized_primary_recipient:
+        print(f"primary_recipient={normalized_primary_recipient}")
+    if normalized_local_date:
+        print(f"local_date={normalized_local_date}")
     print(f"event_id={event_id}")
     return 0
 
@@ -297,7 +441,17 @@ def show_trial(subscriber_key: str, crm_db_path: str | Path | None, recent: int)
 
         start_date = str(trial.get("start_date") or "").strip()
         sends_limit = _resolve_sends_limit_from_state(trial)
-        sent_count = crm_light.count_successful_sends(conn, sk, start_date)
+        primary_recipient = str(sub.get("email") or "").strip().lower()
+        tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
+        sent_count = crm_light.count_trial_delivery_days(
+            conn,
+            sk,
+            start_date,
+            tz_name=tz_name,
+            primary_recipient=primary_recipient,
+            weekdays_only=True,
+        )
+        sent_rows_raw = crm_light.count_successful_sends(conn, sk, start_date)
         expired = sent_count >= sends_limit
         last_sent_at = crm_light.get_last_sent_at(conn, sk, start_date=start_date) or ""
         events = crm_light.get_recent_send_events(conn, sk, limit=max(1, int(recent or 10)))
@@ -309,6 +463,7 @@ def show_trial(subscriber_key: str, crm_db_path: str | Path | None, recent: int)
     print(f"start_date={start_date}")
     print(f"sends_limit={sends_limit}")
     print(f"sent_count={sent_count}")
+    print(f"sent_rows_raw={sent_rows_raw}")
     print(f"expired={'YES' if expired else 'NO'}")
     print(f"notified_at_utc={str(trial.get('notified_at_utc') or '').strip()}")
     print(f"ended_at_utc={str(trial.get('ended_at_utc') or '').strip()}")
@@ -334,7 +489,7 @@ def list_trials(crm_db_path: str | Path | None, status_filter: str) -> int:
         crm_light.init_schema(conn)
         rows = conn.execute(
             """
-            SELECT s.subscriber_key, s.email, s.territory_code, s.status, t.start_date, t.sends_limit, t.notified_at_utc, t.ended_at_utc
+            SELECT s.subscriber_key, s.email, s.territory_code, s.status, s.tz, t.start_date, t.sends_limit, t.notified_at_utc, t.ended_at_utc
             FROM subscribers s
             JOIN trial_state t ON t.subscriber_key = s.subscriber_key
             ORDER BY s.subscriber_key ASC
@@ -347,7 +502,14 @@ def list_trials(crm_db_path: str | Path | None, status_filter: str) -> int:
             key = str(item.get("subscriber_key") or "").strip().lower()
             start_date = str(item.get("start_date") or "").strip()
             sends_limit = _resolve_sends_limit_from_state(item)
-            sent = crm_light.count_successful_sends(conn, key, start_date)
+            sent = crm_light.count_trial_delivery_days(
+                conn,
+                key,
+                start_date,
+                tz_name=str(item.get("tz") or "").strip() or "America/Chicago",
+                primary_recipient=str(item.get("email") or "").strip().lower(),
+                weekdays_only=True,
+            )
             expired = sent >= sends_limit
             if sf == "active" and expired:
                 continue
@@ -404,17 +566,27 @@ def build_trial_status(
         start = date.fromisoformat(start_date)
         sends_limit = _resolve_sends_limit_from_state(trial)
         sends_limit_raw = trial.get("sends_limit")
-        sends_used = crm_light.count_successful_sends(conn, sk, start_date)
+        primary_recipient = str(sub.get("email") or "").strip().lower()
+        tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
+        sends_used = crm_light.count_trial_delivery_days(
+            conn,
+            sk,
+            start_date,
+            tz_name=tz_name,
+            primary_recipient=primary_recipient,
+            weekdays_only=True,
+        )
+        sends_rows_raw = crm_light.count_successful_sends(conn, sk, start_date)
         first_sent = crm_light.get_first_sent_at(conn, sk, start_date=start_date)
         last_sent = crm_light.get_last_sent_at(conn, sk, start_date=start_date)
     finally:
         conn.close()
 
     days_since = (as_of_date - start).days
-    expired_by_sends = 1 if sends_used >= sends_limit else 0
+    expired_by_sends = 1 if sends_rows_raw >= sends_limit else 0
     # Backward-compatible key: now means "14 successful sends elapsed".
     elapsed_14 = 1 if sends_used >= TRIAL_SENDS_TARGET else 0
-    trial_expired = expired_by_sends
+    trial_expired = 1 if sends_used >= sends_limit else 0
 
     conversion_artifact = crm_light.data_dir() / "trials" / sk / "conversion_email.txt"
     conversion_exists = conversion_artifact.exists()
@@ -500,12 +672,23 @@ def main(argv: list[str] | None = None) -> int:
     append.add_argument("--status", default="SENT")
     append.add_argument("--variant", default="DAILY")
     append.add_argument("--run-id", default="", help="Optional run id; default backfill_<yyyymmddhhmmss>.")
+    append.add_argument("--primary-recipient", default="", help="Optional primary recipient for delivery-day counting.")
+    append.add_argument("--send-mode", default="", help="Optional mode token (e.g., LIVE, SAFE, DRY_RUN).")
+    append.add_argument("--local-date", default="", help="Optional subscriber-local date YYYY-MM-DD.")
+    append.add_argument("--meta-source", default="trial_admin_backfill", help="Optional source token for meta_json.")
     append.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
 
     status = sub.add_parser("status", help="Print deterministic trial status block for a subscriber.")
     status.add_argument("--subscriber-key", required=True)
     status.add_argument("--as-of", default="", help="Optional as-of date YYYY-MM-DD (default: America/New_York today)")
     status.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
+
+    conversion = sub.add_parser(
+        "conversion-draft",
+        help="Write plain-text conversion draft artifact using the same template as expiry path.",
+    )
+    conversion.add_argument("--subscriber-key", required=True)
+    conversion.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
 
     args = ap.parse_args(argv)
 
@@ -542,6 +725,10 @@ def main(argv: list[str] | None = None) -> int:
                 status=str(args.status),
                 variant=str(args.variant),
                 run_id=str(args.run_id),
+                primary_recipient=str(args.primary_recipient),
+                send_mode=str(args.send_mode),
+                local_date=str(args.local_date),
+                meta_source=str(args.meta_source),
                 crm_db_path=crm_db,
             )
         except Exception as exc:
@@ -554,6 +741,22 @@ def main(argv: list[str] | None = None) -> int:
             crm_db_path=crm_db,
             as_of=str(args.as_of or ""),
         )
+
+    if args.cmd == "conversion-draft":
+        try:
+            write_conversion_draft(
+                subscriber_key=str(args.subscriber_key),
+                crm_db_path=crm_db,
+                emit_stdout=True,
+            )
+            return 0
+        except Exception as exc:
+            msg = str(exc)
+            if msg.startswith("CONFIG_ERROR"):
+                print(msg, file=sys.stderr)
+            else:
+                print(f"CONFIG_ERROR {msg}", file=sys.stderr)
+            return 1
 
     try:
         subscriber_key = _validate_subscriber_key(args.subscriber_key)

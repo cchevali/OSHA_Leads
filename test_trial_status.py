@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 
 import crm_light
 import run_trial_admin
@@ -83,7 +84,22 @@ class TestTrialStatus(unittest.TestCase):
             )
             with crm_light.open_conn(db) as conn:
                 crm_light.init_schema(conn)
-                for i in range(13):
+                weekday_dates = [
+                    "2026-02-02",
+                    "2026-02-03",
+                    "2026-02-04",
+                    "2026-02-05",
+                    "2026-02-06",
+                    "2026-02-09",
+                    "2026-02-10",
+                    "2026-02-11",
+                    "2026-02-12",
+                    "2026-02-13",
+                    "2026-02-16",
+                    "2026-02-17",
+                    "2026-02-18",
+                ]
+                for i, day in enumerate(weekday_dates):
                     crm_light.append_send_event(
                         conn,
                         subscriber_key="trial_boundary",
@@ -91,7 +107,7 @@ class TestTrialStatus(unittest.TestCase):
                         status="SENT",
                         run_id=f"sent_{i}",
                         meta={},
-                        ts_utc=f"2026-02-{i + 1:02d}T15:00:00+00:00",
+                        ts_utc=f"{day}T15:00:00+00:00",
                     )
 
             buf = io.StringIO()
@@ -119,7 +135,7 @@ class TestTrialStatus(unittest.TestCase):
                     status="SENT",
                     run_id="sent_14",
                     meta={},
-                    ts_utc="2026-02-14T15:00:00+00:00",
+                    ts_utc="2026-02-19T15:00:00+00:00",
                 )
 
             buf = io.StringIO()
@@ -197,9 +213,86 @@ class TestTrialStatus(unittest.TestCase):
             self.assertEqual(keys, REQUIRED_KEYS)
             self.assertEqual(values["TRIAL_FIRST_SENT_UTC"], "2026-02-04T15:00:00+00:00")
             self.assertEqual(values["TRIAL_LAST_SENT_UTC"], "2026-02-07T15:00:00+00:00")
-            self.assertEqual(values["TRIAL_SENDS_USED"], "2")
+            self.assertEqual(values["TRIAL_SENDS_USED"], "1")
             self.assertEqual(values["TRIAL_EXPIRED_BY_SENDS"], "1")
             self.assertEqual(values["TRIAL_EXPIRED"], "1")
+
+    def test_status_counts_distinct_live_primary_weekdays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            db = base / "crm_light.sqlite"
+            self._seed_trial(
+                db,
+                subscriber_key="trial_meta",
+                start_date="2026-02-01",
+                sends_limit=2,
+            )
+            with crm_light.open_conn(db) as conn:
+                crm_light.init_schema(conn)
+                conn.execute(
+                    "UPDATE subscribers SET email = ? WHERE subscriber_key = ?",
+                    ("trial_meta@example.com", "trial_meta"),
+                )
+                conn.commit()
+                crm_light.append_send_event(
+                    conn,
+                    subscriber_key="trial_meta",
+                    variant="DAILY",
+                    status="SENT",
+                    run_id="live_a",
+                    meta={"send_mode": "LIVE", "primary_recipient": "trial_meta@example.com"},
+                    ts_utc="2026-02-02T15:00:00+00:00",
+                )
+                crm_light.append_send_event(
+                    conn,
+                    subscriber_key="trial_meta",
+                    variant="DAILY",
+                    status="SENT",
+                    run_id="live_a_dup",
+                    meta={"send_mode": "LIVE", "primary_recipient": "trial_meta@example.com"},
+                    ts_utc="2026-02-02T17:00:00+00:00",
+                )
+                crm_light.append_send_event(
+                    conn,
+                    subscriber_key="trial_meta",
+                    variant="DAILY",
+                    status="SENT",
+                    run_id="weekend_live",
+                    meta={"send_mode": "LIVE", "primary_recipient": "trial_meta@example.com"},
+                    ts_utc="2026-02-07T15:00:00+00:00",
+                )
+                crm_light.append_send_event(
+                    conn,
+                    subscriber_key="trial_meta",
+                    variant="DAILY",
+                    status="SENT",
+                    run_id="test_mode",
+                    meta={"send_mode": "TEST", "primary_recipient": "trial_meta@example.com"},
+                    ts_utc="2026-02-03T15:00:00+00:00",
+                )
+                crm_light.append_send_event(
+                    conn,
+                    subscriber_key="trial_meta",
+                    variant="DAILY",
+                    status="SENT",
+                    run_id="other_recipient",
+                    meta={"send_mode": "LIVE", "primary_recipient": "other@example.com"},
+                    ts_utc="2026-02-04T15:00:00+00:00",
+                )
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = run_trial_admin.print_trial_status(
+                    subscriber_key="trial_meta",
+                    crm_db_path=db,
+                    as_of="2026-02-05",
+                )
+            self.assertEqual(code, 0)
+            keys, values = _parse_stdout_block(buf.getvalue())
+            self.assertEqual(keys, REQUIRED_KEYS)
+            self.assertEqual(values["TRIAL_SENDS_USED"], "1")
+            self.assertEqual(values["TRIAL_EXPIRED"], "0")
+            self.assertEqual(values["TRIAL_EXPIRED_BY_SENDS"], "1")
 
     def test_trial_not_expired_before_day14_below_hard_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -213,7 +306,22 @@ class TestTrialStatus(unittest.TestCase):
             )
             with crm_light.open_conn(db) as conn:
                 crm_light.init_schema(conn)
-                for i in range(29):
+                weekday_dates = [
+                    "2026-02-02",
+                    "2026-02-03",
+                    "2026-02-04",
+                    "2026-02-05",
+                    "2026-02-06",
+                    "2026-02-09",
+                    "2026-02-10",
+                    "2026-02-11",
+                    "2026-02-12",
+                    "2026-02-13",
+                    "2026-02-16",
+                    "2026-02-17",
+                    "2026-02-18",
+                ]
+                for i, day in enumerate(weekday_dates):
                     crm_light.append_send_event(
                         conn,
                         subscriber_key="trial_below_cap",
@@ -221,7 +329,7 @@ class TestTrialStatus(unittest.TestCase):
                         status="SENT",
                         run_id=f"seed_{i}",
                         meta={},
-                        ts_utc=f"2026-02-{(i % 12) + 1:02d}T15:00:00+00:00",
+                        ts_utc=f"{day}T15:00:00+00:00",
                     )
 
             buf = io.StringIO()
@@ -234,7 +342,7 @@ class TestTrialStatus(unittest.TestCase):
             self.assertEqual(code, 0)
             keys, values = _parse_stdout_block(buf.getvalue())
             self.assertEqual(keys, REQUIRED_KEYS)
-            self.assertEqual(values["TRIAL_SENDS_USED"], "29")
+            self.assertEqual(values["TRIAL_SENDS_USED"], "13")
             self.assertEqual(values["TRIAL_EXPIRED_BY_SENDS"], "0")
             self.assertEqual(values["TRIAL_EXPIRED"], "0")
 
@@ -278,7 +386,7 @@ class TestTrialStatus(unittest.TestCase):
                     status="SENT",
                     run_id="seed1",
                     meta={},
-                    ts_utc="2026-02-01T16:00:00+00:00",
+                    ts_utc="2026-02-02T16:00:00+00:00",
                 )
                 crm_light.append_send_event(
                     conn,
@@ -287,7 +395,7 @@ class TestTrialStatus(unittest.TestCase):
                     status="SENT",
                     run_id="seed2",
                     meta={},
-                    ts_utc="2026-02-01T16:00:00+00:00",
+                    ts_utc="2026-02-02T16:00:00+00:00",
                 )
 
             artifact_dir = data_dir / "trials" / "hint_expired_artifact"
@@ -484,7 +592,14 @@ class TestTrialStatus(unittest.TestCase):
                 self.assertEqual(calls["deliver"], 0)
                 with crm_light.open_conn(db) as conn:
                     crm_light.init_schema(conn)
-                    sends_used = crm_light.count_successful_sends(conn, "guard_trial", "2026-02-01")
+                    sends_used = crm_light.count_trial_delivery_days(
+                        conn,
+                        "guard_trial",
+                        "2026-02-01",
+                        tz_name="America/Chicago",
+                        primary_recipient="guard_trial@example.com",
+                        weekdays_only=True,
+                    )
                     statuses = conn.execute(
                         "SELECT status FROM send_events WHERE subscriber_key='guard_trial' ORDER BY id"
                     ).fetchall()
@@ -553,6 +668,560 @@ class TestTrialStatus(unittest.TestCase):
                     os.environ.pop("DATA_DIR", None)
                 else:
                     os.environ["DATA_DIR"] = old_data_dir
+
+    def test_conversion_draft_writes_to_resolved_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_conv = os.environ.get("TRIAL_CONVERSION_URL")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ["TRIAL_CONVERSION_URL"] = "https://example.com/activate"
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=14,
+                )
+                code = run_trial_admin.main(["conversion-draft", "--subscriber-key", "wally_trial"])
+                self.assertEqual(code, 0)
+                artifact = data_dir / "trials" / "wally_trial" / "conversion_email.txt"
+                self.assertTrue(artifact.exists())
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_conv is None:
+                    os.environ.pop("TRIAL_CONVERSION_URL", None)
+                else:
+                    os.environ["TRIAL_CONVERSION_URL"] = old_conv
+
+    def test_conversion_draft_is_db_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            old_data_dir = os.environ.get("DATA_DIR")
+            os.environ["DATA_DIR"] = str(data_dir)
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=14,
+                )
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    before_send_rows = int(conn.execute("SELECT COUNT(1) FROM send_events").fetchone()[0])
+                    before_sub = conn.execute(
+                        "SELECT subscriber_key, email, territory_code, tz, status FROM subscribers WHERE subscriber_key=?",
+                        ("wally_trial",),
+                    ).fetchone()
+                    before_sub_tuple = tuple(before_sub) if before_sub else tuple()
+
+                code = run_trial_admin.main(["conversion-draft", "--subscriber-key", "wally_trial"])
+                self.assertEqual(code, 0)
+
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    after_send_rows = int(conn.execute("SELECT COUNT(1) FROM send_events").fetchone()[0])
+                    after_sub = conn.execute(
+                        "SELECT subscriber_key, email, territory_code, tz, status FROM subscribers WHERE subscriber_key=?",
+                        ("wally_trial",),
+                    ).fetchone()
+                    after_sub_tuple = tuple(after_sub) if after_sub else tuple()
+                self.assertEqual(before_send_rows, after_send_rows)
+                self.assertEqual(before_sub_tuple, after_sub_tuple)
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+
+    def test_conversion_draft_template_plain_text_and_required_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_conv = os.environ.get("TRIAL_CONVERSION_URL")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ["TRIAL_CONVERSION_URL"] = "https://example.com/activate"
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=14,
+                )
+                code = run_trial_admin.main(["conversion-draft", "--subscriber-key", "wally_trial"])
+                self.assertEqual(code, 0)
+                artifact = data_dir / "trials" / "wally_trial" / "conversion_email.txt"
+                text = artifact.read_text(encoding="utf-8")
+                self.assertIn("To: wally_trial@example.com", text)
+                self.assertIn("Subject: Keep your OSHA signal digest running -", text)
+                self.assertIn("Quick note on \"0 new\":", text)
+                self.assertIn('Reply "go" and confirm the metros/cities', text)
+                self.assertIn("Or activate via Stripe here:", text)
+                self.assertIn("If you'd rather confirm fit before paying", text)
+                self.assertIn("Want any tweaks (add/remove metros, add recipients, different send time)?", text)
+                self.assertIn('P.S. If it\'s not a fit, just reply "stop" and I\'ll close it out.', text)
+                self.assertIn("https://example.com/activate", text)
+                self.assertIn("Texas Triangle", text)
+                self.assertNotRegex(text, re.compile(r"<(html|body|p|a|br)\\b", re.IGNORECASE))
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_conv is None:
+                    os.environ.pop("TRIAL_CONVERSION_URL", None)
+                else:
+                    os.environ["TRIAL_CONVERSION_URL"] = old_conv
+
+    def test_conversion_draft_placeholder_when_link_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_conv = os.environ.get("TRIAL_CONVERSION_URL")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ.pop("TRIAL_CONVERSION_URL", None)
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=14,
+                )
+                code = run_trial_admin.main(["conversion-draft", "--subscriber-key", "wally_trial"])
+                self.assertEqual(code, 0)
+                artifact = data_dir / "trials" / "wally_trial" / "conversion_email.txt"
+                text = artifact.read_text(encoding="utf-8")
+                self.assertIn("{stripe_link}", text)
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_conv is None:
+                    os.environ.pop("TRIAL_CONVERSION_URL", None)
+                else:
+                    os.environ["TRIAL_CONVERSION_URL"] = old_conv
+
+    def test_expiry_path_uses_same_conversion_template_as_conversion_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            leads_db = base / "osha.sqlite"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_conv = os.environ.get("TRIAL_CONVERSION_URL")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ["TRIAL_CONVERSION_URL"] = "https://example.com/activate"
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=1,
+                )
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    crm_light.append_send_event(
+                        conn,
+                        subscriber_key="wally_trial",
+                        variant="DAILY",
+                        status="SENT",
+                        run_id="seed_expired",
+                        meta={"send_mode": "LIVE", "primary_recipient": "wally_trial@example.com"},
+                        ts_utc="2026-02-04T15:00:00+00:00",
+                    )
+
+                code = run_trial_admin.main(["conversion-draft", "--subscriber-key", "wally_trial"])
+                self.assertEqual(code, 0)
+                artifact = data_dir / "trials" / "wally_trial" / "conversion_email.txt"
+                draft_text = artifact.read_text(encoding="utf-8")
+
+                run_code = run_trial_daily.run_trial_daily(
+                    subscriber_key="wally_trial",
+                    leads_db=str(leads_db),
+                    crm_db=db,
+                    customer_arg="",
+                    send_live=False,
+                    dry_run=False,
+                    test_send_daily=False,
+                    print_config=False,
+                )
+                self.assertEqual(run_code, 0)
+                expiry_text = artifact.read_text(encoding="utf-8")
+                self.assertEqual(draft_text, expiry_text)
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_conv is None:
+                    os.environ.pop("TRIAL_CONVERSION_URL", None)
+                else:
+                    os.environ["TRIAL_CONVERSION_URL"] = old_conv
+
+    def test_conversion_email_auto_sends_once_on_first_expired_live_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            leads_db = base / "osha.sqlite"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_conv = os.environ.get("TRIAL_CONVERSION_URL")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ["TRIAL_CONVERSION_URL"] = "https://example.com/activate"
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=1,
+                )
+
+                calls = {"deliver": 0, "conversion": 0}
+                orig_deliver = run_trial_daily._run_deliver_daily
+                orig_mode = run_trial_daily._try_extract_latest_send_start_mode
+                orig_send_conversion = run_trial_daily._send_conversion_email_from_artifact
+
+                def _fake_deliver(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                    calls["deliver"] += 1
+                    return 0, "ok"
+
+                def _fake_mode(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                    return "LIVE"
+
+                def _fake_send_conversion(*, artifact_path, subscriber_key, territory_code):  # type: ignore[no-untyped-def]
+                    calls["conversion"] += 1
+                    self.assertTrue(Path(artifact_path).exists())
+                    self.assertEqual(subscriber_key, "wally_trial")
+                    self.assertEqual(territory_code, "TX_TRIANGLE_V1")
+                    return True, "<msg-1>", ""
+
+                run_trial_daily._run_deliver_daily = _fake_deliver  # type: ignore[assignment]
+                run_trial_daily._try_extract_latest_send_start_mode = _fake_mode  # type: ignore[assignment]
+                run_trial_daily._send_conversion_email_from_artifact = _fake_send_conversion  # type: ignore[assignment]
+                try:
+                    code_first = run_trial_daily.run_trial_daily(
+                        subscriber_key="wally_trial",
+                        leads_db=str(leads_db),
+                        crm_db=db,
+                        customer_arg="",
+                        send_live=True,
+                        dry_run=False,
+                        test_send_daily=False,
+                        print_config=False,
+                    )
+                    code_second = run_trial_daily.run_trial_daily(
+                        subscriber_key="wally_trial",
+                        leads_db=str(leads_db),
+                        crm_db=db,
+                        customer_arg="",
+                        send_live=True,
+                        dry_run=False,
+                        test_send_daily=False,
+                        print_config=False,
+                    )
+                    code_third = run_trial_daily.run_trial_daily(
+                        subscriber_key="wally_trial",
+                        leads_db=str(leads_db),
+                        crm_db=db,
+                        customer_arg="",
+                        send_live=True,
+                        dry_run=False,
+                        test_send_daily=False,
+                        print_config=False,
+                    )
+                finally:
+                    run_trial_daily._run_deliver_daily = orig_deliver  # type: ignore[assignment]
+                    run_trial_daily._try_extract_latest_send_start_mode = orig_mode  # type: ignore[assignment]
+                    run_trial_daily._send_conversion_email_from_artifact = orig_send_conversion  # type: ignore[assignment]
+
+                self.assertEqual(code_first, 0)
+                self.assertEqual(code_second, 0)
+                self.assertEqual(code_third, 0)
+                self.assertEqual(calls["deliver"], 1)
+                self.assertEqual(calls["conversion"], 1)
+
+                artifact = data_dir / "trials" / "wally_trial" / "conversion_email.txt"
+                self.assertTrue(artifact.exists())
+
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    trial = crm_light.get_trial_state(conn, "wally_trial") or {}
+                    statuses = [
+                        str(row[0] or "")
+                        for row in conn.execute(
+                            "SELECT status FROM send_events WHERE subscriber_key='wally_trial' ORDER BY id"
+                        ).fetchall()
+                    ]
+                self.assertTrue(str(trial.get("notified_at_utc") or "").strip())
+                self.assertEqual(statuses.count("SENT"), 1)
+                self.assertEqual(statuses.count("CONVERSION_SENT"), 1)
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_conv is None:
+                    os.environ.pop("TRIAL_CONVERSION_URL", None)
+                else:
+                    os.environ["TRIAL_CONVERSION_URL"] = old_conv
+
+    def test_expired_non_live_run_leaves_conversion_pending_until_live(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            leads_db = base / "osha.sqlite"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_conv = os.environ.get("TRIAL_CONVERSION_URL")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ["TRIAL_CONVERSION_URL"] = "https://example.com/activate"
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=1,
+                )
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    crm_light.append_send_event(
+                        conn,
+                        subscriber_key="wally_trial",
+                        variant="daily",
+                        status="SENT",
+                        run_id="seed_expired",
+                        meta={"send_mode": "LIVE", "primary_recipient": "wally_trial@example.com"},
+                        ts_utc="2026-02-04T15:00:00+00:00",
+                    )
+
+                calls = {"conversion": 0}
+                orig_send_conversion = run_trial_daily._send_conversion_email_from_artifact
+
+                def _fake_send_conversion(*, artifact_path, subscriber_key, territory_code):  # type: ignore[no-untyped-def]
+                    calls["conversion"] += 1
+                    self.assertTrue(Path(artifact_path).exists())
+                    self.assertEqual(subscriber_key, "wally_trial")
+                    self.assertEqual(territory_code, "TX_TRIANGLE_V1")
+                    return True, "<msg-2>", ""
+
+                run_trial_daily._send_conversion_email_from_artifact = _fake_send_conversion  # type: ignore[assignment]
+                try:
+                    code_non_live = run_trial_daily.run_trial_daily(
+                        subscriber_key="wally_trial",
+                        leads_db=str(leads_db),
+                        crm_db=db,
+                        customer_arg="",
+                        send_live=False,
+                        dry_run=False,
+                        test_send_daily=False,
+                        print_config=False,
+                    )
+                    with crm_light.open_conn(db) as conn:
+                        crm_light.init_schema(conn)
+                        trial_after_non_live = crm_light.get_trial_state(conn, "wally_trial") or {}
+                    code_live = run_trial_daily.run_trial_daily(
+                        subscriber_key="wally_trial",
+                        leads_db=str(leads_db),
+                        crm_db=db,
+                        customer_arg="",
+                        send_live=True,
+                        dry_run=False,
+                        test_send_daily=False,
+                        print_config=False,
+                    )
+                    with crm_light.open_conn(db) as conn:
+                        crm_light.init_schema(conn)
+                        trial_after_live = crm_light.get_trial_state(conn, "wally_trial") or {}
+                finally:
+                    run_trial_daily._send_conversion_email_from_artifact = orig_send_conversion  # type: ignore[assignment]
+
+                self.assertEqual(code_non_live, 0)
+                self.assertEqual(code_live, 0)
+                self.assertEqual(calls["conversion"], 1)
+                self.assertFalse(str(trial_after_non_live.get("notified_at_utc") or "").strip())
+                self.assertTrue(str(trial_after_live.get("notified_at_utc") or "").strip())
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_conv is None:
+                    os.environ.pop("TRIAL_CONVERSION_URL", None)
+                else:
+                    os.environ["TRIAL_CONVERSION_URL"] = old_conv
+
+    def test_expired_live_with_placeholder_link_blocks_send_and_latch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            leads_db = base / "osha.sqlite"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_conv = os.environ.get("TRIAL_CONVERSION_URL")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ.pop("TRIAL_CONVERSION_URL", None)
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=1,
+                )
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    crm_light.append_send_event(
+                        conn,
+                        subscriber_key="wally_trial",
+                        variant="daily",
+                        status="SENT",
+                        run_id="seed_expired",
+                        meta={"send_mode": "LIVE", "primary_recipient": "wally_trial@example.com"},
+                        ts_utc="2026-02-04T15:00:00+00:00",
+                    )
+
+                calls = {"conversion": 0}
+                orig_send_conversion = run_trial_daily._send_conversion_email_from_artifact
+
+                def _fake_send_conversion(*, artifact_path, subscriber_key, territory_code):  # type: ignore[no-untyped-def]
+                    calls["conversion"] += 1
+                    return True, "<msg-should-not-send>", ""
+
+                run_trial_daily._send_conversion_email_from_artifact = _fake_send_conversion  # type: ignore[assignment]
+                buf = io.StringIO()
+                try:
+                    with contextlib.redirect_stdout(buf):
+                        code = run_trial_daily.run_trial_daily(
+                            subscriber_key="wally_trial",
+                            leads_db=str(leads_db),
+                            crm_db=db,
+                            customer_arg="",
+                            send_live=True,
+                            dry_run=False,
+                            test_send_daily=False,
+                            print_config=False,
+                        )
+                finally:
+                    run_trial_daily._send_conversion_email_from_artifact = orig_send_conversion  # type: ignore[assignment]
+
+                self.assertEqual(code, 0)
+                self.assertEqual(calls["conversion"], 0)
+                self.assertIn("ERR_CONVERSION_LINK_MISSING subscriber_key=wally_trial", buf.getvalue())
+
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    trial = crm_light.get_trial_state(conn, "wally_trial") or {}
+                    statuses = [
+                        str(row[0] or "")
+                        for row in conn.execute(
+                            "SELECT status FROM send_events WHERE subscriber_key='wally_trial' ORDER BY id"
+                        ).fetchall()
+                    ]
+                self.assertFalse(str(trial.get("notified_at_utc") or "").strip())
+                self.assertIn("CONVERSION_LINK_MISSING", statuses)
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_conv is None:
+                    os.environ.pop("TRIAL_CONVERSION_URL", None)
+                else:
+                    os.environ["TRIAL_CONVERSION_URL"] = old_conv
+
+    def test_expired_live_uses_existing_conversion_artifact_verbatim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            leads_db = base / "osha.sqlite"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_conv = os.environ.get("TRIAL_CONVERSION_URL")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ["TRIAL_CONVERSION_URL"] = "https://example.com/activate"
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=1,
+                )
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    crm_light.append_send_event(
+                        conn,
+                        subscriber_key="wally_trial",
+                        variant="daily",
+                        status="SENT",
+                        run_id="seed_expired",
+                        meta={"send_mode": "LIVE", "primary_recipient": "wally_trial@example.com"},
+                        ts_utc="2026-02-04T15:00:00+00:00",
+                    )
+
+                artifact = data_dir / "trials" / "wally_trial" / "conversion_email.txt"
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                custom_text = (
+                    "To: custom@example.com\n\n"
+                    "Subject: Custom Conversion Subject\n\n"
+                    "Custom line one.\n"
+                    "Custom CTA link: https://example.com/pay\n"
+                )
+                artifact.write_text(custom_text, encoding="utf-8")
+
+                seen = {"calls": 0, "text": ""}
+                orig_send_conversion = run_trial_daily._send_conversion_email_from_artifact
+
+                def _fake_send_conversion(*, artifact_path, subscriber_key, territory_code):  # type: ignore[no-untyped-def]
+                    seen["calls"] += 1
+                    seen["text"] = Path(artifact_path).read_text(encoding="utf-8")
+                    self.assertEqual(subscriber_key, "wally_trial")
+                    self.assertEqual(territory_code, "TX_TRIANGLE_V1")
+                    return True, "<msg-custom>", ""
+
+                run_trial_daily._send_conversion_email_from_artifact = _fake_send_conversion  # type: ignore[assignment]
+                try:
+                    code = run_trial_daily.run_trial_daily(
+                        subscriber_key="wally_trial",
+                        leads_db=str(leads_db),
+                        crm_db=db,
+                        customer_arg="",
+                        send_live=True,
+                        dry_run=False,
+                        test_send_daily=False,
+                        print_config=False,
+                    )
+                finally:
+                    run_trial_daily._send_conversion_email_from_artifact = orig_send_conversion  # type: ignore[assignment]
+
+                self.assertEqual(code, 0)
+                self.assertEqual(seen["calls"], 1)
+                self.assertEqual(seen["text"], custom_text)
+                self.assertEqual(artifact.read_text(encoding="utf-8"), custom_text)
+
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    trial = crm_light.get_trial_state(conn, "wally_trial") or {}
+                self.assertTrue(str(trial.get("notified_at_utc") or "").strip())
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_conv is None:
+                    os.environ.pop("TRIAL_CONVERSION_URL", None)
+                else:
+                    os.environ["TRIAL_CONVERSION_URL"] = old_conv
 
 
 if __name__ == "__main__":

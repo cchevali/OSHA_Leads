@@ -4,14 +4,18 @@ import argparse
 import json
 import os
 import re
+import smtplib
 import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.message import EmailMessage
+from email.utils import make_msgid
 from pathlib import Path
 from typing import Any
 
 import crm_light
+import run_trial_admin
 from lead_filters import load_territory_definitions
 
 try:
@@ -20,6 +24,10 @@ except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 _RE_SUBSCRIBER_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+_RE_DRAFT_TO = re.compile(r"^To:\s*(.+)$", re.IGNORECASE)
+_RE_DRAFT_SUBJECT = re.compile(r"^Subject:\s*(.+)$", re.IGNORECASE)
+_RE_UNRESOLVED_STRIPE_BRACE = re.compile(r"\{[^}\n]*stripe_link[^}\n]*\}", re.IGNORECASE)
+_RE_UNRESOLVED_STRIPE_ANGLE = re.compile(r"<\s*stripe_link\s*>", re.IGNORECASE)
 DEFAULT_SENDS_LIMIT = 14
 DEFAULT_EXPIRED_BEHAVIOR = "notify_once"
 
@@ -99,59 +107,133 @@ def _resolve_trial_timezone(tz_name: str) -> Any:
     return timezone.utc
 
 
-def _parse_aware_utc(value: str) -> datetime | None:
-    raw = (value or "").strip()
-    if not raw:
-        return None
-    candidate = raw[:-1] + "+00:00" if raw.upper().endswith("Z") else raw
-    try:
-        dt = datetime.fromisoformat(candidate)
-    except Exception:
-        return None
-    if dt.tzinfo is None or dt.utcoffset() is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-def _sent_successfully_on_local_date(
-    conn: Any,
-    subscriber_key: str,
-    start_date: str,
-    tz_name: str,
-    local_date_text: str,
-) -> bool:
-    sk = (subscriber_key or "").strip().lower()
-    if not sk:
-        return False
-    sd = (start_date or "").strip()
-    if not sd:
-        return False
-    target = (local_date_text or "").strip()
-    if not target:
-        return False
-    zone = _resolve_trial_timezone(tz_name)
-    rows = conn.execute(
-        """
-        SELECT ts_utc
-        FROM send_events
-        WHERE subscriber_key = ?
-          AND status = 'SENT'
-          AND ts_utc >= ?
-        ORDER BY ts_utc DESC
-        """,
-        (sk, f"{sd}T00:00:00+00:00"),
-    ).fetchall()
-    for row in rows:
-        dt = _parse_aware_utc(str(row["ts_utc"] if hasattr(row, "keys") else row[0]))
-        if dt is None:
-            continue
-        if dt.astimezone(zone).date().isoformat() == target:
-            return True
-    return False
+def _event_meta(
+    *,
+    source: str,
+    send_mode: str,
+    primary_recipient: str,
+    local_date: str,
+    exit_code: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "source": (source or "").strip() or "run_trial_daily",
+    }
+    normalized_mode = (send_mode or "").strip().upper()
+    normalized_recipient = (primary_recipient or "").strip().lower()
+    normalized_date = (local_date or "").strip()
+    if normalized_mode:
+        payload["send_mode"] = normalized_mode
+    if normalized_recipient:
+        payload["primary_recipient"] = normalized_recipient
+    if normalized_date:
+        payload["local_date"] = normalized_date
+    if exit_code is not None:
+        payload["exit_code"] = int(exit_code)
+    return payload
 
 
 def _resolve_conversion_url() -> str:
     return (os.getenv("TRIAL_CONVERSION_URL") or "").strip()
+
+
+def _parse_conversion_artifact(text: str) -> tuple[str, str, str]:
+    lines = (text or "").splitlines(keepends=True)
+    recipient = ""
+    subject = ""
+    body_offset = -1
+    offset = 0
+    for line in lines:
+        if not recipient:
+            m_to = _RE_DRAFT_TO.match((line or "").strip())
+            if m_to:
+                recipient = m_to.group(1).strip().lower()
+                offset += len(line)
+                continue
+        if not subject:
+            m_subject = _RE_DRAFT_SUBJECT.match((line or "").strip())
+            if m_subject:
+                subject = m_subject.group(1).strip()
+                body_offset = offset + len(line)
+                break
+        offset += len(line)
+    if not recipient:
+        raise RuntimeError("CONFIG_ERROR conversion artifact missing To header")
+    if not subject:
+        raise RuntimeError("CONFIG_ERROR conversion artifact missing Subject header")
+    body = (text or "")[body_offset:] if body_offset >= 0 else ""
+    if not body.strip():
+        raise RuntimeError("CONFIG_ERROR conversion artifact missing body")
+    return recipient, subject, body
+
+
+def _has_unresolved_conversion_link(text: str) -> bool:
+    value = (text or "")
+    lower = value.lower()
+    if "stripe_link" in lower:
+        return True
+    if "{stripe_link}" in lower or "<stripe_link>" in lower:
+        return True
+    if _RE_UNRESOLVED_STRIPE_BRACE.search(value):
+        return True
+    if _RE_UNRESOLVED_STRIPE_ANGLE.search(value):
+        return True
+    return False
+
+
+def _send_conversion_email_from_artifact(
+    *,
+    artifact_path: Path,
+    subscriber_key: str,
+    territory_code: str,
+) -> tuple[bool, str, str]:
+    try:
+        text = artifact_path.read_text(encoding="utf-8")
+        recipient, subject, body = _parse_conversion_artifact(text)
+    except Exception as exc:
+        return False, "", str(exc)
+
+    smtp_host = (os.getenv("SMTP_HOST") or "").strip()
+    smtp_port_text = (os.getenv("SMTP_PORT") or "").strip()
+    smtp_user = (os.getenv("SMTP_USER") or "").strip()
+    smtp_pass = (os.getenv("SMTP_PASS") or "").strip()
+
+    missing = [k for k, v in (("SMTP_HOST", smtp_host), ("SMTP_PORT", smtp_port_text), ("SMTP_USER", smtp_user), ("SMTP_PASS", smtp_pass)) if not v]
+    if missing:
+        return False, "", f"missing SMTP env: {','.join(missing)}"
+
+    try:
+        smtp_port = int(smtp_port_text)
+    except Exception:
+        return False, "", "invalid SMTP_PORT"
+
+    from_email = (os.getenv("FROM_EMAIL") or smtp_user).strip() or smtp_user
+    reply_to = (os.getenv("REPLY_TO_EMAIL") or from_email).strip() or from_email
+    support_email = (os.getenv("SUPPORT_EMAIL") or "support@microflowops.com").strip() or "support@microflowops.com"
+
+    msg = EmailMessage()
+    msg["Message-ID"] = make_msgid()
+    msg["Subject"] = subject
+    msg["From"] = from_email
+    msg["To"] = recipient
+    msg["Reply-To"] = reply_to
+    msg["X-Customer-ID"] = subscriber_key
+    msg["X-Territory-Code"] = territory_code
+    msg["List-Unsubscribe"] = f"<mailto:{support_email}?subject=unsubscribe>"
+    msg.set_content(body)
+
+    try:
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port) as server:
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+        return True, str(msg.get("Message-ID") or ""), ""
+    except Exception as exc:
+        return False, "", str(exc)
 
 
 def _territory_states(territory_code: str) -> list[str]:
@@ -237,65 +319,6 @@ def _load_or_build_customer_config(policy: TrialPolicy, customer_path: Path, out
     runtime_path = out_root / "trials" / policy.subscriber_key / "customer.runtime.json"
     _write_json(runtime_path, cfg)
     return runtime_path
-
-
-def _write_conversion_artifact_legacy(policy: TrialPolicy, out_root: Path) -> Path:
-    path = out_root / "trials" / policy.subscriber_key / "conversion_email.txt"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    body = (
-        f"To: {policy.email}\n"
-        "Subject: Trial ended - ready to convert?\n\n"
-        "Hi,\n\n"
-        "Your trial has ended based on successful daily sends.\n\n"
-        f"subscriber_key: {policy.subscriber_key}\n"
-        f"territory_code: {policy.territory_code}\n"
-        f"trial_start_date: {policy.start_date}\n"
-        f"successful_sends: {policy.successful_sends}\n"
-        f"sends_limit: {policy.sends_limit}\n\n"
-        "If you'd like to continue receiving daily alerts, reply to this email and we can set up ongoing delivery.\n"
-    )
-    path.write_text(body, encoding="utf-8")
-    return path
-
-
-def _write_conversion_artifact(policy: TrialPolicy, out_root: Path) -> tuple[Path, Path]:
-    artifact_dir = out_root / "trials" / policy.subscriber_key
-    text_path = artifact_dir / "conversion_email.txt"
-    html_path = artifact_dir / "conversion_email.html"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    conversion_url = _resolve_conversion_url()
-    if conversion_url:
-        cta_text = f"To continue, activate here: {conversion_url}\n"
-        cta_html = f'<p>To continue, activate here: <a href="{conversion_url}">{conversion_url}</a></p>'
-    else:
-        cta_text = "To continue receiving daily alerts, reply to this email and we can set up ongoing delivery.\n"
-        cta_html = "<p>To continue receiving daily alerts, reply to this email and we can set up ongoing delivery.</p>"
-
-    text_body = (
-        f"To: {policy.email}\n"
-        "Subject: Trial ended - ready to convert?\n\n"
-        "Hi,\n\n"
-        "Your trial has ended based on successful daily sends.\n\n"
-        f"subscriber_key: {policy.subscriber_key}\n"
-        f"territory_code: {policy.territory_code}\n"
-        f"trial_start_date: {policy.start_date}\n"
-        f"successful_sends: {policy.successful_sends}\n"
-        f"sends_limit: {policy.sends_limit}\n\n"
-        f"{cta_text}"
-    )
-    html_body = (
-        "<!doctype html>\n<html><body><p>Hi,</p>"
-        "<p>Your trial has ended based on successful daily sends.</p>"
-        f"<p>subscriber_key: {policy.subscriber_key}"
-        f"<br>territory_code: {policy.territory_code}"
-        f"<br>trial_start_date: {policy.start_date}"
-        f"<br>successful_sends: {policy.successful_sends}"
-        f"<br>sends_limit: {policy.sends_limit}</p>"
-        f"{cta_html}</body></html>\n"
-    )
-    text_path.write_text(text_body, encoding="utf-8")
-    html_path.write_text(html_body, encoding="utf-8")
-    return text_path, html_path
 
 
 def _run_send_digest_test_daily(db_path: str, customer_runtime_path: Path, dry_run: bool) -> tuple[int, str]:
@@ -416,7 +439,16 @@ def _resolve_policy(subscriber_key: str, crm_db_path: str | Path | None) -> Tria
             )
         sends_limit = _resolve_sends_limit(trial)
         behavior = _resolve_expired_behavior()
-        successful = crm_light.count_successful_sends(conn, subscriber_key, start_date)
+        primary_recipient = str(sub.get("email") or "").strip().lower()
+        tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
+        successful = crm_light.count_trial_delivery_days(
+            conn,
+            subscriber_key,
+            start_date,
+            tz_name=tz_name,
+            primary_recipient=primary_recipient,
+            weekdays_only=True,
+        )
         expired_by_sends = bool(successful >= sends_limit)
         expired = expired_by_sends
         return TrialPolicy(
@@ -486,18 +518,80 @@ def run_trial_daily(
             if policy.expired_behavior == "notify_once":
                 trial_state = crm_light.get_trial_state(conn, policy.subscriber_key) or {}
                 if not str(trial_state.get("notified_at_utc") or "").strip():
-                    text_artifact, html_artifact = _write_conversion_artifact(policy, out_root)
-                    crm_light.set_trial_notified_at(conn, policy.subscriber_key, _now_utc_iso())
+                    text_artifact = out_root / "trials" / policy.subscriber_key / "conversion_email.txt"
+                    if text_artifact.exists():
+                        text_artifact = text_artifact.resolve()
+                    else:
+                        text_artifact = run_trial_admin.write_conversion_draft(
+                            subscriber_key=policy.subscriber_key,
+                            crm_db_path=resolved_crm_db,
+                            emit_stdout=False,
+                        )
                     print(f"CONVERSION_ARTIFACT text_path={text_artifact}")
-                    print(f"CONVERSION_ARTIFACT html_path={html_artifact}")
+                    if send_live and not dry_run:
+                        artifact_text = ""
+                        try:
+                            artifact_text = text_artifact.read_text(encoding="utf-8")
+                        except Exception as exc:
+                            artifact_text = ""
+                            print(f"WARN_CONVERSION_ARTIFACT_READ_FAILED detail={exc}")
+                        if _has_unresolved_conversion_link(artifact_text):
+                            print(f"ERR_CONVERSION_LINK_MISSING subscriber_key={policy.subscriber_key}")
+                            crm_light.append_send_event(
+                                conn,
+                                subscriber_key=policy.subscriber_key,
+                                variant="conversion",
+                                status="CONVERSION_LINK_MISSING",
+                                run_id=run_id,
+                                meta={
+                                    "artifact_path": str(text_artifact),
+                                    "reason": "stripe_link_placeholder",
+                                },
+                                ts_utc="",
+                            )
+                            return 0
+                        sent, message_id, error_detail = _send_conversion_email_from_artifact(
+                            artifact_path=text_artifact,
+                            subscriber_key=policy.subscriber_key,
+                            territory_code=policy.territory_code,
+                        )
+                        status = "CONVERSION_SENT" if sent else "CONVERSION_SEND_ERROR"
+                        meta: dict[str, Any] = {
+                            "start_date": policy.start_date,
+                            "successful_sends": policy.successful_sends,
+                            "sends_limit": policy.sends_limit,
+                            "expired_behavior": policy.expired_behavior,
+                            "artifact_path": str(text_artifact),
+                        }
+                        if message_id:
+                            meta["message_id"] = message_id
+                        if error_detail:
+                            meta["error"] = error_detail
+                        crm_light.append_send_event(
+                            conn,
+                            subscriber_key=policy.subscriber_key,
+                            variant="conversion",
+                            status=status,
+                            run_id=run_id,
+                            meta=meta,
+                            ts_utc="",
+                        )
+                        if sent:
+                            crm_light.set_trial_notified_at(conn, policy.subscriber_key, _now_utc_iso())
+                            print(f"CONVERSION_EMAIL_SENT to={policy.email}")
+                        else:
+                            print(f"WARN_CONVERSION_EMAIL_SEND_FAILED detail={error_detail}")
+                    else:
+                        print("CONVERSION_EMAIL_PENDING send_live=NO")
             return 0
 
         local_today = datetime.now(_resolve_trial_timezone(policy.tz)).date().isoformat()
-        if send_live and not dry_run and _sent_successfully_on_local_date(
+        if send_live and not dry_run and crm_light.has_trial_delivery_on_local_date(
             conn,
             subscriber_key=policy.subscriber_key,
             start_date=policy.start_date,
             tz_name=policy.tz,
+            primary_recipient=policy.email,
             local_date_text=local_today,
         ):
             crm_light.append_send_event(
@@ -506,10 +600,7 @@ def run_trial_daily(
                 variant="daily",
                 status="SKIP_ALREADY_SENT_LOCAL_DATE",
                 run_id=run_id,
-                meta={
-                    "local_date": local_today,
-                    "timezone": policy.tz,
-                },
+                meta={"local_date": local_today, "timezone": policy.tz},
                 ts_utc="",
             )
             print(f"TRIAL_EVENT status=SKIP_ALREADY_SENT_LOCAL_DATE local_date={local_today}")
@@ -521,13 +612,20 @@ def run_trial_daily(
         if test_send_daily:
             code, out = _run_send_digest_test_daily(leads_db, customer_runtime, dry_run=dry_run)
             status = "DRY_RUN" if dry_run else ("SENT" if code == 0 else "ERROR")
+            event_mode = "DRY_RUN" if dry_run else ("TEST" if code == 0 else "ERROR")
             crm_light.append_send_event(
                 conn,
                 subscriber_key=policy.subscriber_key,
                 variant="test_send_daily",
                 status=status,
                 run_id=run_id,
-                meta={"exit_code": code},
+                meta=_event_meta(
+                    source="run_trial_daily_test_send",
+                    send_mode=event_mode,
+                    primary_recipient=policy.email,
+                    local_date=local_today,
+                    exit_code=code,
+                ),
                 ts_utc="",
             )
             print(f"TRIAL_EVENT status={status}")
@@ -547,16 +645,21 @@ def run_trial_daily(
 
         if dry_run:
             status = "DRY_RUN" if code == 0 else "ERROR"
+            event_mode = "DRY_RUN" if code == 0 else "ERROR"
         else:
             mode = _try_extract_latest_send_start_mode(customer_id=customer_id)
             if code == 0 and mode == "LIVE":
                 status = "SENT"
+                event_mode = "LIVE"
             elif code == 0 and mode == "SAFE":
                 status = "SAFE_MODE"
+                event_mode = "SAFE"
             elif code == 0:
                 status = "UNKNOWN"
+                event_mode = "UNKNOWN"
             else:
                 status = "ERROR"
+                event_mode = "ERROR"
 
         crm_light.append_send_event(
             conn,
@@ -564,7 +667,13 @@ def run_trial_daily(
             variant="daily",
             status=status,
             run_id=run_id,
-            meta={"exit_code": code},
+            meta=_event_meta(
+                source="run_trial_daily_deliver",
+                send_mode=event_mode,
+                primary_recipient=policy.email,
+                local_date=local_today,
+                exit_code=code,
+            ),
             ts_utc="",
         )
         print(f"TRIAL_EVENT status={status}")
