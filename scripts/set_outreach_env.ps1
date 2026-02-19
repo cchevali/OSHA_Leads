@@ -41,6 +41,7 @@ $ERR_SET_OUTREACH_ENV_ENCRYPT = 'ERR_SET_OUTREACH_ENV_ENCRYPT'
 $ERR_SET_OUTREACH_ENV_WRITE = 'ERR_SET_OUTREACH_ENV_WRITE'
 $ERR_SET_OUTREACH_ENV_VERIFY = 'ERR_SET_OUTREACH_ENV_VERIFY'
 $ERR_SET_OUTREACH_ENV_PRINT_CONFIG = 'ERR_SET_OUTREACH_ENV_PRINT_CONFIG'
+$ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS = 'ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS'
 
 $PASS_SET_OUTREACH_ENV_APPLY = 'PASS_SET_OUTREACH_ENV_APPLY'
 $PASS_SET_OUTREACH_ENV_VERIFY = 'PASS_SET_OUTREACH_ENV_VERIFY'
@@ -189,15 +190,66 @@ function Run-PrintConfigCheck(
     Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG 'missing_outreach_states'
   }
 
-  $stripeOut = & $RunWithSecretsPath py -3 scripts\subscription_registry_ops.py stripe-ingest --print-config 2>&1
-  $stripeCode = $LASTEXITCODE
+  $oldPythonPath = $null
+  if (Test-Path Env:PYTHONPATH) {
+    $oldPythonPath = [string]$env:PYTHONPATH
+  }
+  try {
+    if ([string]::IsNullOrWhiteSpace($oldPythonPath)) {
+      $env:PYTHONPATH = $RepoRoot
+    } else {
+      $env:PYTHONPATH = ($RepoRoot + [IO.Path]::PathSeparator + $oldPythonPath)
+    }
+    $stripeOut = & $RunWithSecretsPath py -3 scripts\subscription_registry_ops.py stripe-ingest --print-config 2>&1
+    $stripeCode = $LASTEXITCODE
+  } finally {
+    if ($null -eq $oldPythonPath) {
+      Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+    } else {
+      $env:PYTHONPATH = $oldPythonPath
+    }
+  }
+
   $stripeJoined = (($stripeOut | ForEach-Object { $_.ToString() }) -join "`n")
   if ($stripeCode -ne 0) {
     Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG ('stripe_print_config_failed code=' + $stripeCode + ' detail=' + (Compact-Detail $stripeJoined))
   }
-  if ($stripeJoined -notmatch '"command"\s*:\s*"stripe-ingest"') {
+
+  $stripeJson = ''
+  foreach ($line in ($stripeOut | ForEach-Object { $_.ToString().Trim() })) {
+    if ($line.StartsWith('{') -and $line.EndsWith('}')) {
+      $stripeJson = $line
+    }
+  }
+  if (-not $stripeJson) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG 'missing_stripe_json_payload'
+  }
+
+  $stripePayload = $null
+  try {
+    $stripePayload = ($stripeJson | ConvertFrom-Json -ErrorAction Stop)
+  } catch {
+    Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG ('invalid_stripe_json detail=' + (Compact-Detail $_.Exception.Message))
+  }
+
+  if (-not $stripePayload -or [string]$stripePayload.command -ne 'stripe-ingest') {
     Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG 'missing_stripe_command'
   }
+
+  $missingKeys = New-Object System.Collections.Generic.List[string]
+  if (-not [bool]$stripePayload.stripe_price_id_core_present) {
+    [void]$missingKeys.Add('stripe_price_id_core_present')
+  }
+  if (-not [bool]$stripePayload.stripe_price_id_multi_present) {
+    [void]$missingKeys.Add('stripe_price_id_multi_present')
+  }
+  if (-not [bool]$stripePayload.web_stripe_webhook_secret_present) {
+    [void]$missingKeys.Add('web_stripe_webhook_secret_present')
+  }
+  if ($missingKeys.Count -gt 0) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS ('missing=' + ($missingKeys -join ','))
+  }
+
   if ($ExpectedStripePriceIdCore -and $stripeJoined -notmatch [Regex]::Escape($ExpectedStripePriceIdCore)) {
     Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG 'missing_stripe_price_id_core'
   }

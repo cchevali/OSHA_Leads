@@ -58,6 +58,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "ERR_SET_OUTREACH_ENV_WRITE",
             "ERR_SET_OUTREACH_ENV_VERIFY",
             "ERR_SET_OUTREACH_ENV_PRINT_CONFIG",
+            "ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS",
             "PASS_SET_OUTREACH_ENV_APPLY",
             "PASS_SET_OUTREACH_ENV_VERIFY",
             "PASS_SET_OUTREACH_ENV_PRINT_CONFIG",
@@ -79,7 +80,15 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("STRIPE_PRICE_ID_PILOT", text)
         self.assertIn("WEB_STRIPE_WEBHOOK_SECRET", text)
         self.assertIn("STRIPE_WEBHOOK_SECRET", text)
+        self.assertIn("& $RunWithSecretsPath py -3 scripts\\subscription_registry_ops.py stripe-ingest --print-config", text)
         self.assertIn("scripts\\subscription_registry_ops.py stripe-ingest --print-config", text)
+        self.assertIn("$env:PYTHONPATH = $RepoRoot", text)
+        self.assertIn("ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS", text)
+        self.assertIn("missing=", text)
+        self.assertIn("Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS ('missing=' + ($missingKeys -join ','))", text)
+        self.assertIn("stripe_price_id_core_present", text)
+        self.assertIn("stripe_price_id_multi_present", text)
+        self.assertIn("web_stripe_webhook_secret_present", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_ENABLED", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_SOURCES", text)
 
