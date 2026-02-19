@@ -807,8 +807,10 @@ Deterministic ZIP->CBSA rebuild command (from HUD USPS ZIP-CBSA CSV extract):
 
 ```powershell
 cd C:\dev\OSHA_Leads
-py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA <MONTH_OR_QUARTER>"
+py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --zip-meta-json data\geo\zip_to_cbsa.meta.json --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA <MONTH_OR_QUARTER>"
 ```
+
+Operator note: if `data\geo\SOURCES.md` dataset label indicates `seed`/`incomplete`, rebuild from a full nationwide HUD USPS crosswalk file before relying on metro matching for new customers.
 
 ### Add a Trial Participant (No Secrets Required)
 

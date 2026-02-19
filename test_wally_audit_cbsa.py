@@ -20,6 +20,8 @@ class TestWallyAuditCbsa(unittest.TestCase):
         self._orig_data_dir = os.environ.get("DATA_DIR")
         self._orig_zip_to_cbsa = zip_cbsa.ZIP_TO_CBSA_PATH
         self._orig_cbsa_meta = zip_cbsa.CBSA_META_PATH
+        self._orig_dataset_meta = zip_cbsa.ZIP_TO_CBSA_DATASET_META_PATH
+        self._orig_sources_path = zip_cbsa.ZIP_TO_CBSA_SOURCES_PATH
 
         os.environ["DATA_DIR"] = str(self._tmp_path / "data_dir")
         self.crm_db_path = crm_light.ensure_database(None)
@@ -82,9 +84,26 @@ class TestWallyAuditCbsa(unittest.TestCase):
             writer = csv.writer(fh)
             writer.writerow(["CBSA", "metro_label"])
             writer.writerow(["19100", "Dallas-Fort Worth-Arlington, TX"])
+        dataset_meta_path = self._tmp_path / "zip_to_cbsa.meta.json"
+        dataset_meta_path.write_text(
+            json.dumps(
+                {
+                    "source_label": "HUD USPS ZIP-CBSA seed bootstrap (coverage incomplete)",
+                    "dataset_incomplete": True,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        sources_path = self._tmp_path / "SOURCES.md"
+        sources_path.write_text("# test\n", encoding="utf-8")
 
         zip_cbsa.ZIP_TO_CBSA_PATH = zip_map_path
         zip_cbsa.CBSA_META_PATH = meta_path
+        zip_cbsa.ZIP_TO_CBSA_DATASET_META_PATH = dataset_meta_path
+        zip_cbsa.ZIP_TO_CBSA_SOURCES_PATH = sources_path
         zip_cbsa.clear_caches()
 
     def tearDown(self) -> None:
@@ -94,6 +113,8 @@ class TestWallyAuditCbsa(unittest.TestCase):
             os.environ["DATA_DIR"] = self._orig_data_dir
         zip_cbsa.ZIP_TO_CBSA_PATH = self._orig_zip_to_cbsa
         zip_cbsa.CBSA_META_PATH = self._orig_cbsa_meta
+        zip_cbsa.ZIP_TO_CBSA_DATASET_META_PATH = self._orig_dataset_meta
+        zip_cbsa.ZIP_TO_CBSA_SOURCES_PATH = self._orig_sources_path
         zip_cbsa.clear_caches()
         self._tmp.cleanup()
 
@@ -222,10 +243,14 @@ class TestWallyAuditCbsa(unittest.TestCase):
         self.assertTrue(report_path.exists())
 
         payload = json.loads(events_path.read_text(encoding="utf-8"))
+        self.assertTrue(payload.get("dataset_incomplete"))
         check_payload = payload.get("check_inspection") or {}
         self.assertTrue(check_payload.get("present_in_data"))
         self.assertEqual(check_payload.get("inspection_nr"), "1874533.015")
         self.assertIn("CBSA_MATCH", str(check_payload.get("match_reason") or ""))
+        self.assertTrue(check_payload.get("dataset_incomplete"))
+        exclusions_text = exclusions_path.read_text(encoding="utf-8")
+        self.assertIn("dataset_incomplete", exclusions_text.splitlines()[0])
 
         report = report_path.read_text(encoding="utf-8")
         self.assertIn("## Check Inspection", report)
@@ -241,6 +266,7 @@ class TestWallyAuditCbsa(unittest.TestCase):
         self.assertEqual(code, 0)
         out_dir = Path(os.environ["DATA_DIR"]) / "trials" / "wally_trial"
         payload = json.loads((out_dir / "audit_events.json").read_text(encoding="utf-8"))
+        self.assertTrue(payload.get("dataset_incomplete"))
         check_payload = payload.get("check_inspection") or {}
         reason = str(check_payload.get("match_reason") or "")
         self.assertIn("FALLBACK_USED|OFFICE_MATCH|ZIP_UNKNOWN", reason)

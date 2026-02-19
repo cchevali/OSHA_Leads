@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from geo.zip_cbsa import extract_zip5_from_text, resolve_lead_cbsa
+from geo.zip_cbsa import extract_zip5_from_text, resolve_lead_cbsa, zip_cbsa_dataset_status
 
 
 DEFAULT_TERRITORIES = {
@@ -275,6 +275,10 @@ def filter_by_territory(
         "matched_by_cbsa": 0,
     }
     debug_rows: list[dict[str, Any]] = []
+    dataset_incomplete = False
+    if include_debug and kind == "CBSA_SET" and cbsa_set:
+        dataset_status = zip_cbsa_dataset_status()
+        dataset_incomplete = bool(dataset_status.get("dataset_incomplete"))
 
     def _inspection_nr_from_lead(lead_row: dict[str, Any]) -> str:
         url = str(lead_row.get("source_url") or "").strip()
@@ -301,6 +305,7 @@ def filter_by_territory(
                 "territory_code": canonical_code or requested_code,
                 "matched": "Y" if matched else "N",
                 "match_reason": match_reason,
+                "dataset_incomplete": dataset_incomplete,
             }
         )
 

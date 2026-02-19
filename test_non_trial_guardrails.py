@@ -99,6 +99,8 @@ class TestNonTrialGuardrails(unittest.TestCase):
                 self.assertEqual(resolved.parent, expected_parent)
                 self.assertTrue(resolved.name.startswith("territory_debug_20260219"))
                 self.assertNotIn("outreach", str(resolved).lower())
+                csv_text = resolved.read_text(encoding="utf-8")
+                self.assertIn("dataset_incomplete", csv_text.splitlines()[0])
 
 
 if __name__ == "__main__":

@@ -7,11 +7,13 @@
 - License: U.S. Federal Government work (public domain)
 - Input file: `hud_zip_cbsa_seed_input.csv`
 - Input SHA256: `421bf164b47d202133fd9fa33d235a200ee1b5f28edfe1302640a6c09e1da046`
+- Dataset incomplete: `true`
 - Coverage note: committed artifact is a bootstrap subset, not the full nationwide extract.
 
 ## Output Artifacts
 - `zip_to_cbsa.csv.gz` SHA256: `e423b14aaa80d3e00075324d3ac3f5f2de29577990a9cb6c33172a8a2fb8c5fe`
 - `cbsa_meta.csv` SHA256: `d53cc8719822add29c8f65745cc1ea22cb4a889b47f3910602dfa8ef4c5b4b45`
+- `zip_to_cbsa.meta.json` SHA256: `40a3615d18e80763a72caffab5f42dac15b947f208f468320b2604215a50813d`
 - ZIP rows written: `12`
 - ZIP rows with multi-CBSA candidates: `0`
 
@@ -22,5 +24,5 @@
 
 ## Rebuild Command
 ```powershell
-py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA <MONTH_OR_QUARTER>"
+py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --zip-meta-json data\geo\zip_to_cbsa.meta.json --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA <MONTH_OR_QUARTER>"
 ```
