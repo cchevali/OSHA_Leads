@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=757795bbac01f8346541e19b625bbe3b160b8d28
-PACK_BUILD_UTC=2026-02-19T04:14:06Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=f6bfd62cbe56a1becf3f9c9afd0c5e18389f74671929e467b09383252d9b8de7 docs/DECISIONS.md=12a2f46da4a1fb434e7cffd83cee1a9af240dbbc0e6fe183deab6420327014fa docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=f8b6a7fce6b09a542bffad328b3a12274daff807145850858e1de5809f0446aa docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=5fbfbed234909c40557c85440802bfeb0a3939f4291c713e22c3bd79c5b1fd9a
+PACK_GIT_SHA=bb5cc8b76e7aeba3ff1e9add048d37dd5284a763
+PACK_BUILD_UTC=2026-02-19T16:32:19Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=ec52e6f3c27a66a31c05992f3e60d9e19eff69956a91bc73ee2865139fc22a71 docs/DECISIONS.md=9a12123455fa91b2de7a97aa6cd7ab3403590a0ed6a92e66a4918114e8961acc docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=89f2f29de0ebead74554f7c20d67dae2123ed8179b4521e4634f185d6b8acf8b docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=06c9bbf117d33dd2ac8e50e2e05809e0f86116d0554e088c57577cad26d07fc7
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -107,7 +107,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 ## Outreach CRM Auto-Run Data Flow
 
 1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).
-   - Optional env-gated auto-growth source: AIHA (`PROSPECT_AUTOGROW_*` keys).
+   - Optional env-gated auto-growth source: AIHA (`PROSPECT_AUTOGROW_*` keys), evaluated per configured state in `OUTREACH_STATES`.
+   - Safety-net mode (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`) can force AIHA growth for depleted configured states even when `PROSPECT_AUTOGROW_ENABLED=0`.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Optional one-release inbox migration dual-read:
      - canonical inbox: `${DATA_DIR}/prospect_generation/inbox/*.csv`
@@ -334,6 +335,38 @@ Adopt a single upstream feed path:
 - Daily scheduler flow becomes generation -> discovery -> outreach.
 - Operators now monitor both `GENERATOR_*` and `DISCOVERY_*` machine-readable outputs.
 - Suppression and campaign tracking artifacts remain separate from the discovery feed.
+
+## ADR-0007: Multi-State Backlog Targeting With Safety-Net Auto-Grow
+
+Date: 2026-02-19
+Status: Accepted
+
+### Context
+
+Configured outreach state rotation can select a state whose CRM uncontacted backlog is depleted (`contacted=0`, skips dominated by `already_contacted`) while other states still have backlog.
+Generation previously targeted only one selected state for optional autogrow and discovery feed composition was tied to fixed TX/CA/FL ordering.
+
+### Decision
+
+Adopt multi-state prospect generation behavior:
+
+- Evaluate backlog deficits for every state in `OUTREACH_STATES` each run.
+- When autogrow is enabled, attempt AIHA growth for each configured state with deficit.
+- Add safety-net forcing (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, default `1`): when autogrow is disabled and a configured state is depleted (zero uncontacted with existing pool rows), force AIHA growth for that state.
+- Keep outreach send-state rotation unchanged and deterministic in `run_outreach_auto.py`.
+- Keep legacy recipient pool CSV outputs for compatibility, but build discovery feed from in-memory state-filtered rows instead of legacy write->read roundtrip.
+
+### Rationale
+
+- Prevents silent depletion of one configured state from stalling outreach despite healthy backlog elsewhere.
+- Supports onboarding additional states without hardcoded feed assembly logic.
+- Preserves compliance/sending invariants and deterministic state selection behavior.
+
+### Consequences
+
+- New generator telemetry includes safety-net and per-state growth lines (`GENERATOR_AUTOGROW_SAFETY_NET_*`, `GENERATOR_AUTOGROW_STATE=...`).
+- `scripts/set_outreach_env.ps1` now manages `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED` in the canonical no-editor flow.
+- Operators continue to run generation -> discovery -> outreach, with stronger machine-readable visibility into per-state replenishment.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -648,6 +681,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
   -ProspectAutoGrowEnabled 1 `
+  -ProspectAutoGrowSafetyNetEnabled 1 `
   -ProspectAutoGrowSources AIHA `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
@@ -706,11 +740,13 @@ Drop-folder behavior:
 
 Auto-growth (env-gated, optional):
 
-- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
+- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
 - Source scope v1: `AIHA` only.
 - Cache path: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`.
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
-- `--for-date YYYY-MM-DD` controls `selected_state`, backlog check, and `new_needed` preview in `--print-config` and `--dry-run`.
+- Backlog targeting is evaluated per configured state in `OUTREACH_STATES`.
+- Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
+- `--for-date YYYY-MM-DD` controls `selected_state` plus per-state backlog/new-needed previews in `--print-config` and `--dry-run`.
 
 Dry-run generation (no writes):
 
@@ -737,6 +773,9 @@ Generator emits machine-readable lines:
 - `GENERATOR_INBOX_ROWS_MISSING_STATE`
 - `GENERATOR_INBOX_FILES_ARCHIVED` (live runs only)
 - `GENERATOR_AUTOGROW_*`
+- `GENERATOR_AUTOGROW_SAFETY_NET_FORCED`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
+- `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
+- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n>`
 - `GENERATOR_AIHA_*`
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
