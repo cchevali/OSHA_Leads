@@ -5,6 +5,8 @@ import argparse
 import csv
 import json
 import os
+import re
+import sqlite3
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -17,8 +19,16 @@ try:
 except Exception:  # pragma: no cover
     load_dotenv = None
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore[assignment]
+
 from export_daily import export_daily
+import crm_light
 import run_trial_admin
+from send_digest_email import get_leads_for_period
+from lead_filters import filter_by_territory, load_territory_definitions, normalize_content_filter
 
 DEFAULT_TRIAL_TARGET_LOCAL_HHMM = "09:00"
 DEFAULT_TRIAL_CATCHUP_MAX_MINUTES = 180
@@ -255,6 +265,465 @@ def estimate_daily_counts(
         writer.writerows(rows)
 
     return output_path
+
+
+def _resolve_zone(tz_name: str):
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo((tz_name or "").strip() or "America/Chicago")
+        except Exception:
+            try:
+                return ZoneInfo("America/Chicago")
+            except Exception:
+                pass
+    return timezone.utc
+
+
+def _parse_utc_ts(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _meta_dict(raw: str) -> dict:
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        loaded = json.loads(text)
+        if isinstance(loaded, dict):
+            return loaded
+    except Exception:
+        pass
+    return {}
+
+
+def _is_trial_delivery_event(*, variant: str, meta: dict, primary_recipient: str) -> bool:
+    normalized_variant = (variant or "").strip().upper()
+    if normalized_variant and normalized_variant != "DAILY":
+        return False
+    normalized_primary = (primary_recipient or "").strip().lower()
+    event_recipient = str(meta.get("primary_recipient") or meta.get("recipient") or meta.get("to") or "").strip().lower()
+    if event_recipient and normalized_primary and event_recipient != normalized_primary:
+        return False
+    send_mode = str(meta.get("send_mode") or meta.get("mode") or "").strip().upper()
+    if send_mode and send_mode != "LIVE":
+        return False
+    return True
+
+
+def _resolve_send_window(config: dict) -> tuple[int, int]:
+    send_time = str(config.get("send_time_local") or "08:00").strip()
+    hour = 8
+    minute = 0
+    try:
+        hh, mm = send_time.split(":", 1)
+        hour = max(0, min(23, int(hh)))
+        minute = max(0, min(59, int(mm)))
+    except Exception:
+        hour = 8
+        minute = 0
+    try:
+        window = int(config.get("send_window_minutes", 60))
+    except Exception:
+        window = 60
+    if window < 1:
+        window = 60
+    return hour * 60 + minute, window
+
+
+def _within_send_window(local_dt: datetime, start_minute: int, window_minutes: int) -> bool:
+    minute_of_day = local_dt.hour * 60 + local_dt.minute
+    return start_minute <= minute_of_day <= (start_minute + window_minutes)
+
+
+def _extract_inspection_nr(lead: dict) -> str:
+    url = str(lead.get("source_url") or "").strip()
+    match = re.search(r"id=([0-9.]+)", url, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return str(lead.get("inspection_nr") or lead.get("activity_nr") or "").strip()
+
+
+def _legacy_tx_tri_definitions(definitions: dict[str, dict]) -> dict[str, dict]:
+    legacy = dict(definitions)
+    legacy["TX_TRI_LEGACY_AUDIT"] = {
+        "description": "Legacy regex matcher for Texas Triangle (pre-CBSA)",
+        "kind": "LEGACY_REGEX",
+        "states": ["TX"],
+        "office_patterns": [
+            r"\baustin\b",
+            r"\bdallas\b",
+            r"\bfort[\s-]*worth\b",
+            r"\bdallas[\s/-]*fort[\s-]*worth\b",
+            r"\bhouston\b",
+            r"\bsan[\s-]*antonio\b",
+        ],
+        "fallback_city_patterns": [
+            r"\baustin\b",
+            r"\bdallas\b",
+            r"\bfort[\s-]*worth\b",
+            r"\bhouston\b",
+            r"\bpasadena\b",
+            r"\bpearland\b",
+            r"\bsugar[\s-]*land\b",
+            r"\bthe[\s-]*woodlands\b",
+            r"\bkaty\b",
+            r"\bbaytown\b",
+            r"\bsan[\s-]*antonio\b",
+        ],
+    }
+    return legacy
+
+
+def _resolve_inspection(db_path: str, inspection_value: str) -> dict | None:
+    raw = str(inspection_value or "").strip()
+    if not raw:
+        return None
+    base = raw.split(".", 1)[0]
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT activity_nr, lead_key, establishment_name, site_city, site_state, site_zip, mail_zip, area_office, source_url
+            FROM inspections
+            WHERE activity_nr = ?
+               OR activity_nr = ?
+               OR source_url LIKE ?
+               OR source_url LIKE ?
+            ORDER BY activity_nr ASC
+            LIMIT 1
+            """,
+            (raw, base, f"%id={raw}%", f"%id={base}%"),
+        ).fetchone()
+        if not row:
+            return None
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def _check_inspection_status(db_path: str, territory_code: str, inspection_value: str) -> dict:
+    lead = _resolve_inspection(db_path, inspection_value)
+    if not lead:
+        return {
+            "input": inspection_value,
+            "present_in_data": False,
+            "activity_nr": "",
+            "inspection_nr": inspection_value,
+            "territory_code": territory_code,
+            "matched": False,
+            "match_reason": "INSPECTION_NOT_FOUND",
+            "legacy_matched": False,
+            "legacy_reason": "INSPECTION_NOT_FOUND",
+        }
+
+    filtered, _stats, debug_rows = filter_by_territory([lead], territory_code, include_debug=True)
+    current_row = debug_rows[0] if debug_rows else {}
+    definitions = load_territory_definitions()
+    legacy_defs = _legacy_tx_tri_definitions(definitions)
+    legacy_filtered, _legacy_stats, legacy_debug = filter_by_territory(
+        [lead],
+        "TX_TRI_LEGACY_AUDIT",
+        definitions=legacy_defs,
+        include_debug=True,
+    )
+    legacy_row = legacy_debug[0] if legacy_debug else {}
+    return {
+        "input": inspection_value,
+        "present_in_data": True,
+        "activity_nr": str(lead.get("activity_nr") or ""),
+        "inspection_nr": _extract_inspection_nr(lead),
+        "territory_code": territory_code,
+        "matched": bool(filtered),
+        "match_reason": str(current_row.get("match_reason") or ("CBSA_MATCH" if filtered else "CBSA_NO_MATCH")),
+        "legacy_matched": bool(legacy_filtered),
+        "legacy_reason": str(legacy_row.get("match_reason") or ("LEGACY_MATCH" if legacy_filtered else "LEGACY_NO_MATCH")),
+    }
+
+
+def run_wally_audit(
+    *,
+    db_path: str,
+    customer_path: Path,
+    as_of: str,
+    check_inspection: str,
+) -> int:
+    subscriber_key = WALLY_TRIAL_SUBSCRIBER_KEY
+    crm_db = crm_light.resolve_crm_db_path(None)
+    if not crm_db.exists():
+        print(f"CONFIG_ERROR crm_db missing path={crm_db}")
+        return 1
+    if not Path(db_path).exists():
+        print(f"CONFIG_ERROR leads_db missing path={db_path}")
+        return 1
+
+    as_of_date = date.today()
+    if str(as_of or "").strip():
+        as_of_date = date.fromisoformat(str(as_of).strip())
+
+    with crm_light.open_conn(crm_db) as conn:
+        crm_light.init_schema(conn)
+        sub = crm_light.get_subscriber(conn, subscriber_key)
+        trial = crm_light.get_trial_state(conn, subscriber_key)
+        if not sub or not trial:
+            print(f"CONFIG_ERROR missing subscriber/trial state for subscriber_key={subscriber_key}")
+            return 1
+        start_date = str(trial.get("start_date") or "").strip()
+        if not start_date:
+            print("CONFIG_ERROR missing trial start_date")
+            return 1
+        start = date.fromisoformat(start_date)
+        tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
+        primary_recipient = str(sub.get("email") or "").strip().lower()
+        territory_code = str(sub.get("territory_code") or "").strip()
+        rows = conn.execute(
+            """
+            SELECT id, ts_utc, status, variant, run_id, meta_json
+            FROM send_events
+            WHERE subscriber_key = ?
+              AND ts_utc >= ?
+            ORDER BY ts_utc ASC, id ASC
+            """,
+            (subscriber_key, f"{start_date}T00:00:00+00:00"),
+        ).fetchall()
+
+    zone = _resolve_zone(tz_name)
+    trial_events: list[dict] = []
+    for row in rows:
+        status = str(row["status"] or "").strip().upper()
+        if status != "SENT":
+            continue
+        ts_utc = str(row["ts_utc"] or "").strip()
+        dt_utc = _parse_utc_ts(ts_utc)
+        if dt_utc is None:
+            continue
+        meta = _meta_dict(str(row["meta_json"] or ""))
+        variant = str(row["variant"] or "")
+        if not _is_trial_delivery_event(variant=variant, meta=meta, primary_recipient=primary_recipient):
+            continue
+        dt_local = dt_utc.astimezone(zone)
+        trial_events.append(
+            {
+                "id": int(row["id"]),
+                "ts_utc": ts_utc,
+                "local_iso": dt_local.isoformat(),
+                "local_date": dt_local.date().isoformat(),
+                "local_weekday": int(dt_local.weekday()),
+                "run_id": str(row["run_id"] or ""),
+            }
+        )
+
+    expected_dates: list[str] = []
+    d = start
+    while d <= as_of_date:
+        if d.weekday() < 5:
+            expected_dates.append(d.isoformat())
+        d += timedelta(days=1)
+
+    actual_by_date: dict[str, list[dict]] = {}
+    for event in trial_events:
+        if int(event["local_weekday"]) >= 5:
+            continue
+        actual_by_date.setdefault(str(event["local_date"]), []).append(event)
+    missing_dates = [item for item in expected_dates if item not in actual_by_date]
+    duplicate_dates = {k: len(v) for k, v in actual_by_date.items() if len(v) > 1}
+
+    customer_cfg: dict = {}
+    if customer_path.exists():
+        try:
+            customer_cfg = json.loads(customer_path.read_text(encoding="utf-8"))
+        except Exception:
+            customer_cfg = {}
+    send_start_minute, send_window_minutes = _resolve_send_window(customer_cfg)
+    window_violations: list[dict] = []
+    for event in trial_events:
+        local_iso = str(event.get("local_iso") or "")
+        try:
+            local_dt = datetime.fromisoformat(local_iso)
+        except Exception:
+            continue
+        if not _within_send_window(local_dt, send_start_minute, send_window_minutes):
+            window_violations.append(
+                {
+                    "ts_utc": event["ts_utc"],
+                    "local_iso": local_iso,
+                    "local_date": event["local_date"],
+                    "reason": "OUTSIDE_SEND_WINDOW",
+                }
+            )
+
+    # Deterministic no-send rebuild for each expected weekday.
+    states = [str(state).strip().upper() for state in (customer_cfg.get("states") or ["TX"]) if str(state).strip()]
+    if not states:
+        states = ["TX"]
+    content_filter = normalize_content_filter(str(customer_cfg.get("content_filter") or "high_medium"))
+    include_low_fallback = bool(customer_cfg.get("include_low_fallback", True))
+    baseline_on_first_send = bool(customer_cfg.get("baseline_on_first_send", True))
+    territory_for_audit = territory_code or str(customer_cfg.get("territory_code") or "TX_TRI")
+    since_days = int(customer_cfg.get("opened_window_days") or 14)
+    new_only_days = int(customer_cfg.get("new_only_days") or 1)
+
+    leads_conn = sqlite3.connect(db_path)
+    leads_conn.row_factory = sqlite3.Row
+    try:
+        per_day: list[dict] = []
+        all_exclusions: list[dict] = []
+        for expected_date in expected_dates:
+            ref_now = datetime.fromisoformat(f"{expected_date}T12:00:00")
+            prior_events = [item for item in trial_events if str(item.get("local_date") or "") < expected_date]
+            prior_events.sort(key=lambda item: str(item.get("ts_utc") or ""))
+            previous_sent_dt = _parse_utc_ts(prior_events[-1]["ts_utc"]) if prior_events else None
+            snapshot_mode = baseline_on_first_send and previous_sent_dt is None
+            if snapshot_mode:
+                use_opened_window = True
+                skip_first_seen_filter = True
+                window_start = None
+                new_only_cutoff = None
+                strict_first_seen_after = None
+                include_changed = False
+            else:
+                use_opened_window = False
+                skip_first_seen_filter = True
+                window_start = previous_sent_dt
+                new_only_cutoff = None
+                strict_first_seen_after = previous_sent_dt
+                include_changed = False
+
+            leads, _low_fallback, stats, _territory_debug, exclusions = get_leads_for_period(
+                conn=leads_conn,
+                states=states,
+                since_days=since_days,
+                new_only_days=new_only_days,
+                skip_first_seen_filter=skip_first_seen_filter,
+                territory_code=territory_for_audit,
+                content_filter=content_filter,
+                include_low_fallback=include_low_fallback,
+                window_start=window_start,
+                new_only_cutoff=new_only_cutoff,
+                strict_first_seen_after=strict_first_seen_after,
+                include_changed=include_changed,
+                use_opened_window=use_opened_window,
+                reference_now=ref_now,
+                return_debug=True,
+            )
+            per_day.append(
+                {
+                    "date": expected_date,
+                    "expected_send_day": True,
+                    "actual_send_events": len(actual_by_date.get(expected_date, [])),
+                    "included_count": len(leads),
+                    "included_activity_nrs": [str(lead.get("activity_nr") or "") for lead in leads[:50]],
+                    "stats": stats,
+                }
+            )
+            for item in exclusions:
+                row = dict(item)
+                row["as_of_date"] = expected_date
+                row["territory_code"] = territory_for_audit
+                all_exclusions.append(row)
+    finally:
+        leads_conn.close()
+
+    inspection_details = {}
+    if str(check_inspection or "").strip():
+        inspection_details = _check_inspection_status(
+            db_path=db_path,
+            territory_code=territory_for_audit,
+            inspection_value=str(check_inspection),
+        )
+
+    out_dir = crm_light.data_dir() / "trials" / subscriber_key
+    out_dir.mkdir(parents=True, exist_ok=True)
+    audit_events_path = out_dir / "audit_events.json"
+    audit_exclusions_path = out_dir / "audit_exclusions.csv"
+    audit_report_path = out_dir / "audit_report.md"
+
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "subscriber_key": subscriber_key,
+        "as_of_date": as_of_date.isoformat(),
+        "start_date": start_date,
+        "timezone": tz_name,
+        "territory_code": territory_for_audit,
+        "expected_send_dates": expected_dates,
+        "actual_send_dates": sorted(actual_by_date.keys()),
+        "missing_send_dates": missing_dates,
+        "duplicate_send_dates": duplicate_dates,
+        "window_violations": window_violations,
+        "events": trial_events,
+        "per_day": per_day,
+        "check_inspection": inspection_details,
+    }
+    audit_events_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    exclusion_fields = [
+        "as_of_date",
+        "inspection_nr",
+        "lead_key",
+        "activity_nr",
+        "site_city",
+        "site_state",
+        "site_zip",
+        "stage",
+        "reason",
+        "territory_code",
+    ]
+    with open(audit_exclusions_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=exclusion_fields)
+        writer.writeheader()
+        for row in all_exclusions:
+            writer.writerow({field: row.get(field, "") for field in exclusion_fields})
+
+    lines = [
+        "# Wally Trial Audit",
+        "",
+        f"- Subscriber: `{subscriber_key}`",
+        f"- As of: `{as_of_date.isoformat()}`",
+        f"- Territory code: `{territory_for_audit}`",
+        f"- Expected weekday send dates: `{len(expected_dates)}`",
+        f"- Actual send dates: `{len(actual_by_date)}`",
+        f"- Missing send dates: `{', '.join(missing_dates) if missing_dates else 'NONE'}`",
+        f"- Duplicate send dates: `{json.dumps(duplicate_dates) if duplicate_dates else 'NONE'}`",
+        f"- Send window violations: `{len(window_violations)}`",
+        "",
+        f"- `audit_events.json`: `{audit_events_path}`",
+        f"- `audit_exclusions.csv`: `{audit_exclusions_path}`",
+    ]
+    if inspection_details:
+        lines.extend(
+            [
+                "",
+                "## Check Inspection",
+                f"- Input: `{inspection_details.get('input')}`",
+                f"- Present in data: `{inspection_details.get('present_in_data')}`",
+                f"- Activity: `{inspection_details.get('activity_nr')}`",
+                f"- Inspection: `{inspection_details.get('inspection_nr')}`",
+                f"- CBSA matcher: `matched={inspection_details.get('matched')}` reason=`{inspection_details.get('match_reason')}`",
+                f"- Legacy matcher: `matched={inspection_details.get('legacy_matched')}` reason=`{inspection_details.get('legacy_reason')}`",
+            ]
+        )
+    audit_report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    print(f"AUDIT_OK report={audit_report_path}")
+    print(f"AUDIT_EVENTS path={audit_events_path}")
+    print(f"AUDIT_EXCLUSIONS path={audit_exclusions_path}")
+    if inspection_details:
+        print(
+            "CHECK_INSPECTION "
+            f"present={inspection_details.get('present_in_data')} "
+            f"matched={inspection_details.get('matched')} "
+            f"reason={inspection_details.get('match_reason')}"
+        )
+    return 0
 
 
 def run_preview_send(db_path: str, customer_config: str, chase_email: str) -> None:
@@ -659,10 +1128,20 @@ def main() -> None:
         default="",
         help="Optional as-of date YYYY-MM-DD for --status (default: America/New_York today).",
     )
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="Run deterministic no-send audit and write audit artifacts under out/trials/<subscriber_key>/.",
+    )
     parser.add_argument("--out-dir", default="out")
-    parser.add_argument("--territory-code", default="TX_TRIANGLE_V1")
+    parser.add_argument("--territory-code", default="TX_TRI")
     parser.add_argument("--content-filter", default="high_medium")
     parser.add_argument("--lookback-days", type=int, default=14)
+    parser.add_argument(
+        "--check-inspection",
+        default="",
+        help="Optional inspection id/activity id to explain in audit output (e.g., 1874533.015).",
+    )
     parser.add_argument(
         "--chase-email",
         default=(os.getenv("OSHA_SMOKE_TO") or os.getenv("CHASE_EMAIL") or "cchevali+oshasmoke@gmail.com"),
@@ -719,6 +1198,16 @@ def main() -> None:
 
     customer_arg = args.customer_path if args.customer_path else args.customer
     customer_path = resolve_customer_path(customer_arg, repo_root)
+
+    if args.audit:
+        raise SystemExit(
+            run_wally_audit(
+                db_path=args.db,
+                customer_path=customer_path,
+                as_of=str(args.as_of or ""),
+                check_inspection=str(args.check_inspection or ""),
+            )
+        )
 
     if args.print_config:
         print_trial_config(customer_path)
