@@ -5,11 +5,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from geo.zip_cbsa import extract_zip5_from_text, resolve_lead_cbsa
+
 
 DEFAULT_TERRITORIES = {
-    "TX_TRIANGLE_V1": {
-        "description": "Texas Triangle OSHA area offices: Austin, Dallas/Fort Worth, Houston, San Antonio",
+    "TX_TRI": {
+        "display_name": "Texas Triangle",
+        "label": "Texas Triangle (DFW + Houston + San Antonio + Austin)",
+        "description": "Texas Triangle metros resolved by ZIP->CBSA with fallback city matching when CBSA cannot be resolved.",
+        "kind": "CBSA_SET",
         "states": ["TX"],
+        "cbsas": ["19100", "26420", "41700", "12420"],
+        "aliases": ["TX_TRIANGLE_V1", "TX_TRIANGLE", "TX_TRI_V1"],
         "office_patterns": [
             r"\baustin\b",
             r"\bdallas\b",
@@ -32,6 +39,12 @@ DEFAULT_TERRITORIES = {
             r"\bsan[\s-]*antonio\b",
         ],
     }
+}
+
+LEGACY_TERRITORY_ALIASES = {
+    "TX_TRIANGLE_V1": "TX_TRI",
+    "TX_TRIANGLE": "TX_TRI",
+    "TX_TRI_V1": "TX_TRI",
 }
 
 CONTENT_FILTER_ALL = "all"
@@ -85,7 +98,54 @@ def load_territory_definitions(path: str = "territories.json") -> dict[str, dict
                 if isinstance(cfg, dict):
                     definitions[code] = cfg
 
+    # Backward compatibility: alias entries that only define canonical_code should still
+    # behave like the canonical territory when callers access defs[alias] directly.
+    for code in list(definitions.keys()):
+        cfg = definitions.get(code)
+        if not isinstance(cfg, dict):
+            continue
+        canonical_code = str(cfg.get("canonical_code") or "").strip().upper()
+        if not canonical_code:
+            continue
+        canonical_cfg = definitions.get(canonical_code)
+        if not isinstance(canonical_cfg, dict):
+            continue
+        merged = dict(canonical_cfg)
+        merged.update(cfg)
+        merged.setdefault("label", canonical_cfg.get("label") or canonical_cfg.get("description"))
+        definitions[code] = merged
+
     return definitions
+
+
+def resolve_territory_code(
+    territory_code: str | None,
+    definitions: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    raw = str(territory_code or "").strip().upper()
+    if not raw:
+        return ""
+
+    defs = definitions or load_territory_definitions()
+    if raw in defs:
+        canonical = str(defs[raw].get("canonical_code") or raw).strip().upper()
+        if canonical and canonical in defs:
+            return canonical
+        return raw
+
+    target = LEGACY_TERRITORY_ALIASES.get(raw)
+    if target and target in defs:
+        return target
+
+    for code, definition in defs.items():
+        aliases = definition.get("aliases") or []
+        if not isinstance(aliases, list):
+            continue
+        normalized = {str(alias or "").strip().upper() for alias in aliases}
+        if raw in normalized:
+            return str(code).strip().upper()
+
+    return raw
 
 
 def normalize_content_filter(value: str | None) -> str:
@@ -175,21 +235,34 @@ def filter_by_territory(
     leads: list[dict],
     territory_code: str | None,
     definitions: dict[str, dict[str, Any]] | None = None,
-) -> tuple[list[dict], dict[str, int]]:
+    include_debug: bool = False,
+) -> tuple[list[dict], dict[str, int]] | tuple[list[dict], dict[str, int], list[dict[str, Any]]]:
     if not territory_code:
-        return list(leads), {
+        stats = {
             "excluded_state": 0,
             "excluded_territory": 0,
             "matched_by_office": 0,
             "matched_by_fallback": 0,
+            "matched_by_cbsa": 0,
         }
+        if include_debug:
+            return list(leads), stats, []
+        return list(leads), stats
 
     defs = definitions or load_territory_definitions()
-    if territory_code not in defs:
+    requested_code = str(territory_code or "").strip().upper()
+    canonical_code = resolve_territory_code(requested_code, defs)
+    if canonical_code not in defs:
         raise ValueError(f"Unknown territory_code='{territory_code}'")
 
-    territory = defs[territory_code]
+    territory = defs[canonical_code]
     states = [s.upper() for s in territory.get("states", [])]
+    kind = str(territory.get("kind") or "LEGACY_REGEX").strip().upper()
+    cbsa_set = {
+        "".join(ch for ch in str(cbsa or "").strip() if ch.isdigit()).zfill(5)
+        for cbsa in (territory.get("cbsas") or [])
+        if str(cbsa or "").strip()
+    }
     office_patterns = territory.get("office_patterns", [])
     fallback_patterns = territory.get("fallback_city_patterns", [])
 
@@ -199,25 +272,122 @@ def filter_by_territory(
         "excluded_territory": 0,
         "matched_by_office": 0,
         "matched_by_fallback": 0,
+        "matched_by_cbsa": 0,
     }
+    debug_rows: list[dict[str, Any]] = []
+
+    def _inspection_nr_from_lead(lead_row: dict[str, Any]) -> str:
+        url = str(lead_row.get("source_url") or "").strip()
+        match = re.search(r"id=([0-9.]+)", url, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return str(lead_row.get("inspection_nr") or lead_row.get("activity_nr") or "").strip()
+
+    def _add_debug_row(
+        lead_row: dict[str, Any],
+        matched: bool,
+        match_reason: str,
+        resolved_cbsa: str = "",
+    ) -> None:
+        if not include_debug:
+            return
+        debug_rows.append(
+            {
+                "inspection_nr": _inspection_nr_from_lead(lead_row),
+                "lead_key": str(lead_row.get("lead_key") or lead_row.get("activity_nr") or "").strip(),
+                "site_city": str(lead_row.get("site_city") or "").strip(),
+                "site_zip": extract_zip5_from_text(lead_row.get("site_zip")) or "",
+                "resolved_cbsa": resolved_cbsa,
+                "territory_code": canonical_code or requested_code,
+                "matched": "Y" if matched else "N",
+                "match_reason": match_reason,
+            }
+        )
 
     for lead in leads:
         state = str(lead.get("site_state") or "").upper()
         if states and state not in states:
             stats["excluded_state"] += 1
+            _add_debug_row(lead, matched=False, match_reason="STATE_NO_MATCH")
+            continue
+
+        if kind == "CBSA_SET" and cbsa_set:
+            resolution = resolve_lead_cbsa(lead)
+            if resolution.cbsa:
+                if resolution.cbsa in cbsa_set:
+                    filtered.append(lead)
+                    stats["matched_by_cbsa"] += 1
+                    match_reason = "CBSA_MATCH"
+                    if resolution.used_mail_fallback:
+                        match_reason = "FALLBACK_USED|CBSA_MATCH"
+                    _add_debug_row(
+                        lead,
+                        matched=True,
+                        match_reason=match_reason,
+                        resolved_cbsa=resolution.cbsa,
+                    )
+                    continue
+                stats["excluded_territory"] += 1
+                no_match_reason = "CBSA_NO_MATCH"
+                if resolution.used_mail_fallback:
+                    no_match_reason = "FALLBACK_USED|CBSA_NO_MATCH"
+                _add_debug_row(
+                    lead,
+                    matched=False,
+                    match_reason=no_match_reason,
+                    resolved_cbsa=resolution.cbsa,
+                )
+                continue
+
+            # CBSA unavailable. Fall back to legacy pattern matching only in this case.
+            office_text = " ".join(
+                str(lead.get(field) or "")
+                for field in ("area_office", "office", "osha_office")
+            )
+            if office_text.strip() and office_patterns and _matches_any(office_text, office_patterns):
+                filtered.append(lead)
+                stats["matched_by_office"] += 1
+                _add_debug_row(
+                    lead,
+                    matched=True,
+                    match_reason=f"FALLBACK_USED|OFFICE_MATCH|{resolution.reason}",
+                )
+                continue
+
+            fallback_fields = [
+                lead.get("site_city"),
+                lead.get("mail_city"),
+                lead.get("site_address1"),
+            ]
+            city_text = " ".join(_normalize_location_text(value) for value in fallback_fields if value)
+            if fallback_patterns and _matches_any(city_text, fallback_patterns):
+                filtered.append(lead)
+                stats["matched_by_fallback"] += 1
+                _add_debug_row(
+                    lead,
+                    matched=True,
+                    match_reason=f"FALLBACK_USED|{resolution.reason}",
+                )
+                continue
+
+            stats["excluded_territory"] += 1
+            _add_debug_row(
+                lead,
+                matched=False,
+                match_reason=resolution.reason,
+            )
             continue
 
         office_text = " ".join(
             str(lead.get(field) or "")
             for field in ("area_office", "office", "osha_office")
         )
-
         if office_text.strip() and office_patterns and _matches_any(office_text, office_patterns):
             filtered.append(lead)
             stats["matched_by_office"] += 1
+            _add_debug_row(lead, matched=True, match_reason="OFFICE_MATCH")
             continue
 
-        # Equivalent fallback field: city when office metadata is absent in source record.
         fallback_fields = [
             lead.get("site_city"),
             lead.get("mail_city"),
@@ -227,10 +397,14 @@ def filter_by_territory(
         if fallback_patterns and _matches_any(city_text, fallback_patterns):
             filtered.append(lead)
             stats["matched_by_fallback"] += 1
+            _add_debug_row(lead, matched=True, match_reason="FALLBACK_CITY_MATCH")
             continue
 
         stats["excluded_territory"] += 1
+        _add_debug_row(lead, matched=False, match_reason="TERRITORY_NO_MATCH")
 
+    if include_debug:
+        return filtered, stats, debug_rows
     return filtered, stats
 
 

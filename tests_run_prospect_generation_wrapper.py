@@ -34,7 +34,11 @@ class TestRunProspectGenerationWrapper(unittest.TestCase):
 
     def test_two_file_model_for_run_prospect_generation(self):
         self.assertTrue(CANONICAL_SCRIPT.exists(), msg=f"missing canonical implementation: {CANONICAL_SCRIPT}")
-        discovered = {p.resolve().relative_to(REPO_ROOT.resolve()) for p in REPO_ROOT.rglob("run_prospect_generation.py")}
+        discovered = {
+            p.resolve().relative_to(REPO_ROOT.resolve())
+            for p in REPO_ROOT.rglob("run_prospect_generation.py")
+            if not p.resolve().relative_to(REPO_ROOT.resolve()).as_posix().startswith(".local/wip_autosave_worktree/")
+        }
         expected = {EXPECTED_WRAPPER_REL, EXPECTED_CANONICAL_REL}
         self.assertEqual(
             discovered,

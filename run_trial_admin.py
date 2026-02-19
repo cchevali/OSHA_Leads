@@ -17,12 +17,13 @@ except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 import crm_light
-from lead_filters import load_territory_definitions
+from lead_filters import load_territory_definitions, resolve_territory_code
 
 _RE_SUBSCRIBER_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 TERRITORY_ALIASES: dict[str, str] = {
-    "TX_TRI": "TX_TRIANGLE_V1",
-    "TX_TRIANGLE": "TX_TRIANGLE_V1",
+    "TX_TRIANGLE_V1": "TX_TRI",
+    "TX_TRIANGLE": "TX_TRI",
+    "TX_TRI_V1": "TX_TRI",
 }
 DEFAULT_SENDS_LIMIT = 14
 TRIAL_SENDS_TARGET = 14
@@ -77,6 +78,12 @@ def _validate_email(value: str) -> str:
 
 def _normalize_territory(value: str) -> str:
     raw = (value or "").strip().upper()
+    if not raw:
+        return raw
+    defs = load_territory_definitions()
+    canonical = resolve_territory_code(raw, defs)
+    if canonical in defs:
+        return canonical
     return TERRITORY_ALIASES.get(raw, raw)
 
 
@@ -107,7 +114,9 @@ def _resolve_territory_label(territory_code: str) -> str:
     code = (territory_code or "").strip().upper()
     if not code:
         return "{territory_label}"
-    terr = load_territory_definitions().get(code) or {}
+    defs = load_territory_definitions()
+    canonical = resolve_territory_code(code, defs)
+    terr = defs.get(canonical) or defs.get(code) or {}
     label = str(terr.get("description") or "").strip()
     return label or code or "{territory_label}"
 
@@ -247,7 +256,8 @@ def _ensure_schema(db_path: str, schema_path: str) -> None:
 
 def _upsert_territory(conn: sqlite3.Connection, territory_code: str) -> None:
     defs = load_territory_definitions()
-    terr = defs.get(territory_code)
+    canonical_code = resolve_territory_code(territory_code, defs)
+    terr = defs.get(canonical_code) or defs.get(territory_code)
     if not terr:
         raise ValueError(f"unknown territory_code={territory_code}")
     conn.execute(
@@ -263,7 +273,7 @@ def _upsert_territory(conn: sqlite3.Connection, territory_code: str) -> None:
             active=1
         """,
         (
-            territory_code,
+            canonical_code,
             str(terr.get("description") or territory_code),
             json.dumps(list(terr.get("states") or [])),
             json.dumps(list(terr.get("office_patterns") or [])),
@@ -648,7 +658,7 @@ def main(argv: list[str] | None = None) -> int:
     add.add_argument(
         "--territory",
         required=True,
-        help="Territory code or alias (e.g., TX_TRI -> TX_TRIANGLE_V1).",
+        help="Territory code or alias (e.g., TX_TRIANGLE_V1 -> TX_TRI).",
     )
     add.add_argument("--tz", default="America/Chicago")
     add.add_argument("--start-date", required=True, help="YYYY-MM-DD")

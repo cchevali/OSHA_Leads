@@ -26,6 +26,8 @@ PROJECT_CONTEXT_PACK.md
 *.sqlite
 *.db
 *.csv
+!data/geo/*.csv
+!data/geo/*.csv.gz
 
 # Outreach module: keep synthetic sample input committed, ignore generated exports/logs.
 !outreach/sample_prospects.csv

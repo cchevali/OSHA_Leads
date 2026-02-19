@@ -171,6 +171,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
             rel = path.relative_to(REPO_ROOT).as_posix()
             if "/__pycache__/" in ("/" + rel + "/"):
                 continue
+            if rel.startswith(".local/wip_autosave_worktree/"):
+                continue
             matches.append(rel)
         self.assertEqual(matches, ["scripts/scheduled/run_inbound_triage.ps1"], msg=str(matches))
 
