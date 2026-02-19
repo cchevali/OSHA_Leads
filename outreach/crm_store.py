@@ -95,6 +95,24 @@ def init_schema(conn: sqlite3.Connection) -> None:
             ts TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS bounce_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at_utc TEXT NOT NULL,
+            recipient_email TEXT NOT NULL,
+            bounce_class TEXT NOT NULL,
+            smtp_status TEXT NOT NULL DEFAULT '',
+            smtp_code TEXT NOT NULL DEFAULT '',
+            diagnostic_code TEXT NOT NULL DEFAULT '',
+            final_recipient TEXT NOT NULL DEFAULT '',
+            original_to TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL,
+            subject TEXT NOT NULL DEFAULT '',
+            source_message_id TEXT NOT NULL DEFAULT '',
+            source_uid_fingerprint TEXT NOT NULL UNIQUE,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            prospect_id TEXT NOT NULL DEFAULT ''
+        );
+
         CREATE TABLE IF NOT EXISTS trials (
             prospect_id TEXT NOT NULL,
             territory_code TEXT NOT NULL,
@@ -109,6 +127,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_events_prospect ON outreach_events(prospect_id);
         CREATE INDEX IF NOT EXISTS idx_events_type_ts ON outreach_events(event_type, ts);
         CREATE INDEX IF NOT EXISTS idx_trials_status ON trials(status);
+        CREATE INDEX IF NOT EXISTS idx_bounce_events_recipient ON bounce_events(recipient_email);
+        CREATE INDEX IF NOT EXISTS idx_bounce_events_created_at ON bounce_events(created_at_utc);
+        CREATE INDEX IF NOT EXISTS idx_bounce_events_class ON bounce_events(bounce_class);
         """
     )
     ensure_outreach_events_columns(conn)

@@ -13,6 +13,13 @@ param(
   [string] $TrialConversionUrl = '',
   [string] $DataDir = '',
   [string] $ProspectDiscoveryInput = '',
+  [string] $BounceImapHost = '',
+  [Nullable[int]] $BounceImapPort = $null,
+  [string] $BounceImapUser = '',
+  [string] $BounceImapPass = '',
+  [string] $BounceImapFolder = '',
+  [Nullable[int]] $BounceImapSinceHours = $null,
+  [Nullable[int]] $BounceImapMaxMessages = $null,
   [switch] $PrintConfig
 )
 
@@ -192,7 +199,14 @@ try {
     'TrialExpiredBehaviorDefault',
     'TrialConversionUrl',
     'DataDir',
-    'ProspectDiscoveryInput'
+    'ProspectDiscoveryInput',
+    'BounceImapHost',
+    'BounceImapPort',
+    'BounceImapUser',
+    'BounceImapPass',
+    'BounceImapFolder',
+    'BounceImapSinceHours',
+    'BounceImapMaxMessages'
   )
   $hasMutatingArgs = $false
   foreach ($name in $mutatingArgs) {
@@ -226,6 +240,15 @@ try {
   if ($PSBoundParameters.ContainsKey('TrialSendsLimitDefault') -and $TrialSendsLimitDefault -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TrialSendsLimitDefault'
   }
+  if ($PSBoundParameters.ContainsKey('BounceImapPort') -and $BounceImapPort -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapPort'
+  }
+  if ($PSBoundParameters.ContainsKey('BounceImapSinceHours') -and $BounceImapSinceHours -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapSinceHours'
+  }
+  if ($PSBoundParameters.ContainsKey('BounceImapMaxMessages') -and $BounceImapMaxMessages -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapMaxMessages'
+  }
 
   if ($PSBoundParameters.ContainsKey('OutreachStates')) {
     $normStates = Normalize-OutreachStates $OutreachStates
@@ -256,6 +279,26 @@ try {
       if ($srcTokens -notcontains $src) {
         $srcTokens += $src
       }
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('BounceImapHost')) {
+    if (-not (($BounceImapHost -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapHost'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('BounceImapUser')) {
+    if (-not (($BounceImapUser -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapUser'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('BounceImapPass')) {
+    if (-not (($BounceImapPass -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapPass'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('BounceImapFolder')) {
+    if (-not (($BounceImapFolder -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapFolder'
     }
   }
 
@@ -306,6 +349,42 @@ try {
       Set-MapValue -Map $map -Key 'OUTREACH_SUPPRESSION_MAX_AGE_HOURS' -Value ([string]$OutreachSuppressionMaxAgeHours) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'OUTREACH_SUPPRESSION_MAX_AGE_HOURS')) {
       Set-MapValue -Map $map -Key 'OUTREACH_SUPPRESSION_MAX_AGE_HOURS' -Value '240' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('BounceImapHost')) {
+      Set-MapValue -Map $map -Key 'BOUNCE_IMAP_HOST' -Value (($BounceImapHost -as [string]).Trim()) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'BOUNCE_IMAP_HOST')) {
+      Set-MapValue -Map $map -Key 'BOUNCE_IMAP_HOST' -Value 'imappro.zoho.com' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('BounceImapPort')) {
+      Set-MapValue -Map $map -Key 'BOUNCE_IMAP_PORT' -Value ([string]$BounceImapPort) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'BOUNCE_IMAP_PORT')) {
+      Set-MapValue -Map $map -Key 'BOUNCE_IMAP_PORT' -Value '993' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('BounceImapUser')) {
+      Set-MapValue -Map $map -Key 'BOUNCE_IMAP_USER' -Value (($BounceImapUser -as [string]).Trim().ToLowerInvariant()) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'BOUNCE_IMAP_USER')) {
+      Set-MapValue -Map $map -Key 'BOUNCE_IMAP_USER' -Value 'cchevali@zohomail.com' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('BounceImapPass')) {
+      Set-MapValue -Map $map -Key 'BOUNCE_IMAP_PASS' -Value (($BounceImapPass -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('BounceImapFolder')) {
+      Set-MapValue -Map $map -Key 'BOUNCE_IMAP_FOLDER' -Value (($BounceImapFolder -as [string]).Trim()) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'BOUNCE_IMAP_FOLDER')) {
+      Set-MapValue -Map $map -Key 'BOUNCE_IMAP_FOLDER' -Value 'INBOX' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('BounceImapSinceHours')) {
+      Set-MapValue -Map $map -Key 'BOUNCE_IMAP_SINCE_HOURS' -Value ([string]$BounceImapSinceHours) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('BounceImapMaxMessages')) {
+      Set-MapValue -Map $map -Key 'BOUNCE_IMAP_MAX_MESSAGES' -Value ([string]$BounceImapMaxMessages) -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowEnabled')) {
