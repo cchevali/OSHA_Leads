@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=757795bbac01f8346541e19b625bbe3b160b8d28
-PACK_BUILD_UTC=2026-02-19T04:14:06Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=f6bfd62cbe56a1becf3f9c9afd0c5e18389f74671929e467b09383252d9b8de7 docs/DECISIONS.md=12a2f46da4a1fb434e7cffd83cee1a9af240dbbc0e6fe183deab6420327014fa docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=f8b6a7fce6b09a542bffad328b3a12274daff807145850858e1de5809f0446aa docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=5fbfbed234909c40557c85440802bfeb0a3939f4291c713e22c3bd79c5b1fd9a
+PACK_GIT_SHA=2ffb58ae0d0107f63446a782eca85902685175b3
+PACK_BUILD_UTC=2026-02-19T19:08:31Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=733dd12e9e3b680309a96cc8579552afd4574d24a289e5186c89cb6cc9e77ed6 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=9e7157980007a6637935b8f507c067d5f00f2aa2b5e702ced4e75cffec1cd526 docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=bc0eebe9bf8ef05d8e7b2952682e9f27b596387025f31dca205b91723fb5f270
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -648,6 +648,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
   -ProspectAutoGrowEnabled 1 `
+  -ProspectAutoGrowSafetyNetEnabled 1 `
   -ProspectAutoGrowSources AIHA `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
@@ -706,11 +707,13 @@ Drop-folder behavior:
 
 Auto-growth (env-gated, optional):
 
-- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
+- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
 - Source scope v1: `AIHA` only.
 - Cache path: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`.
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
-- `--for-date YYYY-MM-DD` controls `selected_state`, backlog check, and `new_needed` preview in `--print-config` and `--dry-run`.
+- Backlog targeting is evaluated per configured state in `OUTREACH_STATES`.
+- Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
+- `--for-date YYYY-MM-DD` controls `selected_state` plus per-state backlog/new-needed previews in `--print-config` and `--dry-run`.
 
 Dry-run generation (no writes):
 
@@ -737,6 +740,9 @@ Generator emits machine-readable lines:
 - `GENERATOR_INBOX_ROWS_MISSING_STATE`
 - `GENERATOR_INBOX_FILES_ARCHIVED` (live runs only)
 - `GENERATOR_AUTOGROW_*`
+- `GENERATOR_AUTOGROW_SAFETY_NET_FORCED`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
+- `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
+- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n>`
 - `GENERATOR_AIHA_*`
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
@@ -1165,6 +1171,27 @@ One-time historical backfill for prior successful Wally scheduled runs from `out
 cd C:\dev\OSHA_Leads
 py -3 backfill_wally_trial_send_events.py
 ```
+
+Territory definition and deterministic audit commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\print_territory.py --code TX_TRI
+py -3 run_wally_trial.py --audit --check-inspection 1874533.015
+```
+
+Notes:
+- Canonical territory code is `TX_TRI` (`kind=CBSA_SET`, CBSAs `19100,26420,41700,12420`).
+- Legacy aliases remain accepted and resolve to the same canonical matcher: `TX_TRIANGLE_V1`, `TX_TRIANGLE`, `TX_TRI_V1`.
+
+Deterministic ZIP->CBSA rebuild command (from HUD USPS ZIP-CBSA CSV extract):
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --zip-meta-json data\geo\zip_to_cbsa.meta.json --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA <MONTH_OR_QUARTER>"
+```
+
+Operator note: if `data\geo\SOURCES.md` dataset label indicates `seed`/`incomplete`, rebuild from a full nationwide HUD USPS crosswalk file before relying on metro matching for new customers.
 
 ### Add a Trial Participant (No Secrets Required)
 
