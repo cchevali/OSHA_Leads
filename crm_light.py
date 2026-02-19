@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import hashlib
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,61 @@ except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 REPO_ROOT = Path(__file__).resolve().parent
+PLAN_MAX_METROS: dict[str, int] = {
+    "pilot": 4,
+    "core": 4,
+    "multi": 10,
+}
+PAID_PLAN_CODES = {"core", "multi"}
+CRM_SCHEMA_VERSION = 5
+
+
+def normalize_subscriber_key(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def normalize_email(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def normalize_cbsa_code(value: str | None) -> str:
+    digits = "".join(ch for ch in str(value or "").strip() if ch.isdigit())
+    if not digits:
+        return ""
+    return digits.zfill(5)
+
+
+def normalize_plan_code(value: str | None) -> str:
+    text = (value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "pilot": "pilot",
+        "trial": "pilot",
+        "starter": "pilot",
+        "core": "core",
+        "multi": "multi",
+        "multi_territory": "multi",
+        "multi_territory_plan": "multi",
+    }
+    return aliases.get(text, text)
+
+
+def plan_max_metros(plan_code: str | None) -> int | None:
+    normalized = normalize_plan_code(plan_code)
+    if normalized in PLAN_MAX_METROS:
+        return int(PLAN_MAX_METROS[normalized])
+    return None
+
+
+def is_paid_plan(plan_code: str | None) -> bool:
+    return normalize_plan_code(plan_code) in PAID_PLAN_CODES
+
+
+def derive_subscriber_key_from_email(email: str | None) -> str:
+    normalized = normalize_email(email)
+    if not normalized:
+        return ""
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:10]
+    return f"sub_{digest}"
 
 
 def resolve_crm_db_path(db_path: str | Path | None = None) -> Path:
@@ -99,7 +155,129 @@ def init_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _apply_schema_migrations(conn)
     conn.commit()
+
+
+def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_version (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            version INTEGER NOT NULL,
+            updated_at_utc TEXT NOT NULL
+        )
+        """
+    )
+    row = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO schema_version (id, version, updated_at_utc) VALUES (1, 0, ?)",
+            (utc_now_iso(),),
+        )
+
+
+def _get_schema_version(conn: sqlite3.Connection) -> int:
+    _ensure_schema_version_table(conn)
+    row = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()
+    if row is None:
+        return 0
+    return int(row["version"] if isinstance(row, sqlite3.Row) else row[0])
+
+
+def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute(
+        "UPDATE schema_version SET version = ?, updated_at_utc = ? WHERE id = 1",
+        (int(version), utc_now_iso()),
+    )
+
+
+def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
+    version = _get_schema_version(conn)
+
+    if version < 1:
+        _set_schema_version(conn, 1)
+        version = 1
+
+    if version < 2:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stripe_subscription_id TEXT NOT NULL UNIQUE,
+                plan_code TEXT NOT NULL,
+                max_metros INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                customer_email TEXT NOT NULL DEFAULT '',
+                stripe_customer_id TEXT NOT NULL DEFAULT '',
+                source_event_id TEXT NOT NULL DEFAULT '',
+                created_at_utc TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_status
+                ON subscriptions (status);
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_customer_email
+                ON subscriptions (customer_email);
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_customer_id
+                ON subscriptions (stripe_customer_id);
+            """
+        )
+        _set_schema_version(conn, 2)
+        version = 2
+
+    if version < 3:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS subscriber_entitlements (
+                subscriber_key TEXT PRIMARY KEY,
+                email TEXT NOT NULL DEFAULT '',
+                plan_code TEXT NOT NULL,
+                max_metros INTEGER NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT '',
+                created_at_utc TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_subscriber_entitlements_email
+                ON subscriber_entitlements (email);
+            CREATE INDEX IF NOT EXISTS idx_subscriber_entitlements_active
+                ON subscriber_entitlements (active);
+            """
+        )
+        _set_schema_version(conn, 3)
+        version = 3
+
+    if version < 4:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS subscriber_cbsa (
+                subscriber_key TEXT NOT NULL,
+                cbsa_code TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL,
+                PRIMARY KEY (subscriber_key, cbsa_code)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_subscriber_cbsa_subscriber
+                ON subscriber_cbsa (subscriber_key);
+            """
+        )
+        _set_schema_version(conn, 4)
+        version = 4
+
+    if version < 5:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS stripe_event_log (
+                event_id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                processed_at_utc TEXT NOT NULL
+            );
+            """
+        )
+        _set_schema_version(conn, 5)
+        version = 5
 
 
 def ensure_database(db_path: str | Path | None = None) -> Path:
@@ -502,3 +680,445 @@ def get_recent_send_events(conn: sqlite3.Connection, subscriber_key: str, limit:
         (sk, n),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_schema_version(conn: sqlite3.Connection) -> int:
+    return _get_schema_version(conn)
+
+
+def record_stripe_event_once(conn: sqlite3.Connection, event_id: str, event_type: str) -> bool:
+    normalized_event_id = str(event_id or "").strip()
+    if not normalized_event_id:
+        raise ValueError("event_id required")
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO stripe_event_log (event_id, event_type, processed_at_utc)
+        VALUES (?, ?, ?)
+        """,
+        (normalized_event_id, str(event_type or "").strip(), utc_now_iso()),
+    )
+    conn.commit()
+    return int(cur.rowcount or 0) > 0
+
+
+def upsert_subscription(
+    conn: sqlite3.Connection,
+    *,
+    stripe_subscription_id: str,
+    plan_code: str,
+    max_metros: int,
+    status: str,
+    customer_email: str = "",
+    stripe_customer_id: str = "",
+    source_event_id: str = "",
+) -> None:
+    subscription_id = str(stripe_subscription_id or "").strip()
+    if not subscription_id:
+        raise ValueError("stripe_subscription_id required")
+    normalized_plan = normalize_plan_code(plan_code)
+    if not normalized_plan:
+        raise ValueError("plan_code required")
+    max_metros_value = int(max_metros)
+    if max_metros_value < 1:
+        raise ValueError("max_metros must be >= 1")
+    ts = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO subscriptions (
+            stripe_subscription_id,
+            plan_code,
+            max_metros,
+            status,
+            customer_email,
+            stripe_customer_id,
+            source_event_id,
+            created_at_utc,
+            updated_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(stripe_subscription_id) DO UPDATE SET
+            plan_code=excluded.plan_code,
+            max_metros=excluded.max_metros,
+            status=excluded.status,
+            customer_email=excluded.customer_email,
+            stripe_customer_id=excluded.stripe_customer_id,
+            source_event_id=excluded.source_event_id,
+            updated_at_utc=excluded.updated_at_utc
+        """,
+        (
+            subscription_id,
+            normalized_plan,
+            max_metros_value,
+            str(status or "").strip().lower(),
+            normalize_email(customer_email),
+            str(stripe_customer_id or "").strip(),
+            str(source_event_id or "").strip(),
+            ts,
+            ts,
+        ),
+    )
+    conn.commit()
+
+
+def upsert_subscriber_entitlement(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str,
+    email: str,
+    plan_code: str,
+    max_metros: int,
+    active: bool,
+    source: str,
+) -> None:
+    sk = normalize_subscriber_key(subscriber_key)
+    if not sk:
+        raise ValueError("subscriber_key required")
+    normalized_plan = normalize_plan_code(plan_code)
+    if not normalized_plan:
+        raise ValueError("plan_code required")
+    metros = int(max_metros)
+    if metros < 1:
+        raise ValueError("max_metros must be >= 1")
+    ts = utc_now_iso()
+    conn.execute(
+        """
+        INSERT INTO subscriber_entitlements (
+            subscriber_key,
+            email,
+            plan_code,
+            max_metros,
+            active,
+            source,
+            created_at_utc,
+            updated_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(subscriber_key) DO UPDATE SET
+            email=excluded.email,
+            plan_code=excluded.plan_code,
+            max_metros=excluded.max_metros,
+            active=excluded.active,
+            source=excluded.source,
+            updated_at_utc=excluded.updated_at_utc
+        """,
+        (
+            sk,
+            normalize_email(email),
+            normalized_plan,
+            metros,
+            1 if active else 0,
+            str(source or "").strip(),
+            ts,
+            ts,
+        ),
+    )
+    conn.commit()
+
+
+def get_subscriber_entitlement(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str | None = None,
+    email: str | None = None,
+    active_only: bool = True,
+) -> dict[str, Any] | None:
+    sk = normalize_subscriber_key(subscriber_key)
+    em = normalize_email(email)
+    where_clauses: list[str] = []
+    params: list[Any] = []
+    if sk:
+        where_clauses.append("subscriber_key = ?")
+        params.append(sk)
+    if em:
+        where_clauses.append("email = ?")
+        params.append(em)
+    if not where_clauses:
+        return None
+    where = " OR ".join(where_clauses)
+    if active_only:
+        where = f"({where}) AND active = 1"
+    row = conn.execute(
+        f"""
+        SELECT subscriber_key, email, plan_code, max_metros, active, source, created_at_utc, updated_at_utc
+        FROM subscriber_entitlements
+        WHERE {where}
+        ORDER BY updated_at_utc DESC
+        LIMIT 1
+        """,
+        tuple(params),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def replace_subscriber_cbsa_allowlist(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str,
+    cbsa_codes: list[str],
+) -> list[str]:
+    sk = normalize_subscriber_key(subscriber_key)
+    if not sk:
+        raise ValueError("subscriber_key required")
+    normalized = sorted({normalize_cbsa_code(code) for code in cbsa_codes if normalize_cbsa_code(code)})
+    conn.execute("DELETE FROM subscriber_cbsa WHERE subscriber_key = ?", (sk,))
+    ts = utc_now_iso()
+    for code in normalized:
+        conn.execute(
+            """
+            INSERT INTO subscriber_cbsa (subscriber_key, cbsa_code, created_at_utc)
+            VALUES (?, ?, ?)
+            """,
+            (sk, code, ts),
+        )
+    conn.commit()
+    return normalized
+
+
+def get_subscriber_cbsa_allowlist(conn: sqlite3.Connection, subscriber_key: str | None) -> list[str]:
+    sk = normalize_subscriber_key(subscriber_key)
+    if not sk:
+        return []
+    rows = conn.execute(
+        """
+        SELECT cbsa_code
+        FROM subscriber_cbsa
+        WHERE subscriber_key = ?
+        ORDER BY cbsa_code ASC
+        """,
+        (sk,),
+    ).fetchall()
+    return [str(row["cbsa_code"] or "").strip() for row in rows if str(row["cbsa_code"] or "").strip()]
+
+
+def resolve_stripe_price_map_from_env() -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    env_pairs = (
+        ("STRIPE_PRICE_ID_PILOT", "pilot"),
+        ("STRIPE_PRICE_ID_CORE", "core"),
+        ("STRIPE_PRICE_ID_MULTI", "multi"),
+    )
+    for env_key, plan_code in env_pairs:
+        value = str(os.getenv(env_key, "")).strip()
+        if value:
+            mapping[value] = plan_code
+    return mapping
+
+
+def resolve_plan_from_stripe_payload(
+    *,
+    price_id: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[str, int]:
+    normalized_price = str(price_id or "").strip()
+    mapping = resolve_stripe_price_map_from_env()
+    if normalized_price and normalized_price in mapping:
+        code = normalize_plan_code(mapping[normalized_price])
+        metros = plan_max_metros(code)
+        if metros is None:
+            raise ValueError(f"unmapped_plan_code={code}")
+        return code, metros
+
+    metadata_plan = normalize_plan_code(str((metadata or {}).get("plan_code") or ""))
+    if metadata_plan in PLAN_MAX_METROS:
+        return metadata_plan, int(PLAN_MAX_METROS[metadata_plan])
+
+    raise ValueError("ERR_STRIPE_PLAN_MAP_UNRESOLVED")
+
+
+def ingest_stripe_subscription_event(
+    conn: sqlite3.Connection,
+    event_payload: dict[str, Any],
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    event_id = str(event_payload.get("id") or "").strip()
+    event_type = str(event_payload.get("type") or "").strip()
+    data_object = ((event_payload.get("data") or {}).get("object") or {})
+    if not event_id or not event_type or not isinstance(data_object, dict):
+        return {
+            "ok": False,
+            "token": "ERR_STRIPE_EVENT_INVALID",
+            "event_id": event_id,
+            "event_type": event_type,
+        }
+
+    if event_type not in {
+        "customer.subscription.created",
+        "customer.subscription.updated",
+        "customer.subscription.deleted",
+    }:
+        return {
+            "ok": True,
+            "token": "STRIPE_EVENT_IGNORED_UNSUPPORTED_TYPE",
+            "event_id": event_id,
+            "event_type": event_type,
+        }
+
+    if not dry_run:
+        inserted = record_stripe_event_once(conn, event_id, event_type)
+        if not inserted:
+            return {
+                "ok": True,
+                "token": "STRIPE_EVENT_DUPLICATE",
+                "event_id": event_id,
+                "event_type": event_type,
+            }
+
+    subscription_id = str(data_object.get("id") or "").strip()
+    customer_id = str(data_object.get("customer") or "").strip()
+    status = str(data_object.get("status") or "").strip().lower()
+    metadata = data_object.get("metadata") if isinstance(data_object.get("metadata"), dict) else {}
+    items = data_object.get("items") if isinstance(data_object.get("items"), dict) else {}
+    item_rows = items.get("data") if isinstance(items.get("data"), list) else []
+    price_id = ""
+    if item_rows:
+        first_item = item_rows[0] if isinstance(item_rows[0], dict) else {}
+        price = first_item.get("price") if isinstance(first_item.get("price"), dict) else {}
+        price_id = str(price.get("id") or "").strip()
+
+    if not subscription_id:
+        return {
+            "ok": False,
+            "token": "ERR_STRIPE_SUBSCRIPTION_ID_MISSING",
+            "event_id": event_id,
+            "event_type": event_type,
+        }
+
+    try:
+        plan_code, max_metros = resolve_plan_from_stripe_payload(
+            price_id=price_id,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "token": str(exc),
+            "event_id": event_id,
+            "event_type": event_type,
+            "stripe_subscription_id": subscription_id,
+            "stripe_price_id": price_id,
+        }
+
+    email = normalize_email(
+        str(
+            data_object.get("customer_email")
+            or (metadata or {}).get("customer_email")
+            or (metadata or {}).get("email")
+            or ""
+        )
+    )
+    subscriber_key = normalize_subscriber_key(
+        str((metadata or {}).get("subscriber_key") or derive_subscriber_key_from_email(email))
+    )
+    active = status not in {"canceled", "incomplete_expired", "unpaid"}
+
+    if not dry_run:
+        upsert_subscription(
+            conn,
+            stripe_subscription_id=subscription_id,
+            plan_code=plan_code,
+            max_metros=max_metros,
+            status=status or "unknown",
+            customer_email=email,
+            stripe_customer_id=customer_id,
+            source_event_id=event_id,
+        )
+        if subscriber_key:
+            upsert_subscriber_entitlement(
+                conn,
+                subscriber_key=subscriber_key,
+                email=email,
+                plan_code=plan_code,
+                max_metros=max_metros,
+                active=active,
+                source="stripe_webhook_price_id",
+            )
+
+    return {
+        "ok": True,
+        "token": "STRIPE_EVENT_PROCESSED",
+        "event_id": event_id,
+        "event_type": event_type,
+        "stripe_subscription_id": subscription_id,
+        "stripe_customer_id": customer_id,
+        "customer_email": email,
+        "plan_code": plan_code,
+        "max_metros": max_metros,
+        "status": status,
+        "subscriber_key": subscriber_key,
+        "dry_run": bool(dry_run),
+    }
+
+
+def upsert_subscriber_onboarding(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str | None,
+    email: str | None,
+    plan_code: str | None,
+    cbsa_codes: list[str],
+    source: str = "onboarding",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    normalized_email = normalize_email(email)
+    resolved_subscriber_key = normalize_subscriber_key(subscriber_key) or derive_subscriber_key_from_email(normalized_email)
+    if not resolved_subscriber_key:
+        return {"ok": False, "err_code": "ERR_SUBSCRIBER_KEY_REQUIRED"}
+
+    entitlement = get_subscriber_entitlement(
+        conn,
+        subscriber_key=resolved_subscriber_key,
+        email=normalized_email,
+        active_only=True,
+    )
+    effective_plan = ""
+    max_metros_value = None
+    if entitlement:
+        effective_plan = normalize_plan_code(str(entitlement.get("plan_code") or ""))
+        try:
+            max_metros_value = int(entitlement.get("max_metros") or 0)
+        except Exception:
+            max_metros_value = None
+
+    if not effective_plan:
+        effective_plan = normalize_plan_code(plan_code)
+    if max_metros_value is None or max_metros_value < 1:
+        max_metros_value = plan_max_metros(effective_plan)
+    if max_metros_value is None:
+        return {"ok": False, "err_code": "ERR_PLAN_CODE_UNKNOWN", "plan_code": effective_plan}
+
+    normalized_cbsas = sorted({normalize_cbsa_code(code) for code in cbsa_codes if normalize_cbsa_code(code)})
+    if len(normalized_cbsas) > int(max_metros_value):
+        return {
+            "ok": False,
+            "err_code": "ERR_MAX_METROS_EXCEEDED",
+            "selected_count": len(normalized_cbsas),
+            "max_metros": int(max_metros_value),
+            "plan_code": effective_plan,
+            "contact_path": "/contact?source=onboarding&intent=expand",
+        }
+
+    if not dry_run:
+        upsert_subscriber_entitlement(
+            conn,
+            subscriber_key=resolved_subscriber_key,
+            email=normalized_email,
+            plan_code=effective_plan,
+            max_metros=int(max_metros_value),
+            active=True,
+            source=source,
+        )
+        replace_subscriber_cbsa_allowlist(
+            conn,
+            subscriber_key=resolved_subscriber_key,
+            cbsa_codes=normalized_cbsas,
+        )
+
+    return {
+        "ok": True,
+        "subscriber_key": resolved_subscriber_key,
+        "email": normalized_email,
+        "plan_code": effective_plan,
+        "max_metros": int(max_metros_value),
+        "selected_count": len(normalized_cbsas),
+        "cbsa_codes": normalized_cbsas,
+        "dry_run": bool(dry_run),
+    }

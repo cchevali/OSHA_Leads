@@ -413,6 +413,97 @@ def filter_by_territory(
     return filtered, stats
 
 
+def filter_by_cbsa_allowlist(
+    leads: list[dict],
+    cbsa_allowlist: list[str],
+    include_debug: bool = False,
+) -> tuple[list[dict], dict[str, int]] | tuple[list[dict], dict[str, int], list[dict[str, Any]]]:
+    cbsa_set = {
+        "".join(ch for ch in str(cbsa or "").strip() if ch.isdigit()).zfill(5)
+        for cbsa in (cbsa_allowlist or [])
+        if str(cbsa or "").strip()
+    }
+    filtered: list[dict] = []
+    stats = {
+        "excluded_state": 0,
+        "excluded_territory": 0,
+        "matched_by_office": 0,
+        "matched_by_fallback": 0,
+        "matched_by_cbsa": 0,
+    }
+    debug_rows: list[dict[str, Any]] = []
+
+    dataset_incomplete = False
+    if include_debug:
+        dataset_status = zip_cbsa_dataset_status()
+        dataset_incomplete = bool(dataset_status.get("dataset_incomplete"))
+
+    def _inspection_nr_from_lead(lead_row: dict[str, Any]) -> str:
+        url = str(lead_row.get("source_url") or "").strip()
+        match = re.search(r"id=([0-9.]+)", url, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return str(lead_row.get("inspection_nr") or lead_row.get("activity_nr") or "").strip()
+
+    def _add_debug_row(
+        lead_row: dict[str, Any],
+        matched: bool,
+        match_reason: str,
+        resolved_cbsa: str = "",
+    ) -> None:
+        if not include_debug:
+            return
+        debug_rows.append(
+            {
+                "inspection_nr": _inspection_nr_from_lead(lead_row),
+                "lead_key": str(lead_row.get("lead_key") or lead_row.get("activity_nr") or "").strip(),
+                "site_city": str(lead_row.get("site_city") or "").strip(),
+                "site_zip": extract_zip5_from_text(lead_row.get("site_zip")) or "",
+                "resolved_cbsa": resolved_cbsa,
+                "territory_code": "CBSA_ALLOWLIST",
+                "matched": "Y" if matched else "N",
+                "match_reason": match_reason,
+                "dataset_incomplete": dataset_incomplete,
+            }
+        )
+
+    if not cbsa_set:
+        for lead in leads:
+            stats["excluded_territory"] += 1
+            _add_debug_row(lead, matched=False, match_reason="CBSA_ALLOWLIST_EMPTY")
+        if include_debug:
+            return [], stats, debug_rows
+        return [], stats
+
+    for lead in leads:
+        resolution = resolve_lead_cbsa(lead)
+        if resolution.cbsa:
+            if resolution.cbsa in cbsa_set:
+                filtered.append(lead)
+                stats["matched_by_cbsa"] += 1
+                reason = "CBSA_MATCH"
+                if resolution.used_mail_fallback:
+                    reason = "FALLBACK_USED|CBSA_MATCH"
+                _add_debug_row(lead, matched=True, match_reason=reason, resolved_cbsa=resolution.cbsa)
+                continue
+            stats["excluded_territory"] += 1
+            reason = "CBSA_MISMATCH"
+            if resolution.used_mail_fallback:
+                reason = "FALLBACK_USED|CBSA_MISMATCH"
+            _add_debug_row(lead, matched=False, match_reason=reason, resolved_cbsa=resolution.cbsa)
+            continue
+
+        stats["excluded_territory"] += 1
+        reason = f"CBSA_UNRESOLVED|{resolution.reason}"
+        if resolution.used_mail_fallback:
+            reason = f"FALLBACK_USED|{reason}"
+        _add_debug_row(lead, matched=False, match_reason=reason, resolved_cbsa="")
+
+    if include_debug:
+        return filtered, stats, debug_rows
+    return filtered, stats
+
+
 def merge_territory_definition(code: str, definition: dict, path: str = "territories.json") -> None:
     json_path = Path(path)
     current: dict[str, Any] = {}

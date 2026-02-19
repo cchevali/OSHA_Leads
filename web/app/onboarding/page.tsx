@@ -1,19 +1,33 @@
 import type { Metadata } from "next";
 import SectionHeading from "@/components/SectionHeading";
+import OnboardingMetroForm from "@/components/OnboardingMetroForm";
 import site from "@/config/site.json";
+import { loadCbsaOptions } from "@/lib/cbsa";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/onboarding" }
 };
 
-export default function OnboardingPage() {
+type OnboardingPageProps = {
+  searchParams?: {
+    plan?: string;
+    email?: string;
+    subscriber_key?: string;
+  };
+};
+
+export default function OnboardingPage({ searchParams }: OnboardingPageProps) {
+  const options = loadCbsaOptions();
+  const initialPlanCode = String(searchParams?.plan || "core");
+  const initialEmail = String(searchParams?.email || "");
+  const initialSubscriberKey = String(searchParams?.subscriber_key || "");
   return (
     <div className="space-y-16 pb-24 pt-12">
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="Onboarding"
-          title="Onboarding"
-          description="Thanks—now tell us the metros/cities you want covered (2 minutes). We'll confirm fit. Activation within 24 hours. If you already paid, submit details below or reply to your confirmation email."
+          title="Set your metro coverage"
+          description="Select your metros as Census CBSA/MSA boundaries (city + suburbs). We enforce your plan cap on submission so coverage is deterministic."
           align="center"
         />
       </section>
@@ -22,78 +36,18 @@ export default function OnboardingPage() {
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <h2 className="font-display text-2xl text-ink">Submit onboarding details</h2>
           <p className="mt-3 text-sm text-inkMuted">
-            This sends your onboarding details through your default email client to {site.ctaEmail}.
+            Core supports up to 4 metros. Multi-Territory supports up to 10 metros. If you need expansion beyond your cap,
+            submission is blocked and routed to contact.
           </p>
-          <form
-            action={`mailto:${site.ctaEmail}`}
-            method="post"
-            encType="text/plain"
-            className="mt-6 grid gap-4"
-          >
-            <input type="hidden" name="subject" value="Onboarding details" />
-            <label className="grid gap-2 text-sm text-inkMuted">
-              Company
-              <input
-                required
-                type="text"
-                name="company"
-                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
-              />
-            </label>
-            <label className="grid gap-2 text-sm text-inkMuted">
-              Contact name
-              <input
-                required
-                type="text"
-                name="contact_name"
-                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
-              />
-            </label>
-            <label className="grid gap-2 text-sm text-inkMuted">
-              Email
-              <input
-                required
-                type="email"
-                name="email"
-                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
-              />
-            </label>
-            <label className="grid gap-2 text-sm text-inkMuted">
-              Metros to cover (cities or states are fine too — we will translate)
-              <input
-                required
-                type="text"
-                name="metros_or_cities"
-                placeholder="e.g. Miami–Fort Lauderdale, Orlando, Tampa–St. Petersburg, Jacksonville"
-                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
-              />
-            </label>
-            <label className="grid gap-2 text-sm text-inkMuted">
-              Recipients (comma-separated)
-              <input
-                required
-                type="text"
-                name="recipients"
-                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
-              />
-            </label>
-            <label className="grid gap-2 text-sm text-inkMuted">
-              Notes
-              <textarea
-                name="notes"
-                rows={5}
-                className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
-              />
-            </label>
-            <div className="pt-2">
-              <button
-                type="submit"
-                className="inline-flex items-center justify-center rounded-full bg-ocean px-5 py-2 text-sm font-semibold text-white shadow-glow transition hover:bg-oceanDark"
-              >
-                Send onboarding details
-              </button>
-            </div>
-          </form>
+          <OnboardingMetroForm
+            options={options}
+            initialPlanCode={initialPlanCode}
+            initialEmail={initialEmail}
+            initialSubscriberKey={initialSubscriberKey}
+          />
+          <p className="mt-4 text-xs text-inkMuted">
+            Need help mapping cities to CBSA codes? Email {site.ctaEmail}.
+          </p>
         </div>
       </section>
     </div>
