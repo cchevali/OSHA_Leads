@@ -1315,6 +1315,7 @@ def write_trial_territory_debug_artifact(
         "territory_code",
         "matched",
         "match_reason",
+        "dataset_incomplete",
     ]
     with open(out_path, "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
@@ -1330,6 +1331,9 @@ def write_trial_territory_debug_artifact(
                     "territory_code": str(row.get("territory_code") or "").strip(),
                     "matched": str(row.get("matched") or "").strip(),
                     "match_reason": str(row.get("match_reason") or "").strip(),
+                    "dataset_incomplete": str(
+                        str(row.get("dataset_incomplete") or "").strip().lower() in {"1", "true", "yes", "y"}
+                    ).lower(),
                 }
             )
     return str(out_path)
@@ -1523,6 +1527,7 @@ def get_leads_for_period(
                         "site_zip": str(item.get("site_zip") or "").strip(),
                         "stage": "TERRITORY",
                         "reason": str(item.get("match_reason") or "TERRITORY_NO_MATCH"),
+                        "dataset_incomplete": str(bool(item.get("dataset_incomplete"))).lower(),
                     }
                 )
     else:

@@ -1,28 +1,28 @@
 # ZIP->CBSA Data Sources
 
-## Canonical source format
-- Source family: HUD USPS ZIP Code Crosswalk (HUD USER)
-- Endpoint/docs:
-  - https://www.huduser.gov/portal/datasets/usps_crosswalk.html
-  - https://www.huduser.gov/portal/dataset/uspszip-api.html
+## Source
+- Dataset label: `HUD USPS ZIP-CBSA seed bootstrap (coverage incomplete)`
+- Source URL: `https://www.huduser.gov/portal/datasets/usps_crosswalk.html`
+- Provenance family: HUD USPS ZIP Code Crosswalk (HUD USER)
 - License: U.S. Federal Government work (public domain)
+- Input file: `hud_zip_cbsa_seed_input.csv`
+- Input SHA256: `421bf164b47d202133fd9fa33d235a200ee1b5f28edfe1302640a6c09e1da046`
+- Dataset incomplete: `true`
+- Coverage note: committed artifact is a bootstrap subset, not the full nationwide extract.
 
-## Repository snapshot (committed artifacts)
-- `zip_to_cbsa.csv.gz`
-  - Format: `ZIP5,CBSA`
-  - SHA256: `7383ebc66fa9f2487443f059d659153dea97ee845c50b9d892f96725226e30b0`
-  - Note: deterministic bootstrap mapping for runtime/tests; regenerate from full HUD extract with `tools/build_zip_cbsa.py`.
-- `cbsa_meta.csv`
-  - Format: `CBSA,metro_label`
-  - SHA256: `71d566e3916f61f7c5f2751c858135689af6d87d65c82909c1bc1740ae18a41a`
+## Output Artifacts
+- `zip_to_cbsa.csv.gz` SHA256: `e423b14aaa80d3e00075324d3ac3f5f2de29577990a9cb6c33172a8a2fb8c5fe`
+- `cbsa_meta.csv` SHA256: `d53cc8719822add29c8f65745cc1ea22cb4a889b47f3910602dfa8ef4c5b4b45`
+- `zip_to_cbsa.meta.json` SHA256: `40a3615d18e80763a72caffab5f42dac15b947f208f468320b2604215a50813d`
+- ZIP rows written: `12`
+- ZIP rows with multi-CBSA candidates: `0`
 
-## Deterministic rebuild
-Use:
+## Deterministic Tie-Break Rules
+- Primary key: highest residential ratio (`RES_RATIO`).
+- Secondary key (tie): lowest numeric CBSA code.
+- Warning token: `WARN_ZIP_MULTI_CBSA` emitted with count.
 
+## Rebuild Command
 ```powershell
-py -3 tools\build_zip_cbsa.py --input <hud_crosswalk_csv> --out data/geo/zip_to_cbsa.csv.gz --meta data/geo/cbsa_meta.csv
+py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --zip-meta-json data\geo\zip_to_cbsa.meta.json --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA <MONTH_OR_QUARTER>"
 ```
-
-Selection rule when a ZIP maps to multiple CBSAs:
-- Highest residential ratio wins.
-- Ties break by lowest numeric CBSA code.

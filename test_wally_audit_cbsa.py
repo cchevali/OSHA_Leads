@@ -20,6 +20,8 @@ class TestWallyAuditCbsa(unittest.TestCase):
         self._orig_data_dir = os.environ.get("DATA_DIR")
         self._orig_zip_to_cbsa = zip_cbsa.ZIP_TO_CBSA_PATH
         self._orig_cbsa_meta = zip_cbsa.CBSA_META_PATH
+        self._orig_dataset_meta = zip_cbsa.ZIP_TO_CBSA_DATASET_META_PATH
+        self._orig_sources_path = zip_cbsa.ZIP_TO_CBSA_SOURCES_PATH
 
         os.environ["DATA_DIR"] = str(self._tmp_path / "data_dir")
         self.crm_db_path = crm_light.ensure_database(None)
@@ -82,9 +84,26 @@ class TestWallyAuditCbsa(unittest.TestCase):
             writer = csv.writer(fh)
             writer.writerow(["CBSA", "metro_label"])
             writer.writerow(["19100", "Dallas-Fort Worth-Arlington, TX"])
+        dataset_meta_path = self._tmp_path / "zip_to_cbsa.meta.json"
+        dataset_meta_path.write_text(
+            json.dumps(
+                {
+                    "source_label": "HUD USPS ZIP-CBSA seed bootstrap (coverage incomplete)",
+                    "dataset_incomplete": True,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        sources_path = self._tmp_path / "SOURCES.md"
+        sources_path.write_text("# test\n", encoding="utf-8")
 
         zip_cbsa.ZIP_TO_CBSA_PATH = zip_map_path
         zip_cbsa.CBSA_META_PATH = meta_path
+        zip_cbsa.ZIP_TO_CBSA_DATASET_META_PATH = dataset_meta_path
+        zip_cbsa.ZIP_TO_CBSA_SOURCES_PATH = sources_path
         zip_cbsa.clear_caches()
 
     def tearDown(self) -> None:
@@ -94,6 +113,8 @@ class TestWallyAuditCbsa(unittest.TestCase):
             os.environ["DATA_DIR"] = self._orig_data_dir
         zip_cbsa.ZIP_TO_CBSA_PATH = self._orig_zip_to_cbsa
         zip_cbsa.CBSA_META_PATH = self._orig_cbsa_meta
+        zip_cbsa.ZIP_TO_CBSA_DATASET_META_PATH = self._orig_dataset_meta
+        zip_cbsa.ZIP_TO_CBSA_SOURCES_PATH = self._orig_sources_path
         zip_cbsa.clear_caches()
         self._tmp.cleanup()
 
@@ -163,6 +184,40 @@ class TestWallyAuditCbsa(unittest.TestCase):
                     0,
                 ),
             )
+            conn.execute(
+                """
+                INSERT INTO inspections (
+                    lead_id, lead_key, activity_nr, date_opened, inspection_type, scope, case_status,
+                    establishment_name, site_city, site_state, site_zip, mail_zip, area_office, naics, naics_desc,
+                    violations_count, emphasis, lead_score, first_seen_at, last_seen_at, changed_at, source_url, parse_invalid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "lead-9990001",
+                    "lead-9990001",
+                    "9990001",
+                    "2026-02-12",
+                    "Planned",
+                    "Partial",
+                    "Open",
+                    "Fallback Office Co",
+                    "Unknown City",
+                    "TX",
+                    "99999",
+                    "",
+                    "Dallas Area Office",
+                    "236220",
+                    "Commercial Building Construction",
+                    0,
+                    "",
+                    7,
+                    "2026-02-12T09:00:00",
+                    "2026-02-12T09:10:00",
+                    "2026-02-12T09:10:00",
+                    "https://www.osha.gov/ords/imis/establishment.inspection_detail?id=9990001.001",
+                    0,
+                ),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -188,14 +243,33 @@ class TestWallyAuditCbsa(unittest.TestCase):
         self.assertTrue(report_path.exists())
 
         payload = json.loads(events_path.read_text(encoding="utf-8"))
+        self.assertTrue(payload.get("dataset_incomplete"))
         check_payload = payload.get("check_inspection") or {}
         self.assertTrue(check_payload.get("present_in_data"))
         self.assertEqual(check_payload.get("inspection_nr"), "1874533.015")
         self.assertIn("CBSA_MATCH", str(check_payload.get("match_reason") or ""))
+        self.assertTrue(check_payload.get("dataset_incomplete"))
+        exclusions_text = exclusions_path.read_text(encoding="utf-8")
+        self.assertIn("dataset_incomplete", exclusions_text.splitlines()[0])
 
         report = report_path.read_text(encoding="utf-8")
         self.assertIn("## Check Inspection", report)
         self.assertIn("1874533.015", report)
+
+    def test_audit_persists_fallback_reason_tokens(self) -> None:
+        code = run_wally_trial.run_wally_audit(
+            db_path=str(self.leads_db),
+            customer_path=self.customer_path,
+            as_of="2026-02-13",
+            check_inspection="9990001.001",
+        )
+        self.assertEqual(code, 0)
+        out_dir = Path(os.environ["DATA_DIR"]) / "trials" / "wally_trial"
+        payload = json.loads((out_dir / "audit_events.json").read_text(encoding="utf-8"))
+        self.assertTrue(payload.get("dataset_incomplete"))
+        check_payload = payload.get("check_inspection") or {}
+        reason = str(check_payload.get("match_reason") or "")
+        self.assertIn("FALLBACK_USED|OFFICE_MATCH|ZIP_UNKNOWN", reason)
 
 
 if __name__ == "__main__":

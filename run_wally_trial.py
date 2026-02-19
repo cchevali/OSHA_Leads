@@ -29,6 +29,7 @@ import crm_light
 import run_trial_admin
 from send_digest_email import get_leads_for_period
 from lead_filters import filter_by_territory, load_territory_definitions, normalize_content_filter, resolve_territory_code
+from geo.zip_cbsa import zip_cbsa_dataset_status
 
 DEFAULT_TRIAL_TARGET_LOCAL_HHMM = "09:00"
 DEFAULT_TRIAL_CATCHUP_MAX_MINUTES = 180
@@ -412,6 +413,9 @@ def _resolve_inspection(db_path: str, inspection_value: str) -> dict | None:
 
 
 def _check_inspection_status(db_path: str, territory_code: str, inspection_value: str) -> dict:
+    dataset_status = zip_cbsa_dataset_status()
+    dataset_incomplete = bool(dataset_status.get("dataset_incomplete"))
+    dataset_source_label = str(dataset_status.get("source_label") or "").strip()
     lead = _resolve_inspection(db_path, inspection_value)
     if not lead:
         return {
@@ -425,6 +429,8 @@ def _check_inspection_status(db_path: str, territory_code: str, inspection_value
             "match_reason": "INSPECTION_NOT_FOUND",
             "legacy_matched": False,
             "legacy_reason": "INSPECTION_NOT_FOUND",
+            "dataset_incomplete": dataset_incomplete,
+            "dataset_source_label": dataset_source_label,
         }
 
     filtered, _stats, debug_rows = filter_by_territory([lead], territory_code, include_debug=True)
@@ -449,6 +455,8 @@ def _check_inspection_status(db_path: str, territory_code: str, inspection_value
         "match_reason": str(current_row.get("match_reason") or ("CBSA_MATCH" if filtered else "CBSA_NO_MATCH")),
         "legacy_matched": bool(legacy_filtered),
         "legacy_reason": str(legacy_row.get("match_reason") or ("LEGACY_MATCH" if legacy_filtered else "LEGACY_NO_MATCH")),
+        "dataset_incomplete": dataset_incomplete,
+        "dataset_source_label": dataset_source_label,
     }
 
 
@@ -467,6 +475,9 @@ def run_wally_audit(
     if not Path(db_path).exists():
         print(f"CONFIG_ERROR leads_db missing path={db_path}")
         return 1
+    dataset_status = zip_cbsa_dataset_status()
+    dataset_incomplete = bool(dataset_status.get("dataset_incomplete"))
+    dataset_source_label = str(dataset_status.get("source_label") or "").strip()
 
     as_of_date = date.today()
     if str(as_of or "").strip():
@@ -632,6 +643,7 @@ def run_wally_audit(
                 row = dict(item)
                 row["as_of_date"] = expected_date
                 row["territory_code"] = territory_for_audit
+                row.setdefault("dataset_incomplete", str(dataset_incomplete).lower())
                 all_exclusions.append(row)
     finally:
         leads_conn.close()
@@ -657,6 +669,8 @@ def run_wally_audit(
         "start_date": start_date,
         "timezone": tz_name,
         "territory_code": territory_for_audit,
+        "dataset_incomplete": dataset_incomplete,
+        "dataset_source_label": dataset_source_label,
         "expected_send_dates": expected_dates,
         "actual_send_dates": sorted(actual_by_date.keys()),
         "missing_send_dates": missing_dates,
@@ -679,6 +693,7 @@ def run_wally_audit(
         "stage",
         "reason",
         "territory_code",
+        "dataset_incomplete",
     ]
     with open(audit_exclusions_path, "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=exclusion_fields)
@@ -692,6 +707,8 @@ def run_wally_audit(
         f"- Subscriber: `{subscriber_key}`",
         f"- As of: `{as_of_date.isoformat()}`",
         f"- Territory code: `{territory_for_audit}`",
+        f"- ZIP->CBSA dataset incomplete: `{dataset_incomplete}`",
+        f"- ZIP->CBSA source label: `{dataset_source_label or 'UNKNOWN'}`",
         f"- Expected weekday send dates: `{len(expected_dates)}`",
         f"- Actual send dates: `{len(actual_by_date)}`",
         f"- Missing send dates: `{', '.join(missing_dates) if missing_dates else 'NONE'}`",
@@ -712,6 +729,8 @@ def run_wally_audit(
                 f"- Inspection: `{inspection_details.get('inspection_nr')}`",
                 f"- CBSA matcher: `matched={inspection_details.get('matched')}` reason=`{inspection_details.get('match_reason')}`",
                 f"- Legacy matcher: `matched={inspection_details.get('legacy_matched')}` reason=`{inspection_details.get('legacy_reason')}`",
+                f"- ZIP->CBSA dataset incomplete: `{inspection_details.get('dataset_incomplete')}`",
+                f"- ZIP->CBSA source label: `{inspection_details.get('dataset_source_label')}`",
             ]
         )
     audit_report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
