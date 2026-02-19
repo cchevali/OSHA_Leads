@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
 PACK_GIT_SHA=757795bbac01f8346541e19b625bbe3b160b8d28
-PACK_BUILD_UTC=2026-02-19T03:40:34Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=f6bfd62cbe56a1becf3f9c9afd0c5e18389f74671929e467b09383252d9b8de7 docs/DECISIONS.md=12a2f46da4a1fb434e7cffd83cee1a9af240dbbc0e6fe183deab6420327014fa docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=33b8a6f4cfed269e4f2a1545721e5e45ba10a32e82d1d569589b278a8f4700e1 docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=f88c502328640643d0a1d696f8f94c8dbaedde4357dc6653051fa8851c679e5b
+PACK_BUILD_UTC=2026-02-19T04:14:06Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=f6bfd62cbe56a1becf3f9c9afd0c5e18389f74671929e467b09383252d9b8de7 docs/DECISIONS.md=12a2f46da4a1fb434e7cffd83cee1a9af240dbbc0e6fe183deab6420327014fa docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=f8b6a7fce6b09a542bffad328b3a12274daff807145850858e1de5809f0446aa docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=5fbfbed234909c40557c85440802bfeb0a3939f4291c713e22c3bd79c5b1fd9a
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -990,6 +990,40 @@ $rows = Import-Csv .\out\suppression.csv | Where-Object { $_.email }
 $rows | Group-Object { $_.email.ToLowerInvariant().Trim() } | ForEach-Object { $_.Group[0] } |
   Export-Csv -NoTypeInformation -Encoding utf8 .\out\suppression.csv
 ```
+
+### Bounce Import (IMAP Member Mailbox)
+
+Use this importer to ingest DSN bounces (including Zoho moderation notifications) from the mailbox
+that actually receives the moderation notices.
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 outreach\import_bounces_imap.py --print-config
+.\run_with_secrets.ps1 -- py -3 outreach\import_bounces_imap.py --dry-run
+.\run_with_secrets.ps1 -- py -3 outreach\import_bounces_imap.py
+```
+
+Notes:
+
+- `--print-config` is side-effect free and can run without IMAP secrets.
+- Real IMAP runs (`--dry-run` and live apply) should be executed via `.\run_with_secrets.ps1`.
+
+Environment keys:
+
+- `BOUNCE_IMAP_HOST` (default `imappro.zoho.com`)
+- `BOUNCE_IMAP_PORT` (default `993`)
+- `BOUNCE_IMAP_USER` (default `cchevali@zohomail.com`)
+- `BOUNCE_IMAP_PASS` (required; falls back to `IMAP_PASS`)
+- `BOUNCE_IMAP_FOLDER` (default `INBOX`)
+
+Idempotency and state behavior:
+
+- Uses a DATA_DIR-aware state file:
+  `${DATA_DIR}\bounce_import_state.json` (or `.\out\bounce_import_state.json` when `DATA_DIR` is unset)
+- Uses a lock file:
+  `${DATA_DIR}\bounce_import.lock` (or `.\out\bounce_import.lock`)
+- Does **not** mutate IMAP flags/folders (`Seen`/move is not used).
+- Emits `BOUNCE_IMPORT_MODERATION_NOTICE_SEEN=1` when a moderation notice is parsed as a hard bounce.
 
 ### Task Scheduler (PC)
 
