@@ -9,7 +9,7 @@ Use this runbook for executable commands, but resolve policy conflicts in favor 
 
 Rules:
 
-- Start-of-session: if the working tree is dirty, run `scripts\autosave_wip.ps1` before any scoped task work (or rely on scheduled autosave).
+- Start-of-session: if the working tree is dirty, run `.\scripts\autosave_wip.ps1` before any scoped task work (or rely on scheduled autosave).
 - Treat WIP branches as the safety net for drift so "only intended changes" remains enforceable.
 - All nontrivial work happens on a task branch; `main` stays clean.
 
