@@ -152,14 +152,12 @@ class TestBuildZipCbsaHudApi(unittest.TestCase):
             cache_root = tmp / "cache"
 
             latest_payload = {
-                "data": [
-                    {
-                        "year": "2025",
-                        "quarter": "Q4",
-                        "input": "22031",
-                        "results": [{"geoid": "19100", "res_ratio": 1.0}],
-                    }
-                ]
+                "data": {
+                    "year": "2025",
+                    "quarter": "Q4",
+                    "input": "22031",
+                    "results": [{"geoid": "19100", "res_ratio": 1.0}],
+                }
             }
             state_payload = {
                 "data": [

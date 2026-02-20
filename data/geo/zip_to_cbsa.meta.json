@@ -1,13 +1,13 @@
 {
-  "cbsa_meta_csv_sha256": "d53cc8719822add29c8f65745cc1ea22cb4a889b47f3910602dfa8ef4c5b4b45",
-  "dataset_incomplete": true,
-  "input_file": "hud_zip_cbsa_seed_input.csv",
-  "input_sha256": "421bf164b47d202133fd9fa33d235a200ee1b5f28edfe1302640a6c09e1da046",
-  "rows_written": 12,
-  "source_label": "HUD USPS ZIP-CBSA seed bootstrap (coverage incomplete)",
-  "source_url": "https://www.huduser.gov/portal/datasets/usps_crosswalk.html",
+  "cbsa_meta_csv_sha256": "963df3744b947088a700555460a7ee5a7a337c25b6ed88cca9dc91a0f278d751",
+  "dataset_incomplete": false,
+  "input_file": "hud_zip_cbsa_type3.csv",
+  "input_sha256": "2300c01318e3db8ee83f669f82ebef0ae1cb10e45341d6f19e1c97c7ffbf625c",
+  "rows_written": 39298,
+  "source_label": "HUD USPS ZIP-CBSA 2025 Q3",
+  "source_url": "https://www.huduser.gov/portal/dataset/uspszip-api.html",
   "tie_break_rule_primary": "highest RES_RATIO",
   "tie_break_rule_secondary": "lowest numeric CBSA",
-  "zip_multi_cbsa_count": 0,
-  "zip_to_cbsa_csv_gz_sha256": "e423b14aaa80d3e00075324d3ac3f5f2de29577990a9cb6c33172a8a2fb8c5fe"
+  "zip_multi_cbsa_count": 7030,
+  "zip_to_cbsa_csv_gz_sha256": "de78aaa132e35fe8b7b182b0f9c5c069501fc46cc079f45956d6e4d5e5aac8e7"
 }

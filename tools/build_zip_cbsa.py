@@ -215,6 +215,8 @@ def _discover_latest_period(token: str) -> tuple[int, int]:
 
 def _payload_data_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows = payload.get("data")
+    if isinstance(rows, dict):
+        return [rows]
     if not isinstance(rows, list):
         return []
     out: list[dict[str, Any]] = []
