@@ -4,6 +4,7 @@ from lead_filters import (
     apply_content_filter,
     dedupe_by_activity_nr,
     filter_by_territory,
+    load_territory_definitions,
     normalize_content_filter,
 )
 
@@ -87,7 +88,19 @@ class TestLeadFilters(unittest.TestCase):
         self.assertEqual(len(filtered), 0)
         self.assertEqual(stats["matched_by_office"], 0)
         self.assertEqual(stats["matched_by_fallback"], 0)
+        self.assertEqual(debug_rows[0]["inspection_office"], "Dallas Area Office")
         self.assertEqual(debug_rows[0]["match_reason"], "CBSA_UNRESOLVED|ZIP_UNKNOWN")
+
+    def test_tx_tri_definition_is_cbsa_only(self):
+        defs = load_territory_definitions()
+        tx_tri = defs["TX_TRI"]
+        self.assertEqual(str(tx_tri.get("kind") or ""), "CBSA_SET")
+        self.assertEqual(
+            set(str(item) for item in (tx_tri.get("cbsas") or [])),
+            {"19100", "26420", "41700", "12420"},
+        )
+        self.assertFalse(tx_tri.get("office_patterns"))
+        self.assertFalse(tx_tri.get("fallback_city_patterns"))
 
     def test_dedupe_by_activity_nr_keeps_best_score(self):
         leads = [

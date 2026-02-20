@@ -47,7 +47,7 @@ class TestSubscriptionRegistryAuditMatch(unittest.TestCase):
                 cbsa_codes=cbsa_allowlist,
             )
 
-    def _run_audit_match(self, inspection: str) -> dict:
+    def _run_audit_match(self, inspection: str, expect_nonzero: bool = False) -> dict:
         repo_root = Path(__file__).resolve().parent
         env = dict(os.environ)
         env["PYTHONPATH"] = str(repo_root)
@@ -64,7 +64,11 @@ class TestSubscriptionRegistryAuditMatch(unittest.TestCase):
             "--crm-db",
             str(self.crm_db),
         ]
-        proc = subprocess.run(cmd, cwd=str(repo_root), env=env, capture_output=True, text=True, check=True)
+        proc = subprocess.run(cmd, cwd=str(repo_root), env=env, capture_output=True, text=True, check=False)
+        if expect_nonzero:
+            self.assertNotEqual(proc.returncode, 0)
+        else:
+            self.assertEqual(proc.returncode, 0)
         lines = [line.strip() for line in str(proc.stdout or "").splitlines() if line.strip()]
         self.assertTrue(lines)
         return json.loads(lines[-1])
@@ -112,6 +116,10 @@ class TestSubscriptionRegistryAuditMatch(unittest.TestCase):
         self.assertTrue(payload.get("ok"))
         self.assertTrue(payload.get("present_in_data"))
         self.assertFalse(payload.get("matched"))
+        self.assertIn("match_reason", payload)
+        self.assertIn("unmatched_reason", payload)
+        self.assertIn("resolution_source", payload)
+        self.assertEqual(payload.get("match_reason"), "CBSA_UNRESOLVED|ZIP_UNKNOWN")
         self.assertEqual(payload.get("reason_token"), "CBSA_UNRESOLVED|ZIP_UNKNOWN")
         self.assertEqual(payload.get("unmatched_reason"), "CBSA_UNRESOLVED|ZIP_UNKNOWN")
         self.assertEqual(payload.get("inspection_office"), "Dallas Area Office")
@@ -164,13 +172,29 @@ class TestSubscriptionRegistryAuditMatch(unittest.TestCase):
         self.assertTrue(payload.get("ok"))
         self.assertTrue(payload.get("present_in_data"))
         self.assertTrue(payload.get("matched"))
+        self.assertIn("match_reason", payload)
+        self.assertIn("unmatched_reason", payload)
+        self.assertIn("resolution_source", payload)
         self.assertEqual(payload.get("resolved_cbsa"), "12420")
         self.assertEqual(payload.get("resolution_source"), "SITE_COUNTY")
+        self.assertEqual(payload.get("match_reason"), "CBSA_MATCH")
         self.assertEqual(payload.get("reason_token"), "CBSA_MATCH")
         self.assertEqual(payload.get("unmatched_reason"), "")
         self.assertEqual(payload.get("site_city"), "Taylor")
         self.assertEqual(payload.get("site_county"), "Williamson")
         self.assertEqual(payload.get("inspection_office"), "Dallas Area Office")
+
+    def test_audit_match_empty_allowlist_still_emits_contract_fields(self) -> None:
+        self._seed_crm([])
+        payload = self._run_audit_match("no-such-id", expect_nonzero=True)
+        self.assertFalse(payload.get("ok"))
+        self.assertEqual(payload.get("reason_token"), "CBSA_ALLOWLIST_EMPTY")
+        self.assertIn("match_reason", payload)
+        self.assertEqual(payload.get("match_reason"), "")
+        self.assertIn("unmatched_reason", payload)
+        self.assertEqual(payload.get("unmatched_reason"), "CBSA_ALLOWLIST_EMPTY")
+        self.assertIn("resolution_source", payload)
+        self.assertEqual(payload.get("resolution_source"), "NONE")
 
 
 if __name__ == "__main__":

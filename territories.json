@@ -17,30 +17,6 @@
       "TX_TRIANGLE_V1",
       "TX_TRIANGLE",
       "TX_TRI_V1"
-    ],
-    "office_patterns": [
-      "\\baustin\\b",
-      "\\bdallas\\b",
-      "\\bfort[\\s-]*worth\\b",
-      "\\bdallas[\\s/-]*fort[\\s-]*worth\\b",
-      "\\bhouston\\b",
-      "\\bsan[\\s-]*antonio\\b"
-    ],
-    "fallback_city_patterns": [
-      "\\baustin\\b",
-      "\\bdallas\\b",
-      "\\bfort[\\s-]*worth\\b",
-      "\\bfrisco\\b",
-      "\\bplano\\b",
-      "\\birving\\b",
-      "\\bhouston\\b",
-      "\\bpasadena\\b",
-      "\\bpearland\\b",
-      "\\bsugar[\\s-]*land\\b",
-      "\\bthe[\\s-]*woodlands\\b",
-      "\\bkaty\\b",
-      "\\bbaytown\\b",
-      "\\bsan[\\s-]*antonio\\b"
     ]
   },
   "TX_TRIANGLE_V1": {

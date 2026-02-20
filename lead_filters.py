@@ -17,27 +17,6 @@ DEFAULT_TERRITORIES = {
         "states": ["TX"],
         "cbsas": ["19100", "26420", "41700", "12420"],
         "aliases": ["TX_TRIANGLE_V1", "TX_TRIANGLE", "TX_TRI_V1"],
-        "office_patterns": [
-            r"\baustin\b",
-            r"\bdallas\b",
-            r"\bfort[\s-]*worth\b",
-            r"\bdallas[\s/-]*fort[\s-]*worth\b",
-            r"\bhouston\b",
-            r"\bsan[\s-]*antonio\b",
-        ],
-        "fallback_city_patterns": [
-            r"\baustin\b",
-            r"\bdallas\b",
-            r"\bfort[\s-]*worth\b",
-            r"\bhouston\b",
-            r"\bpasadena\b",
-            r"\bpearland\b",
-            r"\bsugar[\s-]*land\b",
-            r"\bthe[\s-]*woodlands\b",
-            r"\bkaty\b",
-            r"\bbaytown\b",
-            r"\bsan[\s-]*antonio\b",
-        ],
     }
 }
 
