@@ -37,11 +37,13 @@ class TestNonTrialGuardrails(unittest.TestCase):
             try:
                 conn.execute("CREATE TABLE suppression_list (email_or_domain TEXT NOT NULL)")
                 conn.execute("INSERT INTO suppression_list(email_or_domain) VALUES (?)", ("blocked@example.com",))
+                conn.execute("INSERT INTO suppression_list(email_or_domain) VALUES (?)", ("blocked-domain.test",))
                 conn.commit()
             finally:
                 conn.close()
 
             self.assertTrue(check_suppression(str(db_path), "blocked@example.com"))
+            self.assertTrue(check_suppression(str(db_path), "user@blocked-domain.test"))
             self.assertFalse(check_suppression(str(db_path), "allowed@example.com"))
 
         with mock.patch.dict(os.environ, {"UNSUB_ENDPOINT_BASE": ""}, clear=False):
@@ -53,6 +55,24 @@ class TestNonTrialGuardrails(unittest.TestCase):
             )
         self.assertEqual(header, "<mailto:support@example.com?subject=unsubscribe>")
         self.assertIsNone(one_click)
+
+    def test_optout_header_tokens_remain_canonical_for_mailto_and_one_click(self) -> None:
+        with mock.patch.dict(os.environ, {"UNSUB_ENDPOINT_BASE": "https://unsub.example.com/unsubscribe"}, clear=False):
+            with mock.patch("send_digest_email.create_unsub_token", return_value="tok123"), mock.patch(
+                "send_digest_email.register_unsub_token",
+                return_value=(True, 200, ""),
+            ):
+                header, one_click, url, token = build_unsubscribe_payload(
+                    recipient="allowed@example.com",
+                    campaign_id="campaign_001",
+                    reply_to_email="support@example.com",
+                    dry_run=True,
+                )
+        self.assertIn("<mailto:support@example.com?subject=unsubscribe>", header)
+        self.assertIn("<https://unsub.example.com/unsubscribe?token=tok123>", header)
+        self.assertEqual(one_click, "List-Unsubscribe=One-Click")
+        self.assertEqual(url, "https://unsub.example.com/unsubscribe?token=tok123")
+        self.assertEqual(token, "tok123")
 
     def test_territory_debug_artifacts_are_trial_scoped_only(self) -> None:
         with tempfile.TemporaryDirectory() as d:
