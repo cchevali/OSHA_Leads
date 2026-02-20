@@ -756,10 +756,21 @@ Important:
 Trial daily sends are now subscriber-keyed and backed by a minimal SQLite CRM-light registry plus an append-only send ledger.
 Trial policy is 14 weekday sends (Mon-Fri); send-limit is the trial target and weekend/holiday skips extend calendar duration naturally.
 
+Canonical semantics (enforced):
+
+- Default trial = `14` weekday sends.
+- Trial length is successful weekday digests only (Mon-Fri), not calendar days.
+- `trial_state.sends_limit` is the effective max weekday sends allowed.
+- `sent_count` is the count of distinct subscriber-local weekday dates with `status=SENT` and `variant=DAILY` (live delivery semantics).
+- `expired = (sent_count >= sends_limit)`.
+- `sent_rows_raw` is telemetry only and is not used for expiry decisions.
+- A `7` calendar-day extension always equals `+5` weekday sends (any 7-day span has 5 weekdays).
+- Holidays are not modeled; only weekends are excluded.
+
 Source of truth:
 
 - Subscriber registry + trial latches: `out/crm_light.sqlite` (or `${env:DATA_DIR}\crm_light.sqlite` when `DATA_DIR` is set)
-- Send ledger: `send_events` (`TRIAL_SENDS_USED` counts distinct subscriber-local weekday dates for `status=SENT` daily LIVE events to the primary recipient; raw `status=SENT` row count remains telemetry via `TRIAL_EXPIRED_BY_SENDS`)
+- Send ledger: `send_events` (`TRIAL_SENDS_USED` counts distinct subscriber-local weekday dates for `status=SENT` daily LIVE events to the primary recipient)
 - Wally scheduled live runs now mirror successful sends into `send_events` automatically (best-effort, no send-path change)
 
 Check trial days-since-start and sends-used (single command, no sends/no writes):

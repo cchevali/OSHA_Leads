@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import contextlib
+import io
 import json
 import os
 import sqlite3
@@ -20,13 +22,19 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self._tmp_path = Path(self._tmp.name)
         self._old_data_dir = os.environ.get("DATA_DIR")
+        self._old_trial_limit_default = os.environ.get("TRIAL_SENDS_LIMIT_DEFAULT")
         os.environ["DATA_DIR"] = str(self._tmp_path / "data")
+        os.environ["TRIAL_SENDS_LIMIT_DEFAULT"] = "14"
 
     def tearDown(self) -> None:
         if self._old_data_dir is None:
             os.environ.pop("DATA_DIR", None)
         else:
             os.environ["DATA_DIR"] = self._old_data_dir
+        if self._old_trial_limit_default is None:
+            os.environ.pop("TRIAL_SENDS_LIMIT_DEFAULT", None)
+        else:
+            os.environ["TRIAL_SENDS_LIMIT_DEFAULT"] = self._old_trial_limit_default
         self._tmp.cleanup()
 
     def _build_leads_db(self, path: Path) -> None:
@@ -421,6 +429,156 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
                 "SELECT sends_limit FROM trial_state WHERE subscriber_key = 'trial_active'"
             ).fetchone()
             self.assertEqual(int(row["sends_limit"]), 19)
+
+    def test_extend_all_trials_rejects_non_multiple_of_7(self) -> None:
+        crm_db = crm_light.ensure_database(None)
+        with self.assertRaises(ValueError) as ctx:
+            run_trial_admin.extend_all_trials(
+                days=8,
+                reason="scope_enhancement_2026-02-20",
+                crm_db_path=crm_db,
+            )
+        self.assertEqual(str(ctx.exception), "ERR_TRIAL_EXTENSION_DAYS_NOT_MULTIPLE_OF_7")
+
+    def test_normalize_trials_is_deterministic_and_idempotent(self) -> None:
+        crm_db = crm_light.ensure_database(None)
+        with crm_light.open_conn(crm_db) as conn:
+            crm_light.init_schema(conn)
+            crm_light.upsert_subscriber(
+                conn,
+                subscriber_key="trial_legacy",
+                email="legacy@example.com",
+                territory_code="TX_TRI",
+                tz="America/Chicago",
+                status="trial",
+            )
+            crm_light.upsert_trial_state(
+                conn,
+                subscriber_key="trial_legacy",
+                start_date="2026-02-04",
+                sends_limit=10,
+            )
+            crm_light.upsert_subscriber(
+                conn,
+                subscriber_key="trial_custom",
+                email="custom@example.com",
+                territory_code="TX_TRI",
+                tz="America/Chicago",
+                status="trial",
+            )
+            crm_light.upsert_trial_state(
+                conn,
+                subscriber_key="trial_custom",
+                start_date="2026-02-04",
+                sends_limit=9,
+            )
+            crm_light.record_trial_adjustment_once(
+                conn,
+                subscriber_key="trial_custom",
+                adjustment_key="custom_limit|manual",
+                adjustment_type="CUSTOM_LIMIT",
+                delta_sends=0,
+                reason="custom_limit_manual",
+                meta={"sends_limit": 9},
+                commit=False,
+            )
+            for idx, ts in enumerate(
+                [
+                    "2026-02-20T16:41:08.052314+00:00",
+                    "2026-02-20T17:13:32.292294+00:00",
+                    "2026-02-20T17:32:21.442847+00:00",
+                ]
+            ):
+                crm_light.append_send_event(
+                    conn,
+                    subscriber_key="trial_legacy",
+                    variant="SCOPE_ENHANCEMENT",
+                    status="SCOPE_ENHANCEMENT_SENT",
+                    run_id=f"scope_{idx}",
+                    meta={"from_date": "2026-02-04", "to_date": "2026-02-20"},
+                    ts_utc=ts,
+                )
+            conn.commit()
+
+        first = run_trial_admin.normalize_trials(apply=True, crm_db_path=crm_db)
+        self.assertEqual(first["updated_limits"], 1)
+        self.assertEqual(first["superseded_events"], 2)
+
+        with crm_light.open_conn(crm_db) as conn:
+            legacy_limit = conn.execute(
+                "SELECT sends_limit FROM trial_state WHERE subscriber_key = 'trial_legacy'"
+            ).fetchone()
+            custom_limit = conn.execute(
+                "SELECT sends_limit FROM trial_state WHERE subscriber_key = 'trial_custom'"
+            ).fetchone()
+            self.assertEqual(int(legacy_limit["sends_limit"]), 14)
+            self.assertEqual(int(custom_limit["sends_limit"]), 9)
+            statuses = [
+                str(row["status"] or "")
+                for row in conn.execute(
+                    """
+                    SELECT status
+                    FROM send_events
+                    WHERE subscriber_key = 'trial_legacy'
+                      AND variant = 'SCOPE_ENHANCEMENT'
+                    ORDER BY ts_utc ASC, id ASC
+                    """
+                ).fetchall()
+            ]
+            self.assertEqual(statuses.count("SCOPE_ENHANCEMENT_SENT"), 1)
+            self.assertEqual(statuses.count("SUPERSEDED"), 2)
+
+        second = run_trial_admin.normalize_trials(apply=True, crm_db_path=crm_db)
+        self.assertEqual(second["updated_limits"], 0)
+        self.assertEqual(second["superseded_events"], 0)
+
+    def test_show_includes_effective_fields_and_note(self) -> None:
+        crm_db = crm_light.ensure_database(None)
+        with crm_light.open_conn(crm_db) as conn:
+            crm_light.init_schema(conn)
+            crm_light.upsert_subscriber(
+                conn,
+                subscriber_key="trial_show",
+                email="show@example.com",
+                territory_code="TX_TRI",
+                tz="America/Chicago",
+                status="trial",
+            )
+            crm_light.upsert_trial_state(
+                conn,
+                subscriber_key="trial_show",
+                start_date="2026-02-04",
+                sends_limit=10,
+            )
+            crm_light.append_send_event(
+                conn,
+                subscriber_key="trial_show",
+                variant="DAILY",
+                status="SENT",
+                run_id="live_1",
+                meta={"send_mode": "LIVE", "primary_recipient": "show@example.com"},
+                ts_utc="2026-02-10T15:00:00+00:00",
+            )
+            crm_light.append_send_event(
+                conn,
+                subscriber_key="trial_show",
+                variant="DAILY",
+                status="SENT",
+                run_id="live_dup",
+                meta={"send_mode": "LIVE", "primary_recipient": "show@example.com"},
+                ts_utc="2026-02-10T16:00:00+00:00",
+            )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run_trial_admin.show_trial("trial_show", crm_db_path=crm_db, recent=5)
+        self.assertEqual(code, 0)
+        output = buf.getvalue()
+        self.assertIn("effective_sends_limit=10", output)
+        self.assertIn("default_sends_limit=14", output)
+        self.assertIn("sends_remaining=9", output)
+        self.assertIn("expiry_basis=UNIQUE_WEEKDAY_SENT_DAYS", output)
+        self.assertIn("NOTE sent_rows_raw includes duplicates; expiry uses sent_count only", output)
 
     def test_init_schema_migration_idempotent_for_trial_tables(self) -> None:
         crm_db = crm_light.ensure_database(None)

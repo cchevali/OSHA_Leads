@@ -292,7 +292,7 @@ class TestTrialStatus(unittest.TestCase):
             self.assertEqual(keys, REQUIRED_KEYS)
             self.assertEqual(values["TRIAL_SENDS_USED"], "1")
             self.assertEqual(values["TRIAL_EXPIRED"], "0")
-            self.assertEqual(values["TRIAL_EXPIRED_BY_SENDS"], "1")
+            self.assertEqual(values["TRIAL_EXPIRED_BY_SENDS"], "0")
 
     def test_trial_not_expired_before_day14_below_hard_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

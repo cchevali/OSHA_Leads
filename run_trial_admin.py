@@ -111,6 +111,10 @@ def _resolve_sends_limit_from_state(trial_state: dict[str, Any] | None) -> int:
     return DEFAULT_SENDS_LIMIT
 
 
+def _resolve_default_sends_limit() -> int:
+    return _resolve_sends_limit_from_state(None)
+
+
 def _resolve_conversion_url() -> str:
     return (os.getenv("TRIAL_CONVERSION_URL") or "").strip()
 
@@ -456,6 +460,7 @@ def show_trial(subscriber_key: str, crm_db_path: str | Path | None, recent: int)
 
         start_date = str(trial.get("start_date") or "").strip()
         sends_limit = _resolve_sends_limit_from_state(trial)
+        default_sends_limit = _resolve_default_sends_limit()
         primary_recipient = str(sub.get("email") or "").strip().lower()
         tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
         sent_count = crm_light.count_trial_delivery_days(
@@ -468,6 +473,7 @@ def show_trial(subscriber_key: str, crm_db_path: str | Path | None, recent: int)
         )
         sent_rows_raw = crm_light.count_successful_sends(conn, sk, start_date)
         expired = sent_count >= sends_limit
+        sends_remaining = max(0, int(sends_limit - sent_count))
         last_sent_at = crm_light.get_last_sent_at(conn, sk, start_date=start_date) or ""
         events = crm_light.get_recent_send_events(conn, sk, limit=max(1, int(recent or 10)))
 
@@ -477,12 +483,18 @@ def show_trial(subscriber_key: str, crm_db_path: str | Path | None, recent: int)
     print(f"subscriber_status={str(sub.get('status') or '').strip()}")
     print(f"start_date={start_date}")
     print(f"sends_limit={sends_limit}")
+    print(f"effective_sends_limit={sends_limit}")
+    print(f"default_sends_limit={default_sends_limit}")
     print(f"sent_count={sent_count}")
     print(f"sent_rows_raw={sent_rows_raw}")
+    print(f"sends_remaining={sends_remaining}")
+    print("expiry_basis=UNIQUE_WEEKDAY_SENT_DAYS")
     print(f"expired={'YES' if expired else 'NO'}")
     print(f"notified_at_utc={str(trial.get('notified_at_utc') or '').strip()}")
     print(f"ended_at_utc={str(trial.get('ended_at_utc') or '').strip()}")
     print(f"last_sent_at={last_sent_at}")
+    if sent_rows_raw != sent_count:
+        print("NOTE sent_rows_raw includes duplicates; expiry uses sent_count only")
     print(f"recent_events={len(events)}")
     for event in events:
         ts = str(event.get("ts_utc") or "").strip()
@@ -591,14 +603,13 @@ def build_trial_status(
             primary_recipient=primary_recipient,
             weekdays_only=True,
         )
-        sends_rows_raw = crm_light.count_successful_sends(conn, sk, start_date)
         first_sent = crm_light.get_first_sent_at(conn, sk, start_date=start_date)
         last_sent = crm_light.get_last_sent_at(conn, sk, start_date=start_date)
     finally:
         conn.close()
 
     days_since = (as_of_date - start).days
-    expired_by_sends = 1 if sends_rows_raw >= sends_limit else 0
+    expired_by_sends = 1 if sends_used >= sends_limit else 0
     # Backward-compatible key: now means "14 successful sends elapsed".
     elapsed_14 = 1 if sends_used >= TRIAL_SENDS_TARGET else 0
     trial_expired = 1 if sends_used >= sends_limit else 0
@@ -652,9 +663,10 @@ def print_trial_status(
 
 
 def _calendar_days_to_weekday_sends(days: int) -> int:
-    n = max(0, int(days))
-    weeks, remainder = divmod(n, 7)
-    return int(weeks * 5 + min(remainder, 5))
+    n = int(days)
+    if n < 0 or (n % 7) != 0:
+        raise ValueError("ERR_TRIAL_EXTENSION_DAYS_NOT_MULTIPLE_OF_7")
+    return int((n // 7) * 5)
 
 
 def _resolve_customer_config_for_subscriber(subscriber_key: str, explicit_path: str = "") -> tuple[Path | None, dict[str, Any]]:
@@ -840,7 +852,6 @@ def extend_all_trials(
     skipped_expired = 0
     skipped_idempotent = 0
     scanned = 0
-    adjustment_key_suffix = f"reason={normalized_reason}|days={int(days)}|delta={delta}"
     with crm_light.open_conn(crm_db_path) as conn:
         crm_light.init_schema(conn)
         rows = conn.execute(
@@ -848,6 +859,7 @@ def extend_all_trials(
             SELECT s.subscriber_key, s.email, s.tz, t.start_date, t.sends_limit
             FROM subscribers s
             JOIN trial_state t ON t.subscriber_key = s.subscriber_key
+            WHERE lower(trim(s.status)) = 'trial'
             ORDER BY s.subscriber_key ASC
             """
         ).fetchall()
@@ -867,7 +879,7 @@ def extend_all_trials(
             if sent_count >= sends_limit:
                 skipped_expired += 1
                 continue
-            adjustment_key = f"extend_all_trials|{adjustment_key_suffix}"
+            adjustment_key = f"extend_all_trials|reason={normalized_reason}"
             inserted = crm_light.record_trial_adjustment_once(
                 conn,
                 subscriber_key=sk,
@@ -900,6 +912,149 @@ def extend_all_trials(
         "applied": applied,
         "skipped_expired": skipped_expired,
         "skipped_idempotent": skipped_idempotent,
+    }
+
+
+def _event_meta_dict(raw_json: str) -> dict[str, Any]:
+    text = str(raw_json or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _scope_window_from_meta(raw_meta_json: str) -> tuple[str, str]:
+    meta = _event_meta_dict(raw_meta_json)
+    return (
+        str(meta.get("from_date") or "").strip(),
+        str(meta.get("to_date") or "").strip(),
+    )
+
+
+def _has_custom_limit_adjustment(conn: sqlite3.Connection, subscriber_key: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM trial_adjustments
+        WHERE subscriber_key = ?
+          AND (
+              lower(trim(adjustment_type)) = 'custom_limit'
+              OR lower(trim(reason)) LIKE 'custom_limit%'
+              OR lower(trim(adjustment_key)) LIKE 'custom_limit%'
+          )
+        LIMIT 1
+        """,
+        (str(subscriber_key or "").strip().lower(),),
+    ).fetchone()
+    return row is not None
+
+
+def normalize_trials(*, apply: bool, crm_db_path: str | Path | None) -> dict[str, int]:
+    default_limit = _resolve_default_sends_limit()
+    crm_light.ensure_database(crm_db_path)
+    updated_limits = 0
+    superseded_events = 0
+    skipped = 0
+
+    with crm_light.open_conn(crm_db_path) as conn:
+        crm_light.init_schema(conn)
+        trial_rows = conn.execute(
+            """
+            SELECT s.subscriber_key, t.sends_limit
+            FROM subscribers s
+            JOIN trial_state t ON t.subscriber_key = s.subscriber_key
+            WHERE lower(trim(s.status)) = 'trial'
+            ORDER BY s.subscriber_key ASC
+            """
+        ).fetchall()
+
+        for row in trial_rows:
+            sk = str(row["subscriber_key"] or "").strip().lower()
+            current_limit = _resolve_sends_limit_from_state(dict(row))
+            if current_limit >= default_limit:
+                skipped += 1
+                continue
+            if _has_custom_limit_adjustment(conn, sk):
+                skipped += 1
+                continue
+            delta = int(default_limit - current_limit)
+            if delta <= 0:
+                skipped += 1
+                continue
+
+            inserted = True
+            if apply:
+                inserted = crm_light.record_trial_adjustment_once(
+                    conn,
+                    subscriber_key=sk,
+                    adjustment_key="normalize_to_default|reason=normalize_to_default",
+                    adjustment_type="NORMALIZE_TO_DEFAULT",
+                    delta_sends=delta,
+                    reason="normalize_to_default",
+                    meta={
+                        "old_sends_limit": int(current_limit),
+                        "new_sends_limit": int(default_limit),
+                        "default_sends_limit": int(default_limit),
+                    },
+                    commit=False,
+                )
+            if inserted:
+                updated_limits += 1
+                if apply:
+                    conn.execute(
+                        "UPDATE trial_state SET sends_limit = ? WHERE subscriber_key = ?",
+                        (int(current_limit + delta), sk),
+                    )
+            else:
+                skipped += 1
+
+        sent_rows = conn.execute(
+            """
+            SELECT se.id, se.subscriber_key, se.ts_utc, se.meta_json
+            FROM send_events se
+            JOIN subscribers s ON s.subscriber_key = se.subscriber_key
+            WHERE lower(trim(s.status)) = 'trial'
+              AND se.variant = 'SCOPE_ENHANCEMENT'
+              AND se.status = 'SCOPE_ENHANCEMENT_SENT'
+            ORDER BY se.subscriber_key ASC, se.ts_utc DESC, se.id DESC
+            """
+        ).fetchall()
+
+        grouped: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
+        for row in sent_rows:
+            sk = str(row["subscriber_key"] or "").strip().lower()
+            from_date, to_date = _scope_window_from_meta(str(row["meta_json"] or ""))
+            grouped.setdefault((sk, from_date, to_date), []).append(row)
+
+        superseded_ids: list[int] = []
+        for key_rows in grouped.values():
+            if len(key_rows) <= 1:
+                continue
+            keep_id = int(max(key_rows, key=lambda item: (str(item["ts_utc"] or ""), int(item["id"])))["id"])
+            for row in key_rows:
+                row_id = int(row["id"])
+                if row_id != keep_id:
+                    superseded_ids.append(row_id)
+
+        superseded_events = len(superseded_ids)
+        if apply and superseded_ids:
+            conn.executemany(
+                "UPDATE send_events SET status = 'SUPERSEDED' WHERE id = ?",
+                [(row_id,) for row_id in superseded_ids],
+            )
+
+        if apply:
+            conn.commit()
+
+    return {
+        "updated_limits": int(updated_limits),
+        "superseded_events": int(superseded_events),
+        "skipped": int(skipped),
     }
 
 
@@ -1269,11 +1424,20 @@ def main(argv: list[str] | None = None) -> int:
 
     extend = sub.add_parser(
         "extend-all-trials",
-        help="Extend all active trials by a calendar-day delta converted to weekday sends.",
+        help="Extend all active trials by a calendar-day delta (must be a multiple of 7) converted to weekday sends.",
     )
-    extend.add_argument("--days", type=int, required=True, help="Calendar-day extension (e.g., 7).")
+    extend.add_argument("--days", type=int, required=True, help="Calendar-day extension; must be a multiple of 7 (e.g., 7, 14).")
     extend.add_argument("--reason", required=True, help="Idempotency reason token.")
     extend.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
+
+    normalize = sub.add_parser(
+        "normalize-trials",
+        help="Normalize legacy trial limits and supersede duplicate scope-enhancement send events.",
+    )
+    normalize_mode = normalize.add_mutually_exclusive_group(required=True)
+    normalize_mode.add_argument("--apply", action="store_true")
+    normalize_mode.add_argument("--dry-run", action="store_true")
+    normalize.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
 
     scope = sub.add_parser(
         "scope-enhancement",
@@ -1391,7 +1555,7 @@ def main(argv: list[str] | None = None) -> int:
                 crm_db_path=crm_db,
             )
             print(
-                "OK extend-all-trials "
+                "EXTEND_ALL_TRIALS "
                 f"days={result['days']} "
                 f"weekday_delta={result['weekday_delta']} "
                 f"reason={result['reason']} "
@@ -1400,6 +1564,34 @@ def main(argv: list[str] | None = None) -> int:
                 f"skipped_expired={result['skipped_expired']} "
                 f"skipped_idempotent={result['skipped_idempotent']}"
             )
+            return 0
+        except Exception as exc:
+            if str(exc).strip() == "ERR_TRIAL_EXTENSION_DAYS_NOT_MULTIPLE_OF_7":
+                print("ERR_TRIAL_EXTENSION_DAYS_NOT_MULTIPLE_OF_7", file=sys.stderr)
+                return 1
+            print(f"CONFIG_ERROR {exc}", file=sys.stderr)
+            return 1
+
+    if args.cmd == "normalize-trials":
+        try:
+            result = normalize_trials(
+                apply=bool(args.apply),
+                crm_db_path=crm_db,
+            )
+            if args.apply:
+                print(
+                    "NORMALIZE_TRIALS_APPLIED "
+                    f"updated_limits={result['updated_limits']} "
+                    f"superseded_events={result['superseded_events']} "
+                    f"skipped={result['skipped']}"
+                )
+            else:
+                print(
+                    "NORMALIZE_TRIALS_DRY_RUN "
+                    f"updated_limits={result['updated_limits']} "
+                    f"superseded_events={result['superseded_events']} "
+                    f"skipped={result['skipped']}"
+                )
             return 0
         except Exception as exc:
             print(f"CONFIG_ERROR {exc}", file=sys.stderr)
