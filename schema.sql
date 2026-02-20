@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS inspections (
     site_city TEXT,
     site_state TEXT,
     site_zip TEXT,
+    site_county TEXT,
     area_office TEXT,
     
     -- Mailing address (optional)

@@ -812,6 +812,16 @@ py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_c
 
 Operator note: if `data\geo\SOURCES.md` dataset label indicates `seed`/`incomplete`, rebuild from a full nationwide HUD USPS crosswalk file before relying on metro matching for new customers.
 
+County fallback provenance (`data\geo\county_to_cbsa.csv`):
+- Origin/source: curated deterministic county->CBSA rows derived from official U.S. Census/OMB CBSA county delineation sources.
+- Generation steps:
+1. Select county entries from source delineation tables.
+2. Normalize `state` to USPS 2-letter code.
+3. Normalize `county` by removing `County` suffix and punctuation.
+4. Write explicit `state,county,cbsa` rows to `data\geo\county_to_cbsa.csv`.
+- Expected columns: `state`, `county`, `cbsa`.
+- Runtime normalization: `state` upper alpha only, `county` upper + collapse spaces + strip `COUNTY`, `cbsa` digits only zero-padded to 5.
+
 ## Stripe + Metro Entitlements (CBSA)
 
 Deterministic Stripe plan mapping uses Stripe **price IDs** (no heuristics):
@@ -843,6 +853,12 @@ cd C:\dev\OSHA_Leads
 py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 --subscriber-key sub_example --print-config
 py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 --subscriber-key sub_example
 ```
+
+`audit-match` JSON now includes deterministic CBSA decision fields:
+- Establishment geo: `site_city`, `site_zip`, `mail_zip`, `site_county`
+- Informational office only: `inspection_office` (not used as a CBSA boundary matcher)
+- CBSA resolution: `resolved_cbsa`, `resolution_source`
+- Decision tokens: `reason_token`, `unmatched_reason` (empty when matched)
 
 Safety gate:
 

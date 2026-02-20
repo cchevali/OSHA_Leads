@@ -100,6 +100,7 @@ def compute_record_hash(inspection: dict) -> str:
         "site_city",
         "site_state",
         "site_zip",
+        "site_county",
         "area_office",
         "mail_address1",
         "mail_city",
@@ -650,6 +651,12 @@ def parse_inspection_detail(html: str, url: str) -> dict:
         # SIC
         elif line.startswith("SIC:"):
             data["sic"] = line.split(":", 1)[1].strip()
+
+        # County
+        elif line.startswith("County:") and not data.get("site_county"):
+            county = line.split(":", 1)[1].strip()
+            if county:
+                data["site_county"] = county
     
     # === Parse table data for inspection type, scope, violations ===
     # OSHA detail pages have a specific table structure:
@@ -753,6 +760,8 @@ def parse_inspection_detail(html: str, url: str) -> dict:
             elif label_norm == "establishment name" and not data.get("establishment_name"):
                 if re.search(r"[A-Za-z]", value):
                     data["establishment_name"] = value
+            elif label_norm == "county" and not data.get("site_county"):
+                data["site_county"] = value
             elif label_norm == "total violations" and data.get("violations_count") is None:
                 m = re.search(r"\d+", value)
                 if m:
@@ -865,7 +874,7 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
             "date_opened", "inspection_type", "scope", "case_status", "emphasis",
             "safety_health", "sic", "naics", "naics_desc", "violations_count",
             "serious_violations", "willful_violations", "repeat_violations", "other_violations",
-            "establishment_name", "site_address1", "site_city", "site_state", "site_zip",
+            "establishment_name", "site_address1", "site_city", "site_state", "site_zip", "site_county",
             "area_office", "mail_address1", "mail_city", "mail_state", "mail_zip",
             "report_id", "source_url", "raw_hash", "lead_score", "needs_review", "parse_invalid", "lead_key"
         ]:
@@ -903,7 +912,7 @@ def upsert_inspection(conn: sqlite3.Connection, inspection: dict) -> tuple[bool,
             "emphasis", "safety_health", "sic", "naics", "naics_desc",
             "violations_count", "serious_violations", "willful_violations",
             "repeat_violations", "other_violations", "establishment_name",
-            "site_address1", "site_city", "site_state", "site_zip",
+            "site_address1", "site_city", "site_state", "site_zip", "site_county",
             "area_office", "mail_address1", "mail_city", "mail_state", "mail_zip",
             "report_id", "source_url", "raw_hash", "record_hash", "changed_at",
             "lead_score", "needs_review", "parse_invalid", "first_seen_at", "last_seen_at"
@@ -947,6 +956,10 @@ def ensure_inspection_columns(conn: sqlite3.Connection) -> None:
         cursor.execute("ALTER TABLE inspections ADD COLUMN lead_key TEXT")
         conn.commit()
         logger.info("Added missing inspections.lead_key column")
+    if "site_county" not in existing:
+        cursor.execute("ALTER TABLE inspections ADD COLUMN site_county TEXT")
+        conn.commit()
+        logger.info("Added missing inspections.site_county column")
 
     cursor.execute("SELECT id, activity_nr, establishment_name, site_city, site_state, inspection_type, date_opened FROM inspections WHERE lead_key IS NULL OR trim(lead_key) = ''")
     rows = cursor.fetchall()
