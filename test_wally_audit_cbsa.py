@@ -247,7 +247,8 @@ class TestWallyAuditCbsa(unittest.TestCase):
         check_payload = payload.get("check_inspection") or {}
         self.assertTrue(check_payload.get("present_in_data"))
         self.assertEqual(check_payload.get("inspection_nr"), "1874533.015")
-        self.assertIn("CBSA_MATCH", str(check_payload.get("match_reason") or ""))
+        self.assertIn("CBSA_MATCH", str(check_payload.get("reason_token") or ""))
+        self.assertEqual(str(check_payload.get("unmatched_reason") or ""), "")
         self.assertTrue(check_payload.get("dataset_incomplete"))
         exclusions_text = exclusions_path.read_text(encoding="utf-8")
         self.assertIn("dataset_incomplete", exclusions_text.splitlines()[0])
@@ -268,8 +269,10 @@ class TestWallyAuditCbsa(unittest.TestCase):
         payload = json.loads((out_dir / "audit_events.json").read_text(encoding="utf-8"))
         self.assertTrue(payload.get("dataset_incomplete"))
         check_payload = payload.get("check_inspection") or {}
-        reason = str(check_payload.get("match_reason") or "")
-        self.assertIn("FALLBACK_USED|OFFICE_MATCH|ZIP_UNKNOWN", reason)
+        reason = str(check_payload.get("reason_token") or "")
+        self.assertEqual(reason, "CBSA_UNRESOLVED|ZIP_UNKNOWN")
+        self.assertEqual(str(check_payload.get("unmatched_reason") or ""), "CBSA_UNRESOLVED|ZIP_UNKNOWN")
+        self.assertEqual(str(check_payload.get("inspection_office") or ""), "Dallas Area Office")
 
 
 if __name__ == "__main__":

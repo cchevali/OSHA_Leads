@@ -1364,10 +1364,15 @@ def write_trial_territory_debug_artifact(
         "lead_key",
         "site_city",
         "site_zip",
+        "mail_zip",
+        "site_county",
+        "inspection_office",
         "resolved_cbsa",
+        "resolution_source",
         "territory_code",
         "matched",
         "match_reason",
+        "unmatched_reason",
         "dataset_incomplete",
     ]
     with open(out_path, "w", encoding="utf-8", newline="") as fh:
@@ -1380,10 +1385,15 @@ def write_trial_territory_debug_artifact(
                     "lead_key": str(row.get("lead_key") or "").strip(),
                     "site_city": str(row.get("site_city") or "").strip(),
                     "site_zip": str(row.get("site_zip") or "").strip(),
+                    "mail_zip": str(row.get("mail_zip") or "").strip(),
+                    "site_county": str(row.get("site_county") or "").strip(),
+                    "inspection_office": str(row.get("inspection_office") or "").strip(),
                     "resolved_cbsa": str(row.get("resolved_cbsa") or "").strip(),
+                    "resolution_source": str(row.get("resolution_source") or "").strip(),
                     "territory_code": str(row.get("territory_code") or "").strip(),
                     "matched": str(row.get("matched") or "").strip(),
                     "match_reason": str(row.get("match_reason") or "").strip(),
+                    "unmatched_reason": str(row.get("unmatched_reason") or "").strip(),
                     "dataset_incomplete": str(
                         str(row.get("dataset_incomplete") or "").strip().lower() in {"1", "true", "yes", "y"}
                     ).lower(),
@@ -1449,6 +1459,8 @@ def get_leads_for_period(
         if _has_column(conn, "inspections", "lead_key")
         else "('osha:activity:' || activity_nr) AS lead_key"
     )
+    mail_zip_expr = "mail_zip" if _has_column(conn, "inspections", "mail_zip") else "NULL AS mail_zip"
+    site_county_expr = "site_county" if _has_column(conn, "inspections", "site_county") else "NULL AS site_county"
     area_office_expr = "area_office" if _has_column(conn, "inspections", "area_office") else "NULL AS area_office"
     changed_at_expr = "changed_at" if _has_column(conn, "inspections", "changed_at") else "NULL AS changed_at"
     placeholders = ",".join(["?" for _ in states])
@@ -1466,6 +1478,8 @@ def get_leads_for_period(
             site_city,
             site_state,
             site_zip,
+            {mail_zip_expr},
+            {site_county_expr},
             {area_office_expr},
             naics,
             naics_desc,
@@ -1511,6 +1525,12 @@ def get_leads_for_period(
                 "site_city": str(lead_row.get("site_city") or "").strip(),
                 "site_state": str(lead_row.get("site_state") or "").strip().upper(),
                 "site_zip": str(lead_row.get("site_zip") or "").strip(),
+                "mail_zip": str(lead_row.get("mail_zip") or "").strip(),
+                "site_county": str(lead_row.get("site_county") or "").strip(),
+                "inspection_office": str(lead_row.get("area_office") or "").strip(),
+                "resolved_cbsa": "",
+                "resolution_source": "",
+                "unmatched_reason": reason,
                 "stage": stage,
                 "reason": reason,
             }
@@ -1587,6 +1607,12 @@ def get_leads_for_period(
                         "site_city": str(item.get("site_city") or "").strip(),
                         "site_state": "",
                         "site_zip": str(item.get("site_zip") or "").strip(),
+                        "mail_zip": str(item.get("mail_zip") or "").strip(),
+                        "site_county": str(item.get("site_county") or "").strip(),
+                        "inspection_office": str(item.get("inspection_office") or "").strip(),
+                        "resolved_cbsa": str(item.get("resolved_cbsa") or "").strip(),
+                        "resolution_source": str(item.get("resolution_source") or "").strip(),
+                        "unmatched_reason": str(item.get("unmatched_reason") or item.get("match_reason") or ""),
                         "stage": "TERRITORY",
                         "reason": str(item.get("match_reason") or "TERRITORY_NO_MATCH"),
                         "dataset_incomplete": str(bool(item.get("dataset_incomplete"))).lower(),

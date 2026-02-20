@@ -17,6 +17,7 @@ class TestZipCbsaResolution(unittest.TestCase):
         self._tmp_path = Path(self._tmp.name)
         self._orig_zip_to_cbsa = zip_cbsa.ZIP_TO_CBSA_PATH
         self._orig_cbsa_meta = zip_cbsa.CBSA_META_PATH
+        self._orig_county_to_cbsa = zip_cbsa.COUNTY_TO_CBSA_PATH
         self._orig_dataset_meta = zip_cbsa.ZIP_TO_CBSA_DATASET_META_PATH
         self._orig_sources_path = zip_cbsa.ZIP_TO_CBSA_SOURCES_PATH
 
@@ -33,6 +34,14 @@ class TestZipCbsaResolution(unittest.TestCase):
             writer.writerow(["CBSA", "metro_label"])
             writer.writerow(["19100", "Dallas-Fort Worth-Arlington, TX"])
             writer.writerow(["12420", "Austin-Round Rock-Georgetown, TX"])
+
+        county_map_path = self._tmp_path / "county_to_cbsa.csv"
+        with open(county_map_path, "w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["state", "county", "cbsa"])
+            writer.writerow(["TX", "Williamson", "12420"])
+            writer.writerow(["TX", "Harris", "26420"])
+            writer.writerow(["TX", "Smith", "46340"])
 
         dataset_meta_path = self._tmp_path / "zip_to_cbsa.meta.json"
         dataset_meta_path.write_text(
@@ -52,6 +61,7 @@ class TestZipCbsaResolution(unittest.TestCase):
 
         zip_cbsa.ZIP_TO_CBSA_PATH = zip_map_path
         zip_cbsa.CBSA_META_PATH = meta_path
+        zip_cbsa.COUNTY_TO_CBSA_PATH = county_map_path
         zip_cbsa.ZIP_TO_CBSA_DATASET_META_PATH = dataset_meta_path
         zip_cbsa.ZIP_TO_CBSA_SOURCES_PATH = sources_path
         zip_cbsa.clear_caches()
@@ -59,10 +69,22 @@ class TestZipCbsaResolution(unittest.TestCase):
     def tearDown(self) -> None:
         zip_cbsa.ZIP_TO_CBSA_PATH = self._orig_zip_to_cbsa
         zip_cbsa.CBSA_META_PATH = self._orig_cbsa_meta
+        zip_cbsa.COUNTY_TO_CBSA_PATH = self._orig_county_to_cbsa
         zip_cbsa.ZIP_TO_CBSA_DATASET_META_PATH = self._orig_dataset_meta
         zip_cbsa.ZIP_TO_CBSA_SOURCES_PATH = self._orig_sources_path
         zip_cbsa.clear_caches()
         self._tmp.cleanup()
+
+    def _load_cbsa_regression_cases(self) -> dict[str, dict]:
+        fixture_path = Path(__file__).resolve().parent / "tests" / "fixtures" / "tx_tri_cbsa_regressions.json"
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        cases = payload.get("cases") if isinstance(payload, dict) else []
+        by_name: dict[str, dict] = {}
+        for case in cases or []:
+            name = str((case or {}).get("name") or "").strip()
+            if name:
+                by_name[name] = case
+        return by_name
 
     def test_resolve_zip_75035_to_dfw_cbsa(self) -> None:
         self.assertEqual(zip_cbsa.resolve_cbsa("75035"), "19100")
@@ -88,32 +110,57 @@ class TestZipCbsaResolution(unittest.TestCase):
             else:
                 self.assertEqual(stats, expected)
 
-    def test_fallback_is_only_used_when_cbsa_unresolved(self) -> None:
-        unknown_zip_office = {
+    def test_taylor_tx_resolves_to_austin_cbsa_and_matches_tx_tri(self) -> None:
+        case = self._load_cbsa_regression_cases()["taylor_county_to_austin_cbsa"]
+        lead = dict(case["lead"])
+        resolution = zip_cbsa.resolve_lead_cbsa(lead)
+        self.assertEqual(resolution.cbsa, "12420")
+        self.assertEqual(resolution.resolution_source, "SITE_COUNTY")
+        filtered, _stats, debug_rows = filter_by_territory([lead], "TX_TRI", include_debug=True)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(debug_rows[0]["resolved_cbsa"], "12420")
+        self.assertEqual(debug_rows[0]["resolution_source"], "SITE_COUNTY")
+
+    def test_humble_tx_resolves_to_houston_cbsa_and_matches_tx_tri(self) -> None:
+        case = self._load_cbsa_regression_cases()["humble_county_to_houston_cbsa"]
+        lead = dict(case["lead"])
+        resolution = zip_cbsa.resolve_lead_cbsa(lead)
+        self.assertEqual(resolution.cbsa, "26420")
+        self.assertEqual(resolution.resolution_source, "SITE_COUNTY")
+        filtered, _stats, debug_rows = filter_by_territory([lead], "TX_TRI", include_debug=True)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(debug_rows[0]["resolved_cbsa"], "26420")
+        self.assertEqual(debug_rows[0]["resolution_source"], "SITE_COUNTY")
+
+    def test_tyler_tx_does_not_match_tx_tri_even_if_office_is_dallas(self) -> None:
+        case = self._load_cbsa_regression_cases()["tyler_county_non_tx_tri_cbsa"]
+        lead = dict(case["lead"])
+        resolution = zip_cbsa.resolve_lead_cbsa(lead)
+        self.assertEqual(resolution.cbsa, "46340")
+        self.assertEqual(resolution.resolution_source, "SITE_COUNTY")
+        filtered, stats, debug_rows = filter_by_territory([lead], "TX_TRI", include_debug=True)
+        self.assertEqual(len(filtered), 0)
+        self.assertEqual(stats["matched_by_office"], 0)
+        self.assertEqual(stats["matched_by_fallback"], 0)
+        self.assertIn("CBSA_NO_MATCH", str(debug_rows[0]["match_reason"]))
+        self.assertEqual(debug_rows[0]["inspection_office"], "Dallas Area Office")
+
+    def test_cbsa_set_unresolved_does_not_fallback_to_office_or_city(self) -> None:
+        lead = {
             "activity_nr": "x1",
             "site_state": "TX",
             "site_city": "Frisco",
             "site_zip": "99999",
             "mail_zip": "",
+            "site_county": "",
             "area_office": "Dallas Area Office",
         }
-        filtered, stats, debug_rows = filter_by_territory([unknown_zip_office], "TX_TRI", include_debug=True)
-        self.assertEqual(len(filtered), 1)
-        self.assertEqual(stats["matched_by_office"], 1)
-        self.assertEqual(debug_rows[0]["match_reason"], "FALLBACK_USED|OFFICE_MATCH|ZIP_UNKNOWN")
-
-        missing_zip_office = {
-            "activity_nr": "x2",
-            "site_state": "TX",
-            "site_city": "Plano",
-            "site_zip": "",
-            "mail_zip": "",
-            "area_office": "Dallas Area Office",
-        }
-        filtered2, stats2, debug_rows2 = filter_by_territory([missing_zip_office], "TX_TRI", include_debug=True)
-        self.assertEqual(len(filtered2), 1)
-        self.assertEqual(stats2["matched_by_office"], 1)
-        self.assertEqual(debug_rows2[0]["match_reason"], "FALLBACK_USED|OFFICE_MATCH|ZIP_MISSING")
+        filtered, stats, debug_rows = filter_by_territory([lead], "TX_TRI", include_debug=True)
+        self.assertEqual(len(filtered), 0)
+        self.assertEqual(stats["matched_by_office"], 0)
+        self.assertEqual(stats["matched_by_fallback"], 0)
+        self.assertEqual(debug_rows[0]["match_reason"], "CBSA_UNRESOLVED|ZIP_UNKNOWN")
+        self.assertEqual(debug_rows[0]["unmatched_reason"], "CBSA_UNRESOLVED|ZIP_UNKNOWN")
 
     def test_seed_dataset_warning_token_emitted_once(self) -> None:
         seed_meta_path = self._tmp_path / "zip_to_cbsa.meta.json"

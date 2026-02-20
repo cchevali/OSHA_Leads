@@ -12,6 +12,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ZIP_TO_CBSA_PATH = REPO_ROOT / "data" / "geo" / "zip_to_cbsa.csv.gz"
 CBSA_META_PATH = REPO_ROOT / "data" / "geo" / "cbsa_meta.csv"
+COUNTY_TO_CBSA_PATH = REPO_ROOT / "data" / "geo" / "county_to_cbsa.csv"
 ZIP_TO_CBSA_DATASET_META_PATH = REPO_ROOT / "data" / "geo" / "zip_to_cbsa.meta.json"
 ZIP_TO_CBSA_SOURCES_PATH = REPO_ROOT / "data" / "geo" / "SOURCES.md"
 ZIP5_RE = re.compile(r"(\d{5})(?:-\d{4})?")
@@ -26,6 +27,7 @@ class LeadCbsaResolution:
     cbsa: str | None
     reason: str
     used_mail_fallback: bool
+    resolution_source: str
 
 
 def _normalize_zip5(value: Any) -> str:
@@ -49,9 +51,30 @@ def _normalize_cbsa(value: Any) -> str:
     return digits.zfill(5)
 
 
+def _normalize_state_code(value: Any) -> str:
+    text = re.sub(r"[^A-Za-z]", "", str(value or "").strip().upper())
+    if len(text) == 2:
+        return text
+    return ""
+
+
+def _normalize_county(value: Any) -> str:
+    text = " ".join(str(value or "").strip().upper().split())
+    if not text:
+        return ""
+    text = re.sub(r"\bCOUNTY\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[^A-Z ]", " ", text)
+    return " ".join(text.split())
+
+
 def extract_zip5_from_text(value: Any) -> str | None:
     zip5 = _normalize_zip5(value)
     return zip5 or None
+
+
+def extract_county_from_text(value: Any) -> str | None:
+    county = _normalize_county(value)
+    return county or None
 
 
 def _label_is_incomplete(source_label: str) -> bool:
@@ -159,6 +182,24 @@ def _cbsa_label_map() -> dict[str, str]:
     return mapping
 
 
+@lru_cache(maxsize=1)
+def _county_to_cbsa_map() -> dict[tuple[str, str], str]:
+    mapping: dict[tuple[str, str], str] = {}
+    path = COUNTY_TO_CBSA_PATH
+    if not path.exists():
+        return mapping
+
+    with open(path, "r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            state = _normalize_state_code(row.get("state"))
+            county = _normalize_county(row.get("county"))
+            cbsa = _normalize_cbsa(row.get("cbsa"))
+            if state and county and cbsa:
+                mapping[(state, county)] = cbsa
+    return mapping
+
+
 def resolve_cbsa(zip5: str | None) -> str | None:
     normalized = _normalize_zip5(zip5)
     if not normalized:
@@ -173,8 +214,17 @@ def resolve_metro_label(cbsa: str | None) -> str | None:
     return _cbsa_label_map().get(normalized)
 
 
+def resolve_county_cbsa(state: str | None, county: str | None) -> str | None:
+    state_code = _normalize_state_code(state)
+    county_name = _normalize_county(county)
+    if not state_code or not county_name:
+        return None
+    return _county_to_cbsa_map().get((state_code, county_name))
+
+
 def resolve_lead_cbsa(lead: dict[str, Any]) -> LeadCbsaResolution:
     site_zip = extract_zip5_from_text(lead.get("site_zip"))
+    unresolved_reason = "ZIP_MISSING"
     if site_zip:
         cbsa = resolve_cbsa(site_zip)
         if cbsa:
@@ -183,13 +233,9 @@ def resolve_lead_cbsa(lead: dict[str, Any]) -> LeadCbsaResolution:
                 cbsa=cbsa,
                 reason="CBSA_MATCH",
                 used_mail_fallback=False,
+                resolution_source="SITE_ZIP",
             )
-        return LeadCbsaResolution(
-            zip5=site_zip,
-            cbsa=None,
-            reason="ZIP_UNKNOWN",
-            used_mail_fallback=False,
-        )
+        unresolved_reason = "ZIP_UNKNOWN"
 
     mail_zip = extract_zip5_from_text(lead.get("mail_zip"))
     if mail_zip:
@@ -200,19 +246,36 @@ def resolve_lead_cbsa(lead: dict[str, Any]) -> LeadCbsaResolution:
                 cbsa=cbsa,
                 reason="FALLBACK_USED",
                 used_mail_fallback=True,
+                resolution_source="MAIL_ZIP",
+            )
+        unresolved_reason = "ZIP_UNKNOWN"
+
+    county = extract_county_from_text(lead.get("site_county"))
+    state = _normalize_state_code(lead.get("site_state"))
+    if county and state:
+        cbsa = resolve_county_cbsa(state, county)
+        if cbsa:
+            return LeadCbsaResolution(
+                zip5=site_zip or mail_zip,
+                cbsa=cbsa,
+                reason="FALLBACK_USED",
+                used_mail_fallback=False,
+                resolution_source="SITE_COUNTY",
             )
         return LeadCbsaResolution(
-            zip5=mail_zip,
+            zip5=site_zip or mail_zip,
             cbsa=None,
-            reason="ZIP_UNKNOWN",
-            used_mail_fallback=True,
+            reason="COUNTY_UNKNOWN",
+            used_mail_fallback=False,
+            resolution_source="NONE",
         )
 
     return LeadCbsaResolution(
-        zip5=None,
+        zip5=site_zip or mail_zip,
         cbsa=None,
-        reason="ZIP_MISSING",
-        used_mail_fallback=False,
+        reason=unresolved_reason,
+        used_mail_fallback=bool(mail_zip and not site_zip),
+        resolution_source="NONE",
     )
 
 
@@ -220,5 +283,6 @@ def clear_caches() -> None:
     global _DATASET_WARNING_EMITTED
     _zip_to_cbsa_map.cache_clear()
     _cbsa_label_map.cache_clear()
+    _county_to_cbsa_map.cache_clear()
     _dataset_status.cache_clear()
     _DATASET_WARNING_EMITTED = False
