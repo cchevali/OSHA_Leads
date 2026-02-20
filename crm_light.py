@@ -1085,7 +1085,8 @@ def resolve_plan_from_stripe_payload(
 ) -> tuple[str, int]:
     normalized_price = str(price_id or "").strip()
     mapping = resolve_stripe_price_map_from_env()
-    if not mapping:
+    core_price_id = str(os.getenv("STRIPE_PRICE_ID_CORE", "")).strip()
+    if not mapping or (not core_price_id and normalized_price and normalized_price not in mapping):
         raise ValueError("ERR_STRIPE_PRICE_MAP_MISSING")
     if not normalized_price:
         raise ValueError("ERR_STRIPE_PRICE_ID_MISSING")
