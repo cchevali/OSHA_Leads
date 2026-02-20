@@ -812,6 +812,7 @@ py -3 tools\build_zip_cbsa.py --hud-api --hud-year 2026 --hud-quarter 1 --out da
 ```
 
 Operator note: HUD crosswalk file downloads are login-gated on HUD USER. Use the HUD API token flow above (type `3` / `zip-cbsa`) to rebuild deterministic ZIP->CBSA data.
+Provenance note: API rebuilds record `HUD USPS ZIP Code Crosswalk Files API (type=3 zip-cbsa), year=<YYYY>, quarter=Q<N>` in `data\geo\SOURCES.md`.
 
 County fallback provenance (`data\geo\county_to_cbsa.csv`):
 - Origin/source: curated deterministic county->CBSA rows derived from official U.S. Census/OMB CBSA county delineation sources.
