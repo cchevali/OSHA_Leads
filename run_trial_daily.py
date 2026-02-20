@@ -334,6 +334,8 @@ def _run_send_digest_test_daily(db_path: str, customer_runtime_path: Path, dry_r
         "daily",
         "--smoke-cchevali",
         "--no-state-mutation",
+        "--persist-payload-root",
+        "out",
         "--log-level",
         "ERROR",
     ]
@@ -368,6 +370,8 @@ def _run_deliver_daily(
         "14",
         "--admin-email",
         "support@microflowops.com",
+        "--persist-payload-root",
+        "out",
     ]
     if dry_run:
         cmd.append("--dry-run")

@@ -27,6 +27,7 @@ except Exception:  # pragma: no cover
 from export_daily import export_daily
 import crm_light
 import run_trial_admin
+import trial_audit
 from send_digest_email import get_leads_for_period
 from lead_filters import filter_by_territory, load_territory_definitions, normalize_content_filter, resolve_territory_code
 from geo.zip_cbsa import zip_cbsa_dataset_status
@@ -802,6 +803,167 @@ def run_wally_audit(
     return 0
 
 
+def _compact_diff_keys(keys: list[str], limit: int = 20) -> str:
+    cleaned = [str(item or "").strip() for item in keys if str(item or "").strip()]
+    if not cleaned:
+        return "NONE"
+    if len(cleaned) <= limit:
+        return ",".join(cleaned)
+    return ",".join(cleaned[:limit]) + f",...(+{len(cleaned) - limit})"
+
+
+def run_wally_digest_audit(
+    *,
+    db_path: str,
+    customer_path: Path,
+    for_date: str,
+    subscriber_key: str = WALLY_TRIAL_SUBSCRIBER_KEY,
+) -> int:
+    repo_root = Path(__file__).resolve().parent
+    if not Path(db_path).exists():
+        print(f"CONFIG_ERROR leads_db missing path={db_path}")
+        return 1
+    if not str(for_date or "").strip():
+        print("CONFIG_ERROR for_date required (YYYY-MM-DD)")
+        return 1
+    try:
+        target_date = date.fromisoformat(str(for_date).strip())
+    except Exception:
+        print(f"CONFIG_ERROR invalid for_date={for_date}")
+        return 1
+
+    try:
+        customer_cfg = _load_customer_config_or_exit(customer_path)
+    except SystemExit:
+        return 1
+
+    crm_db = crm_light.resolve_crm_db_path(None)
+    if not crm_db.exists():
+        print(f"CONFIG_ERROR crm_db missing path={crm_db}")
+        return 1
+
+    with crm_light.open_conn(crm_db) as conn:
+        crm_light.init_schema(conn)
+        sub = crm_light.get_subscriber(conn, subscriber_key)
+        trial = crm_light.get_trial_state(conn, subscriber_key)
+    if not sub or not trial:
+        print(f"CONFIG_ERROR missing subscriber/trial state for subscriber_key={subscriber_key}")
+        return 1
+
+    territory_raw = (
+        str(sub.get("territory_code") or "").strip()
+        or str(customer_cfg.get("territory_code") or "TX_TRI").strip()
+    )
+    territory_code = resolve_territory_code(territory_raw, load_territory_definitions())
+    primary_recipient = str(sub.get("email") or "").strip().lower()
+    tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
+
+    events = trial_audit.load_live_daily_events(
+        subscriber_key=subscriber_key,
+        tz_name=tz_name,
+        primary_recipient=primary_recipient,
+        crm_db_path=crm_db,
+    )
+    previous_sent_ts_utc = ""
+    for item in events:
+        local_date = str(item.get("local_date") or "").strip()
+        if not local_date:
+            continue
+        try:
+            event_date = date.fromisoformat(local_date)
+        except Exception:
+            continue
+        if event_date < target_date:
+            previous_sent_ts_utc = str(item.get("ts_utc") or "").strip()
+
+    rendered = trial_audit.load_rendered_digest_for_date(
+        repo_root=repo_root,
+        leads_db_path=db_path,
+        subscriber_key=subscriber_key,
+        for_date=target_date.isoformat(),
+        customer_config=customer_cfg,
+        data_root=repo_root / "out",
+    )
+    window_start_hint = str((rendered.get("diagnostics") or {}).get("window_start") or "").strip()
+    if window_start_hint:
+        previous_sent_ts_utc = window_start_hint
+    lows_enabled = bool(rendered.get("lows_enabled", False))
+    max_first_seen_utc = (
+        str((rendered.get("payload") or {}).get("smtp_sent_at_utc") or "").strip()
+        or str((rendered.get("payload") or {}).get("sent_at_utc") or "").strip()
+        or str((rendered.get("diagnostics") or {}).get("now_local") or "").strip()
+    )
+    expected = trial_audit.compute_expected_daily_digest(
+        leads_db_path=db_path,
+        customer_config=customer_cfg,
+        territory_code=territory_code,
+        for_date=target_date.isoformat(),
+        previous_sent_ts_utc=previous_sent_ts_utc or None,
+        lows_enabled=lows_enabled,
+        max_first_seen_utc=max_first_seen_utc or None,
+    )
+    diff = trial_audit.digest_diff(
+        expected_keys=list(expected.get("shown_lead_keys") or []),
+        rendered_keys=list(rendered.get("shown_lead_keys") or []),
+    )
+    expected_total = len(list(expected.get("shown_lead_keys") or []))
+    rendered_total = len(list(rendered.get("shown_lead_keys") or []))
+    expected_lows = len(list(expected.get("low_available_lead_keys") or []))
+    rendered_tiers = rendered.get("tier_counts") or {}
+    rendered_lows = int(rendered_tiers.get("low", len(list(rendered.get("low_available_lead_keys") or []))))
+
+    pass_ok = (
+        len(diff.get("missing") or []) == 0
+        and len(diff.get("unexpected") or []) == 0
+        and expected_lows == rendered_lows
+    )
+
+    out_dir = crm_light.data_dir() / "trials" / subscriber_key / "audit"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    artifact_path = out_dir / f"audit_digest_{target_date.isoformat()}.json"
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "subscriber_key": subscriber_key,
+        "for_date": target_date.isoformat(),
+        "territory_code": territory_code,
+        "lows_enabled": lows_enabled,
+        "expected": expected,
+        "rendered": rendered,
+        "diff": diff,
+        "expected_total": expected_total,
+        "rendered_total": rendered_total,
+        "expected_lows_available": expected_lows,
+        "rendered_lows_available": rendered_lows,
+        "pass": pass_ok,
+    }
+    artifact_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    if pass_ok:
+        print(
+            "PASS_WALLY_AUDIT_DIGEST_COMPLETE "
+            f"for_date={target_date.isoformat()} "
+            f"expected_total={expected_total} "
+            f"shown={rendered_total} "
+            f"lows_available={expected_lows}"
+        )
+        print(f"AUDIT_DIGEST_JSON path={artifact_path}")
+        return 0
+
+    print(
+        "ERR_WALLY_AUDIT_DIGEST_MISMATCH "
+        f"for_date={target_date.isoformat()} "
+        f"expected_total={expected_total} "
+        f"shown={rendered_total} "
+        f"lows_available={expected_lows} "
+        f"missing={_compact_diff_keys(list(diff.get('missing') or []))} "
+        f"unexpected={_compact_diff_keys(list(diff.get('unexpected') or []))} "
+        f"expected_lows={expected_lows} "
+        f"rendered_lows={rendered_lows}"
+    )
+    print(f"AUDIT_DIGEST_JSON path={artifact_path}")
+    return 1
+
+
 def run_preview_send(db_path: str, customer_config: str, chase_email: str) -> None:
     cmd = [
         sys.executable,
@@ -814,6 +976,8 @@ def run_preview_send(db_path: str, customer_config: str, chase_email: str) -> No
         "daily",
         "--recipient-override",
         chase_email,
+        "--persist-payload-root",
+        "out",
         "--dry-run",
         "--disable-pilot-guard",
     ]
@@ -858,6 +1022,8 @@ def run_live_send(db_path: str, customer_config: str, admin_email: str, send_liv
         "14",
         "--admin-email",
         admin_email,
+        "--persist-payload-root",
+        "out",
     ]
     if send_live:
         cmd.append("--send-live")
@@ -908,6 +1074,8 @@ def run_test_send(db_path: str, customer_config: str) -> None:
         "--smoke-cchevali",
         "--force-starter-snapshot",
         "--no-state-mutation",
+        "--persist-payload-root",
+        "out",
         "--log-level",
         "ERROR",
     ]
@@ -957,6 +1125,8 @@ def run_test_send_daily(db_path: str, customer_config: str, dry_run: bool = Fals
         "daily",
         "--smoke-cchevali",
         "--no-state-mutation",
+        "--persist-payload-root",
+        "out",
         "--log-level",
         "ERROR",
     ]
@@ -1209,6 +1379,16 @@ def main() -> None:
         action="store_true",
         help="Run deterministic no-send audit and write audit artifacts under out/trials/<subscriber_key>/.",
     )
+    parser.add_argument(
+        "--audit-digest",
+        action="store_true",
+        help="Audit a specific daily digest date against expected selection and rendered payload/log artifacts.",
+    )
+    parser.add_argument(
+        "--for-date",
+        default="",
+        help="Date YYYY-MM-DD used by --audit-digest.",
+    )
     parser.add_argument("--out-dir", default="out")
     parser.add_argument("--territory-code", default="TX_TRI")
     parser.add_argument("--content-filter", default="high_medium")
@@ -1282,6 +1462,16 @@ def main() -> None:
                 customer_path=customer_path,
                 as_of=str(args.as_of or ""),
                 check_inspection=str(args.check_inspection or ""),
+            )
+        )
+
+    if args.audit_digest:
+        raise SystemExit(
+            run_wally_digest_audit(
+                db_path=args.db,
+                customer_path=customer_path,
+                for_date=str(args.for_date or ""),
+                subscriber_key=WALLY_TRIAL_SUBSCRIBER_KEY,
             )
         )
 
