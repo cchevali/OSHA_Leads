@@ -19,6 +19,9 @@ HUD_API_URL = "https://www.huduser.gov/hudapi/public/usps"
 HUD_API_SOURCE_URL = "https://www.huduser.gov/portal/dataset/uspszip-api.html"
 HUD_CROSSWALK_SOURCE_URL = "https://www.huduser.gov/portal/datasets/usps_crosswalk.html"
 HUD_API_CROSSWALK_TYPE = "3"  # zip-cbsa
+HUD_API_PERIOD_DISCOVERY_QUERY = "22031"
+DEFAULT_OUT_PATH = "data/geo/zip_to_cbsa.csv.gz"
+DEFAULT_META_PATH = "data/geo/cbsa_meta.csv"
 HUD_API_STATE_CODES = (
     "AL",
     "AK",
@@ -147,8 +150,21 @@ def _build_hud_url(*, query: str, year: int | None, quarter: int | None) -> str:
     return f"{HUD_API_URL}?{urllib.parse.urlencode(params)}"
 
 
-def _hud_get_json(*, state_code: str, token: str, year: int | None, quarter: int | None) -> tuple[dict[str, Any], str]:
-    url = _build_hud_url(query=state_code, year=year, quarter=quarter)
+class HudApiRequestError(RuntimeError):
+    def __init__(self, *, query: str, status: int | None, detail: str | None, url: str) -> None:
+        self.query = query
+        self.status = status
+        self.detail = detail
+        self.url = url
+        if status is not None:
+            message = f"ERR_HUD_API_REQUEST_FAILED state={query} status={status}"
+        else:
+            message = f"ERR_HUD_API_REQUEST_FAILED state={query} detail={detail}"
+        super().__init__(message)
+
+
+def _hud_get_json(*, query: str, token: str, year: int | None, quarter: int | None) -> tuple[dict[str, Any], str]:
+    url = _build_hud_url(query=query, year=year, quarter=quarter)
     req = urllib.request.Request(
         url,
         headers={
@@ -160,17 +176,41 @@ def _hud_get_json(*, state_code: str, token: str, year: int | None, quarter: int
         with urllib.request.urlopen(req, timeout=60) as resp:
             body = resp.read()
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"ERR_HUD_API_REQUEST_FAILED state={state_code} status={exc.code}") from exc
+        raise HudApiRequestError(query=query, status=exc.code, detail=None, url=url) from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"ERR_HUD_API_REQUEST_FAILED state={state_code} detail={exc.reason}") from exc
+        raise HudApiRequestError(query=query, status=None, detail=str(exc.reason), url=url) from exc
 
     try:
         payload = json.loads(body.decode("utf-8"))
     except Exception as exc:
-        raise RuntimeError(f"ERR_HUD_API_RESPONSE_INVALID state={state_code}") from exc
+        raise RuntimeError(f"ERR_HUD_API_RESPONSE_INVALID state={query}") from exc
     if not isinstance(payload, dict):
-        raise RuntimeError(f"ERR_HUD_API_RESPONSE_INVALID state={state_code}")
+        raise RuntimeError(f"ERR_HUD_API_RESPONSE_INVALID state={query}")
     return payload, url
+
+
+def _discover_latest_period(token: str) -> tuple[int, int]:
+    url = _build_hud_url(query=HUD_API_PERIOD_DISCOVERY_QUERY, year=None, quarter=None)
+    try:
+        payload, _ = _hud_get_json(
+            query=HUD_API_PERIOD_DISCOVERY_QUERY,
+            token=token,
+            year=None,
+            quarter=None,
+        )
+    except HudApiRequestError as exc:
+        print(f"DEBUG_HUD_API_PERIOD_DISCOVERY_URL url={exc.url}")
+        status_token = str(exc.status) if exc.status is not None else "UNKNOWN"
+        raise RuntimeError(f"ERR_HUD_API_PERIOD_DISCOVERY_FAILED status={status_token}") from exc
+    except RuntimeError as exc:
+        print(f"DEBUG_HUD_API_PERIOD_DISCOVERY_URL url={url}")
+        raise RuntimeError("ERR_HUD_API_PERIOD_DISCOVERY_FAILED status=UNKNOWN") from exc
+
+    _rows, discovered_year, discovered_quarter = _parse_hud_payload_rows(payload)
+    if discovered_year is None or discovered_quarter is None:
+        print(f"DEBUG_HUD_API_PERIOD_DISCOVERY_URL url={url}")
+        raise RuntimeError("ERR_HUD_API_PERIOD_DISCOVERY_FAILED status=UNKNOWN")
+    return discovered_year, discovered_quarter
 
 
 def _payload_data_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -277,36 +317,58 @@ def _fetch_hud_zip_cbsa_csv(
     if not token.strip():
         raise RuntimeError("ERR_HUD_API_TOKEN_MISSING env=HUD_API_TOKEN")
 
+    requested_year = year
+    requested_quarter = quarter
+    explicit_period = requested_year is not None and requested_quarter is not None
+    resolved_year = requested_year
+    resolved_quarter = requested_quarter
+
+    if resolved_year is None and resolved_quarter is None:
+        resolved_year, resolved_quarter = _discover_latest_period(token)
+
     raw_payloads: list[tuple[str, str, dict[str, Any]]] = []
     all_rows: list[dict[str, str]] = []
-    resolved_year = year
-    resolved_quarter = quarter
+    fallback_used = False
+    states = list(HUD_API_STATE_CODES)
+    idx = 0
+    while idx < len(states):
+        state = states[idx]
+        try:
+            payload, url = _hud_get_json(
+                query=state,
+                token=token,
+                year=resolved_year,
+                quarter=resolved_quarter,
+            )
+        except HudApiRequestError as exc:
+            if explicit_period and not fallback_used and exc.status == 404:
+                fallback_year, fallback_quarter = _discover_latest_period(token)
+                print(
+                    f"WARN_HUD_API_PERIOD_FALLBACK requested={requested_year}Q{requested_quarter} "
+                    f"used={fallback_year}Q{fallback_quarter}"
+                )
+                resolved_year = fallback_year
+                resolved_quarter = fallback_quarter
+                raw_payloads = []
+                all_rows = []
+                fallback_used = True
+                idx = 0
+                continue
+            raise RuntimeError(str(exc)) from exc
 
-    for state in HUD_API_STATE_CODES:
-        payload, url = _hud_get_json(
-            state_code=state,
-            token=token,
-            year=year,
-            quarter=quarter,
-        )
         state_rows, state_year, state_quarter = _parse_hud_payload_rows(payload)
         all_rows.extend(state_rows)
         raw_payloads.append((state, url, payload))
 
-        if state_year is not None:
-            if resolved_year is None:
-                resolved_year = state_year
-            elif resolved_year != state_year:
-                raise RuntimeError(
-                    f"ERR_HUD_API_PERIOD_MISMATCH state={state} expected_year={resolved_year} actual_year={state_year}"
-                )
-        if state_quarter is not None:
-            if resolved_quarter is None:
-                resolved_quarter = state_quarter
-            elif resolved_quarter != state_quarter:
-                raise RuntimeError(
-                    f"ERR_HUD_API_PERIOD_MISMATCH state={state} expected_quarter={resolved_quarter} actual_quarter={state_quarter}"
-                )
+        if state_year is not None and resolved_year is not None and state_year != resolved_year:
+            raise RuntimeError(
+                f"ERR_HUD_API_PERIOD_MISMATCH state={state} expected_year={resolved_year} actual_year={state_year}"
+            )
+        if state_quarter is not None and resolved_quarter is not None and state_quarter != resolved_quarter:
+            raise RuntimeError(
+                f"ERR_HUD_API_PERIOD_MISMATCH state={state} expected_quarter={resolved_quarter} actual_quarter={state_quarter}"
+            )
+        idx += 1
 
     if resolved_year is None or resolved_quarter is None:
         raise RuntimeError("ERR_HUD_API_PERIOD_UNKNOWN")
@@ -577,8 +639,16 @@ def main() -> int:
         default=".local/hud_zip_cbsa_api",
         help="Directory to persist raw HUD API payload cache artifacts.",
     )
-    ap.add_argument("--out", required=True, help="Output gzip CSV path (ZIP5,CBSA).")
-    ap.add_argument("--meta", required=True, help="Output CBSA metadata CSV path.")
+    ap.add_argument(
+        "--out",
+        default=DEFAULT_OUT_PATH,
+        help=f"Output gzip CSV path (ZIP5,CBSA). Default: {DEFAULT_OUT_PATH}.",
+    )
+    ap.add_argument(
+        "--meta",
+        default=DEFAULT_META_PATH,
+        help=f"Output CBSA metadata CSV path. Default: {DEFAULT_META_PATH}.",
+    )
     ap.add_argument(
         "--zip-meta-json",
         default="",
