@@ -11,6 +11,7 @@ param(
   [Nullable[int]] $TrialSendsLimitDefault = $null,
   [string] $TrialExpiredBehaviorDefault = '',
   [string] $TrialConversionUrl = '',
+  [string] $HudApiToken = '',
   [string] $StripePriceIdCore = '',
   [string] $StripePriceIdMulti = '',
   [string] $StripePriceIdPilot = '',
@@ -283,6 +284,7 @@ try {
     'TrialSendsLimitDefault',
     'TrialExpiredBehaviorDefault',
     'TrialConversionUrl',
+    'HudApiToken',
     'StripePriceIdCore',
     'StripePriceIdMulti',
     'StripePriceIdPilot',
@@ -354,6 +356,12 @@ try {
     $beh = ($TrialExpiredBehaviorDefault -as [string]).Trim()
     if (-not $beh) {
       Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TrialExpiredBehaviorDefault'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('HudApiToken')) {
+    $hudToken = ($HudApiToken -as [string]).Trim()
+    if (-not $hudToken) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_HudApiToken'
     }
   }
   if ($PSBoundParameters.ContainsKey('StripePriceIdCore')) {
@@ -555,6 +563,9 @@ try {
       if ($conv) {
         Set-MapValue -Map $map -Key 'TRIAL_CONVERSION_URL' -Value $conv -TouchedList $touched
       }
+    }
+    if ($PSBoundParameters.ContainsKey('HudApiToken')) {
+      Set-MapValue -Map $map -Key 'HUD_API_TOKEN' -Value (($HudApiToken -as [string]).Trim()) -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('StripePriceIdCore')) {

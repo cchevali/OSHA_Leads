@@ -5,6 +5,8 @@
 - Source URL: `https://www.huduser.gov/portal/datasets/usps_crosswalk.html`
 - Provenance family: HUD USPS ZIP Code Crosswalk (HUD USER)
 - License: U.S. Federal Government work (public domain)
+- Access note: HUD crosswalk file downloads are login-gated; deterministic rebuilds use HUD USPS API token flow (`type=3` / `zip-cbsa`).
+- API provenance note: when rebuilt with `--hud-api`, provenance is recorded as `HUD USPS ZIP Code Crosswalk Files API (type=3 zip-cbsa), year=<YYYY>, quarter=Q<N>`.
 - Input file: `hud_zip_cbsa_seed_input.csv`
 - Input SHA256: `421bf164b47d202133fd9fa33d235a200ee1b5f28edfe1302640a6c09e1da046`
 - Dataset incomplete: `true`
@@ -24,7 +26,8 @@
 
 ## Rebuild Command
 ```powershell
-py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --zip-meta-json data\geo\zip_to_cbsa.meta.json --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA <MONTH_OR_QUARTER>"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -HudApiToken "<HUD_API_TOKEN>"
+py -3 tools\build_zip_cbsa.py --hud-api --hud-year 2026 --hud-quarter 1 --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --zip-meta-json data\geo\zip_to_cbsa.meta.json --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA 2026 Q1"
 ```
 
 ## County->CBSA Fallback Table

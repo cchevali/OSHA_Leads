@@ -803,14 +803,16 @@ Notes:
 - Canonical territory code is `TX_TRI` (`kind=CBSA_SET`, CBSAs `19100,26420,41700,12420`).
 - Legacy aliases remain accepted and resolve to the same canonical matcher: `TX_TRIANGLE_V1`, `TX_TRIANGLE`, `TX_TRI_V1`.
 
-Deterministic ZIP->CBSA rebuild command (from HUD USPS ZIP-CBSA CSV extract):
+Deterministic ZIP->CBSA rebuild command (HUD USPS API token flow; no manual file download path required):
 
 ```powershell
 cd C:\dev\OSHA_Leads
-py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --zip-meta-json data\geo\zip_to_cbsa.meta.json --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA <MONTH_OR_QUARTER>"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -HudApiToken "<HUD_API_TOKEN>"
+py -3 tools\build_zip_cbsa.py --hud-api --hud-year 2026 --hud-quarter 1 --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --zip-meta-json data\geo\zip_to_cbsa.meta.json --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA 2026 Q1"
 ```
 
-Operator note: if `data\geo\SOURCES.md` dataset label indicates `seed`/`incomplete`, rebuild from a full nationwide HUD USPS crosswalk file before relying on metro matching for new customers.
+Operator note: HUD crosswalk file downloads are login-gated on HUD USER. Use the HUD API token flow above (type `3` / `zip-cbsa`) to rebuild deterministic ZIP->CBSA data.
+Provenance note: API rebuilds record `HUD USPS ZIP Code Crosswalk Files API (type=3 zip-cbsa), year=<YYYY>, quarter=Q<N>` in `data\geo\SOURCES.md`.
 
 County fallback provenance (`data\geo\county_to_cbsa.csv`):
 - Origin/source: curated deterministic county->CBSA rows derived from official U.S. Census/OMB CBSA county delineation sources.
