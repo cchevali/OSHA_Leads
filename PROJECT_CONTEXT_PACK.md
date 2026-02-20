@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=50482f6e13be4ca0c4ff327886ac839d4f029d26
-PACK_BUILD_UTC=2026-02-19T21:21:07Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=733dd12e9e3b680309a96cc8579552afd4574d24a289e5186c89cb6cc9e77ed6 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=64b713a6f5105569d9db5c2874b40d667a8cb733a49e7f17323ba75f4f6ac237 docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=294137d4e28f4f07300ae2fd4717912ce70fd8814783a6b5e9e06176362d9d23
+PACK_GIT_SHA=eb88ac2b4f8b934b55ebfed0ca7fbd640b646027
+PACK_BUILD_UTC=2026-02-20T04:29:43Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=733dd12e9e3b680309a96cc8579552afd4574d24a289e5186c89cb6cc9e77ed6 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=bb0ed0b0549931a6aea14d8683dad3516e987dba590594df9e5bdc400db78d6f docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=7246a486daddad6c0cdad51bbe885ac4921c9c515dcb871a2e63a43425a50d4f
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1193,6 +1193,16 @@ py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_c
 
 Operator note: if `data\geo\SOURCES.md` dataset label indicates `seed`/`incomplete`, rebuild from a full nationwide HUD USPS crosswalk file before relying on metro matching for new customers.
 
+County fallback provenance (`data\geo\county_to_cbsa.csv`):
+- Origin/source: curated deterministic county->CBSA rows derived from official U.S. Census/OMB CBSA county delineation sources.
+- Generation steps:
+1. Select county entries from source delineation tables.
+2. Normalize `state` to USPS 2-letter code.
+3. Normalize `county` by removing `County` suffix and punctuation.
+4. Write explicit `state,county,cbsa` rows to `data\geo\county_to_cbsa.csv`.
+- Expected columns: `state`, `county`, `cbsa`.
+- Runtime normalization: `state` upper alpha only, `county` upper + collapse spaces + strip `COUNTY`, `cbsa` digits only zero-padded to 5.
+
 ## Stripe + Metro Entitlements (CBSA)
 
 Deterministic Stripe plan mapping uses Stripe **price IDs** (no heuristics):
@@ -1224,6 +1234,12 @@ cd C:\dev\OSHA_Leads
 py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 --subscriber-key sub_example --print-config
 py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 --subscriber-key sub_example
 ```
+
+`audit-match` JSON now includes deterministic CBSA decision fields:
+- Establishment geo: `site_city`, `site_zip`, `mail_zip`, `site_county`
+- Informational office only: `inspection_office` (not used as a CBSA boundary matcher)
+- CBSA resolution: `resolved_cbsa`, `resolution_source`
+- Decision tokens: `reason_token`, `unmatched_reason` (empty when matched)
 
 Safety gate:
 
