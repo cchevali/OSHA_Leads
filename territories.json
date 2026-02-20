@@ -2,7 +2,7 @@
   "TX_TRI": {
     "display_name": "Texas Triangle",
     "label": "Texas Triangle (DFW + Houston + San Antonio + Austin)",
-    "description": "Texas Triangle metros resolved by ZIP->CBSA with fallback city matching when CBSA cannot be resolved.",
+    "description": "Texas Triangle metros resolved by deterministic ZIP->CBSA with county fallback.",
     "kind": "CBSA_SET",
     "states": [
       "TX"

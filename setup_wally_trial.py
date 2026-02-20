@@ -14,7 +14,7 @@ TERRITORY_CODE = "TX_TRI"
 
 TERRITORY_DEF = {
     "label": "Texas Triangle (DFW + Houston + San Antonio + Austin)",
-    "description": "Texas Triangle metros resolved by ZIP->CBSA with fallback city matching when CBSA cannot be resolved.",
+    "description": "Texas Triangle metros resolved by deterministic ZIP->CBSA with county fallback.",
     "kind": "CBSA_SET",
     "states": ["TX"],
     "cbsas": ["19100", "26420", "41700", "12420"],

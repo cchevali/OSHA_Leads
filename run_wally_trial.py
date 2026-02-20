@@ -384,6 +384,14 @@ def _legacy_tx_tri_definitions(definitions: dict[str, dict]) -> dict[str, dict]:
     return legacy
 
 
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except Exception:
+        return False
+    return any(str(row[1]).lower() == column.lower() for row in rows)
+
+
 def _resolve_inspection(db_path: str, inspection_value: str) -> dict | None:
     raw = str(inspection_value or "").strip()
     if not raw:
@@ -392,9 +400,21 @@ def _resolve_inspection(db_path: str, inspection_value: str) -> dict | None:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
+        site_county_expr = "site_county" if _has_column(conn, "inspections", "site_county") else "NULL AS site_county"
+        area_office_expr = "area_office" if _has_column(conn, "inspections", "area_office") else "NULL AS area_office"
         row = conn.execute(
-            """
-            SELECT activity_nr, lead_key, establishment_name, site_city, site_state, site_zip, mail_zip, area_office, source_url
+            f"""
+            SELECT
+                activity_nr,
+                lead_key,
+                establishment_name,
+                site_city,
+                site_state,
+                site_zip,
+                mail_zip,
+                {site_county_expr},
+                {area_office_expr},
+                source_url
             FROM inspections
             WHERE activity_nr = ?
                OR activity_nr = ?
@@ -426,6 +446,15 @@ def _check_inspection_status(db_path: str, territory_code: str, inspection_value
             "inspection_nr": inspection_value,
             "territory_code": territory_code,
             "matched": False,
+            "site_city": "",
+            "site_zip": "",
+            "mail_zip": "",
+            "site_county": "",
+            "inspection_office": "",
+            "resolved_cbsa": "",
+            "resolution_source": "NONE",
+            "reason_token": "INSPECTION_NOT_FOUND",
+            "unmatched_reason": "INSPECTION_NOT_FOUND",
             "match_reason": "INSPECTION_NOT_FOUND",
             "legacy_matched": False,
             "legacy_reason": "INSPECTION_NOT_FOUND",
@@ -444,6 +473,14 @@ def _check_inspection_status(db_path: str, territory_code: str, inspection_value
         include_debug=True,
     )
     legacy_row = legacy_debug[0] if legacy_debug else {}
+    reason_token = str(current_row.get("match_reason") or ("CBSA_MATCH" if filtered else "CBSA_NO_MATCH"))
+    inspection_office = str(
+        current_row.get("inspection_office")
+        or lead.get("area_office")
+        or lead.get("office")
+        or lead.get("osha_office")
+        or ""
+    )
     return {
         "input": inspection_value,
         "present_in_db": True,
@@ -452,7 +489,16 @@ def _check_inspection_status(db_path: str, territory_code: str, inspection_value
         "inspection_nr": _extract_inspection_nr(lead),
         "territory_code": territory_code,
         "matched": bool(filtered),
-        "match_reason": str(current_row.get("match_reason") or ("CBSA_MATCH" if filtered else "CBSA_NO_MATCH")),
+        "site_city": str(current_row.get("site_city") or lead.get("site_city") or ""),
+        "site_zip": str(current_row.get("site_zip") or lead.get("site_zip") or ""),
+        "mail_zip": str(current_row.get("mail_zip") or lead.get("mail_zip") or ""),
+        "site_county": str(current_row.get("site_county") or lead.get("site_county") or ""),
+        "inspection_office": inspection_office,
+        "resolved_cbsa": str(current_row.get("resolved_cbsa") or ""),
+        "resolution_source": str(current_row.get("resolution_source") or "NONE"),
+        "reason_token": reason_token,
+        "unmatched_reason": "" if filtered else reason_token,
+        "match_reason": reason_token,
         "legacy_matched": bool(legacy_filtered),
         "legacy_reason": str(legacy_row.get("match_reason") or ("LEGACY_MATCH" if legacy_filtered else "LEGACY_NO_MATCH")),
         "dataset_incomplete": dataset_incomplete,
@@ -690,6 +736,12 @@ def run_wally_audit(
         "site_city",
         "site_state",
         "site_zip",
+        "mail_zip",
+        "site_county",
+        "inspection_office",
+        "resolved_cbsa",
+        "resolution_source",
+        "unmatched_reason",
         "stage",
         "reason",
         "territory_code",
@@ -727,7 +779,9 @@ def run_wally_audit(
                 f"- Present in data: `{inspection_details.get('present_in_data')}`",
                 f"- Activity: `{inspection_details.get('activity_nr')}`",
                 f"- Inspection: `{inspection_details.get('inspection_nr')}`",
-                f"- CBSA matcher: `matched={inspection_details.get('matched')}` reason=`{inspection_details.get('match_reason')}`",
+                f"- Establishment geo: city=`{inspection_details.get('site_city')}` site_zip=`{inspection_details.get('site_zip')}` mail_zip=`{inspection_details.get('mail_zip')}` county=`{inspection_details.get('site_county')}`",
+                f"- Inspection office (info only): `{inspection_details.get('inspection_office')}`",
+                f"- CBSA matcher: `matched={inspection_details.get('matched')}` reason=`{inspection_details.get('reason_token')}` resolved_cbsa=`{inspection_details.get('resolved_cbsa')}` source=`{inspection_details.get('resolution_source')}` unmatched_reason=`{inspection_details.get('unmatched_reason')}`",
                 f"- Legacy matcher: `matched={inspection_details.get('legacy_matched')}` reason=`{inspection_details.get('legacy_reason')}`",
                 f"- ZIP->CBSA dataset incomplete: `{inspection_details.get('dataset_incomplete')}`",
                 f"- ZIP->CBSA source label: `{inspection_details.get('dataset_source_label')}`",
@@ -743,7 +797,7 @@ def run_wally_audit(
             "CHECK_INSPECTION "
             f"present={inspection_details.get('present_in_data')} "
             f"matched={inspection_details.get('matched')} "
-            f"reason={inspection_details.get('match_reason')}"
+            f"reason={inspection_details.get('reason_token')}"
         )
     return 0
 

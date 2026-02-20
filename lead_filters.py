@@ -12,7 +12,7 @@ DEFAULT_TERRITORIES = {
     "TX_TRI": {
         "display_name": "Texas Triangle",
         "label": "Texas Triangle (DFW + Houston + San Antonio + Austin)",
-        "description": "Texas Triangle metros resolved by ZIP->CBSA with fallback city matching when CBSA cannot be resolved.",
+        "description": "Texas Triangle metros resolved by deterministic ZIP->CBSA with county fallback.",
         "kind": "CBSA_SET",
         "states": ["TX"],
         "cbsas": ["19100", "26420", "41700", "12420"],
@@ -231,6 +231,14 @@ def _normalize_location_text(text: str) -> str:
     return cleaned.upper()
 
 
+def _inspection_office_value(lead_row: dict[str, Any]) -> str:
+    for field in ("area_office", "office", "osha_office"):
+        value = str(lead_row.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def filter_by_territory(
     leads: list[dict],
     territory_code: str | None,
@@ -292,19 +300,26 @@ def filter_by_territory(
         matched: bool,
         match_reason: str,
         resolved_cbsa: str = "",
+        resolution_source: str = "NONE",
     ) -> None:
         if not include_debug:
             return
+        reason_token = str(match_reason or "").strip()
         debug_rows.append(
             {
                 "inspection_nr": _inspection_nr_from_lead(lead_row),
                 "lead_key": str(lead_row.get("lead_key") or lead_row.get("activity_nr") or "").strip(),
                 "site_city": str(lead_row.get("site_city") or "").strip(),
                 "site_zip": extract_zip5_from_text(lead_row.get("site_zip")) or "",
+                "mail_zip": extract_zip5_from_text(lead_row.get("mail_zip")) or "",
+                "site_county": str(lead_row.get("site_county") or "").strip(),
+                "inspection_office": _inspection_office_value(lead_row),
                 "resolved_cbsa": resolved_cbsa,
+                "resolution_source": str(resolution_source or "NONE"),
                 "territory_code": canonical_code or requested_code,
                 "matched": "Y" if matched else "N",
-                "match_reason": match_reason,
+                "match_reason": reason_token,
+                "unmatched_reason": "" if matched else reason_token,
                 "dataset_incomplete": dataset_incomplete,
             }
         )
@@ -330,6 +345,7 @@ def filter_by_territory(
                         matched=True,
                         match_reason=match_reason,
                         resolved_cbsa=resolution.cbsa,
+                        resolution_source=resolution.resolution_source,
                     )
                     continue
                 stats["excluded_territory"] += 1
@@ -341,45 +357,19 @@ def filter_by_territory(
                     matched=False,
                     match_reason=no_match_reason,
                     resolved_cbsa=resolution.cbsa,
-                )
-                continue
-
-            # CBSA unavailable. Fall back to legacy pattern matching only in this case.
-            office_text = " ".join(
-                str(lead.get(field) or "")
-                for field in ("area_office", "office", "osha_office")
-            )
-            if office_text.strip() and office_patterns and _matches_any(office_text, office_patterns):
-                filtered.append(lead)
-                stats["matched_by_office"] += 1
-                _add_debug_row(
-                    lead,
-                    matched=True,
-                    match_reason=f"FALLBACK_USED|OFFICE_MATCH|{resolution.reason}",
-                )
-                continue
-
-            fallback_fields = [
-                lead.get("site_city"),
-                lead.get("mail_city"),
-                lead.get("site_address1"),
-            ]
-            city_text = " ".join(_normalize_location_text(value) for value in fallback_fields if value)
-            if fallback_patterns and _matches_any(city_text, fallback_patterns):
-                filtered.append(lead)
-                stats["matched_by_fallback"] += 1
-                _add_debug_row(
-                    lead,
-                    matched=True,
-                    match_reason=f"FALLBACK_USED|{resolution.reason}",
+                    resolution_source=resolution.resolution_source,
                 )
                 continue
 
             stats["excluded_territory"] += 1
+            unresolved_reason = f"CBSA_UNRESOLVED|{resolution.reason}"
+            if resolution.used_mail_fallback:
+                unresolved_reason = f"FALLBACK_USED|{unresolved_reason}"
             _add_debug_row(
                 lead,
                 matched=False,
-                match_reason=resolution.reason,
+                match_reason=unresolved_reason,
+                resolution_source=resolution.resolution_source,
             )
             continue
 
@@ -450,19 +440,26 @@ def filter_by_cbsa_allowlist(
         matched: bool,
         match_reason: str,
         resolved_cbsa: str = "",
+        resolution_source: str = "NONE",
     ) -> None:
         if not include_debug:
             return
+        reason_token = str(match_reason or "").strip()
         debug_rows.append(
             {
                 "inspection_nr": _inspection_nr_from_lead(lead_row),
                 "lead_key": str(lead_row.get("lead_key") or lead_row.get("activity_nr") or "").strip(),
                 "site_city": str(lead_row.get("site_city") or "").strip(),
                 "site_zip": extract_zip5_from_text(lead_row.get("site_zip")) or "",
+                "mail_zip": extract_zip5_from_text(lead_row.get("mail_zip")) or "",
+                "site_county": str(lead_row.get("site_county") or "").strip(),
+                "inspection_office": _inspection_office_value(lead_row),
                 "resolved_cbsa": resolved_cbsa,
+                "resolution_source": str(resolution_source or "NONE"),
                 "territory_code": "CBSA_ALLOWLIST",
                 "matched": "Y" if matched else "N",
-                "match_reason": match_reason,
+                "match_reason": reason_token,
+                "unmatched_reason": "" if matched else reason_token,
                 "dataset_incomplete": dataset_incomplete,
             }
         )
@@ -484,20 +481,38 @@ def filter_by_cbsa_allowlist(
                 reason = "CBSA_MATCH"
                 if resolution.used_mail_fallback:
                     reason = "FALLBACK_USED|CBSA_MATCH"
-                _add_debug_row(lead, matched=True, match_reason=reason, resolved_cbsa=resolution.cbsa)
+                _add_debug_row(
+                    lead,
+                    matched=True,
+                    match_reason=reason,
+                    resolved_cbsa=resolution.cbsa,
+                    resolution_source=resolution.resolution_source,
+                )
                 continue
             stats["excluded_territory"] += 1
             reason = "CBSA_MISMATCH"
             if resolution.used_mail_fallback:
                 reason = "FALLBACK_USED|CBSA_MISMATCH"
-            _add_debug_row(lead, matched=False, match_reason=reason, resolved_cbsa=resolution.cbsa)
+            _add_debug_row(
+                lead,
+                matched=False,
+                match_reason=reason,
+                resolved_cbsa=resolution.cbsa,
+                resolution_source=resolution.resolution_source,
+            )
             continue
 
         stats["excluded_territory"] += 1
         reason = f"CBSA_UNRESOLVED|{resolution.reason}"
         if resolution.used_mail_fallback:
             reason = f"FALLBACK_USED|{reason}"
-        _add_debug_row(lead, matched=False, match_reason=reason, resolved_cbsa="")
+        _add_debug_row(
+            lead,
+            matched=False,
+            match_reason=reason,
+            resolved_cbsa="",
+            resolution_source=resolution.resolution_source,
+        )
 
     if include_debug:
         return filtered, stats, debug_rows

@@ -53,6 +53,22 @@ def _print_config(subscriber_db: Path, command: str) -> None:
     _print_json(payload)
 
 
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except Exception:
+        return False
+    return any(str(row[1]).lower() == column.lower() for row in rows)
+
+
+def _inspection_office_value(lead: dict[str, Any]) -> str:
+    for field in ("area_office", "office", "osha_office"):
+        value = str(lead.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _load_inspection(db_path: str, inspection_value: str) -> dict[str, Any] | None:
     target = str(inspection_value or "").strip()
     if not target:
@@ -61,8 +77,10 @@ def _load_inspection(db_path: str, inspection_value: str) -> dict[str, Any] | No
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
+        site_county_expr = "site_county" if _has_column(conn, "inspections", "site_county") else "NULL AS site_county"
+        area_office_expr = "area_office" if _has_column(conn, "inspections", "area_office") else "NULL AS area_office"
         row = conn.execute(
-            """
+            f"""
             SELECT
                 activity_nr,
                 lead_key,
@@ -71,7 +89,8 @@ def _load_inspection(db_path: str, inspection_value: str) -> dict[str, Any] | No
                 site_state,
                 site_zip,
                 mail_zip,
-                area_office
+                {site_county_expr},
+                {area_office_expr}
             FROM inspections
             WHERE activity_nr = ?
                OR activity_nr = ?
@@ -194,7 +213,14 @@ def cmd_audit_match(args: argparse.Namespace) -> int:
             "inspection": inspection,
             "inspection_nr": inspection,
             "reason_token": "INSPECTION_NOT_FOUND",
+            "unmatched_reason": "INSPECTION_NOT_FOUND",
+            "site_city": "",
+            "site_zip": "",
+            "mail_zip": "",
+            "site_county": "",
+            "inspection_office": "",
             "resolved_cbsa": "",
+            "resolution_source": "NONE",
             "subscriber_cbsa_set": allowlist,
             "subscriber_key": resolved_key,
         }
@@ -203,14 +229,22 @@ def cmd_audit_match(args: argparse.Namespace) -> int:
 
     filtered, _stats, debug_rows = filter_by_cbsa_allowlist([lead], allowlist, include_debug=True)
     debug = debug_rows[0] if debug_rows else {}
+    reason_token = str(debug.get("match_reason") or ("CBSA_MATCH" if filtered else "CBSA_MISMATCH"))
     payload = {
         "ok": True,
         "present_in_data": True,
         "matched": len(filtered) == 1,
         "inspection": inspection,
         "inspection_nr": _extract_inspection_nr(lead, inspection),
-        "reason_token": str(debug.get("match_reason") or ("CBSA_MATCH" if filtered else "CBSA_MISMATCH")),
+        "reason_token": reason_token,
+        "unmatched_reason": "" if filtered else reason_token,
+        "site_city": str(debug.get("site_city") or lead.get("site_city") or ""),
+        "site_zip": str(debug.get("site_zip") or lead.get("site_zip") or ""),
+        "mail_zip": str(debug.get("mail_zip") or lead.get("mail_zip") or ""),
+        "site_county": str(debug.get("site_county") or lead.get("site_county") or ""),
+        "inspection_office": str(debug.get("inspection_office") or _inspection_office_value(lead)),
         "resolved_cbsa": str(debug.get("resolved_cbsa") or ""),
+        "resolution_source": str(debug.get("resolution_source") or "NONE"),
         "subscriber_cbsa_set": allowlist,
         "subscriber_key": resolved_key,
         "plan_code": str((entitlement or {}).get("plan_code") or ""),

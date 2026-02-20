@@ -844,6 +844,12 @@ py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 
 py -3 scripts\subscription_registry_ops.py audit-match --inspection 1874533.015 --subscriber-key sub_example
 ```
 
+`audit-match` JSON now includes deterministic CBSA decision fields:
+- Establishment geo: `site_city`, `site_zip`, `mail_zip`, `site_county`
+- Informational office only: `inspection_office` (not used as a CBSA boundary matcher)
+- CBSA resolution: `resolved_cbsa`, `resolution_source`
+- Decision tokens: `reason_token`, `unmatched_reason` (empty when matched)
+
 Safety gate:
 
 - Trial subscribers: incomplete ZIP->CBSA dataset emits warning and continues.

@@ -9,6 +9,28 @@ from lead_filters import (
 
 
 class TestLeadFilters(unittest.TestCase):
+    @staticmethod
+    def _legacy_defs() -> dict:
+        return {
+            "TX_TRI_LEGACY": {
+                "description": "Legacy regex matcher for TX Triangle",
+                "kind": "LEGACY_REGEX",
+                "states": ["TX"],
+                "office_patterns": [
+                    r"\baustin\b",
+                    r"\bdallas\b",
+                    r"\bhouston\b",
+                    r"\bsan[\s-]*antonio\b",
+                ],
+                "fallback_city_patterns": [
+                    r"\baustin\b",
+                    r"\bdallas\b",
+                    r"\bhouston\b",
+                    r"\bsan[\s-]*antonio\b",
+                ],
+            }
+        }
+
     def test_normalize_content_filter(self):
         self.assertEqual(normalize_content_filter("High+Medium"), "high_medium")
         self.assertEqual(normalize_content_filter("high_only"), "high_only")
@@ -24,34 +46,48 @@ class TestLeadFilters(unittest.TestCase):
         self.assertEqual([row["activity_nr"] for row in filtered], ["1", "2"])
         self.assertEqual(excluded, 1)
 
-    def test_territory_matches_office_and_fallback_city(self):
+    def test_legacy_regex_territory_matches_office_and_fallback_city(self):
         leads = [
             {"activity_nr": "1", "site_state": "TX", "area_office": "Austin Area Office", "site_city": "Round Rock"},
             {"activity_nr": "2", "site_state": "TX", "area_office": "", "site_city": "Houston"},
             {"activity_nr": "3", "site_state": "TX", "area_office": "El Paso Area Office", "site_city": "El Paso"},
             {"activity_nr": "4", "site_state": "OK", "area_office": "Dallas Area Office", "site_city": "Dallas"},
         ]
-
-        filtered, stats = filter_by_territory(leads, "TX_TRIANGLE_V1")
-
+        filtered, stats = filter_by_territory(leads, "TX_TRI_LEGACY", definitions=self._legacy_defs())
         self.assertEqual([row["activity_nr"] for row in filtered], ["1", "2"])
         self.assertEqual(stats["matched_by_office"], 1)
         self.assertEqual(stats["matched_by_fallback"], 1)
         self.assertEqual(stats["excluded_state"], 1)
         self.assertEqual(stats["excluded_territory"], 1)
 
-
-    def test_territory_anchor_cities(self):
+    def test_legacy_regex_anchor_cities(self):
         leads = [
             {"activity_nr": "1", "site_state": "TX", "area_office": "", "site_city": "Houston"},
             {"activity_nr": "2", "site_state": "TX", "area_office": "", "site_city": "Dallas/Fort Worth"},
             {"activity_nr": "3", "site_state": "TX", "area_office": "", "site_city": "Austin"},
             {"activity_nr": "4", "site_state": "TX", "area_office": "", "site_city": "San Antonio"},
         ]
-
-        filtered, _ = filter_by_territory(leads, "TX_TRIANGLE_V1")
+        filtered, _ = filter_by_territory(leads, "TX_TRI_LEGACY", definitions=self._legacy_defs())
         matched = {row["site_city"] for row in filtered}
         self.assertEqual(matched, {"Houston", "Dallas/Fort Worth", "Austin", "San Antonio"})
+
+    def test_tx_tri_cbsa_set_does_not_use_office_fallback(self):
+        leads = [
+            {
+                "activity_nr": "1",
+                "site_state": "TX",
+                "site_city": "Dallas",
+                "site_zip": "99999",
+                "mail_zip": "",
+                "site_county": "",
+                "area_office": "Dallas Area Office",
+            }
+        ]
+        filtered, stats, debug_rows = filter_by_territory(leads, "TX_TRI", include_debug=True)
+        self.assertEqual(len(filtered), 0)
+        self.assertEqual(stats["matched_by_office"], 0)
+        self.assertEqual(stats["matched_by_fallback"], 0)
+        self.assertEqual(debug_rows[0]["match_reason"], "CBSA_UNRESOLVED|ZIP_UNKNOWN")
 
     def test_dedupe_by_activity_nr_keeps_best_score(self):
         leads = [

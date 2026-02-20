@@ -23,12 +23,13 @@ class TestNonTrialGuardrails(unittest.TestCase):
             "site_city": "Plano",
             "site_zip": "99999",
             "mail_zip": "",
+            "site_county": "",
             "area_office": "Dallas Area Office",
         }
         filtered, stats, debug_rows = filter_by_territory([lead], "TX_TRI", include_debug=True)
-        self.assertEqual(len(filtered), 1)
-        self.assertEqual(stats["matched_by_office"], 1)
-        self.assertEqual(debug_rows[0]["match_reason"], "FALLBACK_USED|OFFICE_MATCH|ZIP_UNKNOWN")
+        self.assertEqual(len(filtered), 0)
+        self.assertEqual(stats["matched_by_office"], 0)
+        self.assertEqual(debug_rows[0]["match_reason"], "CBSA_UNRESOLVED|ZIP_UNKNOWN")
 
         with tempfile.TemporaryDirectory() as d:
             db_path = Path(d) / "osha.sqlite"
@@ -85,10 +86,15 @@ class TestNonTrialGuardrails(unittest.TestCase):
                             "lead_key": "lead-1",
                             "site_city": "Frisco",
                             "site_zip": "75035",
+                            "mail_zip": "",
+                            "site_county": "Collin",
+                            "inspection_office": "Dallas Area Office",
                             "resolved_cbsa": "19100",
+                            "resolution_source": "SITE_ZIP",
                             "territory_code": "TX_TRI",
                             "matched": "Y",
                             "match_reason": "CBSA_MATCH",
+                            "unmatched_reason": "",
                         }
                     ],
                 )
