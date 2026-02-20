@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=eb88ac2b4f8b934b55ebfed0ca7fbd640b646027
-PACK_BUILD_UTC=2026-02-20T04:29:43Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=733dd12e9e3b680309a96cc8579552afd4574d24a289e5186c89cb6cc9e77ed6 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=bb0ed0b0549931a6aea14d8683dad3516e987dba590594df9e5bdc400db78d6f docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=7246a486daddad6c0cdad51bbe885ac4921c9c515dcb871a2e63a43425a50d4f
+PACK_GIT_SHA=9715cda607fa44d6b1edbfcd1c6a288d6e49363b
+PACK_BUILD_UTC=2026-02-20T05:06:14Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=733dd12e9e3b680309a96cc8579552afd4574d24a289e5186c89cb6cc9e77ed6 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=1732830fa992a767a74f21a67eb869deab8fd6a1f86061de78dbdf3d0e5cb23e docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=9bb067b3d339f6cbbac6144d971eab64e95618689660ceb2d31c9d53541856d3
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1184,14 +1184,16 @@ Notes:
 - Canonical territory code is `TX_TRI` (`kind=CBSA_SET`, CBSAs `19100,26420,41700,12420`).
 - Legacy aliases remain accepted and resolve to the same canonical matcher: `TX_TRIANGLE_V1`, `TX_TRIANGLE`, `TX_TRI_V1`.
 
-Deterministic ZIP->CBSA rebuild command (from HUD USPS ZIP-CBSA CSV extract):
+Deterministic ZIP->CBSA rebuild command (HUD USPS API token flow; no manual file download path required):
 
 ```powershell
 cd C:\dev\OSHA_Leads
-py -3 tools\build_zip_cbsa.py --input <hud_zip_cbsa_csv> --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --zip-meta-json data\geo\zip_to_cbsa.meta.json --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA <MONTH_OR_QUARTER>"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -HudApiToken "<HUD_API_TOKEN>"
+py -3 tools\build_zip_cbsa.py --hud-api --hud-year 2026 --hud-quarter 1 --out data\geo\zip_to_cbsa.csv.gz --meta data\geo\cbsa_meta.csv --zip-meta-json data\geo\zip_to_cbsa.meta.json --sources data\geo\SOURCES.md --source-label "HUD USPS ZIP-CBSA 2026 Q1"
 ```
 
-Operator note: if `data\geo\SOURCES.md` dataset label indicates `seed`/`incomplete`, rebuild from a full nationwide HUD USPS crosswalk file before relying on metro matching for new customers.
+Operator note: HUD crosswalk file downloads are login-gated on HUD USER. Use the HUD API token flow above (type `3` / `zip-cbsa`) to rebuild deterministic ZIP->CBSA data.
+Provenance note: API rebuilds record `HUD USPS ZIP Code Crosswalk Files API (type=3 zip-cbsa), year=<YYYY>, quarter=Q<N>` in `data\geo\SOURCES.md`.
 
 County fallback provenance (`data\geo\county_to_cbsa.csv`):
 - Origin/source: curated deterministic county->CBSA rows derived from official U.S. Census/OMB CBSA county delineation sources.
