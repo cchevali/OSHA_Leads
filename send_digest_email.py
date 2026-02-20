@@ -537,10 +537,10 @@ def _render_sha256(subject: str, html_body: str, text_body: str) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
-def _trial_payload_path(subscriber_key: str, local_date: str) -> Path:
+def _trial_payload_path(persist_root: Path, subscriber_key: str, local_date: str) -> Path:
     sk = (subscriber_key or "").strip().lower()
     ld = (local_date or "").strip()
-    return crm_light.data_dir() / "trials" / sk / "sent" / ld / "payload.json"
+    return persist_root / "trials" / sk / "sent" / ld / "payload.json"
 
 
 def _write_trial_payload(path: Path, payload: dict[str, Any]) -> None:
@@ -559,6 +559,35 @@ def _update_trial_payload(path: Path, updates: dict[str, Any]) -> None:
             current = {}
     current.update(dict(updates or {}))
     _write_trial_payload(path, current)
+
+
+def _resolve_trial_payload_target(
+    *,
+    persist_payload_root: str,
+    subscriber_key: str,
+    mode: str,
+    live_allowed: bool,
+    dry_run: bool,
+    no_state_mutation: bool,
+    now_local: datetime,
+) -> tuple[bool, Path | None, str]:
+    payload_local_date = now_local.date().isoformat()
+    root_raw = str(persist_payload_root or "").strip()
+    root_path = Path(root_raw) if root_raw else None
+    enabled = bool(
+        root_path is not None
+        and str(subscriber_key or "").strip()
+        and mode == "daily"
+        and live_allowed
+        and (not dry_run)
+        and (not no_state_mutation)
+    )
+    payload_path = (
+        _trial_payload_path(root_path, str(subscriber_key or ""), payload_local_date)
+        if enabled and root_path is not None
+        else None
+    )
+    return enabled, payload_path, payload_local_date
 
 
 def _selected_lead_keys_for_payload(
@@ -2834,6 +2863,11 @@ def main() -> None:
         action="store_true",
         help="Laptop-safe smoke: force a single send to cchevali+oshasmoke@gmail.com (non-live/admin-only) and print a compact quality summary.",
     )
+    parser.add_argument(
+        "--persist-payload-root",
+        default="",
+        help="Optional root directory for trial sent payload artifacts (disabled by default).",
+    )
 
     args = parser.parse_args()
     setup_logging(args.log_level)
@@ -3422,15 +3456,15 @@ def main() -> None:
                 print(f"PREFS_LINKS_DISABLED detail={prefs_detail}")
                 os.environ["PREFS_LINKS_DISABLED"] = "1"
 
-    persist_trial_payload = bool(
-        args.mode == "daily"
-        and live_allowed
-        and (not args.dry_run)
-        and (not args.no_state_mutation)
-        and str(subscriber_key or "").strip()
+    persist_trial_payload, trial_payload_path, payload_local_date = _resolve_trial_payload_target(
+        persist_payload_root=str(args.persist_payload_root or ""),
+        subscriber_key=str(subscriber_key or ""),
+        mode=str(args.mode or ""),
+        live_allowed=bool(live_allowed),
+        dry_run=bool(args.dry_run),
+        no_state_mutation=bool(args.no_state_mutation),
+        now_local=now_local,
     )
-    payload_local_date = now_local.date().isoformat()
-    trial_payload_path = _trial_payload_path(str(subscriber_key or ""), payload_local_date) if persist_trial_payload else None
     trial_payload_written = False
 
     for recipient in recipients:

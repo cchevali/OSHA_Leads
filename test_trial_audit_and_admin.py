@@ -6,10 +6,12 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 import crm_light
 import run_trial_admin
+import send_digest_email
 import trial_audit
 
 
@@ -61,7 +63,7 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
         self.assertEqual(diff["unexpected"], ["lead_c"])
 
     def test_load_rendered_digest_prefers_payload_artifact(self) -> None:
-        payload_path = trial_audit.sent_payload_path("wally_trial", "2026-02-20")
+        payload_path = trial_audit.sent_payload_path("wally_trial", "2026-02-20", data_root=crm_light.data_dir())
         payload_path.parent.mkdir(parents=True, exist_ok=True)
         payload_path.write_text(
             json.dumps(
@@ -89,6 +91,49 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
         self.assertEqual(rendered["source"], "payload_artifact")
         self.assertEqual(rendered["shown_lead_keys"], ["osha:activity:1001", "osha:activity:1002"])
         self.assertEqual(rendered["tier_counts"]["low"], 1)
+
+    def test_trial_payload_persistence_enabled_writes_and_updates(self) -> None:
+        now_local = datetime.fromisoformat("2026-02-20T08:30:00")
+        enabled, payload_path, local_date = send_digest_email._resolve_trial_payload_target(
+            persist_payload_root=str(self._tmp_path / "out"),
+            subscriber_key="wally_trial",
+            mode="daily",
+            live_allowed=True,
+            dry_run=False,
+            no_state_mutation=False,
+            now_local=now_local,
+        )
+        self.assertTrue(enabled)
+        self.assertEqual(local_date, "2026-02-20")
+        self.assertIsNotNone(payload_path)
+        assert payload_path is not None
+        send_digest_email._write_trial_payload(
+            payload_path,
+            {
+                "sent_at_utc": "2026-02-20T14:30:00+00:00",
+                "subscriber_key": "wally_trial",
+                "selected_lead_keys": ["osha:activity:1"],
+            },
+        )
+        self.assertTrue(payload_path.exists())
+        send_digest_email._update_trial_payload(payload_path, {"smtp_sent_at_utc": "2026-02-20T14:31:00+00:00"})
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload.get("smtp_sent_at_utc"), "2026-02-20T14:31:00+00:00")
+
+    def test_payload_persistence_default_off_for_outreach(self) -> None:
+        now_local = datetime.fromisoformat("2026-02-20T08:30:00")
+        enabled, payload_path, local_date = send_digest_email._resolve_trial_payload_target(
+            persist_payload_root="",
+            subscriber_key="sunbelt_ops",
+            mode="daily",
+            live_allowed=True,
+            dry_run=False,
+            no_state_mutation=False,
+            now_local=now_local,
+        )
+        self.assertFalse(enabled)
+        self.assertIsNone(payload_path)
+        self.assertEqual(local_date, "2026-02-20")
 
     def test_load_rendered_digest_fallback_from_run_log_debug(self) -> None:
         leads_db = self._tmp_path / "osha.sqlite"
@@ -377,7 +422,20 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
             ).fetchone()
             self.assertEqual(int(row["sends_limit"]), 19)
 
+    def test_init_schema_migration_idempotent_for_trial_tables(self) -> None:
+        crm_db = crm_light.ensure_database(None)
+        with crm_light.open_conn(crm_db) as conn:
+            crm_light.init_schema(conn)
+            crm_light.init_schema(conn)
+            tables = {
+                str(row["name"])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('trial_adjustments','trial_latches')"
+                ).fetchall()
+            }
+        self.assertIn("trial_adjustments", tables)
+        self.assertIn("trial_latches", tables)
+
 
 if __name__ == "__main__":
     unittest.main()
-

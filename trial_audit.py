@@ -148,23 +148,42 @@ def _append_unique_in_order(keys: list[str], candidate_keys: list[str]) -> list[
 
 
 def sent_payload_path(subscriber_key: str, local_date: str, data_root: Path | None = None) -> Path:
-    root = data_root or crm_light.data_dir()
+    root = data_root or Path("out")
     sk = (subscriber_key or "").strip().lower()
     d = (local_date or "").strip()
     return root / "trials" / sk / "sent" / d / "payload.json"
 
 
-def load_sent_payload(subscriber_key: str, local_date: str, data_root: Path | None = None) -> tuple[dict[str, Any] | None, Path]:
-    path = sent_payload_path(subscriber_key=subscriber_key, local_date=local_date, data_root=data_root)
-    if not path.exists():
-        return None, path
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None, path
-    if not isinstance(payload, dict):
-        return None, path
-    return payload, path
+def load_sent_payload(
+    subscriber_key: str,
+    local_date: str,
+    data_root: Path | None = None,
+    repo_root: Path | None = None,
+) -> tuple[dict[str, Any] | None, Path]:
+    candidates: list[Path] = []
+    if data_root is not None:
+        candidates.append(sent_payload_path(subscriber_key=subscriber_key, local_date=local_date, data_root=data_root))
+    else:
+        if repo_root is not None:
+            candidates.append(
+                sent_payload_path(subscriber_key=subscriber_key, local_date=local_date, data_root=repo_root / "out")
+            )
+        candidates.append(
+            sent_payload_path(subscriber_key=subscriber_key, local_date=local_date, data_root=crm_light.data_dir())
+        )
+
+    last_path = candidates[0] if candidates else sent_payload_path(subscriber_key=subscriber_key, local_date=local_date)
+    for path in candidates:
+        last_path = path
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return payload, path
+    return None, last_path
 
 
 def _resolve_run_log_path(for_date: str, repo_root: Path) -> Path | None:
@@ -444,7 +463,12 @@ def load_rendered_digest_for_date(
     customer_config: dict[str, Any],
     data_root: Path | None = None,
 ) -> dict[str, Any]:
-    payload, payload_path = load_sent_payload(subscriber_key=subscriber_key, local_date=for_date, data_root=data_root)
+    payload, payload_path = load_sent_payload(
+        subscriber_key=subscriber_key,
+        local_date=for_date,
+        data_root=data_root,
+        repo_root=repo_root,
+    )
     if payload is not None:
         shown = [str(item or "").strip() for item in (payload.get("selected_lead_keys") or []) if str(item or "").strip()]
         low_keys = [

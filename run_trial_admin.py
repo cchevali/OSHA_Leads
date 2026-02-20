@@ -769,7 +769,7 @@ def generate_missed_signals_report(
         start_date=start.isoformat(),
         end_date=end.isoformat(),
         crm_db_path=crm_db_path,
-        data_root=crm_light.data_dir(),
+        data_root=Path(__file__).resolve().parent / "out",
     )
     missed_rows = trial_audit.build_missed_signal_rows(
         expected_by_key=expected_by_key,

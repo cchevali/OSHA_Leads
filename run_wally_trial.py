@@ -882,7 +882,7 @@ def run_wally_digest_audit(
         subscriber_key=subscriber_key,
         for_date=target_date.isoformat(),
         customer_config=customer_cfg,
-        data_root=crm_light.data_dir(),
+        data_root=repo_root / "out",
     )
     window_start_hint = str((rendered.get("diagnostics") or {}).get("window_start") or "").strip()
     if window_start_hint:
@@ -976,6 +976,8 @@ def run_preview_send(db_path: str, customer_config: str, chase_email: str) -> No
         "daily",
         "--recipient-override",
         chase_email,
+        "--persist-payload-root",
+        "out",
         "--dry-run",
         "--disable-pilot-guard",
     ]
@@ -1020,6 +1022,8 @@ def run_live_send(db_path: str, customer_config: str, admin_email: str, send_liv
         "14",
         "--admin-email",
         admin_email,
+        "--persist-payload-root",
+        "out",
     ]
     if send_live:
         cmd.append("--send-live")
@@ -1070,6 +1074,8 @@ def run_test_send(db_path: str, customer_config: str) -> None:
         "--smoke-cchevali",
         "--force-starter-snapshot",
         "--no-state-mutation",
+        "--persist-payload-root",
+        "out",
         "--log-level",
         "ERROR",
     ]
@@ -1119,6 +1125,8 @@ def run_test_send_daily(db_path: str, customer_config: str, dry_run: bool = Fals
         "daily",
         "--smoke-cchevali",
         "--no-state-mutation",
+        "--persist-payload-root",
+        "out",
         "--log-level",
         "ERROR",
     ]
