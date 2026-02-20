@@ -714,6 +714,26 @@ def _scope_enhancement_latch_key(subscriber_key: str, from_date: str, to_date: s
     return f"scope_enhancement|subscriber={subscriber_key}|from={from_date}|to={to_date}"
 
 
+def _scope_enhancement_subject() -> str:
+    return "Texas Triangle coverage update — trial extended 7 days"
+
+
+def _scope_rows_for_email(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _key(row: dict[str, Any]) -> tuple[str, str, str]:
+        event_date = str(row.get("event_date") or "").strip()
+        observed = str(row.get("observed_at_local") or "").strip()
+        activity = str(row.get("activity_nr") or "").strip()
+        return (event_date, observed, activity)
+
+    filtered = [
+        dict(row)
+        for row in list(rows or [])
+        if str(row.get("tier") or "").strip().lower() in {"high", "medium"}
+    ]
+    filtered.sort(key=_key, reverse=True)
+    return filtered
+
+
 def generate_missed_signals_report(
     *,
     subscriber_key: str,
@@ -884,95 +904,133 @@ def extend_all_trials(
 
 
 def _render_scope_enhancement_text(*, rows: list[dict[str, Any]], extend_days: int) -> str:
-    subject = "Texas Triangle coverage update + trial extended by 7 days"
+    subject = _scope_enhancement_subject()
+    filtered_rows = _scope_rows_for_email(rows)
     lines = [
         f"Subject: {subject}",
         "",
-        "We rolled out an improvement to how the Texas Triangle territory is matched (metro footprint / boundary handling).",
+        "Hi there,",
         "",
-        "As a result, a small set of qualifying signals since Feb 4 may not have appeared in the digest.",
+        "We’ve shipped an improvement to how MicroFlowOps matches signals to your Texas Triangle (metro footprint and boundary handling). This produces a more complete set of qualifying OSHA activity for the same territory going forward.",
         "",
-        f"We extended all active trials by {int(extend_days)} days.",
+        "4 CBSAs:",
+        "",
+        "Dallas–Fort Worth–Arlington (CBSA 19100) — includes Frisco, Plano, Arlington",
+        "Houston–The Woodlands–Sugar Land (CBSA 26420)",
+        "San Antonio–New Braunfels (CBSA 41700)",
+        "Austin–Round Rock–Georgetown (CBSA 12420)",
+        "",
+        "Because this improvement affects matching, a small set of qualifying signals since your trial start date (Feb 4, 2026) may not have appeared in prior digests. We’ve included the full list of High and Medium signals below (Feb 4, 2026 through Feb 20, 2026).",
         "",
     ]
-    if not rows:
-        lines.append("No missed qualifying signals were found in this window.")
-        return "\n".join(lines).rstrip() + "\n"
-
-    limit = 80
-    lines.append(f"Missed qualifying signals: {len(rows)}")
-    lines.append("")
-    lines.append("Priority | Event Date | Company | City/State | Activity | Lead Key")
-    lines.append("---------|------------|---------|------------|----------|---------")
-    for row in rows[:limit]:
-        lines.append(
-            f"{row.get('priority','')} | {row.get('event_date','')} | {row.get('company','')} | "
-            f"{row.get('city','')}/{row.get('state','')} | {row.get('activity_nr','')} | {row.get('lead_key','')}"
-        )
-    if len(rows) > limit:
-        lines.append("")
-        lines.append(f"Showing first {limit} rows in compact table. Full list below.")
-        lines.append("")
-        lines.append("Full list:")
-        for row in rows:
+    if not filtered_rows:
+        lines.append("No High or Medium qualifying signals were found in this window.")
+    else:
+        lines.append("Priority | Company | City | Signal | Observed | Event date | Link")
+        lines.append("---------|---------|------|--------|----------|------------|-----")
+        for row in filtered_rows:
+            city_state = f"{row.get('city','')}, {row.get('state','')}".strip().strip(",")
+            url = str(row.get("osha_url") or "").strip() or "-"
+            observed = str(row.get("observed_at_local") or "").strip() or "-"
+            signal = str(row.get("signal") or "").strip()
+            activity = str(row.get("activity_nr") or "").strip()
+            if activity:
+                signal = f"{signal} ({activity})" if signal else activity
             lines.append(
-                f"- {row.get('priority','')} | {row.get('event_date','')} | {row.get('company','')} | "
-                f"{row.get('city','')}, {row.get('state','')} | {row.get('activity_nr','')} | "
-                f"{row.get('lead_key','')} | {row.get('osha_url','')}"
+                f"{row.get('priority','')} | {row.get('company','')} | {city_state} | "
+                f"{signal or '-'} | {observed} | {row.get('event_date','')} | {url}"
             )
+    lines.extend(
+        [
+            "",
+            f"To make sure you get a full window to evaluate the improved feed, we extended all active trials by {int(extend_days)} days. No action is required—this is already applied.",
+            "",
+            "If you have questions on any specific item in the list, reply here and we’ll clarify.",
+            "",
+            "— Chase",
+            "MicroFlowOps",
+            "microflowops.com",
+        ]
+    )
     return "\n".join(lines).rstrip() + "\n"
 
 
 def _render_scope_enhancement_html(*, rows: list[dict[str, Any]], extend_days: int) -> str:
-    subject = "Texas Triangle coverage update + trial extended by 7 days"
+    subject = _scope_enhancement_subject()
+    filtered_rows = _scope_rows_for_email(rows)
     parts: list[str] = []
     parts.append("<!doctype html>")
-    parts.append("<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"></head><body>")
+    parts.append("<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+    parts.append(
+        "<style>"
+        ".signals-table{border-collapse:collapse;width:100%;}"
+        ".signals-table th,.signals-table td{border:1px solid #d1d5db;padding:8px 10px;text-align:left;vertical-align:top;}"
+        ".signals-table th{background:#f8fafc;font-size:12px;letter-spacing:.02em;text-transform:uppercase;color:#374151;}"
+        ".signals-table td{font-size:14px;color:#111827;}"
+        "@media only screen and (max-width:640px){"
+        ".signals-table thead{display:none !important;}"
+        ".signals-table,.signals-table tbody,.signals-table tr,.signals-table td{display:block !important;width:100% !important;}"
+        ".signals-table tr{border:1px solid #d1d5db !important;border-radius:10px !important;margin:0 0 10px 0 !important;overflow:hidden !important;}"
+        ".signals-table td{border:none !important;border-bottom:1px solid #e5e7eb !important;padding:10px 12px !important;}"
+        ".signals-table td:last-child{border-bottom:none !important;}"
+        ".signals-table td::before{content:attr(data-label);display:block;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6b7280;font-weight:700;margin-bottom:4px;}"
+        "}"
+        "</style>"
+    )
+    parts.append("</head><body>")
     parts.append(f"<h1>{escape(subject)}</h1>")
+    parts.append("<p>Hi there,</p>")
     parts.append(
-        "<p>We rolled out an improvement to how the Texas Triangle territory is matched "
-        "(metro footprint / boundary handling).</p>"
+        "<p>We’ve shipped an improvement to how MicroFlowOps matches signals to your Texas Triangle "
+        "(metro footprint and boundary handling). This produces a more complete set of qualifying OSHA activity "
+        "for the same territory going forward.</p>"
     )
-    parts.append("<p>As a result, a small set of qualifying signals since Feb 4 may not have appeared in the digest.</p>")
-    parts.append(f"<p>We extended all active trials by {int(extend_days)} days.</p>")
-    if not rows:
-        parts.append("<p>No missed qualifying signals were found in this window.</p>")
-        parts.append("</body></html>")
-        return "".join(parts)
-
-    limit = 80
-    parts.append(f"<p>Missed qualifying signals: <strong>{len(rows)}</strong></p>")
-    parts.append("<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\" style=\"border-collapse: collapse; width: 100%;\">")
+    parts.append("<p><strong>4 CBSAs:</strong></p>")
+    parts.append("<ul>")
+    parts.append("<li>Dallas–Fort Worth–Arlington (CBSA 19100) — includes Frisco, Plano, Arlington</li>")
+    parts.append("<li>Houston–The Woodlands–Sugar Land (CBSA 26420)</li>")
+    parts.append("<li>San Antonio–New Braunfels (CBSA 41700)</li>")
+    parts.append("<li>Austin–Round Rock–Georgetown (CBSA 12420)</li>")
+    parts.append("</ul>")
     parts.append(
-        "<thead><tr>"
-        "<th>Priority</th><th>Event Date</th><th>Company</th><th>City</th><th>State</th>"
-        "<th>Signal</th><th>Activity</th><th>Lead Key</th>"
-        "</tr></thead><tbody>"
+        "<p>Because this improvement affects matching, a small set of qualifying signals since your trial start date "
+        "(Feb 4, 2026) may not have appeared in prior digests. We’ve included the full list of High and Medium signals "
+        "below (Feb 4, 2026 through Feb 20, 2026).</p>"
     )
-    for row in rows[:limit]:
-        parts.append(
-            "<tr>"
-            f"<td>{escape(str(row.get('priority') or ''))}</td>"
-            f"<td>{escape(str(row.get('event_date') or ''))}</td>"
-            f"<td>{escape(str(row.get('company') or ''))}</td>"
-            f"<td>{escape(str(row.get('city') or ''))}</td>"
-            f"<td>{escape(str(row.get('state') or ''))}</td>"
-            f"<td>{escape(str(row.get('signal') or ''))}</td>"
-            f"<td>{escape(str(row.get('activity_nr') or ''))}</td>"
-            f"<td>{escape(str(row.get('lead_key') or ''))}</td>"
-            "</tr>"
-        )
-    parts.append("</tbody></table>")
-    if len(rows) > limit:
-        parts.append(f"<p>Showing first {limit} rows in compact table. Full list below.</p>")
-        full_lines = []
-        for row in rows:
-            full_lines.append(
-                f"- {row.get('priority','')} | {row.get('event_date','')} | {row.get('company','')} | "
-                f"{row.get('city','')}, {row.get('state','')} | {row.get('activity_nr','')} | "
-                f"{row.get('lead_key','')} | {row.get('osha_url','')}"
+    if not filtered_rows:
+        parts.append("<p>No High or Medium qualifying signals were found in this window.</p>")
+    else:
+        parts.append('<table class="signals-table" border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%;">')
+        parts.append("<thead><tr><th>Priority</th><th>Company</th><th>City</th><th>Signal</th><th>Observed</th><th>Event date</th></tr></thead>")
+        parts.append("<tbody>")
+        for row in filtered_rows:
+            city_state = f"{row.get('city','')}, {row.get('state','')}".strip().strip(",") or "-"
+            url = str(row.get("osha_url") or "").strip()
+            company = escape(str(row.get("company") or "").strip() or "-")
+            company_html = f'<a href="{escape(url)}">{company}</a>' if url else company
+            signal = str(row.get("signal") or "").strip()
+            activity = str(row.get("activity_nr") or "").strip()
+            if activity:
+                signal = f"{signal} ({activity})" if signal else activity
+            observed = str(row.get("observed_at_local") or "").strip() or "-"
+            event_date = str(row.get("event_date") or "").strip() or "-"
+            parts.append(
+                "<tr>"
+                f"<td data-label=\"Priority\">{escape(str(row.get('priority') or ''))}</td>"
+                f"<td data-label=\"Company\">{company_html}</td>"
+                f"<td data-label=\"City\">{escape(city_state)}</td>"
+                f"<td data-label=\"Signal\">{escape(signal or '-')}</td>"
+                f"<td data-label=\"Observed\">{escape(observed)}</td>"
+                f"<td data-label=\"Event date\">{escape(event_date)}</td>"
+                "</tr>"
             )
-        parts.append("<pre>" + escape("\n".join(full_lines)) + "</pre>")
+        parts.append("</tbody></table>")
+    parts.append(
+        f"<p>To make sure you get a full window to evaluate the improved feed, we extended all active trials by {int(extend_days)} days. "
+        "No action is required—this is already applied.</p>"
+    )
+    parts.append("<p>If you have questions on any specific item in the list, reply here and we’ll clarify.</p>")
+    parts.append("<p>— Chase<br>MicroFlowOps<br><a href=\"https://microflowops.com\">microflowops.com</a></p>")
     parts.append("</body></html>")
     return "".join(parts)
 
@@ -1052,7 +1110,7 @@ def scope_enhancement(
     if not recipients:
         raise ValueError("no recipients resolved")
 
-    subject = "Texas Triangle coverage update + trial extended by 7 days"
+    subject = _scope_enhancement_subject()
     sent_count = 0
     errors: list[str] = []
     for recipient in recipients:
