@@ -735,13 +735,7 @@ def load_lead_rows_for_range(
                 inspection_type,
                 date_opened,
                 first_seen_at,
-                source_url,
-                site_zip,
-                mail_zip,
-                site_county,
-                area_office,
-                mail_city,
-                site_address1
+                source_url
             FROM inspections
             WHERE parse_invalid = 0
               AND site_state IN ({placeholders})
