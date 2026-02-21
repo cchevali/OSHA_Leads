@@ -548,9 +548,20 @@ class TestTrialStatus(unittest.TestCase):
                     sends_limit=14,
                 )
 
+                # Freeze "today" to a weekday so weekday-only semantics are deterministic.
+                orig_datetime = run_trial_daily.datetime
+                class _FixedDateTime(datetime):  # type: ignore[misc]
+                    @classmethod
+                    def now(cls, tz=None):  # type: ignore[override]
+                        base = datetime(2026, 2, 20, 14, 0, 0, tzinfo=timezone.utc)
+                        if tz is None:
+                            return base.replace(tzinfo=None)
+                        return base.astimezone(tz)
+
                 with crm_light.open_conn(db) as conn:
                     crm_light.init_schema(conn)
-                    now_local = datetime.now(run_trial_daily._resolve_trial_timezone("America/Chicago"))
+                    run_trial_daily.datetime = _FixedDateTime  # type: ignore[assignment]
+                    now_local = run_trial_daily.datetime.now(run_trial_daily._resolve_trial_timezone("America/Chicago"))
                     sent_ts = (
                         now_local.replace(hour=12, minute=0, second=0, microsecond=0)
                         .astimezone(timezone.utc)
@@ -587,6 +598,7 @@ class TestTrialStatus(unittest.TestCase):
                     )
                 finally:
                     run_trial_daily._run_deliver_daily = orig_deliver  # type: ignore[assignment]
+                    run_trial_daily.datetime = orig_datetime  # type: ignore[assignment]
 
                 self.assertEqual(code, 0)
                 self.assertEqual(calls["deliver"], 0)
@@ -892,6 +904,16 @@ class TestTrialStatus(unittest.TestCase):
                 orig_deliver = run_trial_daily._run_deliver_daily
                 orig_mode = run_trial_daily._try_extract_latest_send_start_mode
                 orig_send_conversion = run_trial_daily._send_conversion_email_from_artifact
+                orig_datetime = run_trial_daily.datetime
+                orig_crm_datetime = crm_light.datetime
+
+                class _FixedDateTime(datetime):  # type: ignore[misc]
+                    @classmethod
+                    def now(cls, tz=None):  # type: ignore[override]
+                        base = datetime(2026, 2, 20, 14, 0, 0, tzinfo=timezone.utc)
+                        if tz is None:
+                            return base.replace(tzinfo=None)
+                        return base.astimezone(tz)
 
                 def _fake_deliver(*_args, **_kwargs):  # type: ignore[no-untyped-def]
                     calls["deliver"] += 1
@@ -910,6 +932,8 @@ class TestTrialStatus(unittest.TestCase):
                 run_trial_daily._run_deliver_daily = _fake_deliver  # type: ignore[assignment]
                 run_trial_daily._try_extract_latest_send_start_mode = _fake_mode  # type: ignore[assignment]
                 run_trial_daily._send_conversion_email_from_artifact = _fake_send_conversion  # type: ignore[assignment]
+                run_trial_daily.datetime = _FixedDateTime  # type: ignore[assignment]
+                crm_light.datetime = _FixedDateTime  # type: ignore[assignment]
                 try:
                     code_first = run_trial_daily.run_trial_daily(
                         subscriber_key="wally_trial",
@@ -945,6 +969,8 @@ class TestTrialStatus(unittest.TestCase):
                     run_trial_daily._run_deliver_daily = orig_deliver  # type: ignore[assignment]
                     run_trial_daily._try_extract_latest_send_start_mode = orig_mode  # type: ignore[assignment]
                     run_trial_daily._send_conversion_email_from_artifact = orig_send_conversion  # type: ignore[assignment]
+                    run_trial_daily.datetime = orig_datetime  # type: ignore[assignment]
+                    crm_light.datetime = orig_crm_datetime  # type: ignore[assignment]
 
                 self.assertEqual(code_first, 0)
                 self.assertEqual(code_second, 0)
