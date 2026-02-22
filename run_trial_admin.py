@@ -783,6 +783,15 @@ def generate_missed_signals_report(
     tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
     primary_recipient = str(sub.get("email") or "").strip().lower()
 
+    try:
+        import trial_audit
+    except ImportError:
+        print("ERR_TRIAL_AUDIT_MODULE_MISSING: trial_audit module not found", file=sys.stderr)
+        return {
+            "error": "trial_audit module missing",
+            "recipients": _collect_customer_recipients(customer_cfg, primary_recipient),
+        }
+
     expected_by_key = trial_audit.collect_expected_signals_for_range(
         leads_db_path=leads_db_path,
         territory_code=territory_code,
