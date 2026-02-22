@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
 import sqlite3
 import sys
+from html import escape
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -17,7 +19,10 @@ except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 import crm_light
+import trial_audit
+from email_footer import build_footer_html, build_footer_text
 from lead_filters import load_territory_definitions, resolve_territory_code
+from send_digest_email import build_unsubscribe_payload, resolve_branding, send_email
 
 _RE_SUBSCRIBER_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 TERRITORY_ALIASES: dict[str, str] = {
@@ -104,6 +109,10 @@ def _resolve_sends_limit_from_state(trial_state: dict[str, Any] | None) -> int:
         except Exception:
             return DEFAULT_SENDS_LIMIT
     return DEFAULT_SENDS_LIMIT
+
+
+def _resolve_default_sends_limit() -> int:
+    return _resolve_sends_limit_from_state(None)
 
 
 def _resolve_conversion_url() -> str:
@@ -451,6 +460,7 @@ def show_trial(subscriber_key: str, crm_db_path: str | Path | None, recent: int)
 
         start_date = str(trial.get("start_date") or "").strip()
         sends_limit = _resolve_sends_limit_from_state(trial)
+        default_sends_limit = _resolve_default_sends_limit()
         primary_recipient = str(sub.get("email") or "").strip().lower()
         tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
         sent_count = crm_light.count_trial_delivery_days(
@@ -463,6 +473,7 @@ def show_trial(subscriber_key: str, crm_db_path: str | Path | None, recent: int)
         )
         sent_rows_raw = crm_light.count_successful_sends(conn, sk, start_date)
         expired = sent_count >= sends_limit
+        sends_remaining = max(0, int(sends_limit - sent_count))
         last_sent_at = crm_light.get_last_sent_at(conn, sk, start_date=start_date) or ""
         events = crm_light.get_recent_send_events(conn, sk, limit=max(1, int(recent or 10)))
 
@@ -472,12 +483,18 @@ def show_trial(subscriber_key: str, crm_db_path: str | Path | None, recent: int)
     print(f"subscriber_status={str(sub.get('status') or '').strip()}")
     print(f"start_date={start_date}")
     print(f"sends_limit={sends_limit}")
+    print(f"effective_sends_limit={sends_limit}")
+    print(f"default_sends_limit={default_sends_limit}")
     print(f"sent_count={sent_count}")
     print(f"sent_rows_raw={sent_rows_raw}")
+    print(f"sends_remaining={sends_remaining}")
+    print("expiry_basis=UNIQUE_WEEKDAY_SENT_DAYS")
     print(f"expired={'YES' if expired else 'NO'}")
     print(f"notified_at_utc={str(trial.get('notified_at_utc') or '').strip()}")
     print(f"ended_at_utc={str(trial.get('ended_at_utc') or '').strip()}")
     print(f"last_sent_at={last_sent_at}")
+    if sent_rows_raw != sent_count:
+        print("NOTE sent_rows_raw includes duplicates; expiry uses sent_count only")
     print(f"recent_events={len(events)}")
     for event in events:
         ts = str(event.get("ts_utc") or "").strip()
@@ -586,14 +603,13 @@ def build_trial_status(
             primary_recipient=primary_recipient,
             weekdays_only=True,
         )
-        sends_rows_raw = crm_light.count_successful_sends(conn, sk, start_date)
         first_sent = crm_light.get_first_sent_at(conn, sk, start_date=start_date)
         last_sent = crm_light.get_last_sent_at(conn, sk, start_date=start_date)
     finally:
         conn.close()
 
     days_since = (as_of_date - start).days
-    expired_by_sends = 1 if sends_rows_raw >= sends_limit else 0
+    expired_by_sends = 1 if sends_used >= sends_limit else 0
     # Backward-compatible key: now means "14 successful sends elapsed".
     elapsed_14 = 1 if sends_used >= TRIAL_SENDS_TARGET else 0
     trial_expired = 1 if sends_used >= sends_limit else 0
@@ -644,6 +660,701 @@ def print_trial_status(
     for k, v in ordered.items():
         print(f"{k}={v}")
     return code
+
+
+def _calendar_days_to_weekday_sends(days: int) -> int:
+    n = int(days)
+    if n < 0 or (n % 7) != 0:
+        raise ValueError("ERR_TRIAL_EXTENSION_DAYS_NOT_MULTIPLE_OF_7")
+    return int((n // 7) * 5)
+
+
+def _resolve_customer_config_for_subscriber(subscriber_key: str, explicit_path: str = "") -> tuple[Path | None, dict[str, Any]]:
+    raw = (explicit_path or "").strip()
+    if raw:
+        path = Path(raw)
+        if path.exists():
+            try:
+                return path, json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                return path, {}
+        return path, {}
+
+    candidates = [
+        Path("customers") / f"{subscriber_key}.json",
+        Path("customers") / f"{subscriber_key}_trial.json",
+        Path("customers") / "wally_trial_tx_triangle_v1.json",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if str(cfg.get("subscriber_key") or "").strip().lower() == subscriber_key:
+            return path, cfg
+    customers_dir = Path("customers")
+    if customers_dir.exists():
+        for path in sorted(customers_dir.glob("*.json")):
+            try:
+                cfg = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if str(cfg.get("subscriber_key") or "").strip().lower() == subscriber_key:
+                return path, cfg
+    return None, {}
+
+
+def _collect_customer_recipients(config: dict[str, Any], fallback_email: str) -> list[str]:
+    values = config.get("recipients") or config.get("email_recipients") or []
+    out: list[str] = []
+    seen: set[str] = set()
+    if isinstance(values, list):
+        for item in values:
+            email = str(item or "").strip().lower()
+            if email and email not in seen:
+                seen.add(email)
+                out.append(email)
+    fallback = str(fallback_email or "").strip().lower()
+    if not out and fallback:
+        out.append(fallback)
+    return out
+
+
+def _scope_enhancement_latch_key(subscriber_key: str, from_date: str, to_date: str) -> str:
+    return f"scope_enhancement|subscriber={subscriber_key}|from={from_date}|to={to_date}"
+
+
+def _scope_enhancement_subject() -> str:
+    return "Texas Triangle coverage update — trial extended 7 days"
+
+
+def _scope_rows_for_email(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _key(row: dict[str, Any]) -> tuple[str, str, str]:
+        event_date = str(row.get("event_date") or "").strip()
+        observed = str(row.get("observed_at_local") or "").strip()
+        activity = str(row.get("activity_nr") or "").strip()
+        return (event_date, observed, activity)
+
+    filtered = [
+        dict(row)
+        for row in list(rows or [])
+        if str(row.get("tier") or "").strip().lower() in {"high", "medium"}
+    ]
+    filtered.sort(key=_key, reverse=True)
+    return filtered
+
+
+def generate_missed_signals_report(
+    *,
+    subscriber_key: str,
+    leads_db_path: str,
+    crm_db_path: str | Path | None,
+    from_date: str,
+    to_date: str,
+    customer_config_path: str = "",
+) -> dict[str, Any]:
+    sk = _validate_subscriber_key(subscriber_key)
+    start = date.fromisoformat((from_date or "").strip())
+    end = date.fromisoformat((to_date or "").strip())
+    if end < start:
+        raise ValueError("to_date must be >= from_date")
+    crm_light.ensure_database(crm_db_path)
+    with crm_light.open_conn(crm_db_path) as conn:
+        crm_light.init_schema(conn)
+        sub = crm_light.get_subscriber(conn, sk)
+        trial = crm_light.get_trial_state(conn, sk)
+    if not sub or not trial:
+        raise ValueError(f"subscriber/trial missing subscriber_key={sk}")
+
+    cfg_path, customer_cfg = _resolve_customer_config_for_subscriber(sk, explicit_path=customer_config_path)
+    territory_raw = (
+        str(sub.get("territory_code") or "").strip()
+        or str(customer_cfg.get("territory_code") or "TX_TRI").strip()
+    )
+    territory_code = _normalize_territory(territory_raw)
+    states = [
+        str(item).strip().upper()
+        for item in (customer_cfg.get("states") or ["TX"])
+        if str(item).strip()
+    ]
+    if not states:
+        states = ["TX"]
+    tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
+    primary_recipient = str(sub.get("email") or "").strip().lower()
+
+    expected_by_key = trial_audit.collect_expected_signals_for_range(
+        leads_db_path=leads_db_path,
+        territory_code=territory_code,
+        states=states,
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+    )
+    delivered_keys, delivery_meta = trial_audit.collect_delivered_keys_for_range(
+        repo_root=Path(__file__).resolve().parent,
+        leads_db_path=leads_db_path,
+        subscriber_key=sk,
+        primary_recipient=primary_recipient,
+        tz_name=tz_name,
+        customer_config=customer_cfg,
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        crm_db_path=crm_db_path,
+        data_root=Path(__file__).resolve().parent / "out",
+    )
+    missed_rows = trial_audit.build_missed_signal_rows(
+        expected_by_key=expected_by_key,
+        delivered_keys=delivered_keys,
+        tz_name=tz_name,
+    )
+    out_dir = crm_light.data_dir() / "trials" / sk / "audit"
+    csv_path, txt_path = trial_audit.write_missed_signals_artifacts(
+        out_dir=out_dir,
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        missed_rows=missed_rows,
+        expected_total=len(expected_by_key),
+        delivered_total=len(delivered_keys),
+    )
+    return {
+        "subscriber_key": sk,
+        "territory_code": territory_code,
+        "from_date": start.isoformat(),
+        "to_date": end.isoformat(),
+        "expected_total": len(expected_by_key),
+        "delivered_total": len(delivered_keys),
+        "missed_total": len(missed_rows),
+        "missed_rows": missed_rows,
+        "delivery_meta": delivery_meta,
+        "csv_path": csv_path,
+        "txt_path": txt_path,
+        "customer_config_path": cfg_path,
+        "customer_config": customer_cfg,
+        "primary_recipient": primary_recipient,
+        "recipients": _collect_customer_recipients(customer_cfg, primary_recipient),
+        "tz_name": tz_name,
+    }
+
+
+def extend_all_trials(
+    *,
+    days: int,
+    reason: str,
+    crm_db_path: str | Path | None,
+) -> dict[str, Any]:
+    delta = _calendar_days_to_weekday_sends(days)
+    normalized_reason = str(reason or "").strip()
+    if not normalized_reason:
+        raise ValueError("reason required")
+    crm_light.ensure_database(crm_db_path)
+    applied = 0
+    skipped_expired = 0
+    skipped_idempotent = 0
+    scanned = 0
+    with crm_light.open_conn(crm_db_path) as conn:
+        crm_light.init_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT s.subscriber_key, s.email, s.tz, t.start_date, t.sends_limit
+            FROM subscribers s
+            JOIN trial_state t ON t.subscriber_key = s.subscriber_key
+            WHERE lower(trim(s.status)) = 'trial'
+            ORDER BY s.subscriber_key ASC
+            """
+        ).fetchall()
+        for row in rows:
+            scanned += 1
+            sk = str(row["subscriber_key"] or "").strip().lower()
+            start_date = str(row["start_date"] or "").strip()
+            sends_limit = _resolve_sends_limit_from_state(dict(row))
+            sent_count = crm_light.count_trial_delivery_days(
+                conn,
+                sk,
+                start_date,
+                tz_name=str(row["tz"] or "").strip() or "America/Chicago",
+                primary_recipient=str(row["email"] or "").strip().lower(),
+                weekdays_only=True,
+            )
+            if sent_count >= sends_limit:
+                skipped_expired += 1
+                continue
+            adjustment_key = f"extend_all_trials|reason={normalized_reason}"
+            inserted = crm_light.record_trial_adjustment_once(
+                conn,
+                subscriber_key=sk,
+                adjustment_key=adjustment_key,
+                adjustment_type="EXTEND_ALL_TRIALS",
+                delta_sends=delta,
+                reason=normalized_reason,
+                meta={
+                    "days": int(days),
+                    "weekday_delta": delta,
+                    "old_sends_limit": sends_limit,
+                    "sent_count": sent_count,
+                },
+                commit=False,
+            )
+            if not inserted:
+                skipped_idempotent += 1
+                continue
+            conn.execute(
+                "UPDATE trial_state SET sends_limit = ? WHERE subscriber_key = ?",
+                (int(sends_limit + delta), sk),
+            )
+            applied += 1
+        conn.commit()
+    return {
+        "days": int(days),
+        "weekday_delta": delta,
+        "reason": normalized_reason,
+        "scanned": scanned,
+        "applied": applied,
+        "skipped_expired": skipped_expired,
+        "skipped_idempotent": skipped_idempotent,
+    }
+
+
+def _event_meta_dict(raw_json: str) -> dict[str, Any]:
+    text = str(raw_json or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _scope_window_from_meta(raw_meta_json: str) -> tuple[str, str]:
+    meta = _event_meta_dict(raw_meta_json)
+    return (
+        str(meta.get("from_date") or "").strip(),
+        str(meta.get("to_date") or "").strip(),
+    )
+
+
+def _has_custom_limit_adjustment(conn: sqlite3.Connection, subscriber_key: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM trial_adjustments
+        WHERE subscriber_key = ?
+          AND (
+              lower(trim(adjustment_type)) = 'custom_limit'
+              OR lower(trim(reason)) LIKE 'custom_limit%'
+              OR lower(trim(adjustment_key)) LIKE 'custom_limit%'
+          )
+        LIMIT 1
+        """,
+        (str(subscriber_key or "").strip().lower(),),
+    ).fetchone()
+    return row is not None
+
+
+def normalize_trials(*, apply: bool, crm_db_path: str | Path | None) -> dict[str, int]:
+    default_limit = _resolve_default_sends_limit()
+    crm_light.ensure_database(crm_db_path)
+    updated_limits = 0
+    superseded_events = 0
+    skipped = 0
+
+    with crm_light.open_conn(crm_db_path) as conn:
+        crm_light.init_schema(conn)
+        trial_rows = conn.execute(
+            """
+            SELECT s.subscriber_key, t.sends_limit
+            FROM subscribers s
+            JOIN trial_state t ON t.subscriber_key = s.subscriber_key
+            WHERE lower(trim(s.status)) = 'trial'
+            ORDER BY s.subscriber_key ASC
+            """
+        ).fetchall()
+
+        for row in trial_rows:
+            sk = str(row["subscriber_key"] or "").strip().lower()
+            current_limit = _resolve_sends_limit_from_state(dict(row))
+            if current_limit >= default_limit:
+                skipped += 1
+                continue
+            if _has_custom_limit_adjustment(conn, sk):
+                skipped += 1
+                continue
+            delta = int(default_limit - current_limit)
+            if delta <= 0:
+                skipped += 1
+                continue
+
+            inserted = True
+            if apply:
+                inserted = crm_light.record_trial_adjustment_once(
+                    conn,
+                    subscriber_key=sk,
+                    adjustment_key="normalize_to_default|reason=normalize_to_default",
+                    adjustment_type="NORMALIZE_TO_DEFAULT",
+                    delta_sends=delta,
+                    reason="normalize_to_default",
+                    meta={
+                        "old_sends_limit": int(current_limit),
+                        "new_sends_limit": int(default_limit),
+                        "default_sends_limit": int(default_limit),
+                    },
+                    commit=False,
+                )
+            if inserted:
+                updated_limits += 1
+                if apply:
+                    conn.execute(
+                        "UPDATE trial_state SET sends_limit = ? WHERE subscriber_key = ?",
+                        (int(current_limit + delta), sk),
+                    )
+            else:
+                skipped += 1
+
+        sent_rows = conn.execute(
+            """
+            SELECT se.id, se.subscriber_key, se.ts_utc, se.meta_json
+            FROM send_events se
+            JOIN subscribers s ON s.subscriber_key = se.subscriber_key
+            WHERE lower(trim(s.status)) = 'trial'
+              AND se.variant = 'SCOPE_ENHANCEMENT'
+              AND se.status = 'SCOPE_ENHANCEMENT_SENT'
+            ORDER BY se.subscriber_key ASC, se.ts_utc DESC, se.id DESC
+            """
+        ).fetchall()
+
+        grouped: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
+        for row in sent_rows:
+            sk = str(row["subscriber_key"] or "").strip().lower()
+            from_date, to_date = _scope_window_from_meta(str(row["meta_json"] or ""))
+            grouped.setdefault((sk, from_date, to_date), []).append(row)
+
+        superseded_ids: list[int] = []
+        for key_rows in grouped.values():
+            if len(key_rows) <= 1:
+                continue
+            keep_id = int(max(key_rows, key=lambda item: (str(item["ts_utc"] or ""), int(item["id"])))["id"])
+            for row in key_rows:
+                row_id = int(row["id"])
+                if row_id != keep_id:
+                    superseded_ids.append(row_id)
+
+        superseded_events = len(superseded_ids)
+        if apply and superseded_ids:
+            conn.executemany(
+                "UPDATE send_events SET status = 'SUPERSEDED' WHERE id = ?",
+                [(row_id,) for row_id in superseded_ids],
+            )
+
+        if apply:
+            conn.commit()
+
+    return {
+        "updated_limits": int(updated_limits),
+        "superseded_events": int(superseded_events),
+        "skipped": int(skipped),
+    }
+
+
+def _render_scope_enhancement_text(*, rows: list[dict[str, Any]], extend_days: int) -> str:
+    subject = _scope_enhancement_subject()
+    filtered_rows = _scope_rows_for_email(rows)
+    lines = [
+        f"Subject: {subject}",
+        "",
+        "Hi there,",
+        "",
+        "We’ve shipped an improvement to how MicroFlowOps matches signals to your Texas Triangle (metro footprint and boundary handling). This produces a more complete set of qualifying OSHA activity for the same territory going forward.",
+        "",
+        "4 CBSAs:",
+        "",
+        "Dallas–Fort Worth–Arlington (CBSA 19100) — includes Frisco, Plano, Arlington",
+        "Houston–The Woodlands–Sugar Land (CBSA 26420)",
+        "San Antonio–New Braunfels (CBSA 41700)",
+        "Austin–Round Rock–Georgetown (CBSA 12420)",
+        "",
+        "Because this improvement affects matching, a small set of qualifying signals since your trial start date (Feb 4, 2026) may not have appeared in prior digests. We’ve included the full list of High and Medium signals below (Feb 4, 2026 through Feb 20, 2026).",
+        "",
+    ]
+    if not filtered_rows:
+        lines.append("No High or Medium qualifying signals were found in this window.")
+    else:
+        lines.append("Priority | Company | City | Signal | Observed | Event date | Link")
+        lines.append("---------|---------|------|--------|----------|------------|-----")
+        for row in filtered_rows:
+            city_state = f"{row.get('city','')}, {row.get('state','')}".strip().strip(",")
+            url = str(row.get("osha_url") or "").strip() or "-"
+            observed = str(row.get("observed_at_local") or "").strip() or "-"
+            signal = str(row.get("signal") or "").strip()
+            activity = str(row.get("activity_nr") or "").strip()
+            if activity:
+                signal = f"{signal} ({activity})" if signal else activity
+            lines.append(
+                f"{row.get('priority','')} | {row.get('company','')} | {city_state} | "
+                f"{signal or '-'} | {observed} | {row.get('event_date','')} | {url}"
+            )
+    lines.extend(
+        [
+            "",
+            f"To make sure you get a full window to evaluate the improved feed, we extended all active trials by {int(extend_days)} days. No action is required—this is already applied.",
+            "",
+            "If you have questions on any specific item in the list, reply here and we’ll clarify.",
+            "",
+            "— Chase",
+            "MicroFlowOps",
+            "microflowops.com",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_scope_enhancement_html(*, rows: list[dict[str, Any]], extend_days: int) -> str:
+    subject = _scope_enhancement_subject()
+    filtered_rows = _scope_rows_for_email(rows)
+    parts: list[str] = []
+    parts.append("<!doctype html>")
+    parts.append("<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+    parts.append(
+        "<style>"
+        ".signals-table{border-collapse:collapse;width:100%;}"
+        ".signals-table th,.signals-table td{border:1px solid #d1d5db;padding:8px 10px;text-align:left;vertical-align:top;}"
+        ".signals-table th{background:#f8fafc;font-size:12px;letter-spacing:.02em;text-transform:uppercase;color:#374151;}"
+        ".signals-table td{font-size:14px;color:#111827;}"
+        "@media only screen and (max-width:640px){"
+        ".signals-table thead{display:none !important;}"
+        ".signals-table,.signals-table tbody,.signals-table tr,.signals-table td{display:block !important;width:100% !important;}"
+        ".signals-table tr{border:1px solid #d1d5db !important;border-radius:10px !important;margin:0 0 10px 0 !important;overflow:hidden !important;}"
+        ".signals-table td{border:none !important;border-bottom:1px solid #e5e7eb !important;padding:10px 12px !important;}"
+        ".signals-table td:last-child{border-bottom:none !important;}"
+        ".signals-table td::before{content:attr(data-label);display:block;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6b7280;font-weight:700;margin-bottom:4px;}"
+        "}"
+        "</style>"
+    )
+    parts.append("</head><body>")
+    parts.append(f"<h1>{escape(subject)}</h1>")
+    parts.append("<p>Hi there,</p>")
+    parts.append(
+        "<p>We’ve shipped an improvement to how MicroFlowOps matches signals to your Texas Triangle "
+        "(metro footprint and boundary handling). This produces a more complete set of qualifying OSHA activity "
+        "for the same territory going forward.</p>"
+    )
+    parts.append("<p><strong>4 CBSAs:</strong></p>")
+    parts.append("<ul>")
+    parts.append("<li>Dallas–Fort Worth–Arlington (CBSA 19100) — includes Frisco, Plano, Arlington</li>")
+    parts.append("<li>Houston–The Woodlands–Sugar Land (CBSA 26420)</li>")
+    parts.append("<li>San Antonio–New Braunfels (CBSA 41700)</li>")
+    parts.append("<li>Austin–Round Rock–Georgetown (CBSA 12420)</li>")
+    parts.append("</ul>")
+    parts.append(
+        "<p>Because this improvement affects matching, a small set of qualifying signals since your trial start date "
+        "(Feb 4, 2026) may not have appeared in prior digests. We’ve included the full list of High and Medium signals "
+        "below (Feb 4, 2026 through Feb 20, 2026).</p>"
+    )
+    if not filtered_rows:
+        parts.append("<p>No High or Medium qualifying signals were found in this window.</p>")
+    else:
+        parts.append('<table class="signals-table" border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%;">')
+        parts.append("<thead><tr><th>Priority</th><th>Company</th><th>City</th><th>Signal</th><th>Observed</th><th>Event date</th></tr></thead>")
+        parts.append("<tbody>")
+        for row in filtered_rows:
+            city_state = f"{row.get('city','')}, {row.get('state','')}".strip().strip(",") or "-"
+            url = str(row.get("osha_url") or "").strip()
+            company = escape(str(row.get("company") or "").strip() or "-")
+            company_html = f'<a href="{escape(url)}">{company}</a>' if url else company
+            signal = str(row.get("signal") or "").strip()
+            activity = str(row.get("activity_nr") or "").strip()
+            if activity:
+                signal = f"{signal} ({activity})" if signal else activity
+            observed = str(row.get("observed_at_local") or "").strip() or "-"
+            event_date = str(row.get("event_date") or "").strip() or "-"
+            parts.append(
+                "<tr>"
+                f"<td data-label=\"Priority\">{escape(str(row.get('priority') or ''))}</td>"
+                f"<td data-label=\"Company\">{company_html}</td>"
+                f"<td data-label=\"City\">{escape(city_state)}</td>"
+                f"<td data-label=\"Signal\">{escape(signal or '-')}</td>"
+                f"<td data-label=\"Observed\">{escape(observed)}</td>"
+                f"<td data-label=\"Event date\">{escape(event_date)}</td>"
+                "</tr>"
+            )
+        parts.append("</tbody></table>")
+    parts.append(
+        f"<p>To make sure you get a full window to evaluate the improved feed, we extended all active trials by {int(extend_days)} days. "
+        "No action is required—this is already applied.</p>"
+    )
+    parts.append("<p>If you have questions on any specific item in the list, reply here and we’ll clarify.</p>")
+    parts.append("<p>— Chase<br>MicroFlowOps<br><a href=\"https://microflowops.com\">microflowops.com</a></p>")
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
+def scope_enhancement(
+    *,
+    subscriber_key: str,
+    leads_db_path: str,
+    crm_db_path: str | Path | None,
+    from_date: str,
+    to_date: str,
+    extend_days: int,
+    send_live: bool,
+    customer_config_path: str = "",
+) -> int:
+    report = generate_missed_signals_report(
+        subscriber_key=subscriber_key,
+        leads_db_path=leads_db_path,
+        crm_db_path=crm_db_path,
+        from_date=from_date,
+        to_date=to_date,
+        customer_config_path=customer_config_path,
+    )
+    sk = str(report.get("subscriber_key") or "").strip().lower()
+    out_dir = crm_light.data_dir() / "trials" / sk
+    out_dir.mkdir(parents=True, exist_ok=True)
+    text_path = out_dir / "scope_enhancement_email.txt"
+    html_path = out_dir / "scope_enhancement_email.html"
+    text_body = _render_scope_enhancement_text(rows=list(report.get("missed_rows") or []), extend_days=extend_days)
+    html_body = _render_scope_enhancement_html(rows=list(report.get("missed_rows") or []), extend_days=extend_days)
+    text_path.write_text(text_body, encoding="utf-8")
+    html_path.write_text(html_body, encoding="utf-8")
+    print(f"SCOPE_ENHANCEMENT_ARTIFACT text={text_path}")
+    print(f"SCOPE_ENHANCEMENT_ARTIFACT html={html_path}")
+
+    extension_reason = f"scope_enhancement_{to_date}"
+    if send_live:
+        ext = extend_all_trials(days=int(extend_days), reason=extension_reason, crm_db_path=crm_db_path)
+        print(
+            "EXTEND_ALL_TRIALS "
+            f"days={ext['days']} weekday_delta={ext['weekday_delta']} reason={ext['reason']} "
+            f"applied={ext['applied']} skipped_expired={ext['skipped_expired']} skipped_idempotent={ext['skipped_idempotent']}"
+        )
+
+    run_id = f"scope_enhancement_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    latch_key = _scope_enhancement_latch_key(sk, from_date, to_date)
+    crm_light.ensure_database(crm_db_path)
+    with crm_light.open_conn(crm_db_path) as conn:
+        crm_light.init_schema(conn)
+        sub = crm_light.get_subscriber(conn, sk)
+        if not sub:
+            raise ValueError(f"subscriber not found subscriber_key={sk}")
+        if send_live and crm_light.has_trial_latch(conn, latch_key=latch_key):
+            crm_light.append_send_event(
+                conn,
+                subscriber_key=sk,
+                variant="SCOPE_ENHANCEMENT",
+                status="SKIP_SCOPE_ENHANCEMENT_ALREADY_SENT",
+                run_id=run_id,
+                meta={"from_date": from_date, "to_date": to_date, "latch_key": latch_key},
+                ts_utc="",
+            )
+            print("SKIP_SCOPE_ENHANCEMENT_ALREADY_SENT")
+            return 0
+
+    customer_cfg = dict(report.get("customer_config") or {})
+    if not customer_cfg:
+        customer_cfg = {
+            "brand_name": (os.getenv("BRAND_NAME") or "MicroFlowOps").strip() or "MicroFlowOps",
+            "mailing_address": (os.getenv("MAILING_ADDRESS") or "").strip(),
+        }
+    branding = resolve_branding(customer_cfg)
+    recipients = list(report.get("recipients") or [])
+    if not recipients:
+        recipients = [str(report.get("primary_recipient") or "").strip().lower()]
+    recipients = [item for item in recipients if str(item or "").strip()]
+    if not recipients:
+        raise ValueError("no recipients resolved")
+
+    subject = _scope_enhancement_subject()
+    sent_count = 0
+    errors: list[str] = []
+    for recipient in recipients:
+        list_unsub, list_unsub_post, one_click_url, _token = build_unsubscribe_payload(
+            recipient=recipient,
+            campaign_id=str(customer_cfg.get("customer_id") or sk),
+            reply_to_email=branding["reply_to"],
+            dry_run=(not send_live),
+        )
+        footer_disclaimer = "This report contains public OSHA inspection data for informational purposes only. Not legal advice."
+        footer_text = build_footer_text(
+            brand_name=branding.get("brand_legal_name") or branding.get("brand_name") or "",
+            mailing_address=branding.get("mailing_address") or "",
+            disclaimer=footer_disclaimer,
+            reply_to=branding.get("reply_to") or "",
+            unsub_url=one_click_url or None,
+            include_separator=True,
+        )
+        footer_html = build_footer_html(
+            brand_name=branding.get("brand_legal_name") or branding.get("brand_name") or "",
+            mailing_address=branding.get("mailing_address") or "",
+            disclaimer=footer_disclaimer,
+            reply_to=branding.get("reply_to") or "",
+            unsub_url=one_click_url or None,
+        )
+        body_text_with_footer = text_body.rstrip() + "\n\n" + footer_text.strip() + "\n"
+        body_html_with_footer = html_body.replace("</body></html>", f"{footer_html}</body></html>")
+        ok, message_id, error = send_email(
+            recipient=recipient,
+            subject=subject,
+            html_body=body_html_with_footer,
+            text_body=body_text_with_footer,
+            customer_id=str(customer_cfg.get("customer_id") or sk),
+            territory_code=str(report.get("territory_code") or ""),
+            branding=branding,
+            dry_run=(not send_live),
+            list_unsub=list_unsub,
+            list_unsub_post=list_unsub_post,
+        )
+        if ok:
+            sent_count += 1
+            if send_live:
+                print(f"SCOPE_ENHANCEMENT_SENT recipient={recipient} message_id={message_id}")
+            else:
+                print(f"SCOPE_ENHANCEMENT_DRY_RUN recipient={recipient}")
+        else:
+            errors.append(f"{recipient}:{error}")
+
+    status = "SCOPE_ENHANCEMENT_DRY_RUN"
+    if send_live:
+        status = "SCOPE_ENHANCEMENT_SENT" if (sent_count == len(recipients) and not errors) else "SCOPE_ENHANCEMENT_ERROR"
+
+    with crm_light.open_conn(crm_db_path) as conn:
+        crm_light.init_schema(conn)
+        crm_light.append_send_event(
+            conn,
+            subscriber_key=sk,
+            variant="SCOPE_ENHANCEMENT",
+            status=status,
+            run_id=run_id,
+            meta={
+                "from_date": from_date,
+                "to_date": to_date,
+                "subject": subject,
+                "recipients": recipients,
+                "sent_count": sent_count,
+                "errors": errors,
+                "missed_total": int(report.get("missed_total") or 0),
+                "csv_path": str(report.get("csv_path") or ""),
+            },
+            ts_utc="",
+        )
+        if send_live and status == "SCOPE_ENHANCEMENT_SENT":
+            crm_light.create_trial_latch_once(
+                conn,
+                latch_key=latch_key,
+                subscriber_key=sk,
+                action="SCOPE_ENHANCEMENT",
+                meta={
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "run_id": run_id,
+                    "sent_count": sent_count,
+                },
+            )
+    if errors:
+        print(f"ERR_SCOPE_ENHANCEMENT_SEND_FAILED details={';'.join(errors)}")
+        return 1 if send_live else 0
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -699,6 +1410,49 @@ def main(argv: list[str] | None = None) -> int:
     )
     conversion.add_argument("--subscriber-key", required=True)
     conversion.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
+
+    missed = sub.add_parser(
+        "missed-signals-report",
+        help="Write missed-signals artifacts for a trial subscriber over a date range.",
+    )
+    missed.add_argument("--subscriber-key", required=True)
+    missed.add_argument("--db", default="data/osha.sqlite", help="Leads SQLite db path.")
+    missed.add_argument("--from", dest="from_date", required=True, help="Start date YYYY-MM-DD.")
+    missed.add_argument("--to", dest="to_date", required=True, help="End date YYYY-MM-DD.")
+    missed.add_argument("--customer", default="", help="Optional customer config path override.")
+    missed.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
+
+    extend = sub.add_parser(
+        "extend-all-trials",
+        help="Extend all active trials by a calendar-day delta (must be a multiple of 7) converted to weekday sends.",
+    )
+    extend.add_argument("--days", type=int, required=True, help="Calendar-day extension; must be a multiple of 7 (e.g., 7, 14).")
+    extend.add_argument("--reason", required=True, help="Idempotency reason token.")
+    extend.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
+
+    normalize = sub.add_parser(
+        "normalize-trials",
+        help="Normalize legacy trial limits and supersede duplicate scope-enhancement send events.",
+    )
+    normalize_mode = normalize.add_mutually_exclusive_group(required=True)
+    normalize_mode.add_argument("--apply", action="store_true")
+    normalize_mode.add_argument("--dry-run", action="store_true")
+    normalize.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
+
+    scope = sub.add_parser(
+        "scope-enhancement",
+        help="Generate and optionally send one-time scope-enhancement email with missed signals.",
+    )
+    scope.add_argument("--subscriber-key", required=True)
+    scope.add_argument("--db", default="data/osha.sqlite", help="Leads SQLite db path.")
+    scope.add_argument("--from", dest="from_date", required=True, help="Start date YYYY-MM-DD.")
+    scope.add_argument("--to", dest="to_date", required=True, help="End date YYYY-MM-DD.")
+    scope.add_argument("--extend-days", type=int, default=7, help="Calendar days to extend active trials.")
+    scope.add_argument("--customer", default="", help="Optional customer config path override.")
+    scope.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
+    scope_mode = scope.add_mutually_exclusive_group(required=True)
+    scope_mode.add_argument("--dry-run", action="store_true")
+    scope_mode.add_argument("--send-live", action="store_true")
 
     args = ap.parse_args(argv)
 
@@ -766,6 +1520,97 @@ def main(argv: list[str] | None = None) -> int:
                 print(msg, file=sys.stderr)
             else:
                 print(f"CONFIG_ERROR {msg}", file=sys.stderr)
+            return 1
+
+    if args.cmd == "missed-signals-report":
+        try:
+            result = generate_missed_signals_report(
+                subscriber_key=str(args.subscriber_key),
+                leads_db_path=str(args.db),
+                crm_db_path=crm_db,
+                from_date=str(args.from_date),
+                to_date=str(args.to_date),
+                customer_config_path=str(args.customer or ""),
+            )
+            print(
+                "MISSED_SIGNALS_REPORT "
+                f"subscriber_key={result['subscriber_key']} "
+                f"from={result['from_date']} to={result['to_date']} "
+                f"expected_now={result['expected_total']} "
+                f"delivered={result['delivered_total']} "
+                f"missed={result['missed_total']}"
+            )
+            print(f"csv_path={result['csv_path']}")
+            print(f"txt_path={result['txt_path']}")
+            return 0
+        except Exception as exc:
+            print(f"CONFIG_ERROR {exc}", file=sys.stderr)
+            return 1
+
+    if args.cmd == "extend-all-trials":
+        try:
+            result = extend_all_trials(
+                days=int(args.days),
+                reason=str(args.reason),
+                crm_db_path=crm_db,
+            )
+            print(
+                "EXTEND_ALL_TRIALS "
+                f"days={result['days']} "
+                f"weekday_delta={result['weekday_delta']} "
+                f"reason={result['reason']} "
+                f"scanned={result['scanned']} "
+                f"applied={result['applied']} "
+                f"skipped_expired={result['skipped_expired']} "
+                f"skipped_idempotent={result['skipped_idempotent']}"
+            )
+            return 0
+        except Exception as exc:
+            if str(exc).strip() == "ERR_TRIAL_EXTENSION_DAYS_NOT_MULTIPLE_OF_7":
+                print("ERR_TRIAL_EXTENSION_DAYS_NOT_MULTIPLE_OF_7", file=sys.stderr)
+                return 1
+            print(f"CONFIG_ERROR {exc}", file=sys.stderr)
+            return 1
+
+    if args.cmd == "normalize-trials":
+        try:
+            result = normalize_trials(
+                apply=bool(args.apply),
+                crm_db_path=crm_db,
+            )
+            if args.apply:
+                print(
+                    "NORMALIZE_TRIALS_APPLIED "
+                    f"updated_limits={result['updated_limits']} "
+                    f"superseded_events={result['superseded_events']} "
+                    f"skipped={result['skipped']}"
+                )
+            else:
+                print(
+                    "NORMALIZE_TRIALS_DRY_RUN "
+                    f"updated_limits={result['updated_limits']} "
+                    f"superseded_events={result['superseded_events']} "
+                    f"skipped={result['skipped']}"
+                )
+            return 0
+        except Exception as exc:
+            print(f"CONFIG_ERROR {exc}", file=sys.stderr)
+            return 1
+
+    if args.cmd == "scope-enhancement":
+        try:
+            return scope_enhancement(
+                subscriber_key=str(args.subscriber_key),
+                leads_db_path=str(args.db),
+                crm_db_path=crm_db,
+                from_date=str(args.from_date),
+                to_date=str(args.to_date),
+                extend_days=int(args.extend_days),
+                send_live=bool(args.send_live),
+                customer_config_path=str(args.customer or ""),
+            )
+        except Exception as exc:
+            print(f"CONFIG_ERROR {exc}", file=sys.stderr)
             return 1
 
     try:
