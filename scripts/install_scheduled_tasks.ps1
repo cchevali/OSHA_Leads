@@ -16,22 +16,19 @@ function New-TaskDefinition(
   [string]$ScheduleType,
   [string]$StartTime,
   [string]$TaskRun,
-  [int]$MinuteInterval = 0,
-  [string]$Weekdays = ''
+  [int]$MinuteInterval = 0
 ) {
   return @{
     Name           = $Name
     ScheduleType   = $ScheduleType
     StartTime      = $StartTime
     MinuteInterval = $MinuteInterval
-    Weekdays       = $Weekdays
     TaskRun        = $TaskRun
     RunLevel       = 'HIGHEST'
   }
 }
 
 function Get-TaskDefinitions([string]$RepoRoot) {
-  $weekdaySpec = 'MON,TUE,WED,THU,FRI'
   $ingestRunner = Join-Path $RepoRoot 'scripts\scheduled\run_osha_ingest_daily.ps1'
   $generationRunner = Join-Path $RepoRoot 'scripts\scheduled\run_prospect_generation.ps1'
   $inboundRunner = Join-Path $RepoRoot 'scripts\scheduled\run_inbound_triage.ps1'
@@ -40,10 +37,10 @@ function Get-TaskDefinitions([string]$RepoRoot) {
   $outreach = Join-Path $RepoRoot 'run_outreach_auto.py'
 
   return @(
-    (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '06:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestRunner)),
-    (New-TaskDefinition -Name 'OSHA_Prospect_Generation' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $generationRunner)),
-    (New-TaskDefinition -Name 'OSHA_Prospect_Discovery' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:30' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $discovery)),
-    (New-TaskDefinition -Name 'OSHA_Outreach_Auto' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $outreach)),
+    (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Daily' -ScheduleType 'daily' -StartTime '06:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestRunner)),
+    (New-TaskDefinition -Name 'OSHA_Prospect_Generation' -ScheduleType 'daily' -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $generationRunner)),
+    (New-TaskDefinition -Name 'OSHA_Prospect_Discovery' -ScheduleType 'daily' -StartTime '07:30' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $discovery)),
+    (New-TaskDefinition -Name 'OSHA_Outreach_Auto' -ScheduleType 'daily' -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $outreach)),
     (New-TaskDefinition -Name 'OSHA_Inbound_Triage' -ScheduleType 'minute' -StartTime '' -MinuteInterval 15 -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $inboundRunner))
   )
 }
@@ -75,25 +72,6 @@ function Resolve-FutureStartBoundary([hashtable]$Task, [datetime]$NowLocal) {
   if ($candidate -le $NowLocal) {
     $candidate = $candidate.AddDays(1)
   }
-  if ($Task.ScheduleType -eq 'weekly') {
-    $weekdayOrder = @('SUN','MON','TUE','WED','THU','FRI','SAT')
-    $allowed = @{}
-    foreach ($token in (([string]$Task.Weekdays) -split ',')) {
-      $dayKey = ([string]$token).Trim().ToUpperInvariant()
-      if ($dayKey) {
-        $allowed[$dayKey] = $true
-      }
-    }
-    if ($allowed.Count -gt 0) {
-      while ($true) {
-        $candidateKey = $weekdayOrder[[int]$candidate.DayOfWeek]
-        if ($allowed.ContainsKey($candidateKey)) {
-          break
-        }
-        $candidate = $candidate.AddDays(1)
-      }
-    }
-  }
   return $candidate
 }
 
@@ -117,8 +95,6 @@ function Add-ResolvedSchedule([array]$Tasks, [datetime]$NowLocal) {
 function Emit-TaskConfig([array]$Tasks, [string]$Mode) {
   Write-Output ('INSTALL_SCHEDULED_TASKS_MODE=' + $Mode)
   Write-Output ('INSTALL_SCHEDULED_TASKS_TASK_COUNT=' + $Tasks.Count)
-  Write-Output 'INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=1'
-  Write-Output 'INSTALL_SCHEDULED_TASKS_WEEKDAY_SCHEDULE=MON,TUE,WED,THU,FRI'
   for ($i = 0; $i -lt $Tasks.Count; $i++) {
     $idx = $i + 1
     $task = $Tasks[$i]
@@ -131,9 +107,6 @@ function Emit-TaskConfig([array]$Tasks, [string]$Mode) {
     if ([int]$task.MinuteInterval -gt 0) {
       Write-Output ('TASK_' + $idx + '_MINUTE_INTERVAL=' + $task.MinuteInterval)
     }
-    if (([string]$task.Weekdays).Trim()) {
-      Write-Output ('TASK_' + $idx + '_WEEKDAYS=' + ([string]$task.Weekdays).Trim())
-    }
     Write-Output ('TASK_' + $idx + '_RL=' + $task.RunLevel)
     Write-Output ('TASK_' + $idx + '_TR=' + $task.TaskRun)
     Write-Output ('TASK_' + $idx + '_TR_LENGTH=' + $task.TaskRun.Length)
@@ -144,9 +117,6 @@ function Build-SchtasksPreviewLine([hashtable]$Task) {
   $taskNameForQuery = '\' + $Task.Name
   if ($Task.ScheduleType -eq 'minute') {
     return 'schtasks /Create /F /SC MINUTE /MO ' + $Task.MinuteInterval + ' /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskNameForQuery + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
-  }
-  if ($Task.ScheduleType -eq 'weekly') {
-    return 'schtasks /Create /F /SC WEEKLY /D ' + $Task.Weekdays + ' /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskNameForQuery + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
   }
   return 'schtasks /Create /F /SC DAILY /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskNameForQuery + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
 }
@@ -225,9 +195,6 @@ function Invoke-TaskCreate([hashtable]$Task) {
 
   if ($Task.ScheduleType -eq 'minute') {
     $taskArgs += @('MINUTE', '/MO', ([string]$Task.MinuteInterval))
-  }
-  elseif ($Task.ScheduleType -eq 'weekly') {
-    $taskArgs += @('WEEKLY', '/D', ([string]$Task.Weekdays))
   }
   else {
     $taskArgs += @('DAILY')
@@ -440,7 +407,7 @@ function Invoke-Verify([array]$Tasks) {
     if (-not $startTimeRaw -or $startTimeRaw -eq 'N/A') {
       $failures += ('task=' + $task.Name + ' start_time_unavailable')
     }
-    if ($task.ScheduleType -eq 'daily' -or $task.ScheduleType -eq 'weekly') {
+    if ($task.ScheduleType -eq 'daily') {
       $actualStart = Convert-StartTimeTo24Hour -Raw $startTimeRaw
       $expectedStart = ([string]$task.StartTimeResolved).Trim()
       if (-not $actualStart) {

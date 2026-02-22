@@ -19,7 +19,6 @@ except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 import crm_light
-import trial_audit
 from email_footer import build_footer_html, build_footer_text
 from lead_filters import load_territory_definitions, resolve_territory_code
 from send_digest_email import build_unsubscribe_payload, resolve_branding, send_email

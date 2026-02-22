@@ -522,11 +522,6 @@ def main():
                         help="Validate DB + subscriber gating + recipients, then exit 0/1")
     parser.add_argument("--admin-email", default=ADMIN_EMAIL,
                         help=f"Admin email for failure notifications (default: {ADMIN_EMAIL})")
-    parser.add_argument(
-        "--persist-payload-root",
-        default="",
-        help="Optional root directory for persisted sent payload artifacts (disabled by default).",
-    )
     
     args = parser.parse_args()
 
@@ -673,8 +668,6 @@ def main():
                 "--customer", args.customer,
                 "--mode", args.mode
             ]
-            if str(args.persist_payload_root or "").strip():
-                email_cmd.extend(["--persist-payload-root", str(args.persist_payload_root).strip()])
             
             if args.dry_run:
                 email_cmd.append("--dry-run")

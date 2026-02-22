@@ -528,105 +528,6 @@ def compute_digest_hash(
     return hashlib.sha256(blob).hexdigest()
 
 
-def _render_sha256(subject: str, html_body: str, text_body: str) -> str:
-    blob = (
-        f"subject:{subject or ''}\n"
-        f"html:{html_body or ''}\n"
-        f"text:{text_body or ''}\n"
-    ).encode("utf-8")
-    return hashlib.sha256(blob).hexdigest()
-
-
-def _trial_payload_path(persist_root: Path, subscriber_key: str, local_date: str) -> Path:
-    sk = (subscriber_key or "").strip().lower()
-    ld = (local_date or "").strip()
-    return persist_root / "trials" / sk / "sent" / ld / "payload.json"
-
-
-def _write_trial_payload(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
-
-def _update_trial_payload(path: Path, updates: dict[str, Any]) -> None:
-    current: dict[str, Any] = {}
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                current = loaded
-        except Exception:
-            current = {}
-    current.update(dict(updates or {}))
-    _write_trial_payload(path, current)
-
-
-def _resolve_trial_payload_target(
-    *,
-    persist_payload_root: str,
-    subscriber_key: str,
-    mode: str,
-    live_allowed: bool,
-    dry_run: bool,
-    no_state_mutation: bool,
-    now_local: datetime,
-) -> tuple[bool, Path | None, str]:
-    payload_local_date = now_local.date().isoformat()
-    root_raw = str(persist_payload_root or "").strip()
-    root_path = Path(root_raw) if root_raw else None
-    enabled = bool(
-        root_path is not None
-        and str(subscriber_key or "").strip()
-        and mode == "daily"
-        and live_allowed
-        and (not dry_run)
-        and (not no_state_mutation)
-    )
-    payload_path = (
-        _trial_payload_path(root_path, str(subscriber_key or ""), payload_local_date)
-        if enabled and root_path is not None
-        else None
-    )
-    return enabled, payload_path, payload_local_date
-
-
-def _selected_lead_keys_for_payload(
-    *,
-    leads: list[dict],
-    low_fallback: list[dict],
-    signals_limit: int | None,
-    include_lows: bool,
-    low_priority_shown: list[dict],
-    snapshot_rows: list[dict] | None,
-) -> list[str]:
-    selected: list[str] = []
-    seen: set[str] = set()
-
-    def _append(row: dict) -> None:
-        key = str(row.get("lead_key") or row.get("activity_nr") or row.get("lead_id") or "").strip()
-        if not key or key in seen:
-            return
-        seen.add(key)
-        selected.append(key)
-
-    if leads:
-        limit = int(signals_limit) if signals_limit else len(leads)
-        for row in list(leads)[: max(0, limit)]:
-            _append(row)
-    elif low_fallback:
-        for row in list(low_fallback):
-            _append(row)
-
-    if include_lows:
-        for row in list(low_priority_shown or []):
-            _append(row)
-
-    for row in list(snapshot_rows or []):
-        _append(row)
-
-    return selected
-
-
 def ensure_send_log_table(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
     cursor.execute(
@@ -2863,11 +2764,6 @@ def main() -> None:
         action="store_true",
         help="Laptop-safe smoke: force a single send to cchevali+oshasmoke@gmail.com (non-live/admin-only) and print a compact quality summary.",
     )
-    parser.add_argument(
-        "--persist-payload-root",
-        default="",
-        help="Optional root directory for trial sent payload artifacts (disabled by default).",
-    )
 
     args = parser.parse_args()
     setup_logging(args.log_level)
@@ -3456,17 +3352,6 @@ def main() -> None:
                 print(f"PREFS_LINKS_DISABLED detail={prefs_detail}")
                 os.environ["PREFS_LINKS_DISABLED"] = "1"
 
-    persist_trial_payload, trial_payload_path, payload_local_date = _resolve_trial_payload_target(
-        persist_payload_root=str(args.persist_payload_root or ""),
-        subscriber_key=str(subscriber_key or ""),
-        mode=str(args.mode or ""),
-        live_allowed=bool(live_allowed),
-        dry_run=bool(args.dry_run),
-        no_state_mutation=bool(args.no_state_mutation),
-        now_local=now_local,
-    )
-    trial_payload_written = False
-
     for recipient in recipients:
         if pilot_mode and recipient not in whitelist:
             logger.warning("PILOT MODE: skipping %s (not in whitelist)", recipient)
@@ -3924,43 +3809,6 @@ def main() -> None:
                     if shown >= 3:
                         break
 
-        if persist_trial_payload and trial_payload_path is not None and not trial_payload_written:
-            payload_tiers = {"high": 0, "medium": 0, "low": 0}
-            if isinstance(tier_counts, dict):
-                payload_tiers = {
-                    "high": int(tier_counts.get("high", 0)),
-                    "medium": int(tier_counts.get("medium", 0)),
-                    "low": int(tier_counts.get("low", 0)),
-                }
-            selected_keys = _selected_lead_keys_for_payload(
-                leads=leads,
-                low_fallback=low_fallback,
-                signals_limit=signals_limit,
-                include_lows=bool(include_lows_pref),
-                low_priority_shown=low_priority_shown,
-                snapshot_rows=snapshot_rows,
-            )
-            low_available_keys = []
-            for row in list(low_priority_all or []):
-                key = str(row.get("lead_key") or row.get("activity_nr") or row.get("lead_id") or "").strip()
-                if key:
-                    low_available_keys.append(key)
-            payload = {
-                "sent_at_utc": datetime.now(timezone.utc).isoformat(),
-                "subscriber_key": str(subscriber_key or "").strip().lower(),
-                "territory_code": str(territory_code or "").strip(),
-                "local_date": payload_local_date,
-                "lows_enabled": bool(include_lows_pref),
-                "tier_counts": payload_tiers,
-                "selected_lead_keys": selected_keys,
-                "low_available_lead_keys": low_available_keys,
-                "subject": subject,
-                "render_sha256": _render_sha256(subject, html_body, text_body),
-            }
-            _write_trial_payload(trial_payload_path, payload)
-            trial_payload_written = True
-            print(f"TRIAL_SENT_PAYLOAD_WRITTEN path={trial_payload_path} selected={len(selected_keys)}")
-
         success, message_id, error = send_email(
             recipient=recipient,
             subject=subject,
@@ -3989,14 +3837,6 @@ def main() -> None:
             sent_or_dry_run += 1
             if status == "sent":
                 sent_success += 1
-                if persist_trial_payload and trial_payload_path is not None:
-                    _update_trial_payload(
-                        trial_payload_path,
-                        {
-                            "smtp_sent_at_utc": datetime.now(timezone.utc).isoformat(),
-                            "smtp_message_id": str(message_id or ""),
-                        },
-                    )
         else:
             failed_sends += 1
 

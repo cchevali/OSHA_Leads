@@ -11,7 +11,6 @@ import tempfile
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -255,7 +254,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
             }
-            p = self._run(["--allow-weekend-send", "--to", "wrong@example.com"], env)
+            p = self._run(["--to", "wrong@example.com"], env)
             self.assertNotEqual(p.returncode, 0)
             self.assertIn("ERR_AUTO_SUMMARY_TO_MISMATCH", (p.stderr or "") + (p.stdout or ""))
 
@@ -283,11 +282,6 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("outreach_states=TX,CA", out)
             self.assertIn("selected_state=", out)
             self.assertIn("batch_id=", out)
-            self.assertIn("OUTREACH_WEEKDAYS_ONLY=1", out)
-            self.assertIn("outreach_effective_timezone=", out)
-            self.assertIn("outreach_effective_local_date=", out)
-            self.assertIn("outreach_effective_weekday=", out)
-            self.assertIn("outreach_allow_weekend_send=NO", out)
             self.assertIn("trial_conversion_url_present=NO", out)
 
     def test_print_config_outputs_limit_source_env_and_trial_conversion_present(self):
@@ -306,151 +300,7 @@ class TestOutreachRunAuto(unittest.TestCase):
 
             out = p.stdout or ""
             self.assertIn("outreach_daily_limit=17 source=env", out)
-            self.assertIn("OUTREACH_WEEKDAYS_ONLY=1", out)
             self.assertIn("trial_conversion_url_present=YES", out)
-
-    def test_weekend_live_send_skips_before_send_and_db_writes(self):
-        with tempfile.TemporaryDirectory() as d:
-            tmp = Path(d)
-            data_dir = tmp / "data"
-            crm_db = data_dir / "crm.sqlite"
-            _seed_crm(
-                crm_db,
-                [
-                    {
-                        "prospect_id": "p1",
-                        "contact_name": "A",
-                        "firm": "F",
-                        "email": "a@example.com",
-                        "title": "Owner",
-                        "state": "TX",
-                        "score": 5,
-                    }
-                ],
-            )
-            _write_suppression(data_dir / "suppression.csv")
-
-            env = {
-                "DATA_DIR": str(data_dir),
-                "OUTREACH_STATES": "TX",
-                "OUTREACH_DAILY_LIMIT": "10",
-                "OSHA_SMOKE_TO": "allow@example.com",
-            }
-            weekend_now = {
-                "timezone": "America/New_York",
-                "datetime": datetime(2026, 2, 22, 9, 0, 0),  # Sunday
-                "date": date(2026, 2, 22),
-                "date_text": "2026-02-22",
-                "weekday_idx": 6,
-                "weekday_name": "sun",
-                "is_weekend": True,
-            }
-            calls = {"send": 0, "write": 0}
-
-            def _fake_send(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-                calls["send"] += 1
-                return {"ok": True}
-
-            def _fake_write(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-                calls["write"] += 1
-
-            with mock.patch.dict(os.environ, env, clear=True):
-                with mock.patch.object(roa, "_data_dir", return_value=data_dir), mock.patch.object(
-                    roa, "_crm_db_path", return_value=crm_db
-                ), mock.patch.object(
-                    roa, "_suppression_csv_path", return_value=(data_dir / "suppression.csv")
-                ), mock.patch.object(
-                    roa, "_export_ledger_path", return_value=(data_dir / "outreach_export_ledger.jsonl")
-                ), mock.patch.object(
-                    roa, "_outreach_local_now", return_value=weekend_now
-                ), mock.patch.object(
-                    roa, "_send_outreach_email", side_effect=_fake_send
-                ), mock.patch.object(roa, "_write_events_and_status_updates", side_effect=_fake_write):
-                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py"]):
-                        out = io.StringIO()
-                        err = io.StringIO()
-                        with redirect_stdout(out), redirect_stderr(err):
-                            rc = roa.main()
-
-            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
-            self.assertIn(
-                "OUTREACH_SKIP_NON_WEEKDAY local_date=2026-02-22 weekday=sun gate=outreach_weekdays_only",
-                out.getvalue(),
-            )
-            self.assertEqual(calls["send"], 0)
-            self.assertEqual(calls["write"], 0)
-
-            conn = sqlite3.connect(str(crm_db))
-            try:
-                count = int(conn.execute("SELECT COUNT(*) FROM outreach_events").fetchone()[0])
-                self.assertEqual(count, 0)
-            finally:
-                conn.close()
-
-    def test_weekend_plan_and_dry_run_still_run(self):
-        with tempfile.TemporaryDirectory() as d:
-            tmp = Path(d)
-            data_dir = tmp / "data"
-            crm_db = data_dir / "crm.sqlite"
-            _seed_crm(
-                crm_db,
-                [
-                    {
-                        "prospect_id": "p1",
-                        "contact_name": "A",
-                        "firm": "F",
-                        "email": "a@example.com",
-                        "title": "Owner",
-                        "state": "TX",
-                        "score": 5,
-                    }
-                ],
-            )
-            _write_suppression(data_dir / "suppression.csv")
-
-            env = {
-                "DATA_DIR": str(data_dir),
-                "OUTREACH_STATES": "TX",
-                "OUTREACH_DAILY_LIMIT": "10",
-                "OSHA_SMOKE_TO": "allow@example.com",
-            }
-            weekend_now = {
-                "timezone": "America/New_York",
-                "datetime": datetime(2026, 2, 22, 9, 0, 0),
-                "date": date(2026, 2, 22),
-                "date_text": "2026-02-22",
-                "weekday_idx": 6,
-                "weekday_name": "sun",
-                "is_weekend": True,
-            }
-
-            with mock.patch.dict(os.environ, env, clear=True):
-                with mock.patch.object(roa, "_data_dir", return_value=data_dir), mock.patch.object(
-                    roa, "_crm_db_path", return_value=crm_db
-                ), mock.patch.object(
-                    roa, "_suppression_csv_path", return_value=(data_dir / "suppression.csv")
-                ), mock.patch.object(
-                    roa, "_export_ledger_path", return_value=(data_dir / "outreach_export_ledger.jsonl")
-                ), mock.patch.object(
-                    roa.gm, "_load_local_suppression_set", return_value=set()
-                ), mock.patch.object(roa, "_outreach_local_now", return_value=weekend_now):
-                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--plan", "--for-date", "2026-02-10"]):
-                        out_plan = io.StringIO()
-                        err_plan = io.StringIO()
-                        with redirect_stdout(out_plan), redirect_stderr(err_plan):
-                            rc_plan = roa.main()
-                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--dry-run", "--for-date", "2026-02-10"]):
-                        out_dry = io.StringIO()
-                        err_dry = io.StringIO()
-                        with redirect_stdout(out_dry), redirect_stderr(err_dry):
-                            rc_dry = roa.main()
-
-            self.assertEqual(rc_plan, 0, msg=err_plan.getvalue() + "\n" + out_plan.getvalue())
-            self.assertEqual(rc_dry, 0, msg=err_dry.getvalue() + "\n" + out_dry.getvalue())
-            self.assertIn("OUTREACH_PLAN_DATE=2026-02-10", out_plan.getvalue())
-            self.assertIn("PASS_AUTO_DRY_RUN", out_dry.getvalue())
-            self.assertNotIn("OUTREACH_SKIP_NON_WEEKDAY", out_plan.getvalue())
-            self.assertNotIn("OUTREACH_SKIP_NON_WEEKDAY", out_dry.getvalue())
 
     def test_plan_is_deterministic_and_no_db_mutation(self):
         with tempfile.TemporaryDirectory() as d:
@@ -648,7 +498,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("batch=2001-01-02_CA", dry_run.stdout or "")
             self.assertIn("would_contact_prospect_ids=p_ca", dry_run.stdout or "")
 
-            live = self._run(["--allow-weekend-send", "--for-date", "2001-01-02"], env)
+            live = self._run(["--for-date", "2001-01-02"], env)
             self.assertNotEqual(live.returncode, 0)
             self.assertIn("ERR_AUTO_FOR_DATE_LIVE_SEND_BLOCKED", (live.stderr or "") + (live.stdout or ""))
 

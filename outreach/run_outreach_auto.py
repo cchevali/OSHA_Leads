@@ -13,11 +13,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-try:
-    from zoneinfo import ZoneInfo
-except Exception:  # pragma: no cover
-    ZoneInfo = None  # type: ignore[assignment]
-
 try:  # pragma: no cover
     from dotenv import load_dotenv
 
@@ -47,9 +42,6 @@ PASS_AUTO_DRY_RUN = "PASS_AUTO_DRY_RUN"
 PASS_AUTO_PRINT_CONFIG = "PASS_AUTO_PRINT_CONFIG"
 PASS_AUTO_EXPORT = "PASS_AUTO_EXPORT"
 PASS_AUTO_SUMMARY = "PASS_AUTO_SUMMARY"
-OUTREACH_SKIP_NON_WEEKDAY = "OUTREACH_SKIP_NON_WEEKDAY"
-OUTREACH_WEEKDAYS_ONLY = True
-DEFAULT_OUTREACH_TIMEZONE = "America/New_York"
 
 ERR_DOCTOR_SECRETS_DECRYPT = "ERR_DOCTOR_SECRETS_DECRYPT"
 ERR_DOCTOR_ENV_MISSING = "ERR_DOCTOR_ENV_MISSING"
@@ -189,52 +181,12 @@ def _export_ledger_path() -> Path:
 def _parse_for_date(raw: str) -> tuple[bool, date, str]:
     text = (raw or "").strip()
     if not text:
-        return True, _outreach_local_now()["date"], ""
+        return True, datetime.now().date(), ""
     try:
         parsed = datetime.strptime(text, "%Y-%m-%d").date()
     except Exception:
-        return False, _outreach_local_now()["date"], f"{ERR_AUTO_FOR_DATE_INVALID} value={_compact_detail(text, 64)}"
+        return False, datetime.now().date(), f"{ERR_AUTO_FOR_DATE_INVALID} value={_compact_detail(text, 64)}"
     return True, parsed, ""
-
-
-def _resolve_outreach_tz_name() -> str:
-    return str((os.getenv("OUTREACH_TIMEZONE") or "").strip() or DEFAULT_OUTREACH_TIMEZONE)
-
-
-def _resolve_outreach_timezone():
-    tz_name = _resolve_outreach_tz_name()
-    if ZoneInfo is not None:
-        try:
-            return ZoneInfo(tz_name)
-        except Exception:
-            try:
-                return ZoneInfo(DEFAULT_OUTREACH_TIMEZONE)
-            except Exception:
-                pass
-    return timezone.utc
-
-
-def _weekday_name_token(idx: int) -> str:
-    names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-    if 0 <= int(idx) < len(names):
-        return names[int(idx)]
-    return "unknown"
-
-
-def _outreach_local_now() -> dict[str, object]:
-    tz_name = _resolve_outreach_tz_name()
-    zone = _resolve_outreach_timezone()
-    dt_local = datetime.now(zone)
-    weekday_idx = int(dt_local.weekday())
-    return {
-        "timezone": tz_name,
-        "datetime": dt_local,
-        "date": dt_local.date(),
-        "date_text": dt_local.date().isoformat(),
-        "weekday_idx": weekday_idx,
-        "weekday_name": _weekday_name_token(weekday_idx),
-        "is_weekend": weekday_idx >= 5,
-    }
 
 
 def _choose_state(states: list[str], run_date: date) -> str:
@@ -1702,11 +1654,6 @@ def main() -> int:
     ap.add_argument("--print-config", action="store_true", help="Print resolved config paths/state and exit.")
     ap.add_argument("--for-date", default="", help="Override run date (YYYY-MM-DD) for doctor/print-config/dry-run/plan.")
     ap.add_argument("--allow-repeat", action="store_true", help="Allow contacting previously contacted prospects.")
-    ap.add_argument(
-        "--allow-weekend-send",
-        action="store_true",
-        help="Emergency/manual override: allow live outreach sends on Sat/Sun.",
-    )
     ap.add_argument("--to", default="", help="Optional summary recipient override; must equal OSHA_SMOKE_TO.")
     args = ap.parse_args()
 
@@ -1714,8 +1661,7 @@ def main() -> int:
     if not ok_date:
         print(date_msg, file=sys.stderr)
         return 2
-    local_now = _outreach_local_now()
-    today_local = local_now["date"]
+    today_local = datetime.now().date()
 
     if args.doctor:
         ok, msg = _run_doctor(allow_repeat=bool(args.allow_repeat), run_date=run_date)
@@ -1749,26 +1695,10 @@ def main() -> int:
         print(f"{PASS_AUTO_PRINT_CONFIG} outreach_states={','.join(states)} selected_state={state}")
         print(f"{PASS_AUTO_PRINT_CONFIG} batch_id={batch}")
         print(f"{PASS_AUTO_PRINT_CONFIG} run_date={run_date.isoformat()}")
-        print(f"OUTREACH_WEEKDAYS_ONLY={1 if OUTREACH_WEEKDAYS_ONLY else 0}")
-        print(f"outreach_effective_timezone={local_now['timezone']}")
-        print(f"outreach_effective_local_date={local_now['date_text']}")
-        print(f"outreach_effective_weekday={local_now['weekday_name']}")
-        print(f"outreach_allow_weekend_send={'YES' if args.allow_weekend_send else 'NO'}")
         print(f"trial_conversion_url_present={trial_conversion_url_present}")
         return 0
 
     is_live_send = not bool(args.dry_run or args.plan or args.doctor or args.print_config)
-    if (
-        is_live_send
-        and OUTREACH_WEEKDAYS_ONLY
-        and (not bool(args.allow_weekend_send))
-        and bool(local_now["is_weekend"])
-    ):
-        print(
-            f"{OUTREACH_SKIP_NON_WEEKDAY} local_date={local_now['date_text']} "
-            f"weekday={local_now['weekday_name']} gate=outreach_weekdays_only"
-        )
-        return 0
     if is_live_send and run_date != today_local:
         print(
             f"{ERR_AUTO_FOR_DATE_LIVE_SEND_BLOCKED} for_date={run_date.isoformat()} today={today_local.isoformat()}",
