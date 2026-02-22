@@ -5,7 +5,7 @@ import os
 import sqlite3
 import hashlib
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -558,7 +558,8 @@ def count_trial_delivery_days(
             continue
         local_date = dt_utc.astimezone(zone).date()
         if weekdays_only and local_date.weekday() >= 5:
-            continue
+            # Map Saturday (5) to Fri (4) -> -1 day; Sunday (6) to Fri (4) -> -2 days
+            local_date = local_date - timedelta(days=(local_date.weekday() - 4))
         local_dates.add(local_date.isoformat())
 
     return len(local_dates)
@@ -607,7 +608,21 @@ def has_trial_delivery_on_local_date(
         dt_utc = _parse_utc_ts(ts_utc)
         if dt_utc is None:
             continue
-        if dt_utc.astimezone(zone).date().isoformat() == target:
+        local_date = dt_utc.astimezone(zone).date()
+        # Always bucket weekend to Fri for consistent guard check
+        if local_date.weekday() >= 5:
+            local_date = local_date - timedelta(days=(local_date.weekday() - 4))
+        
+        # Also bucket target if it falls on a weekend
+        try:
+            target_date = date.fromisoformat(target)
+            if target_date.weekday() >= 5:
+                target_date = target_date - timedelta(days=(target_date.weekday() - 4))
+            target_bucketed = target_date.isoformat()
+        except Exception:
+            target_bucketed = target
+
+        if local_date.isoformat() == target_bucketed:
             return True
     return False
 
