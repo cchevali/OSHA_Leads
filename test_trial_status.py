@@ -472,8 +472,12 @@ class TestTrialStatus(unittest.TestCase):
                 sys.argv = old_argv
                 os.environ.pop("DATA_DIR", None)
 
-            keys, _values = _parse_stdout_block(buf.getvalue())
-            self.assertEqual(keys, REQUIRED_KEYS)
+            out_text = buf.getvalue()
+            self.assertIn("TRIAL_WEEKDAYS_ONLY=1", out_text)
+            self.assertIn("TRIAL_SCHEDULE_WEEKDAYS=MON,TUE,WED,THU,FRI", out_text)
+            keys, _values = _parse_stdout_block(out_text)
+            for token in REQUIRED_KEYS:
+                self.assertIn(token, keys)
 
     def test_wally_alias_status_is_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -528,9 +532,162 @@ class TestTrialStatus(unittest.TestCase):
             "--dry-run",
             "--print-config",
             "--test-send-daily",
+            "--allow-weekend-send",
         ]
         for token in required_tokens:
             self.assertIn(token, help_text)
+
+    def test_weekend_live_run_skips_without_send_event_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data"
+            leads_db = base / "osha.sqlite"
+            old_data_dir = os.environ.get("DATA_DIR")
+            os.environ["DATA_DIR"] = str(data_dir)
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="weekend_live_trial",
+                    start_date="2026-02-01",
+                    sends_limit=14,
+                )
+
+                orig_datetime = run_trial_daily.datetime
+                orig_deliver = run_trial_daily._run_deliver_daily
+
+                class _WeekendDateTime(datetime):  # type: ignore[misc]
+                    @classmethod
+                    def now(cls, tz=None):  # type: ignore[override]
+                        base_dt = datetime(2026, 2, 22, 15, 0, 0, tzinfo=timezone.utc)  # Sunday
+                        if tz is None:
+                            return base_dt.replace(tzinfo=None)
+                        return base_dt.astimezone(tz)
+
+                def _unexpected_deliver(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                    raise AssertionError("_run_deliver_daily should not be called on weekend skip")
+
+                run_trial_daily.datetime = _WeekendDateTime  # type: ignore[assignment]
+                run_trial_daily._run_deliver_daily = _unexpected_deliver  # type: ignore[assignment]
+                try:
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        code = run_trial_daily.run_trial_daily(
+                            subscriber_key="weekend_live_trial",
+                            leads_db=str(leads_db),
+                            crm_db=db,
+                            customer_arg="",
+                            send_live=True,
+                            dry_run=False,
+                            test_send_daily=False,
+                            print_config=False,
+                        )
+                finally:
+                    run_trial_daily.datetime = orig_datetime  # type: ignore[assignment]
+                    run_trial_daily._run_deliver_daily = orig_deliver  # type: ignore[assignment]
+
+                self.assertEqual(code, 0)
+                text = out.getvalue()
+                self.assertIn("SKIP_NON_WEEKDAY subscriber_key=weekend_live_trial", text)
+                self.assertIn("weekday=sun", text)
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    count = int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM send_events WHERE subscriber_key='weekend_live_trial'"
+                        ).fetchone()[0]
+                    )
+                self.assertEqual(count, 0)
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+
+    def test_weekend_dry_run_skips_unless_override_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data"
+            leads_db = base / "osha.sqlite"
+            old_data_dir = os.environ.get("DATA_DIR")
+            os.environ["DATA_DIR"] = str(data_dir)
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="weekend_dry_trial",
+                    start_date="2026-02-01",
+                    sends_limit=14,
+                )
+
+                calls = {"deliver": 0}
+                orig_datetime = run_trial_daily.datetime
+                orig_deliver = run_trial_daily._run_deliver_daily
+
+                class _WeekendDateTime(datetime):  # type: ignore[misc]
+                    @classmethod
+                    def now(cls, tz=None):  # type: ignore[override]
+                        base_dt = datetime(2026, 2, 22, 15, 0, 0, tzinfo=timezone.utc)  # Sunday
+                        if tz is None:
+                            return base_dt.replace(tzinfo=None)
+                        return base_dt.astimezone(tz)
+
+                def _fake_deliver(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                    calls["deliver"] += 1
+                    return 0, "ok"
+
+                run_trial_daily.datetime = _WeekendDateTime  # type: ignore[assignment]
+                run_trial_daily._run_deliver_daily = _fake_deliver  # type: ignore[assignment]
+                try:
+                    out_skip = io.StringIO()
+                    with contextlib.redirect_stdout(out_skip):
+                        code_skip = run_trial_daily.run_trial_daily(
+                            subscriber_key="weekend_dry_trial",
+                            leads_db=str(leads_db),
+                            crm_db=db,
+                            customer_arg="",
+                            send_live=False,
+                            dry_run=True,
+                            test_send_daily=False,
+                            print_config=False,
+                            allow_weekend_send=False,
+                        )
+                    out_allow = io.StringIO()
+                    with contextlib.redirect_stdout(out_allow):
+                        code_allow = run_trial_daily.run_trial_daily(
+                            subscriber_key="weekend_dry_trial",
+                            leads_db=str(leads_db),
+                            crm_db=db,
+                            customer_arg="",
+                            send_live=False,
+                            dry_run=True,
+                            test_send_daily=False,
+                            print_config=False,
+                            allow_weekend_send=True,
+                        )
+                finally:
+                    run_trial_daily.datetime = orig_datetime  # type: ignore[assignment]
+                    run_trial_daily._run_deliver_daily = orig_deliver  # type: ignore[assignment]
+
+                self.assertEqual(code_skip, 0)
+                self.assertEqual(code_allow, 0)
+                self.assertIn("SKIP_NON_WEEKDAY subscriber_key=weekend_dry_trial", out_skip.getvalue())
+                self.assertNotIn("SKIP_NON_WEEKDAY", out_allow.getvalue())
+                self.assertEqual(calls["deliver"], 1)
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    statuses = [
+                        str(row[0] or "")
+                        for row in conn.execute(
+                            "SELECT status FROM send_events WHERE subscriber_key='weekend_dry_trial' ORDER BY id"
+                        ).fetchall()
+                    ]
+                self.assertEqual(statuses, ["DRY_RUN"])
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
 
     def test_one_send_per_local_date_guard_prevents_double_counting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1053,6 +1210,7 @@ class TestTrialStatus(unittest.TestCase):
                         dry_run=False,
                         test_send_daily=False,
                         print_config=False,
+                        allow_weekend_send=True,
                     )
                     with crm_light.open_conn(db) as conn:
                         crm_light.init_schema(conn)
@@ -1066,6 +1224,7 @@ class TestTrialStatus(unittest.TestCase):
                         dry_run=False,
                         test_send_daily=False,
                         print_config=False,
+                        allow_weekend_send=True,
                     )
                     with crm_light.open_conn(db) as conn:
                         crm_light.init_schema(conn)
@@ -1137,6 +1296,7 @@ class TestTrialStatus(unittest.TestCase):
                             dry_run=False,
                             test_send_daily=False,
                             print_config=False,
+                            allow_weekend_send=True,
                         )
                 finally:
                     run_trial_daily._send_conversion_email_from_artifact = orig_send_conversion  # type: ignore[assignment]
@@ -1226,6 +1386,7 @@ class TestTrialStatus(unittest.TestCase):
                         dry_run=False,
                         test_send_daily=False,
                         print_config=False,
+                        allow_weekend_send=True,
                     )
                 finally:
                     run_trial_daily._send_conversion_email_from_artifact = orig_send_conversion  # type: ignore[assignment]

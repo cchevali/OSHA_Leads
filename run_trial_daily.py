@@ -30,6 +30,8 @@ _RE_UNRESOLVED_STRIPE_BRACE = re.compile(r"\{[^}\n]*stripe_link[^}\n]*\}", re.IG
 _RE_UNRESOLVED_STRIPE_ANGLE = re.compile(r"<\s*stripe_link\s*>", re.IGNORECASE)
 DEFAULT_SENDS_LIMIT = 14
 DEFAULT_EXPIRED_BEHAVIOR = "notify_once"
+TRIAL_WEEKDAYS_ONLY = True
+TRIAL_WEEKEND_SKIP_TOKEN = "SKIP_NON_WEEKDAY"
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,26 @@ def _resolve_trial_timezone(tz_name: str) -> Any:
             except Exception:
                 pass
     return timezone.utc
+
+
+def _weekday_name_token(idx: int) -> str:
+    names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    if 0 <= int(idx) < len(names):
+        return names[int(idx)]
+    return "unknown"
+
+
+def _trial_local_day_context(tz_name: str) -> dict[str, Any]:
+    zone = _resolve_trial_timezone(tz_name)
+    now_local = datetime.now(zone)
+    weekday_idx = int(now_local.weekday())
+    return {
+        "timezone": str((tz_name or "").strip() or "America/Chicago"),
+        "local_date": now_local.date().isoformat(),
+        "weekday_idx": weekday_idx,
+        "weekday_name": _weekday_name_token(weekday_idx),
+        "is_weekend": weekday_idx >= 5,
+    }
 
 
 def _event_meta(
@@ -478,6 +500,7 @@ def run_trial_daily(
     dry_run: bool,
     test_send_daily: bool,
     print_config: bool,
+    allow_weekend_send: bool = False,
 ) -> int:
     sk = _validate_subscriber_key(subscriber_key)
     resolved_crm_db = crm_light.resolve_crm_db_path(crm_db)
@@ -496,8 +519,21 @@ def run_trial_daily(
     print(f"trial_conversion_url_present={'YES' if conversion_url else 'NO'}")
     print(f"expired={'YES' if policy.expired else 'NO'}")
     print(f"dry_run={'YES' if dry_run else 'NO'}")
+    day_ctx = _trial_local_day_context(policy.tz)
+    print(f"TRIAL_WEEKDAYS_ONLY={1 if TRIAL_WEEKDAYS_ONLY else 0}")
+    print(f"trial_effective_timezone={day_ctx['timezone']}")
+    print(f"trial_effective_local_date={day_ctx['local_date']}")
+    print(f"trial_effective_weekday={day_ctx['weekday_name']}")
+    print(f"trial_allow_weekend_send={'YES' if allow_weekend_send else 'NO'}")
 
     if print_config:
+        return 0
+
+    if TRIAL_WEEKDAYS_ONLY and (not allow_weekend_send) and bool(day_ctx["is_weekend"]):
+        print(
+            f"{TRIAL_WEEKEND_SKIP_TOKEN} subscriber_key={policy.subscriber_key} "
+            f"local_date={day_ctx['local_date']} weekday={day_ctx['weekday_name']} gate=trial_weekdays_only"
+        )
         return 0
 
     crm_light.ensure_database(resolved_crm_db)
@@ -590,7 +626,7 @@ def run_trial_daily(
                         print("CONVERSION_EMAIL_PENDING send_live=NO")
             return 0
 
-        local_today = datetime.now(_resolve_trial_timezone(policy.tz)).date().isoformat()
+        local_today = str(day_ctx["local_date"])
         if send_live and not dry_run and crm_light.has_trial_delivery_on_local_date(
             conn,
             subscriber_key=policy.subscriber_key,
@@ -699,6 +735,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="Never send; record DRY_RUN in send_events.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved trial policy (non-secret) and exit.")
     ap.add_argument(
+        "--allow-weekend-send",
+        action="store_true",
+        help="Emergency/manual override: allow trial send path on Sat/Sun (default blocked).",
+    )
+    ap.add_argument(
         "--test-send-daily",
         action="store_true",
         help="Laptop-safe: render daily digest to OSHA_SMOKE_TO with --no-state-mutation (records DRY_RUN/SENT).",
@@ -716,6 +757,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=bool(args.dry_run),
             test_send_daily=bool(args.test_send_daily),
             print_config=bool(args.print_config),
+            allow_weekend_send=bool(args.allow_weekend_send),
         )
     except RuntimeError as exc:
         msg = str(exc)
