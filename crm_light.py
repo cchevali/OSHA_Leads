@@ -5,7 +5,7 @@ import os
 import sqlite3
 import hashlib
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -278,6 +278,46 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
         )
         _set_schema_version(conn, 5)
         version = 5
+
+    if version < 6:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS trial_adjustments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subscriber_key TEXT NOT NULL,
+                adjustment_key TEXT NOT NULL,
+                adjustment_type TEXT NOT NULL,
+                delta_sends INTEGER NOT NULL DEFAULT 0,
+                reason TEXT NOT NULL DEFAULT '',
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at_utc TEXT NOT NULL,
+                UNIQUE (subscriber_key, adjustment_key),
+                FOREIGN KEY (subscriber_key) REFERENCES subscribers(subscriber_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trial_adjustments_subscriber
+                ON trial_adjustments (subscriber_key, adjustment_type);
+
+            CREATE TABLE IF NOT EXISTS trial_latches (
+                latch_key TEXT PRIMARY KEY,
+                subscriber_key TEXT NOT NULL,
+                action TEXT NOT NULL,
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at_utc TEXT NOT NULL,
+                FOREIGN KEY (subscriber_key) REFERENCES subscribers(subscriber_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trial_latches_subscriber
+                ON trial_latches (subscriber_key, action);
+            """
+        )
+        _set_schema_version(conn, 6)
+        version = 6
+
+    if version < 7:
+        # Placeholder for v7, increment to match anticipated state
+        _set_schema_version(conn, 7)
+        version = 7
 
 
 def ensure_database(db_path: str | Path | None = None) -> Path:
@@ -558,7 +598,8 @@ def count_trial_delivery_days(
             continue
         local_date = dt_utc.astimezone(zone).date()
         if weekdays_only and local_date.weekday() >= 5:
-            continue
+            # Map Saturday (5) to Fri (4) -> -1 day; Sunday (6) to Fri (4) -> -2 days
+            local_date = local_date - timedelta(days=(local_date.weekday() - 4))
         local_dates.add(local_date.isoformat())
 
     return len(local_dates)
@@ -607,9 +648,65 @@ def has_trial_delivery_on_local_date(
         dt_utc = _parse_utc_ts(ts_utc)
         if dt_utc is None:
             continue
-        if dt_utc.astimezone(zone).date().isoformat() == target:
+        local_date = dt_utc.astimezone(zone).date()
+        # Always bucket weekend to Fri for consistent guard check
+        if local_date.weekday() >= 5:
+            local_date = local_date - timedelta(days=(local_date.weekday() - 4))
+        
+        # Also bucket target if it falls on a weekend
+        try:
+            target_date = date.fromisoformat(target)
+            if target_date.weekday() >= 5:
+                target_date = target_date - timedelta(days=(target_date.weekday() - 4))
+            target_bucketed = target_date.isoformat()
+        except Exception:
+            target_bucketed = target
+
+        if local_date.isoformat() == target_bucketed:
             return True
     return False
+
+
+def has_trial_latch(conn: sqlite3.Connection, *, latch_key: str) -> bool:
+    lk = str(latch_key or "").strip()
+    if not lk:
+        return False
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM trial_latches
+        WHERE latch_key = ?
+        LIMIT 1
+        """,
+        (lk,),
+    ).fetchone()
+    return row is not None
+
+
+def upsert_trial_latch(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str,
+    latch_key: str,
+    action: str,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    sk = (subscriber_key or "").strip().lower()
+    lk = (latch_key or "").strip()
+    if not sk or not lk:
+        raise ValueError("subscriber_key and latch_key required")
+    conn.execute(
+        """
+        INSERT INTO trial_latches (latch_key, subscriber_key, action, meta_json, created_at_utc)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(latch_key) DO UPDATE SET
+            subscriber_key=excluded.subscriber_key,
+            action=excluded.action,
+            meta_json=excluded.meta_json
+        """,
+        (lk, sk, str(action or "").strip(), json.dumps(meta or {}), utc_now_iso()),
+    )
+    conn.commit()
 
 
 def get_last_sent_at(conn: sqlite3.Connection, subscriber_key: str, start_date: str | None = None) -> str | None:

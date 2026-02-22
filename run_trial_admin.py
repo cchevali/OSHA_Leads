@@ -30,13 +30,8 @@ def _count_distinct_live_primary_weekdays(
     start_date: str,
     tz_name: str,
     primary_recipient: str,
+    as_of_date: date | None = None,
 ) -> int:
-    from datetime import date, datetime, timezone
-    try:
-        from zoneinfo import ZoneInfo
-    except ImportError:
-        ZoneInfo = None
-
     def resolve_tz(name: str):
         if ZoneInfo:
             try:
@@ -47,6 +42,11 @@ def _count_distinct_live_primary_weekdays(
 
     zone = resolve_tz(tz_name)
     start_iso = f"{start_date}T00:00:00+00:00"
+    
+    # End window at end of as_of_date
+    end_iso = "9999-12-31T23:59:59+00:00"
+    if as_of_date:
+        end_iso = f"{as_of_date.isoformat()}T23:59:59+00:00"
 
     rows = conn.execute(
         """
@@ -55,8 +55,9 @@ def _count_distinct_live_primary_weekdays(
         WHERE subscriber_key = ?
           AND status = 'SENT'
           AND ts_utc >= ?
+          AND ts_utc <= ?
         """,
-        (sk, start_iso),
+        (sk, start_iso, end_iso),
     ).fetchall()
 
     local_weekday_dates = set()
@@ -78,19 +79,25 @@ def _count_distinct_live_primary_weekdays(
         local_dt = dt_utc.astimezone(zone)
         local_date = local_dt.date()
 
-        # Filter 1: Mon-Fri only
+        # Filter 1: Mon-Fri only (with bucketing for consistency)
         if local_date.weekday() >= 5:
-            continue
+            local_date = local_date - timedelta(days=(local_date.weekday() - 4))
 
-        # Filter 2: Meta filters (LIVE, Primary recipient)
+        # Filter 2: Meta filters
         meta = json.loads(row["meta_json"] or "{}")
-
+        # Mode: default LIVE if missing/empty
         mode = str(meta.get("send_mode") or meta.get("mode") or "").strip().upper()
         if mode and mode != "LIVE":
             continue
-
-        recip = str(meta.get("primary_recipient") or meta.get("recipient") or meta.get("to") or "").strip().lower()
-        if recip and recip != primary_recipient.lower():
+        # Recipient: fallback order
+        recip = str(
+            meta.get("primary_recipient") or 
+            meta.get("to") or 
+            meta.get("recipient") or 
+            meta.get("email") or ""
+        ).strip().lower()
+        # "only filter out if field exists and explicitly mismatches"
+        if recip and primary_recipient and recip != primary_recipient.lower():
             continue
 
         local_weekday_dates.add(local_date.isoformat())
@@ -103,9 +110,13 @@ def _count_live_primary_send_rows(
     sk: str,
     start_date: str,
     primary_recipient: str,
+    as_of_date: date | None = None,
 ) -> int:
-    import json
     start_iso = f"{start_date}T00:00:00+00:00"
+    end_iso = "9999-12-31T23:59:59+00:00"
+    if as_of_date:
+        end_iso = f"{as_of_date.isoformat()}T23:59:59+00:00"
+
     rows = conn.execute(
         """
         SELECT meta_json
@@ -113,18 +124,26 @@ def _count_live_primary_send_rows(
         WHERE subscriber_key = ?
           AND status = 'SENT'
           AND ts_utc >= ?
+          AND ts_utc <= ?
         """,
-        (sk, start_iso),
+        (sk, start_iso, end_iso),
     ).fetchall()
 
     count = 0
     for row in rows:
         meta = json.loads(row["meta_json"] or "{}")
+        # Mode: default LIVE if missing/empty
         mode = str(meta.get("send_mode") or meta.get("mode") or "").strip().upper()
         if mode and mode != "LIVE":
             continue
-        recip = str(meta.get("primary_recipient") or meta.get("recipient") or meta.get("to") or "").strip().lower()
-        if recip and recip != primary_recipient.lower():
+        # Recipient: fallback order
+        recip = str(
+            meta.get("primary_recipient") or 
+            meta.get("to") or 
+            meta.get("recipient") or 
+            meta.get("email") or ""
+        ).strip().lower()
+        if recip and primary_recipient and recip != primary_recipient.lower():
             continue
         count += 1
     return count
@@ -706,12 +725,14 @@ def build_trial_status(
             start_date,
             tz_name=tz_name,
             primary_recipient=primary_recipient,
+            as_of_date=as_of_date,
         )
         sends_rows_raw = _count_live_primary_send_rows(
             conn,
             sk,
             start_date,
             primary_recipient=primary_recipient,
+            as_of_date=as_of_date,
         )
         first_sent = crm_light.get_first_sent_at(conn, sk, start_date=start_date)
         last_sent = crm_light.get_last_sent_at(conn, sk, start_date=start_date)
