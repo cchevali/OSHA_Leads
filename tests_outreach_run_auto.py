@@ -355,7 +355,15 @@ class TestOutreachRunAuto(unittest.TestCase):
                 calls["write"] += 1
 
             with mock.patch.dict(os.environ, env, clear=True):
-                with mock.patch.object(roa, "_outreach_local_now", return_value=weekend_now), mock.patch.object(
+                with mock.patch.object(roa, "_data_dir", return_value=data_dir), mock.patch.object(
+                    roa, "_crm_db_path", return_value=crm_db
+                ), mock.patch.object(
+                    roa, "_suppression_csv_path", return_value=(data_dir / "suppression.csv")
+                ), mock.patch.object(
+                    roa, "_export_ledger_path", return_value=(data_dir / "outreach_export_ledger.jsonl")
+                ), mock.patch.object(
+                    roa, "_outreach_local_now", return_value=weekend_now
+                ), mock.patch.object(
                     roa, "_send_outreach_email", side_effect=_fake_send
                 ), mock.patch.object(roa, "_write_events_and_status_updates", side_effect=_fake_write):
                     with mock.patch.object(sys, "argv", ["run_outreach_auto.py"]):
@@ -417,7 +425,15 @@ class TestOutreachRunAuto(unittest.TestCase):
             }
 
             with mock.patch.dict(os.environ, env, clear=True):
-                with mock.patch.object(roa, "_outreach_local_now", return_value=weekend_now):
+                with mock.patch.object(roa, "_data_dir", return_value=data_dir), mock.patch.object(
+                    roa, "_crm_db_path", return_value=crm_db
+                ), mock.patch.object(
+                    roa, "_suppression_csv_path", return_value=(data_dir / "suppression.csv")
+                ), mock.patch.object(
+                    roa, "_export_ledger_path", return_value=(data_dir / "outreach_export_ledger.jsonl")
+                ), mock.patch.object(
+                    roa.gm, "_load_local_suppression_set", return_value=set()
+                ), mock.patch.object(roa, "_outreach_local_now", return_value=weekend_now):
                     with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--plan", "--for-date", "2026-02-10"]):
                         out_plan = io.StringIO()
                         err_plan = io.StringIO()
