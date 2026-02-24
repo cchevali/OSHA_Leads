@@ -873,6 +873,43 @@ py -3 scripts\subscription_registry_ops.py onboarding-submit --print-config
 py -3 scripts\subscription_registry_ops.py onboarding-submit --stdin-json --dry-run
 ```
 
+Canonical onboarding payload fields (trial and paid onboarding web paths both normalize to this shape):
+
+- `subscriber_key` (optional; derived from admin email when omitted)
+- `email` (required admin/billing contact email)
+- `plan_code` (`pilot|core|multi`)
+- `cbsa_codes` (required list of 5-digit CBSA codes; plan-capped)
+- `recipients` (required list of `{ email, name? }`; order preserved, index 0 = primary recipient)
+
+Recipient caps (web validates and backend onboarding-submit enforces authoritatively):
+
+- `pilot`: max `6` recipients
+- `core`: max `6` recipients
+- `multi`: max `15` recipients
+
+Example dry-run onboarding payload (PowerShell):
+
+```powershell
+@'
+{
+  "subscriber_key": "sub_example",
+  "email": "billing@example.com",
+  "plan_code": "core",
+  "cbsa_codes": ["19100","12420"],
+  "recipients": [
+    { "email": "ops@example.com", "name": "Ops Lead" },
+    { "email": "safety@example.com", "name": "Safety Manager" }
+  ]
+}
+'@ | py -3 scripts\subscription_registry_ops.py onboarding-submit --stdin-json --dry-run
+```
+
+Post-onboarding recipient changes:
+
+- Current supported operator path: customer emails support with add/remove recipient names/emails.
+- Support updates onboarding recipient configuration and re-runs onboarding-submit (dry-run first, then apply) with the updated `recipients[]`.
+- Do not change outreach templates/cadence/scoring while processing recipient-only updates.
+
 Metro match audit command ("present?", "matched?", "if not, why?"):
 
 ```powershell

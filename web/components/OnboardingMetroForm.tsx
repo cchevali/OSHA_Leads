@@ -12,10 +12,28 @@ type OnboardingMetroFormProps = {
   initialSubscriberKey: string;
 };
 
+type RecipientRow = {
+  name: string;
+  email: string;
+};
+
+type Recipient = {
+  email: string;
+  name?: string;
+};
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const PLAN_CAPS: Record<string, number> = {
   pilot: 4,
   core: 4,
   multi: 10
+};
+
+const PLAN_RECIPIENT_CAPS: Record<string, number> = {
+  pilot: 6,
+  core: 6,
+  multi: 15
 };
 
 const PLAN_LABELS: Record<string, string> = {
@@ -30,6 +48,32 @@ function normalizePlanCode(value: string): string {
   if (normalized === "trial") return "pilot";
   if (normalized in PLAN_CAPS) return normalized;
   return "core";
+}
+
+function collapseWhitespace(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function dedupeRecipients(rows: RecipientRow[], maxRecipients: number): { recipients: Recipient[]; error: string } {
+  const recipients: Recipient[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const email = row.email.trim().toLowerCase();
+    if (!EMAIL_REGEX.test(email)) {
+      return { recipients: [], error: "Enter a valid email for each recipient row." };
+    }
+    if (seen.has(email)) continue;
+    seen.add(email);
+    const name = collapseWhitespace(row.name);
+    recipients.push(name ? { email, name } : { email });
+  }
+  if (recipients.length === 0) {
+    return { recipients: [], error: "At least one recipient is required." };
+  }
+  if (recipients.length > maxRecipients) {
+    return { recipients: [], error: `${maxRecipients} recipients maximum for this plan.` };
+  }
+  return { recipients, error: "" };
 }
 
 type SubmitState = {
@@ -49,6 +93,8 @@ export default function OnboardingMetroForm({
   const [planCode, setPlanCode] = useState(normalizePlanCode(initialPlanCode));
   const [query, setQuery] = useState("");
   const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
+  const [recipientRows, setRecipientRows] = useState<RecipientRow[]>([{ name: "", email: initialEmail }]);
+  const [recipientError, setRecipientError] = useState("");
   const [submitState, setSubmitState] = useState<SubmitState>({
     status: "idle",
     message: "",
@@ -56,6 +102,27 @@ export default function OnboardingMetroForm({
   });
 
   const maxMetros = useMemo(() => PLAN_CAPS[planCode] ?? 4, [planCode]);
+  const maxRecipients = useMemo(() => PLAN_RECIPIENT_CAPS[planCode] ?? 6, [planCode]);
+
+  function updateRecipientRow(index: number, key: keyof RecipientRow, value: string): void {
+    setRecipientRows((prev) => prev.map((row, i) => (i === index ? { ...row, [key]: value } : row)));
+    setRecipientError("");
+    setSubmitState((prev) => ({ ...prev, status: "idle", message: "" }));
+  }
+
+  function addRecipientRow(): void {
+    setRecipientRows((prev) => {
+      if (prev.length >= maxRecipients) return prev;
+      return [...prev, { name: "", email: "" }];
+    });
+    setRecipientError("");
+  }
+
+  function removeRecipientRow(index: number): void {
+    if (index === 0) return;
+    setRecipientRows((prev) => prev.filter((_, i) => i !== index));
+    setRecipientError("");
+  }
 
   function toggleCode(code: string): void {
     setSubmitState((prev) => ({ ...prev, status: "idle", message: "" }));
@@ -94,6 +161,18 @@ export default function OnboardingMetroForm({
       return;
     }
 
+    const normalizedRecipients = dedupeRecipients(recipientRows, maxRecipients);
+    if (normalizedRecipients.error) {
+      setRecipientError(normalizedRecipients.error);
+      setSubmitState({
+        status: "error",
+        message: "Please fix recipient details and resubmit.",
+        contactPath: "/contact?source=onboarding&intent=expand"
+      });
+      return;
+    }
+    setRecipientError("");
+
     setSubmitState({ status: "submitting", message: "Saving coverage...", contactPath: "" });
     const response = await fetch("/api/onboarding", {
       method: "POST",
@@ -102,7 +181,8 @@ export default function OnboardingMetroForm({
         subscriber_key: subscriberKey,
         email,
         plan_code: planCode,
-        cbsa_codes: selectedCodes
+        cbsa_codes: selectedCodes,
+        recipients: normalizedRecipients.recipients
       })
     });
     const payload = (await response.json()) as {
@@ -111,6 +191,8 @@ export default function OnboardingMetroForm({
       max_metros?: number;
       selected_count?: number;
       contact_path?: string;
+      max_recipients?: number;
+      selected_recipients?: number;
     };
     if (!response.ok || !payload.ok) {
       const contactPath = payload.contact_path || "/contact?source=onboarding&intent=expand";
@@ -118,6 +200,14 @@ export default function OnboardingMetroForm({
         setSubmitState({
           status: "error",
           message: `This submission selected ${payload.selected_count || selectedCodes.length} metros and exceeds your plan cap (${payload.max_metros || maxMetros}).`,
+          contactPath
+        });
+        return;
+      }
+      if (payload.err_code === "ERR_MAX_RECIPIENTS_EXCEEDED") {
+        setSubmitState({
+          status: "error",
+          message: `This submission included ${payload.selected_recipients || 0} recipients and exceeds your plan cap (${payload.max_recipients || maxRecipients}).`,
           contactPath
         });
         return;
@@ -132,7 +222,7 @@ export default function OnboardingMetroForm({
 
     setSubmitState({
       status: "success",
-      message: "Coverage saved. Your CBSA allowlist has been recorded.",
+      message: "Coverage and recipients saved. Your onboarding details have been recorded.",
       contactPath: ""
     });
   }
@@ -149,7 +239,7 @@ export default function OnboardingMetroForm({
         />
       </label>
       <label className="grid gap-2 text-sm text-inkMuted">
-        Email
+        Company Email (billing/admin contact)
         <input
           required
           type="email"
@@ -165,11 +255,83 @@ export default function OnboardingMetroForm({
           onChange={(event) => setPlanCode(normalizePlanCode(event.target.value))}
           className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
         >
-          <option value="pilot">Pilot (max 4 metros)</option>
-          <option value="core">Core (max 4 metros)</option>
-          <option value="multi">Multi-Territory (max 10 metros)</option>
+          <option value="pilot">Pilot (max 4 metros, 6 recipients)</option>
+          <option value="core">Core (max 4 metros, 6 recipients)</option>
+          <option value="multi">Multi-Territory (max 10 metros, 15 recipients)</option>
         </select>
       </label>
+
+      <div className="grid gap-3 rounded-xl border border-cardBorder bg-card p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm font-semibold text-ink">Recipients (max {maxRecipients})</p>
+          <button
+            type="button"
+            onClick={addRecipientRow}
+            disabled={recipientRows.length >= maxRecipients}
+            className="text-xs font-semibold text-ocean underline disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Add recipient
+          </button>
+        </div>
+        <p className="text-xs text-inkMuted">Primary recipient is used first for display/order. Additional recipients receive individual emails.</p>
+
+        <div className="grid gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-inkMuted">Primary recipient</p>
+          <div className="grid gap-2 md:grid-cols-[1fr_1fr]">
+            <input
+              type="text"
+              value={recipientRows[0]?.name || ""}
+              onChange={(event) => updateRecipientRow(0, "name", event.target.value)}
+              placeholder="Name (optional)"
+              className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
+            />
+            <input
+              required
+              type="email"
+              value={recipientRows[0]?.email || ""}
+              onChange={(event) => updateRecipientRow(0, "email", event.target.value)}
+              placeholder="recipient@company.com"
+              className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
+            />
+          </div>
+        </div>
+
+        {recipientRows.length > 1 ? (
+          <div className="grid gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-inkMuted">Additional recipients</p>
+            {recipientRows.slice(1).map((row, offset) => {
+              const index = offset + 1;
+              return (
+                <div key={`onboarding-recipient-${index}`} className="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+                  <input
+                    type="text"
+                    value={row.name}
+                    onChange={(event) => updateRecipientRow(index, "name", event.target.value)}
+                    placeholder="Name (optional)"
+                    className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
+                  />
+                  <input
+                    required
+                    type="email"
+                    value={row.email}
+                    onChange={(event) => updateRecipientRow(index, "email", event.target.value)}
+                    placeholder="recipient@company.com"
+                    className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeRecipientRow(index)}
+                    className="rounded-xl border border-cardBorder px-3 py-2 text-xs font-semibold text-ink transition hover:border-ink/40"
+                  >
+                    Remove
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+        {recipientError ? <p className="text-xs font-semibold text-red-700">{recipientError}</p> : null}
+      </div>
 
       <MetroPicker
         options={options}

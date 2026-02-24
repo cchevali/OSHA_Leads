@@ -1410,6 +1410,11 @@ class TestTrialStatus(unittest.TestCase):
                 else:
                     os.environ["TRIAL_CONVERSION_URL"] = old_conv
 
+    def test_conversion_send_path_list_unsubscribe_contract(self) -> None:
+        text = Path("run_trial_daily.py").read_text(encoding="utf-8")
+        self.assertIn('msg["List-Unsubscribe"]', text)
+        self.assertEqual(text.count('msg["List-Unsubscribe"]'), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

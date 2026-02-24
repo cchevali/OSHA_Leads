@@ -39,12 +39,23 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - `outreach/generate_mailmerge.py` remains available to generate outbox CSV + manifest for preview/debug workflows.
 - This path is no longer required for normal daily operations.
 
+## Customer/Trial Onboarding Recipient Flow
+
+1. Website forms:
+   - Trial requests (`web/app/contact` -> `web/app/api/trial-request`) capture company/admin email, metros, and structured `recipients[]`.
+   - Paid onboarding (`web/app/onboarding` -> `web/app/api/onboarding`) captures metros/CBSA selections plus structured `recipients[]`.
+2. Web onboarding API invokes `scripts/subscription_registry_ops.py onboarding-submit` (CLI contract preserved with `--print-config` and `--dry-run`).
+3. `subscription_registry_ops.py` writes onboarding state into `crm_light` (`subscriber_entitlements`, `subscriber_cbsa`) including canonical `recipients_json`.
+4. `send_digest_email.py` loads `crm_light` entitlements/CBSA allowlist and prefers entitlement recipients for per-recipient fan-out delivery (one message per recipient; no To/CC batching).
+5. Suppression and unsubscribe remain email-keyed and are enforced per recipient send attempt.
+
 ## Operational Artifacts
 
 - `out/crm.sqlite` (or `${DATA_DIR}/crm.sqlite`): prospects/outreach/trials/suppression source of truth
 - `out/prospect_discovery/prospects_latest.csv` (or `${DATA_DIR}/prospect_discovery/prospects_latest.csv`): canonical generated discovery feed input
 - `out/unsub_tokens.csv`: token store for one-click unsubscribe links (when enabled)
 - `out/suppression.csv`: suppression list enforced by exports and sending paths
+- `out/crm_light.sqlite` (or `${DATA_DIR}/crm_light.sqlite`): onboarding entitlements + CBSA allowlists + canonical onboarding recipients
 - `out/outreach_export_ledger.jsonl`: optional compatibility ledger for contacted records
 - `out/outreach/<batch>/outbox_*_dry_run.csv` + manifest: non-sending artifact output from `run_outreach_auto.py --dry-run`
 

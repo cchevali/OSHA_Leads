@@ -26,6 +26,7 @@ Success metric (funnel): **reply -> call -> paid** (track conversion per batch).
 
 - All outreach exports/sends must include an opt-out mechanism.
 - Suppression must be enforced for all exports and sends (email and, where available, domain).
+- Trial and paid onboarding must capture structured recipient data (`recipients[]`) so recipient-aware delivery is configured deterministically.
 
 ## Do Not Break
 
@@ -33,5 +34,6 @@ Success metric (funnel): **reply -> call -> paid** (track conversion per batch).
 - Secrets-required commands run via `.\run_with_secrets.ps1 -- py -3 ...`.
 - Automation scripts keep `--print-config` and `--dry-run` behaviors side-effect-safe.
 - Preserve List-Unsubscribe + footer opt-out links; do not duplicate unsubscribe links.
+- Do not change outreach cadence/scoring/templates/sending behavior during onboarding/registry form work.
 - This repo provides operational monitoring and outreach tooling, not legal advice.
 - Documentation/process alignment work must not alter product behavior.
