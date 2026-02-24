@@ -74,18 +74,20 @@ DEFAULT_SENDS_LIMIT = 14
 TRIAL_SENDS_TARGET = 14
 CONVERSION_TEMPLATE_TEXT = (
     "To: {primary_recipient}\n\n"
-    "Subject: Keep your OSHA signal digest running - {territory_label}\n\n"
+    "Subject: Your {territory_label} OSHA digest is wrapping up\n\n"
     "Hi {recipient_name},\n\n"
-    "Thanks for trying MicroFlowOps. Over the trial you've been receiving the weekday OSHA activity digest for {territory_label}.\n\n"
-    "Quick note on \"0 new\": it simply means nothing new was first-seen since the prior weekday send, so there's nothing to report that day.\n\n"
-    "If you'd like to keep the feed running without interruption:\n"
-    "• Reply \"go\" and confirm the metros/cities you want covered (current default: {territory_label}), and I'll switch you to the paid feed the same day.\n"
-    "• Or activate via Stripe here: {stripe_link}\n\n"
-    "If you'd rather confirm fit before paying, reply with your target metros/cities and I'll confirm coverage first.\n\n"
-    "Want any tweaks (add/remove metros, add recipients, different send time)? Just reply with what you want and I'll tune it.\n\n"
-    "— Chase\n"
-    "MicroFlowOps\n\n"
-    "P.S. If it's not a fit, just reply \"stop\" and I'll close it out.\n"
+    "You've been getting the weekday OSHA activity digest for {territory_label} over the past couple of weeks. "
+    "Wanted to check in before it stops.\n\n"
+    "If the digest has been useful, two ways to keep it going:\n\n"
+    "1. Reply \"go\" and confirm your coverage area (or request changes \u2014 different metros, extra recipients, etc.). "
+    "I'll switch you over the same day.\n"
+    "2. Or activate directly here:\n"
+    "{stripe_link}\n\n"
+    "Not sure yet? Reply with questions or the metros you care about and I'll confirm coverage before anything is charged.\n\n"
+    "A few people ask about \"0 new\" days \u2014 that just means no new inspections were first-seen since the last weekday send. "
+    "Nothing missed, nothing broken.\n\n"
+    "\u2014 Chase\n"
+    "MicroFlowOps\n"
 )
 
 
@@ -166,7 +168,7 @@ def _resolve_territory_label(territory_code: str) -> str:
     defs = load_territory_definitions()
     canonical = resolve_territory_code(code, defs)
     terr = defs.get(canonical) or defs.get(code) or {}
-    label = str(terr.get("description") or "").strip()
+    label = str(terr.get("display_name") or terr.get("label") or terr.get("description") or "").strip()
     return label or code or "{territory_label}"
 
 
@@ -176,6 +178,12 @@ def _derive_recipient_name(email: str, subscriber_key: str) -> str:
         text = local.replace(".", " ").replace("_", " ").replace("-", " ")
         cleaned = " ".join(part for part in text.split() if part)
         if cleaned:
+            # Reject abbreviations / non-name prefixes
+            first_token = cleaned.split()[0] if cleaned.split() else cleaned
+            if len(first_token) < 2:
+                return ""
+            if not re.search(r"[aeiouAEIOU]", first_token):
+                return ""
             return cleaned.title()
     sk = (subscriber_key or "").strip()
     return sk or "{recipient_name}"
@@ -189,7 +197,7 @@ def render_conversion_email_text(
     stripe_link: str,
 ) -> str:
     return CONVERSION_TEMPLATE_TEXT.format(
-        recipient_name=(recipient_name or "").strip() or "{recipient_name}",
+        recipient_name=(recipient_name or "").strip() or "there",
         primary_recipient=(primary_recipient or "").strip().lower() or "{primary_recipient}",
         territory_label=(territory_label or "").strip() or "{territory_label}",
         stripe_link=(stripe_link or "").strip() or "{stripe_link}",
