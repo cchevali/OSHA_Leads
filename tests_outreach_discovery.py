@@ -109,6 +109,20 @@ class TestOutreachDiscovery(unittest.TestCase):
             self.assertIn(f"crm_db={(data_dir / 'crm.sqlite').resolve()}", out)
             self.assertIn("input_path=(missing)", out)
 
+    def test_dry_run_accepts_for_date_flag_additively(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            input_csv = tmp / "input.csv"
+            _write_rows(input_csv, _rows(2))
+
+            p = self._run(["--dry-run", "--for-date", "2026-02-24", "--input", str(input_csv)], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("PASS_DISCOVERY_DRY_RUN", out)
+            self.assertIn(f"input_path={input_csv.resolve()}", out)
+            self._assert_discovery_block(out, "DRY_RUN")
+
     def test_no_arg_missing_input_warns_and_exits_zero(self):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "data"

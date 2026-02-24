@@ -363,12 +363,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--input", default="", help="Input prospects CSV path.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved config paths and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Validate/inspect input only. No DB writes.")
+    ap.add_argument("--for-date", default="", help="Optional YYYY-MM-DD run-date override (accepted for CLI parity; no effect).")
     ap.add_argument(
         "--sample",
         action="store_true",
         help="Allow sample CSV fallback (dev/testing only; scheduled mode requires DISCOVERY_ALLOW_SAMPLE=1).",
     )
     args = ap.parse_args(argv)
+    _ = args.for_date
 
     mode = _resolve_mode(has_input=bool((args.input or "").strip()), dry_run=bool(args.dry_run))
     data_dir = crm_store.data_dir()
