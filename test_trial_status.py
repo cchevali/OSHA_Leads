@@ -931,13 +931,13 @@ class TestTrialStatus(unittest.TestCase):
                 artifact = data_dir / "trials" / "wally_trial" / "conversion_email.txt"
                 text = artifact.read_text(encoding="utf-8")
                 self.assertIn("To: wally_trial@example.com", text)
-                self.assertIn("Subject: Keep your OSHA signal digest running -", text)
-                self.assertIn("Quick note on \"0 new\":", text)
-                self.assertIn('Reply "go" and confirm the metros/cities', text)
-                self.assertIn("Or activate via Stripe here:", text)
-                self.assertIn("If you'd rather confirm fit before paying", text)
-                self.assertIn("Want any tweaks (add/remove metros, add recipients, different send time)?", text)
-                self.assertIn('P.S. If it\'s not a fit, just reply "stop" and I\'ll close it out.', text)
+                self.assertIn("Subject: Your", text)
+                self.assertIn("OSHA digest is wrapping up", text)
+                self.assertIn('"0 new" days', text)
+                self.assertIn('Reply "go"', text)
+                self.assertIn("activate directly here", text)
+                self.assertIn("confirm coverage before anything is charged", text)
+                self.assertIn("different metros, extra recipients", text)
                 self.assertIn("https://example.com/activate", text)
                 self.assertIn("Texas Triangle", text)
                 self.assertNotRegex(text, re.compile(r"<(html|body|p|a|br)\\b", re.IGNORECASE))
@@ -1410,6 +1410,16 @@ class TestTrialStatus(unittest.TestCase):
                 else:
                     os.environ["TRIAL_CONVERSION_URL"] = old_conv
 
+    def test_derive_recipient_name_fallback_for_abbreviations(self) -> None:
+        """Non-name email prefixes (no vowels, single char) fall back to empty string."""
+        # No vowels -> empty
+        self.assertEqual(run_trial_admin._derive_recipient_name("wgs@example.com", "wgs_trial"), "")
+        self.assertEqual(run_trial_admin._derive_recipient_name("mgmt@example.com", "mgmt_trial"), "")
+        # Too short -> empty
+        self.assertEqual(run_trial_admin._derive_recipient_name("a@example.com", "a_trial"), "")
+        # Normal names preserved
+        self.assertEqual(run_trial_admin._derive_recipient_name("chase@example.com", "chase_trial"), "Chase")
+        self.assertEqual(run_trial_admin._derive_recipient_name("jane.doe@example.com", "jane_trial"), "Jane Doe")
 
 if __name__ == "__main__":
     unittest.main()
