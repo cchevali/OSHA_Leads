@@ -721,6 +721,72 @@ def _crm_uncontacted_by_state(
     return counts
 
 
+def _crm_funnel_breakdown_for_summary(
+    conn: sqlite3.Connection,
+    states: list[str],
+    suppressed_emails: set[str],
+    allow_repeat: bool,
+    selected_state: str,
+) -> dict:
+    normalized_states = [str(s or "").strip().upper() for s in states if str(s or "").strip()]
+    pool_total_by_state: dict[str, int] = {s: 0 for s in normalized_states}
+    uncontacted_sendable_by_state: dict[str, int] = {s: 0 for s in normalized_states}
+    uncontacted_raw_by_state: dict[str, int] = {s: 0 for s in normalized_states}
+    out = {
+        "pool_total_by_state": pool_total_by_state,
+        "uncontacted_sendable_by_state": uncontacted_sendable_by_state,
+        "uncontacted_raw_by_state": uncontacted_raw_by_state,
+        "missing_state_count": 0,
+        "invalid_email_count": 0,
+        "suppressed_count": 0,
+        "already_contacted_count_selected_state": 0,
+        "already_contacted_count_overall": 0,
+    }
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT prospect_id, email, status, last_contacted_at, state
+            FROM prospects
+            """
+        ).fetchall()
+    except Exception:
+        return out
+
+    selected_state_norm = str(selected_state or "").strip().upper()
+    sent_ids = _fetch_prior_sent_ids(conn)
+    for row in rows:
+        row_state = _safe_text(str(row["state"] or "")).upper()
+        if not row_state:
+            out["missing_state_count"] = int(out["missing_state_count"]) + 1
+        if row_state in pool_total_by_state:
+            pool_total_by_state[row_state] = int(pool_total_by_state.get(row_state, 0)) + 1
+
+        reason = _skip_reason(
+            row=row,
+            suppressed_emails=suppressed_emails,
+            sent_ids=sent_ids,
+            allow_repeat=allow_repeat,
+        )
+        if reason == "invalid_email":
+            out["invalid_email_count"] = int(out["invalid_email_count"]) + 1
+        elif reason == "suppressed":
+            out["suppressed_count"] = int(out["suppressed_count"]) + 1
+        elif reason == "already_contacted":
+            out["already_contacted_count_overall"] = int(out["already_contacted_count_overall"]) + 1
+            if row_state == selected_state_norm:
+                out["already_contacted_count_selected_state"] = int(out["already_contacted_count_selected_state"]) + 1
+
+        if row_state not in uncontacted_sendable_by_state:
+            continue
+        if reason == "":
+            uncontacted_sendable_by_state[row_state] = int(uncontacted_sendable_by_state.get(row_state, 0)) + 1
+            uncontacted_raw_by_state[row_state] = int(uncontacted_raw_by_state.get(row_state, 0)) + 1
+        elif reason in {"invalid_email", "suppressed"}:
+            uncontacted_raw_by_state[row_state] = int(uncontacted_raw_by_state.get(row_state, 0)) + 1
+    return out
+
+
 def _format_state_counts(states: list[str], counts: dict[str, int]) -> str:
     ordered: list[str] = []
     for state in states:
@@ -1917,7 +1983,23 @@ def main() -> int:
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
         )
+        crm_funnel = _crm_funnel_breakdown_for_summary(
+            conn=conn,
+            states=states,
+            suppressed_emails=suppressed_emails,
+            allow_repeat=bool(args.allow_repeat),
+            selected_state=state,
+        )
         uncontacted_by_state_text = _format_state_counts(states=states, counts=uncontacted_by_state)
+        crm_pool_total_by_state_text = _format_state_counts(states=states, counts=crm_funnel["pool_total_by_state"])
+        crm_uncontacted_sendable_by_state_text = _format_state_counts(
+            states=states,
+            counts=crm_funnel["uncontacted_sendable_by_state"],
+        )
+        crm_uncontacted_raw_by_state_text = _format_state_counts(
+            states=states,
+            counts=crm_funnel["uncontacted_raw_by_state"],
+        )
         rotation_hint = _state_rotation_hint(state=state, states=states, counts=uncontacted_by_state)
         new_replies = _event_count_for_day(conn, "replied", run_date)
         new_trials = _event_count_for_day(conn, "trial_started", run_date)
@@ -1940,6 +2022,17 @@ def main() -> int:
             f"{PASS_AUTO_EXPORT} outreach_states_config={','.join(states)} "
             f"crm_uncontacted_by_state={uncontacted_by_state_text}"
         )
+        print(f"{PASS_AUTO_EXPORT} crm_pool_total_by_state={crm_pool_total_by_state_text}")
+        print(f"{PASS_AUTO_EXPORT} crm_uncontacted_sendable_by_state={crm_uncontacted_sendable_by_state_text}")
+        print(f"{PASS_AUTO_EXPORT} crm_uncontacted_raw_by_state={crm_uncontacted_raw_by_state_text}")
+        print(f"{PASS_AUTO_EXPORT} crm_missing_state_count={int(crm_funnel['missing_state_count'])}")
+        print(f"{PASS_AUTO_EXPORT} crm_invalid_email_count={int(crm_funnel['invalid_email_count'])}")
+        print(f"{PASS_AUTO_EXPORT} crm_suppressed_count={int(crm_funnel['suppressed_count'])}")
+        print(
+            f"{PASS_AUTO_EXPORT} crm_already_contacted_count="
+            f"selected_state={int(crm_funnel['already_contacted_count_selected_state'])} "
+            f"overall={int(crm_funnel['already_contacted_count_overall'])}"
+        )
 
         subject = f"[AUTO] Outreach {batch} contacted={contacted_count} skipped={skipped_count} failed={failed_count}"
         text_body = (
@@ -1948,6 +2041,14 @@ def main() -> int:
             f"- batch: {batch}\n"
             f"- outreach_states_config: {','.join(states)}\n"
             f"- crm_uncontacted_by_state: {uncontacted_by_state_text}\n"
+            f"- crm_pool_total_by_state: {crm_pool_total_by_state_text}\n"
+            f"- crm_uncontacted_sendable_by_state: {crm_uncontacted_sendable_by_state_text}\n"
+            f"- crm_uncontacted_raw_by_state: {crm_uncontacted_raw_by_state_text}\n"
+            f"- crm_missing_state_count: {int(crm_funnel['missing_state_count'])}\n"
+            f"- crm_invalid_email_count: {int(crm_funnel['invalid_email_count'])}\n"
+            f"- crm_suppressed_count: {int(crm_funnel['suppressed_count'])}\n"
+            f"- crm_already_contacted_count: selected_state={int(crm_funnel['already_contacted_count_selected_state'])} "
+            f"overall={int(crm_funnel['already_contacted_count_overall'])}\n"
             f"- contacted_count: {contacted_count}\n"
             f"- skipped_count: {skipped_count}\n"
             f"- skipped_top_reasons: {top_skip}\n"
@@ -1965,6 +2066,15 @@ def main() -> int:
             f"<strong>batch:</strong> {batch}<br>"
             f"<strong>outreach_states_config:</strong> {','.join(states)}<br>"
             f"<strong>crm_uncontacted_by_state:</strong> {uncontacted_by_state_text}<br>"
+            f"<strong>crm_pool_total_by_state:</strong> {crm_pool_total_by_state_text}<br>"
+            f"<strong>crm_uncontacted_sendable_by_state:</strong> {crm_uncontacted_sendable_by_state_text}<br>"
+            f"<strong>crm_uncontacted_raw_by_state:</strong> {crm_uncontacted_raw_by_state_text}<br>"
+            f"<strong>crm_missing_state_count:</strong> {int(crm_funnel['missing_state_count'])}<br>"
+            f"<strong>crm_invalid_email_count:</strong> {int(crm_funnel['invalid_email_count'])}<br>"
+            f"<strong>crm_suppressed_count:</strong> {int(crm_funnel['suppressed_count'])}<br>"
+            f"<strong>crm_already_contacted_count:</strong> "
+            f"selected_state={int(crm_funnel['already_contacted_count_selected_state'])} "
+            f"overall={int(crm_funnel['already_contacted_count_overall'])}<br>"
             f"<strong>contacted_count:</strong> {contacted_count}<br>"
             f"<strong>skipped_count:</strong> {skipped_count}<br>"
             f"<strong>skipped_top_reasons:</strong> {top_skip}<br>"

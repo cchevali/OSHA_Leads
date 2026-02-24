@@ -343,7 +343,7 @@ class TestProspectGeneration(unittest.TestCase):
 
             env = {
                 "DATA_DIR": str(data_dir),
-                "OUTREACH_STATES": "TX,CA,FL",
+                "OUTREACH_STATES": "FL",
                 "PROSPECT_AUTOGROW_ENABLED": "1",
                 "PROSPECT_AUTOGROW_SOURCES": "AIHA",
                 "PROSPECT_AUTOGROW_BACKLOG_TARGET": "60",
@@ -380,6 +380,103 @@ class TestProspectGeneration(unittest.TestCase):
                     emails.append((row.get("email") or "").strip().lower())
             self.assertIn("alpha@examplefl.com", emails)
             self.assertNotIn("zeta@examplefl.com", emails)
+
+    def test_autogrow_enabled_backlog_gap_targets_low_nonzero_backlog(self):
+        from outreach import crm_store
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                for i in range(3):
+                    conn.execute(
+                        """
+                        INSERT INTO prospects(
+                          prospect_id, firm, contact_name, email, title, city, state, website, source,
+                          score, status, created_at, last_contacted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"ca_existing_{i}",
+                            f"Existing CA {i}",
+                            "",
+                            f"existingca{i}@exampleca.com",
+                            "EHS Consultant",
+                            "Irvine",
+                            "CA",
+                            "",
+                            "seed",
+                            0,
+                            "new",
+                            now,
+                            None,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+
+            cache_path = data_dir / "prospect_generation" / "cache" / "aiha" / "state_CA.json"
+            aiha_rows = []
+            for i in range(80):
+                aiha_rows.append(
+                    {
+                        "email": f"cand{i:03d}@freshca.com",
+                        "state": "CA",
+                        "firm": f"CA Firm {i:03d}",
+                        "title": "EHS Consultant",
+                        "city": "San Diego",
+                        "source": "aiha_consultants_listing:26-27",
+                    }
+                )
+            mocked_fetch_result = {
+                "rows": aiha_rows,
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": cache_path,
+                "pages_fetched": 4,
+                "parse_mode": "TEXT_CONTAINER",
+                "diagnostics_path": None,
+            }
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "CA",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "60",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "10",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "800",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
+                    return_value=mocked_fetch_result,
+                ) as mocked_fetch:
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0)
+            mocked_fetch.assert_called_once()
+            self.assertEqual(mocked_fetch.call_args.kwargs["state"], "CA")
+
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_BACKLOG_CURRENT=3", out)
+            self.assertIn("GENERATOR_AUTOGROW_NEW_NEEDED=57", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATE=CA backlog_current=3 new_needed=57", out)
+            self.assertIn("GENERATOR_AIHA_ROWS_ACCEPTED=57", out)
+            self.assertIn("GENERATOR_AUTOGROW_TOTAL_ACCEPTED=57", out)
 
     def test_transform_mapping_and_invalid_email_exclusion(self):
         from outreach import run_prospect_generation as generator
