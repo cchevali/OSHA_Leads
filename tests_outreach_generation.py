@@ -79,6 +79,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_ROWS_READ=", out)
             self.assertIn("GENERATOR_ROWS_WRITTEN=", out)
             self.assertIn("GENERATOR_AUTOGROW_ENABLED=0", out)
+            self.assertIn("GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=1 states=TX:60", out)
             self.assertIn("GENERATOR_COMPLETE status=DRY_RUN", out)
             self.assertFalse(out_path.exists(), msg="--dry-run must not write output")
 
@@ -477,6 +478,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_AUTOGROW_STATE=CA backlog_current=3 new_needed=57", out)
             self.assertIn("GENERATOR_AIHA_ROWS_ACCEPTED=57", out)
             self.assertIn("GENERATOR_AUTOGROW_TOTAL_ACCEPTED=57", out)
+            self.assertIn("GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=0 states=none", out)
 
     def test_transform_mapping_and_invalid_email_exclusion(self):
         from outreach import run_prospect_generation as generator

@@ -602,6 +602,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("PASS_AUTO_EXPORT crm_invalid_email_count=", stdout)
             self.assertIn("PASS_AUTO_EXPORT crm_suppressed_count=", stdout)
             self.assertIn("PASS_AUTO_EXPORT crm_already_contacted_count=selected_state=", stdout)
+            self.assertIn("PASS_AUTO_EXPORT GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=", stdout)
             self.assertIn("PASS_AUTO_SUMMARY to=allow@example.com", stdout)
 
             text_body = summary_capture.get("text", "")
@@ -614,6 +615,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("- crm_invalid_email_count:", text_body)
             self.assertIn("- crm_suppressed_count:", text_body)
             self.assertIn("- crm_already_contacted_count:", text_body)
+            self.assertIn("- GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=", text_body)
             self.assertIn("- contacted_count:", text_body)
 
             self.assertIn("<strong>crm_uncontacted_by_state:</strong>", html_body)
@@ -624,6 +626,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("<strong>crm_invalid_email_count:</strong>", html_body)
             self.assertIn("<strong>crm_suppressed_count:</strong>", html_body)
             self.assertIn("<strong>crm_already_contacted_count:</strong>", html_body)
+            self.assertIn("<strong>GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP:</strong>", html_body)
             self.assertIn("<strong>contacted_count:</strong>", html_body)
 
     def test_plan_is_deterministic_and_no_db_mutation(self):

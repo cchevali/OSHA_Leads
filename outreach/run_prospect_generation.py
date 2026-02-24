@@ -633,6 +633,21 @@ def _print_tokens(
             f"aiha_candidate={int(detail.get('aiha_candidate') or 0)} "
             f"aiha_accepted={int(detail.get('aiha_accepted') or 0)}"
         )
+    disabled_gap_states: list[str] = []
+    if not bool(autogrow.get("enabled")):
+        backlog_target = max(0, int(autogrow.get("backlog_target") or 0))
+        for detail in state_details:
+            state = _normalize_state(str(detail.get("state") or ""))
+            if not state:
+                continue
+            gap = max(0, backlog_target - int(detail.get("backlog_current") or 0))
+            if gap > 0:
+                disabled_gap_states.append(f"{state}:{gap}")
+    print(
+        "GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP="
+        f"{1 if disabled_gap_states else 0} "
+        f"states={','.join(disabled_gap_states) if disabled_gap_states else 'none'}"
+    )
 
     print(f"GENERATOR_AIHA_CACHE_PATH={Path(aiha_result['cache_path']).resolve()}")
     print(f"GENERATOR_AIHA_CACHE_USED={'YES' if aiha_result.get('cache_used') else 'NO'}")
