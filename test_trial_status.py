@@ -1382,8 +1382,10 @@ class TestTrialStatus(unittest.TestCase):
                 self.assertIn("11539 Links Dr, Reston, VA 20190", text_body)
                 self.assertIn('Opt out: reply with "unsubscribe"', text_body)
                 self.assertIn("https://unsub.example/", text_body)
+                self.assertNotIn("Not legal advice", text_body)
                 self.assertIn("click here to unsubscribe", html_body)
                 self.assertIn("microflowops.com", html_body.lower())
+                self.assertNotIn("Not legal advice", html_body)
                 self.assertEqual(call.get("list_unsub_post"), "List-Unsubscribe=One-Click")
                 self.assertIn("https://unsub.example/", str(call.get("list_unsub") or ""))
 
