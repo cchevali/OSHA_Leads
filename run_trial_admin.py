@@ -19,35 +19,21 @@ except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 import crm_light
+import trial_audit
 from email_footer import build_footer_html, build_footer_text
 from lead_filters import load_territory_definitions, resolve_territory_code
 from send_digest_email import build_unsubscribe_payload, resolve_branding, send_email
 
 
-def _count_distinct_live_primary_weekdays(
+def _count_status_live_primary_weekdays(
     conn: sqlite3.Connection,
-    sk: str,
+    *,
+    subscriber_key: str,
     start_date: str,
     tz_name: str,
     primary_recipient: str,
-    as_of_date: date | None = None,
 ) -> int:
-    def resolve_tz(name: str):
-        if ZoneInfo:
-            try:
-                return ZoneInfo(name or "America/Chicago")
-            except Exception:
-                return ZoneInfo("America/Chicago")
-        return timezone.utc
-
-    zone = resolve_tz(tz_name)
-    start_iso = f"{start_date}T00:00:00+00:00"
-    
-    # End window at end of as_of_date
-    end_iso = "9999-12-31T23:59:59+00:00"
-    if as_of_date:
-        end_iso = f"{as_of_date.isoformat()}T23:59:59+00:00"
-
+    zone = crm_light._resolve_tz(tz_name)  # type: ignore[attr-defined]
     rows = conn.execute(
         """
         SELECT ts_utc, variant, meta_json
@@ -55,98 +41,59 @@ def _count_distinct_live_primary_weekdays(
         WHERE subscriber_key = ?
           AND status = 'SENT'
           AND ts_utc >= ?
-          AND ts_utc <= ?
+        ORDER BY ts_utc ASC, id ASC
         """,
-        (sk, start_iso, end_iso),
+        (subscriber_key, f"{start_date}T00:00:00+00:00"),
     ).fetchall()
-
-    local_weekday_dates = set()
+    local_dates: set[str] = set()
     for row in rows:
-        ts_utc_str = str(row["ts_utc"] or "").strip()
-        if not ts_utc_str:
+        meta = crm_light._safe_meta_dict(str(row["meta_json"] or ""))  # type: ignore[attr-defined]
+        if not crm_light._is_trial_delivery_event(  # type: ignore[attr-defined]
+            variant=str(row["variant"] or ""),
+            meta=meta,
+            primary_recipient=primary_recipient,
+        ):
             continue
-
-        # Parse UTC timestamp
-        clean_ts = ts_utc_str[:-1] + "+00:00" if ts_utc_str.upper().endswith("Z") else ts_utc_str
-        try:
-            dt_utc = datetime.fromisoformat(clean_ts)
-        except Exception:
+        dt_utc = crm_light._parse_utc_ts(str(row["ts_utc"] or ""))  # type: ignore[attr-defined]
+        if dt_utc is None:
             continue
-        if dt_utc.tzinfo is None:
-            dt_utc = dt_utc.replace(tzinfo=timezone.utc)
-
-        # Convert to local
-        local_dt = dt_utc.astimezone(zone)
-        local_date = local_dt.date()
-
-        # Filter 1: Mon-Fri only (with bucketing for consistency)
+        local_date = dt_utc.astimezone(zone).date()
         if local_date.weekday() >= 5:
-            local_date = local_date - timedelta(days=(local_date.weekday() - 4))
-
-        # Filter 2: Meta filters
-        meta = json.loads(row["meta_json"] or "{}")
-        # Mode: default LIVE if missing/empty
-        mode = str(meta.get("send_mode") or meta.get("mode") or "").strip().upper()
-        if mode and mode != "LIVE":
             continue
-        # Recipient: fallback order
-        recip = str(
-            meta.get("primary_recipient") or 
-            meta.get("to") or 
-            meta.get("recipient") or 
-            meta.get("email") or ""
-        ).strip().lower()
-        # "only filter out if field exists and explicitly mismatches"
-        if recip and primary_recipient and recip != primary_recipient.lower():
-            continue
-
-        local_weekday_dates.add(local_date.isoformat())
-
-    return len(local_weekday_dates)
+        local_dates.add(local_date.isoformat())
+    return len(local_dates)
 
 
-def _count_live_primary_send_rows(
+def _count_status_live_primary_send_rows(
     conn: sqlite3.Connection,
-    sk: str,
+    *,
+    subscriber_key: str,
     start_date: str,
     primary_recipient: str,
-    as_of_date: date | None = None,
 ) -> int:
-    start_iso = f"{start_date}T00:00:00+00:00"
-    end_iso = "9999-12-31T23:59:59+00:00"
-    if as_of_date:
-        end_iso = f"{as_of_date.isoformat()}T23:59:59+00:00"
-
     rows = conn.execute(
         """
-        SELECT meta_json
+        SELECT variant, meta_json
         FROM send_events
         WHERE subscriber_key = ?
           AND status = 'SENT'
           AND ts_utc >= ?
-          AND ts_utc <= ?
+        ORDER BY ts_utc ASC, id ASC
         """,
-        (sk, start_iso, end_iso),
+        (subscriber_key, f"{start_date}T00:00:00+00:00"),
     ).fetchall()
-
     count = 0
     for row in rows:
-        meta = json.loads(row["meta_json"] or "{}")
-        # Mode: default LIVE if missing/empty
-        mode = str(meta.get("send_mode") or meta.get("mode") or "").strip().upper()
-        if mode and mode != "LIVE":
-            continue
-        # Recipient: fallback order
-        recip = str(
-            meta.get("primary_recipient") or 
-            meta.get("to") or 
-            meta.get("recipient") or 
-            meta.get("email") or ""
-        ).strip().lower()
-        if recip and primary_recipient and recip != primary_recipient.lower():
+        meta = crm_light._safe_meta_dict(str(row["meta_json"] or ""))  # type: ignore[attr-defined]
+        if not crm_light._is_trial_delivery_event(  # type: ignore[attr-defined]
+            variant=str(row["variant"] or ""),
+            meta=meta,
+            primary_recipient=primary_recipient,
+        ):
             continue
         count += 1
     return count
+
 
 _RE_SUBSCRIBER_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 TERRITORY_ALIASES: dict[str, str] = {
@@ -719,20 +666,18 @@ def build_trial_status(
         sends_limit_raw = trial.get("sends_limit")
         primary_recipient = str(sub.get("email") or "").strip().lower()
         tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
-        sends_used = _count_distinct_live_primary_weekdays(
+        sends_used = _count_status_live_primary_weekdays(
             conn,
-            sk,
-            start_date,
+            subscriber_key=sk,
+            start_date=start_date,
             tz_name=tz_name,
             primary_recipient=primary_recipient,
-            as_of_date=as_of_date,
         )
-        sends_rows_raw = _count_live_primary_send_rows(
+        sends_rows_raw = _count_status_live_primary_send_rows(
             conn,
-            sk,
-            start_date,
+            subscriber_key=sk,
+            start_date=start_date,
             primary_recipient=primary_recipient,
-            as_of_date=as_of_date,
         )
         first_sent = crm_light.get_first_sent_at(conn, sk, start_date=start_date)
         last_sent = crm_light.get_last_sent_at(conn, sk, start_date=start_date)
@@ -740,14 +685,10 @@ def build_trial_status(
         conn.close()
 
     days_since = (as_of_date - start).days
-    # authorative "expired" driven by distinct weekdays
-    trial_expired = 1 if (sends_limit is not None and sends_used >= sends_limit) else 0
-
-    # legacy "expired_by_sends" driven by raw send rows (required by existing tests)
-    expired_by_sends_raw = 1 if (sends_limit is not None and sends_rows_raw >= sends_limit) else 0
-
+    expired_by_sends = 1 if sends_rows_raw >= sends_limit else 0
     # Backward-compatible key: now means "14 successful sends elapsed".
     elapsed_14 = 1 if sends_used >= TRIAL_SENDS_TARGET else 0
+    trial_expired = 1 if sends_used >= sends_limit else 0
 
     conversion_artifact = crm_light.data_dir() / "trials" / sk / "conversion_email.txt"
     conversion_exists = conversion_artifact.exists()
@@ -766,7 +707,7 @@ def build_trial_status(
         "TRIAL_DAYS_SINCE_START": str(days_since),
         "TRIAL_SENDS_USED": str(sends_used),
         "TRIAL_SENDS_LIMIT": str(int(sends_limit_raw)) if sends_limit_raw is not None else "NONE",
-        "TRIAL_EXPIRED_BY_SENDS": str(expired_by_sends_raw),
+        "TRIAL_EXPIRED_BY_SENDS": str(expired_by_sends),
         "TRIAL_14_DAY_ELAPSED": str(elapsed_14),
         "TRIAL_NEXT_ACTION_HINT": next_hint,
         "TRIAL_EXPIRED": str(trial_expired),
@@ -919,23 +860,14 @@ def generate_missed_signals_report(
     tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
     primary_recipient = str(sub.get("email") or "").strip().lower()
 
-    try:
-        import trial_audit as ta
-    except ImportError:
-        print("ERR_TRIAL_AUDIT_MODULE_MISSING: trial_audit.py is required for missed signals report", file=sys.stderr)
-        return {
-            "subscriber_key": sk,
-            "error": "ERR_TRIAL_AUDIT_MODULE_MISSING",
-        }
-
-    expected_by_key = ta.collect_expected_signals_for_range(
+    expected_by_key = trial_audit.collect_expected_signals_for_range(
         leads_db_path=leads_db_path,
         territory_code=territory_code,
         states=states,
         start_date=start.isoformat(),
         end_date=end.isoformat(),
     )
-    delivered_keys, delivery_meta = ta.collect_delivered_keys_for_range(
+    delivered_keys, delivery_meta = trial_audit.collect_delivered_keys_for_range(
         repo_root=Path(__file__).resolve().parent,
         leads_db_path=leads_db_path,
         subscriber_key=sk,
@@ -947,13 +879,13 @@ def generate_missed_signals_report(
         crm_db_path=crm_db_path,
         data_root=Path(__file__).resolve().parent / "out",
     )
-    missed_rows = ta.build_missed_signal_rows(
+    missed_rows = trial_audit.build_missed_signal_rows(
         expected_by_key=expected_by_key,
         delivered_keys=delivered_keys,
         tz_name=tz_name,
     )
     out_dir = crm_light.data_dir() / "trials" / sk / "audit"
-    csv_path, txt_path = ta.write_missed_signals_artifacts(
+    csv_path, txt_path = trial_audit.write_missed_signals_artifacts(
         out_dir=out_dir,
         start_date=start.isoformat(),
         end_date=end.isoformat(),
