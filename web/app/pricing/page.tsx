@@ -128,7 +128,7 @@ export default function PricingPage() {
                 {(plan.name === "Core" || plan.name === "Multi-Territory") && (
                   <>
                     <p className="mt-2 text-xs text-inkMuted">
-                      After checkout, you&apos;ll be redirected to onboarding to enter the metros/cities you want covered. We&apos;ll confirm fit before any changes.
+                      After checkout, you&apos;ll be redirected to onboarding to enter the metros/cities and recipients you want covered. No calls required; onboarding is handled via a short form + email confirmation. We&apos;ll confirm fit before any changes.
                     </p>
                     <a
                       href={confirmFirstMailto}

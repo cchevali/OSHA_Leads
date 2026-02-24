@@ -183,3 +183,36 @@ Adopt a single upstream feed path:
 - Operators now monitor both `GENERATOR_*` and `DISCOVERY_*` machine-readable outputs.
 - Suppression and campaign tracking artifacts remain separate from the discovery feed.
 
+## ADR-0007: Canonical Onboarding Recipients Schema And Recipient-Aware Fan-Out
+
+Date: 2026-02-24
+Status: Accepted
+
+### Context
+
+Pricing and onboarding copy already referenced multi-recipient delivery, but public trial and paid onboarding flows did not consistently capture structured recipient data end-to-end. Send fan-out and opt-out plumbing were already email-keyed and recipient-safe, but onboarding ingestion only persisted a single email in entitlement records.
+
+### Decision
+
+- Canonical onboarding recipients schema is `recipients: [{ email, name? }]` for trial request and paid onboarding submissions.
+- Paid onboarding retains `email` as admin/billing contact (back-compat and entitlement lookup), while delivery recipients come from `recipients[]`.
+- `crm_light.subscriber_entitlements` stores canonical onboarding recipients in `recipients_json` with forward-only migration and legacy `email` fallback.
+- Send-time recipient precedence is:
+  1. CLI override
+  2. `crm_light` entitlement recipients
+  3. Legacy subscriber profile recipients/email
+  4. Config recipients fallback
+- Delivery remains one message per recipient; unsubscribe/suppression semantics remain email-keyed per recipient.
+
+### Rationale
+
+- Aligns website capture and backend persistence with published pricing claims (`Up to 6` / `Up to 15` recipients).
+- Preserves privacy (no recipient list exposure via To/CC batching) and existing compliance behavior.
+- Minimizes product risk by changing only onboarding capture/registry/send recipient source selection, not outreach templates/cadence/scoring.
+
+### Consequences
+
+- Recipient cap enforcement is now duplicated intentionally (web UI/API + backend authoritative validation).
+- Onboarding runbooks and operator docs must document canonical `recipients[]` schema and plan caps.
+- Legacy entitlement rows without `recipients_json` continue to work via single-email fallback.
+

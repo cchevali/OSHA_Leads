@@ -9,6 +9,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import crm_light
+
 REPO_ROOT = Path(__file__).resolve().parent
 SEND_SCRIPT = REPO_ROOT / "send_digest_email.py"
 SCHEMA_FILE = REPO_ROOT / "schema.sql"
@@ -172,6 +174,23 @@ def set_subscriber_last_sent_at(db_path: Path, subscriber_key: str, last_sent_at
     conn.close()
 
 
+def seed_crm_entitlement_recipients(data_dir: Path, subscriber_key: str, email: str, recipients: list[str]) -> None:
+    crm_db = data_dir / "crm_light.sqlite"
+    crm_light.ensure_database(crm_db)
+    with crm_light.open_conn(crm_db) as conn:
+        crm_light.init_schema(conn)
+        crm_light.upsert_subscriber_entitlement(
+            conn,
+            subscriber_key=subscriber_key,
+            email=email,
+            plan_code="core",
+            max_metros=4,
+            recipients=[{"email": item} for item in recipients],
+            active=True,
+            source="test",
+        )
+
+
 class TestRecipientFanout(unittest.TestCase):
     def test_multi_recipient_distinct_tokens_and_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -306,6 +325,50 @@ class TestRecipientFanout(unittest.TestCase):
                 unsub_events = list(csv.DictReader(f))
             self.assertEqual(len(unsub_events), 1)
             self.assertEqual(unsub_events[0]["email"], "wgs@indigocompliance.com")
+
+    def test_registry_entitlement_recipients_override_profile_and_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "fanout.sqlite"
+            config_path = tmp_path / "customer.json"
+            out_dir = tmp_path / "out"
+            data_dir = tmp_path / "data"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            config_recipients = ["config1@example.com", "config2@example.com"]
+            profile_recipients = ["profile1@example.com", "profile2@example.com"]
+            entitlement_recipients = ["ent1@example.com", "ent2@example.com"]
+            init_db(db_path)
+            write_config(
+                config_path,
+                config_recipients,
+                subscriber_key="fanout_sub",
+                customer_id="fanout_test",
+            )
+            insert_subscriber(
+                db_path,
+                subscriber_key="fanout_sub",
+                email=profile_recipients[0],
+                recipients=profile_recipients,
+                customer_id="fanout_test",
+            )
+            seed_crm_entitlement_recipients(
+                data_dir,
+                subscriber_key="fanout_sub",
+                email="billing@example.com",
+                recipients=entitlement_recipients,
+            )
+
+            result = run_send(db_path, config_path, out_dir, data_dir, send_live=True)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+            with (out_dir / "email_log.csv").open("r", encoding="utf-8") as f:
+                email_log = list(csv.DictReader(f))
+            self.assertEqual(len(email_log), len(entitlement_recipients))
+            self.assertEqual({row["recipient"] for row in email_log}, set(entitlement_recipients))
+            self.assertNotIn("config1@example.com", {row["recipient"] for row in email_log})
+            self.assertNotIn("profile1@example.com", {row["recipient"] for row in email_log})
 
     def test_safe_mode_forces_admin_recipient(self):
         with tempfile.TemporaryDirectory() as tmp:

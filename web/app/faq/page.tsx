@@ -33,7 +33,7 @@ const faqs = [
   },
   {
     q: "Is onboarding handled over email only?",
-    a: "Yes. Email-only onboarding keeps everything documented. No calls are required."
+    a: "Yes. No calls are required; onboarding is handled via a short form plus email confirmation, which keeps everything documented."
   },
   {
     q: "Where does the data come from?",
