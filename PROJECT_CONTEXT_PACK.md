@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=f04101549724974c2ff0a2b65a8dde5c567ee063
-PACK_BUILD_UTC=2026-02-24T05:01:16Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=4e8df407acb604b0eeeef43ecfaa9e6b8bba55fa77ab96de7e506f67a25f2342 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=3e508f84c08319a8afd602619fdc38c792aec2fdcb7724bd71c6db607297d371 docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=770e7f080ff1696f3293728192cf2a3aa47ba9f0371c145e5c142c13815e221a
+PACK_GIT_SHA=2ae104c75f01c960650949b325d94f684ff6aa06
+PACK_BUILD_UTC=2026-02-24T19:15:53Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=e0f36f0e098678115a7442120e99ee91ca8a835aa14209cc9bc07bb35a13b769 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=863f98d00c5bab0472808f1f5d8033522c0eabee0a1afb27416d855e6ebc6c3e docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=83e400461d62bb1538b8f6acbb8ba1f25f49c9a5d3fced0eb9e6508cc49798da
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -868,6 +868,8 @@ Tomorrow confirmation (canonical no-send deterministic check):
 - `OUTREACH_PLAN_DIAGNOSTICS_PATH=<absolute_path>`
 
 When `OUTREACH_PLAN_WILL_SEND=0`, root-cause must be interpreted from `OUTREACH_PLAN_POOL_TOTAL*`, `OUTREACH_PLAN_FILTER_BREAKDOWN`, and `OUTREACH_PLAN_DIAGNOSTICS_PATH` (instead of relying on skip totals alone).
+- Optional zero-send-day guard: set `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` to allow auto-switching to the configured state with the highest sendable estimate; verify activation via `OUTREACH_FALLBACK_TRIGGERED=1 from=<STATE> to=<STATE> reason=<...>`.
+- Recommended default remains `0` unless you explicitly want to prevent zero-send days by allowing state fallback.
 
 Dry-run (no sends, writes outbox + manifest artifacts):
 
