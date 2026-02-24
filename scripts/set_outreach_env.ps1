@@ -3,6 +3,7 @@ param(
   [string] $OutreachStates = '',
   [string] $OshaSmokeTo = '',
   [Nullable[int]] $OutreachSuppressionMaxAgeHours = $null,
+  [Nullable[int]] $OutreachFallbackOnEmptyState = $null,
   [Nullable[int]] $ProspectAutoGrowEnabled = $null,
   [string] $ProspectAutoGrowSources = '',
   [Nullable[int]] $ProspectAutoGrowBacklogTarget = $null,
@@ -276,6 +277,7 @@ try {
     'OutreachStates',
     'OshaSmokeTo',
     'OutreachSuppressionMaxAgeHours',
+    'OutreachFallbackOnEmptyState',
     'ProspectAutoGrowEnabled',
     'ProspectAutoGrowSources',
     'ProspectAutoGrowBacklogTarget',
@@ -315,6 +317,11 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('OutreachSuppressionMaxAgeHours') -and $OutreachSuppressionMaxAgeHours -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachSuppressionMaxAgeHours'
+  }
+  if ($PSBoundParameters.ContainsKey('OutreachFallbackOnEmptyState')) {
+    if (($OutreachFallbackOnEmptyState -ne 0) -and ($OutreachFallbackOnEmptyState -ne 1)) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachFallbackOnEmptyState'
+    }
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowEnabled') -and $ProspectAutoGrowEnabled -notin @(0, 1)) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowEnabled'
@@ -394,7 +401,7 @@ try {
     foreach ($part in ($rawSources -split ',')) {
       $src = ($part -as [string]).Trim().ToUpperInvariant()
       if (-not $src) { continue }
-      if ($src -ne 'AIHA') {
+      if (($src -ne 'AIHA') -and ($src -ne 'OHS_BG')) {
         Fail-Token $ERR_SET_OUTREACH_ENV_ARGS ('invalid_ProspectAutoGrowSources value=' + $src)
       }
       if ($srcTokens -notcontains $src) {
@@ -470,6 +477,12 @@ try {
       Set-MapValue -Map $map -Key 'OUTREACH_SUPPRESSION_MAX_AGE_HOURS' -Value ([string]$OutreachSuppressionMaxAgeHours) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'OUTREACH_SUPPRESSION_MAX_AGE_HOURS')) {
       Set-MapValue -Map $map -Key 'OUTREACH_SUPPRESSION_MAX_AGE_HOURS' -Value '240' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('OutreachFallbackOnEmptyState')) {
+      Set-MapValue -Map $map -Key 'OUTREACH_FALLBACK_ON_EMPTY_STATE' -Value ([string]$OutreachFallbackOnEmptyState) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'OUTREACH_FALLBACK_ON_EMPTY_STATE')) {
+      Set-MapValue -Map $map -Key 'OUTREACH_FALLBACK_ON_EMPTY_STATE' -Value '0' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('BounceImapHost')) {

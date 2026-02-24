@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=16b8e07edcdaa16eb919bbbd459d6a1a6ca21daf
-PACK_BUILD_UTC=2026-02-24T02:49:32Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=733dd12e9e3b680309a96cc8579552afd4574d24a289e5186c89cb6cc9e77ed6 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=4a501ba77cff752c2e3838aebc9549329030f8e0dde7d537e7c1b4cfa3305053 docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=52e7aa89ed95f6b3d760805731c850cd673ae0814cd83ce06839db37d4085f87
+PACK_GIT_SHA=f04101549724974c2ff0a2b65a8dde5c567ee063
+PACK_BUILD_UTC=2026-02-24T05:01:16Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=4e8df407acb604b0eeeef43ecfaa9e6b8bba55fa77ab96de7e506f67a25f2342 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=3e508f84c08319a8afd602619fdc38c792aec2fdcb7724bd71c6db607297d371 docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=770e7f080ff1696f3293728192cf2a3aa47ba9f0371c145e5c142c13815e221a
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -107,7 +107,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 ## Outreach CRM Auto-Run Data Flow
 
 1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).
-   - Optional env-gated auto-growth source: AIHA (`PROSPECT_AUTOGROW_*` keys).
+   - Optional env-gated auto-growth sources: AIHA and OHS_BG (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated).
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Optional one-release inbox migration dual-read:
      - canonical inbox: `${DATA_DIR}/prospect_generation/inbox/*.csv`
@@ -115,7 +115,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts the generated CSV into `crm.sqlite`.
 3. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
 4. Daily run: `outreach/run_outreach_auto.py`
-   - Resolves daily state from `OUTREACH_STATES` and batch id `<YYYY-MM-DD>_<STATE>`
+   - Resolves daily state from `OUTREACH_STATES` and batch id `<YYYY-MM-DD>_<STATE>` (optional fallback override via `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` when the rotation-selected state is depleted/below floor)
    - Selects/prioritizes prospects from `prospects` table
    - Enforces suppression + one-click unsubscribe compliance gates
    - Supports a non-sending readiness gate via `--doctor` (secrets/env/config/provider/reachability/dry-run/idempotency checks)
@@ -708,8 +708,10 @@ Drop-folder behavior:
 Auto-growth (env-gated, optional):
 
 - Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
-- Source scope v1: `AIHA` only.
-- Cache path: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`.
+- Source scope v1: `AIHA` and `OHS_BG` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG`).
+- Cache paths:
+  - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
+  - OHS_BG: `${DATA_DIR}\prospect_generation\cache\ohs_bg\state_<STATE>.json`
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
 - Backlog targeting is evaluated per configured state in `OUTREACH_STATES`.
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
@@ -742,10 +744,16 @@ Generator emits machine-readable lines:
 - `GENERATOR_AUTOGROW_*`
 - `GENERATOR_AUTOGROW_SAFETY_NET_FORCED`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
 - `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
-- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n>`
+- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n>`
 - `GENERATOR_AIHA_*`
+- `GENERATOR_OHS_BG_*`
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
+
+Optional empty-state planner fallback:
+- `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default) preserves weekday rotation-selected state.
+- Set `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` to auto-switch plan/send to the configured state with the highest sendable estimate when the rotation-selected state is empty (or below floor).
+- Fallback token: `OUTREACH_FALLBACK_TRIGGERED=1 from=<STATE> to=<STATE> reason=<SENDABLE_ZERO|SENDABLE_BELOW_FLOOR>`
 
 Artifact separation (do not mix these):
 

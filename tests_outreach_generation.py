@@ -514,6 +514,126 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_AUTOGROW_SOURCES_EMPTY=1", out)
             self.assertIn("GENERATOR_AIHA_PAGE_PARSE_MODE=SKIP_NO_SOURCES", out)
 
+    def test_autogrow_multi_source_ohs_bg_emits_tokens_and_shared_reject_buckets(self):
+        from outreach import crm_store
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            conn = crm_store.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO prospects(
+                      prospect_id, firm, contact_name, email, title, city, state, website, source,
+                      score, status, created_at, last_contacted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "crm_fl_1",
+                        "Existing CRM",
+                        "",
+                        "crmdup@examplefl.com",
+                        "Owner",
+                        "Tampa",
+                        "FL",
+                        "",
+                        "seed",
+                        0,
+                        "new",
+                        datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                        None,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            aiha_cache = data_dir / "prospect_generation" / "cache" / "aiha" / "state_FL.json"
+            ohs_cache = data_dir / "prospect_generation" / "cache" / "ohs_bg" / "state_FL.json"
+            aiha_result = {
+                "rows": [
+                    {"email": "alpha@examplefl.com", "state": "FL", "firm": "Alpha", "source": "aiha_consultants_listing:1"},
+                    {"email": "dup@examplefl.com", "state": "FL", "firm": "Dup AIHA", "source": "aiha_consultants_listing:1"},
+                ],
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": aiha_cache,
+                "pages_fetched": 1,
+                "parse_mode": "TEXT_CONTAINER",
+                "diagnostics_path": None,
+            }
+            ohs_result = {
+                "rows": [
+                    {"email": "dup@examplefl.com", "state": "FL", "firm": "Dup OHS", "source": "ohs_buyers_guide:1"},
+                    {"email": "crmdup@examplefl.com", "state": "FL", "firm": "CRM Dup", "source": "ohs_buyers_guide:2"},
+                    {"email": "bad-email", "state": "FL", "firm": "Bad", "source": "ohs_buyers_guide:3"},
+                    {"email": "txperson@exampletx.com", "state": "TX", "firm": "TX Person", "source": "ohs_buyers_guide:4"},
+                    {"email": "bravo@examplefl.com", "state": "FL", "firm": "Bravo", "source": "ohs_buyers_guide:5"},
+                ],
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": ohs_cache,
+                "pages_fetched": 2,
+                "parse_mode": "TEXT",
+                "diagnostics_path": None,
+            }
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "FL",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA,OHS_BG",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "4",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "6",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
+                    return_value=aiha_result,
+                ) as mocked_aiha:
+                    with mock.patch(
+                        "outreach.run_prospect_generation.prospect_sources_ohs_bg.fetch_ohs_bg_state_rows",
+                        return_value=ohs_result,
+                    ) as mocked_ohs:
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0)
+            mocked_aiha.assert_called_once()
+            mocked_ohs.assert_called_once()
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SOURCES=AIHA,OHS_BG", out)
+            self.assertIn("GENERATOR_OHS_BG_ROWS_CANDIDATE=5", out)
+            self.assertIn("GENERATOR_OHS_BG_ROWS_ACCEPTED=1", out)
+            self.assertIn("GENERATOR_OHS_BG_REJECTED_INVALID_EMAIL=1", out)
+            self.assertIn("GENERATOR_OHS_BG_REJECTED_ALREADY_IN_CRM=1", out)
+            self.assertIn("GENERATOR_OHS_BG_REJECTED_STATE_MISMATCH=1", out)
+            self.assertIn("GENERATOR_OHS_BG_REJECTED_DUPLICATE_IN_BATCH=1", out)
+            self.assertIn("ohs_bg_candidate=5", out)
+            self.assertIn("ohs_bg_accepted=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_TOTAL_ACCEPTED=3", out)
+
+    def test_invalid_autogrow_source_fails_fast(self):
+        p = self._run(
+            ["--dry-run", "--for-date", "2026-02-24"],
+            {
+                "OUTREACH_STATES": "FL",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA,NOPE",
+            },
+        )
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("ERR_GENERATOR_FAILED stage=autogrow_config", (p.stderr or "") + (p.stdout or ""))
+
     def test_transform_mapping_and_invalid_email_exclusion(self):
         from outreach import run_prospect_generation as generator
 

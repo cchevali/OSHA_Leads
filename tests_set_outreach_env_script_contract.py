@@ -35,6 +35,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "OutreachStates",
             "OshaSmokeTo",
             "OutreachSuppressionMaxAgeHours",
+            "OutreachFallbackOnEmptyState",
             "ProspectAutoGrowEnabled",
             "ProspectAutoGrowSources",
             "ProspectAutoGrowBacklogTarget",
@@ -74,6 +75,8 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("ERR_ENV_SOPS_STAGED", text)
         self.assertIn("PROSPECT_AUTOGROW_ENABLED", text)
         self.assertIn("PROSPECT_AUTOGROW_SOURCES", text)
+        self.assertIn("OUTREACH_FALLBACK_ON_EMPTY_STATE", text)
+        self.assertIn("OHS_BG", text)
         self.assertIn("PROSPECT_AUTOGROW_BACKLOG_TARGET", text)
         self.assertIn("STRIPE_PRICE_ID_CORE", text)
         self.assertIn("STRIPE_PRICE_ID_MULTI", text)
