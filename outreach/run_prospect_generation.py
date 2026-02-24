@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from outreach import crm_store
 from outreach import prospect_sources_aiha
+from outreach import prospect_sources_ohs_bg
 import seed_recipients_pools as pools
 
 
@@ -40,10 +41,10 @@ INBOX_NEW_SUBDIR = ("prospect_generation", "inbox")
 INBOX_OLD_SUBDIR = ("prospect_discovery", "inbox")
 INBOX_PROCESSED_SUBDIR = "processed"
 
-GENERATION_CACHE_SUBDIR = ("prospect_generation", "cache", "aiha")
+GENERATION_CACHE_ROOT_SUBDIR = ("prospect_generation", "cache")
 GENERATION_DIAGNOSTICS_SUBDIR = ("prospect_generation", "diagnostics")
 
-AUTOGROW_ALLOWED_SOURCES = {"AIHA"}
+AUTOGROW_ALLOWED_SOURCES = {"AIHA", "OHS_BG"}
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
 
 
@@ -93,7 +94,21 @@ def _legacy_inbox_dir(data_dir: Path) -> Path:
 
 
 def _generation_cache_dir(data_dir: Path) -> Path:
-    return data_dir.joinpath(*GENERATION_CACHE_SUBDIR)
+    # Backward-compatible alias used by existing print-config/tests: AIHA cache dir.
+    return data_dir.joinpath(*GENERATION_CACHE_ROOT_SUBDIR) / "aiha"
+
+
+def _generation_cache_root_dir(data_dir: Path) -> Path:
+    return data_dir.joinpath(*GENERATION_CACHE_ROOT_SUBDIR)
+
+
+def _autogrow_source_cache_dir(cache_root_dir: Path, source_token: str) -> Path:
+    token = _normalize_state(source_token)
+    if token == "AIHA":
+        return cache_root_dir / "aiha"
+    if token == "OHS_BG":
+        return cache_root_dir / "ohs_bg"
+    return cache_root_dir / token.lower()
 
 
 def _generation_diagnostics_dir(data_dir: Path) -> Path:
@@ -526,9 +541,11 @@ def _filter_autogrow_candidates(
     target_state: str,
     suppressed_emails: set[str],
     existing_crm_emails: set[str],
+    preseen_batch_emails: set[str] | None = None,
 ) -> tuple[list[dict[str, str]], Counter]:
     target = _normalize_state(target_state)
     seen_batch: set[str] = set()
+    preseen_batch: set[str] = set(preseen_batch_emails or set())
     accepted: list[dict[str, str]] = []
     counters: Counter = Counter()
 
@@ -544,6 +561,10 @@ def _filter_autogrow_candidates(
 
         if email in suppressed_emails:
             counters["suppressed"] += 1
+            continue
+
+        if email in preseen_batch:
+            counters["duplicate_in_batch"] += 1
             continue
 
         if email in existing_crm_emails:
@@ -592,6 +613,8 @@ def _print_tokens(
     autogrow: dict,
     aiha_result: dict,
     aiha_rejected: Counter,
+    ohs_bg_result: dict,
+    ohs_bg_rejected: Counter,
     diagnostics_path: Path | None,
     inbox_files_archived: int | None = None,
 ) -> None:
@@ -632,7 +655,9 @@ def _print_tokens(
             f"backlog_current={int(detail.get('backlog_current') or 0)} "
             f"new_needed={int(detail.get('new_needed') or 0)} "
             f"aiha_candidate={int(detail.get('aiha_candidate') or 0)} "
-            f"aiha_accepted={int(detail.get('aiha_accepted') or 0)}"
+            f"aiha_accepted={int(detail.get('aiha_accepted') or 0)} "
+            f"ohs_bg_candidate={int(detail.get('ohs_bg_candidate') or 0)} "
+            f"ohs_bg_accepted={int(detail.get('ohs_bg_accepted') or 0)}"
         )
     backlog_target = max(0, int(autogrow.get("backlog_target") or 0))
     for detail in state_details:
@@ -678,10 +703,72 @@ def _print_tokens(
     print(f"GENERATOR_AIHA_REJECTED_STATE_MISMATCH={int(aiha_rejected.get('state_mismatch', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_DUPLICATE_IN_BATCH={int(aiha_rejected.get('duplicate_in_batch', 0))}")
 
+    print(f"GENERATOR_OHS_BG_CACHE_PATH={Path(ohs_bg_result['cache_path']).resolve()}")
+    print(f"GENERATOR_OHS_BG_CACHE_USED={'YES' if ohs_bg_result.get('cache_used') else 'NO'}")
+    ohs_cache_age = ohs_bg_result.get("cache_age_days")
+    print(f"GENERATOR_OHS_BG_CACHE_AGE_DAYS={ohs_cache_age if ohs_cache_age is not None else -1}")
+    print(f"GENERATOR_OHS_BG_PAGES_FETCHED={int(ohs_bg_result.get('pages_fetched') or 0)}")
+    print(f"GENERATOR_OHS_BG_PAGE_PARSE_MODE={ohs_bg_result.get('parse_mode') or 'FAILED'}")
+    print(f"GENERATOR_OHS_BG_ROWS_CANDIDATE={int(ohs_bg_result.get('rows_candidate') or 0)}")
+    print(f"GENERATOR_OHS_BG_ROWS_ACCEPTED={int(ohs_bg_result.get('rows_accepted') or 0)}")
+    print(f"GENERATOR_OHS_BG_REJECTED_INVALID_EMAIL={int(ohs_bg_rejected.get('invalid_email', 0))}")
+    print(f"GENERATOR_OHS_BG_REJECTED_FREE_DOMAIN={int(ohs_bg_rejected.get('free_domain', 0))}")
+    print(f"GENERATOR_OHS_BG_REJECTED_SUPPRESSED={int(ohs_bg_rejected.get('suppressed', 0))}")
+    print(f"GENERATOR_OHS_BG_REJECTED_ALREADY_IN_CRM={int(ohs_bg_rejected.get('already_in_crm', 0))}")
+    print(f"GENERATOR_OHS_BG_REJECTED_STATE_MISMATCH={int(ohs_bg_rejected.get('state_mismatch', 0))}")
+    print(f"GENERATOR_OHS_BG_REJECTED_DUPLICATE_IN_BATCH={int(ohs_bg_rejected.get('duplicate_in_batch', 0))}")
+
     if diagnostics_path is not None:
         print(f"GENERATOR_DIAGNOSTICS_PATH={diagnostics_path.resolve()}")
 
     print(f"GENERATOR_COMPLETE status={status}")
+
+
+def _default_autogrow_source_result(cache_path: Path, enabled: bool, sources_empty: bool) -> dict:
+    return {
+        "cache_path": cache_path,
+        "cache_used": False,
+        "cache_age_days": None,
+        "pages_fetched": 0,
+        "parse_mode": ("SKIP_NO_SOURCES" if enabled and sources_empty else "FAILED"),
+        "rows_candidate": 0,
+        "rows_accepted": 0,
+    }
+
+
+def _fetch_autogrow_source_rows(
+    source_token: str,
+    state: str,
+    run_date: date,
+    max_fetch_pages: int,
+    sleep_ms: int,
+    cache_root_dir: Path,
+    diagnostics_dir: Path,
+    allow_cache_write: bool,
+) -> dict:
+    token = _normalize_state(source_token)
+    cache_dir = _autogrow_source_cache_dir(cache_root_dir, token)
+    if token == "AIHA":
+        return prospect_sources_aiha.fetch_aiha_state_rows(
+            state=state,
+            run_date=run_date,
+            max_pages=max_fetch_pages,
+            sleep_ms=sleep_ms,
+            cache_dir=cache_dir,
+            diagnostics_dir=diagnostics_dir,
+            allow_cache_write=allow_cache_write,
+        )
+    if token == "OHS_BG":
+        return prospect_sources_ohs_bg.fetch_ohs_bg_state_rows(
+            state=state,
+            run_date=run_date,
+            max_pages=max_fetch_pages,
+            sleep_ms=sleep_ms,
+            cache_dir=cache_dir,
+            diagnostics_dir=diagnostics_dir,
+            allow_cache_write=allow_cache_write,
+        )
+    raise ValueError(f"unsupported_source={token}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -701,6 +788,7 @@ def main(argv: list[str] | None = None) -> int:
     output_path = _output_path(data_dir)
     generation_inbox_dir, legacy_inbox_dir, inbox_items, deprecated_file_count = _collect_inbox_files(data_dir)
     cache_dir = _generation_cache_dir(data_dir)
+    cache_root_dir = _generation_cache_root_dir(data_dir)
     diagnostics_dir = _generation_diagnostics_dir(data_dir)
 
     states = _parse_states(os.getenv("OUTREACH_STATES", "TX"))
@@ -755,6 +843,8 @@ def main(argv: list[str] | None = None) -> int:
                 "safety_net_forced": bool(safety_forced),
                 "aiha_candidate": 0,
                 "aiha_accepted": 0,
+                "ohs_bg_candidate": 0,
+                "ohs_bg_accepted": 0,
             }
             autogrow_state_details.append(detail)
             if state_norm == _normalize_state(selected_state):
@@ -781,20 +871,19 @@ def main(argv: list[str] | None = None) -> int:
         "total_accepted": 0,
     }
 
-    aiha_result = {
-        "cache_path": prospect_sources_aiha._cache_path(cache_dir, selected_state),
-        "cache_used": False,
-        "cache_age_days": None,
-        "pages_fetched": 0,
-        "parse_mode": (
-            "SKIP_NO_SOURCES"
-            if bool(autogrow_cfg["enabled"]) and len(list(autogrow_cfg["sources"])) == 0
-            else "FAILED"
-        ),
-        "rows_candidate": 0,
-        "rows_accepted": 0,
-    }
+    sources_empty = bool(autogrow_cfg["enabled"]) and len(list(autogrow_cfg["sources"])) == 0
+    aiha_result = _default_autogrow_source_result(
+        cache_path=prospect_sources_aiha._cache_path(_autogrow_source_cache_dir(cache_root_dir, "AIHA"), selected_state),
+        enabled=bool(autogrow_cfg["enabled"]),
+        sources_empty=sources_empty,
+    )
     aiha_rejected: Counter = Counter()
+    ohs_bg_result = _default_autogrow_source_result(
+        cache_path=prospect_sources_ohs_bg._cache_path(_autogrow_source_cache_dir(cache_root_dir, "OHS_BG"), selected_state),
+        enabled=bool(autogrow_cfg["enabled"]),
+        sources_empty=sources_empty,
+    )
+    ohs_bg_rejected: Counter = Counter()
     diagnostics_path: Path | None = None
     autogrow_rows: list[dict[str, str]] = []
 
@@ -820,6 +909,8 @@ def main(argv: list[str] | None = None) -> int:
             autogrow=autogrow_state,
             aiha_result=aiha_result,
             aiha_rejected=aiha_rejected,
+            ohs_bg_result=ohs_bg_result,
+            ohs_bg_rejected=ohs_bg_rejected,
             diagnostics_path=None,
             inbox_files_archived=None,
         )
@@ -855,61 +946,96 @@ def main(argv: list[str] | None = None) -> int:
         if state_new_needed <= 0:
             continue
 
-        can_fetch_aiha = ("AIHA" in autogrow_cfg["sources"]) or bool(detail.get("safety_net_forced"))
-        if not can_fetch_aiha:
-            continue
+        source_order: list[str] = []
+        for source_token in list(autogrow_cfg["sources"]):
+            source_norm = _normalize_state(str(source_token or ""))
+            if source_norm and source_norm not in source_order:
+                source_order.append(source_norm)
+        if bool(detail.get("safety_net_forced")) and "AIHA" not in source_order:
+            source_order.insert(0, "AIHA")
 
-        result = prospect_sources_aiha.fetch_aiha_state_rows(
-            state=state_detail,
-            run_date=run_date,
-            max_pages=int(autogrow_cfg["max_fetch_pages"]),
-            sleep_ms=int(autogrow_cfg["sleep_ms"]),
-            cache_dir=cache_dir,
-            diagnostics_dir=diagnostics_dir,
-            allow_cache_write=not bool(args.dry_run),
-        )
-        rows_candidate = list(result.get("rows") or [])
-        detail["aiha_candidate"] = len(rows_candidate)
+        remaining_needed = state_new_needed
+        for source_token in source_order:
+            if remaining_needed <= 0:
+                break
+            if source_token not in AUTOGROW_ALLOWED_SOURCES:
+                continue
 
-        filtered_rows, rejected = _filter_autogrow_candidates(
-            rows=rows_candidate,
-            target_state=state_detail,
-            suppressed_emails=suppressed_emails,
-            existing_crm_emails=set(existing_crm_emails).union(autogrow_seen_emails),
-        )
-        accepted_rows = filtered_rows[:state_new_needed]
-        detail["aiha_accepted"] = len(accepted_rows)
-        autogrow_rows.extend(accepted_rows)
-        for row in accepted_rows:
-            email = _normalize_email(row.get("contact_email") or row.get("email") or "")
-            if email:
-                autogrow_seen_emails.add(email)
+            result = _fetch_autogrow_source_rows(
+                source_token=source_token,
+                state=state_detail,
+                run_date=run_date,
+                max_fetch_pages=int(autogrow_cfg["max_fetch_pages"]),
+                sleep_ms=int(autogrow_cfg["sleep_ms"]),
+                cache_root_dir=cache_root_dir,
+                diagnostics_dir=diagnostics_dir,
+                allow_cache_write=not bool(args.dry_run),
+            )
+            rows_candidate = list(result.get("rows") or [])
 
-        diag = result.get("diagnostics_path")
-        resolved_diag: Path | None = None
-        if isinstance(diag, Path):
-            resolved_diag = diag
-        elif diag:
-            resolved_diag = Path(str(diag))
+            filtered_rows, rejected = _filter_autogrow_candidates(
+                rows=rows_candidate,
+                target_state=state_detail,
+                suppressed_emails=suppressed_emails,
+                existing_crm_emails=set(existing_crm_emails),
+                preseen_batch_emails=set(autogrow_seen_emails),
+            )
+            accepted_rows = filtered_rows[:remaining_needed]
+            remaining_needed = max(0, remaining_needed - len(accepted_rows))
 
-        if resolved_diag is not None:
+            if source_token == "AIHA":
+                detail["aiha_candidate"] = len(rows_candidate)
+                detail["aiha_accepted"] = len(accepted_rows)
+            elif source_token == "OHS_BG":
+                detail["ohs_bg_candidate"] = len(rows_candidate)
+                detail["ohs_bg_accepted"] = len(accepted_rows)
+
+            autogrow_rows.extend(accepted_rows)
+            for row in accepted_rows:
+                email = _normalize_email(row.get("contact_email") or row.get("email") or "")
+                if email:
+                    autogrow_seen_emails.add(email)
+
+            diag = result.get("diagnostics_path")
+            resolved_diag: Path | None = None
+            if isinstance(diag, Path):
+                resolved_diag = diag
+            elif diag:
+                resolved_diag = Path(str(diag))
+
+            if resolved_diag is not None:
+                if state_detail == selected_state_norm:
+                    diagnostics_path = resolved_diag
+                elif diagnostics_path is None:
+                    diagnostics_path = resolved_diag
+
             if state_detail == selected_state_norm:
-                diagnostics_path = resolved_diag
-            elif diagnostics_path is None:
-                diagnostics_path = resolved_diag
+                if source_token == "AIHA":
+                    aiha_result.update(result)
+                    aiha_result["rows_candidate"] = len(rows_candidate)
+                    aiha_result["rows_accepted"] = len(accepted_rows)
+                    aiha_rejected = rejected
+                elif source_token == "OHS_BG":
+                    ohs_bg_result.update(result)
+                    ohs_bg_result["rows_candidate"] = len(rows_candidate)
+                    ohs_bg_result["rows_accepted"] = len(accepted_rows)
+                    ohs_bg_rejected = rejected
 
-        if state_detail == selected_state_norm:
-            aiha_result.update(result)
-            aiha_result["rows_candidate"] = len(rows_candidate)
-            aiha_result["rows_accepted"] = len(accepted_rows)
-            aiha_rejected = rejected
+            if result.get("error"):
+                source_label = "aiha" if source_token == "AIHA" else "ohs_bg"
+                print(f"{WARN_AUTOGROWTH_SOURCE_FAILED} source={source_label} state={state_detail} err={result.get('error')}")
 
-        if result.get("error"):
-            print(f"{WARN_AUTOGROWTH_SOURCE_FAILED} source=aiha state={state_detail} err={result.get('error')}")
-
-    autogrow_state["total_accepted"] = int(sum(int(d.get("aiha_accepted") or 0) for d in autogrow_state_details))
+    autogrow_state["total_accepted"] = int(
+        sum(
+            int(d.get("aiha_accepted") or 0) + int(d.get("ohs_bg_accepted") or 0)
+            for d in autogrow_state_details
+        )
+    )
     rows_read_total = rows_read_seed + inbox_rows_read + int(
-        sum(int(d.get("aiha_candidate") or 0) for d in autogrow_state_details)
+        sum(
+            int(d.get("aiha_candidate") or 0) + int(d.get("ohs_bg_candidate") or 0)
+            for d in autogrow_state_details
+        )
     )
 
     if args.dry_run:
@@ -928,6 +1054,8 @@ def main(argv: list[str] | None = None) -> int:
             autogrow=autogrow_state,
             aiha_result=aiha_result,
             aiha_rejected=aiha_rejected,
+            ohs_bg_result=ohs_bg_result,
+            ohs_bg_rejected=ohs_bg_rejected,
             diagnostics_path=diagnostics_path,
         )
         return 0
@@ -956,6 +1084,8 @@ def main(argv: list[str] | None = None) -> int:
         autogrow=autogrow_state,
         aiha_result=aiha_result,
         aiha_rejected=aiha_rejected,
+        ohs_bg_result=ohs_bg_result,
+        ohs_bg_rejected=ohs_bg_rejected,
         diagnostics_path=diagnostics_path,
     )
     return 0
