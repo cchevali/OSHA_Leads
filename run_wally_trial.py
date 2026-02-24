@@ -35,6 +35,9 @@ DEFAULT_TRIAL_TARGET_LOCAL_HHMM = "09:00"
 DEFAULT_TRIAL_CATCHUP_MAX_MINUTES = 180
 PROJECT_CONTEXT_SOFT_CHECK_CMD = ["--check", "--soft"]
 WALLY_TRIAL_SUBSCRIBER_KEY = "wally_trial"
+TRIAL_WEEKDAYS_ONLY = True
+TRIAL_WEEKEND_SKIP_TOKEN = "SKIP_NON_WEEKDAY"
+TRIAL_SCHEDULE_WEEKDAYS = "MON,TUE,WED,THU,FRI"
 
 
 def load_environment(repo_root: Path) -> None:
@@ -150,12 +153,21 @@ def _load_customer_config_or_exit(customer_path: Path) -> dict:
         raise SystemExit(1)
 
 
-def print_trial_config(customer_path: Path) -> None:
+def print_trial_config(customer_path: Path, allow_weekend_send: bool = False) -> None:
     config = _load_customer_config_or_exit(customer_path)
     target = _coerce_trial_target_local_hhmm(config.get("trial_target_local_hhmm"))
     catchup = _coerce_trial_catchup_max_minutes(config.get("trial_catchup_max_minutes"))
+    tz_name = str(config.get("timezone") or config.get("tz") or "").strip() or "America/Chicago"
+    local_now = datetime.now(_resolve_zone(tz_name))
+    weekday_name = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"][int(local_now.weekday())]
     print(f"trial_target_local_hhmm={target}")
     print(f"trial_catchup_max_minutes={catchup}")
+    print(f"TRIAL_WEEKDAYS_ONLY={1 if TRIAL_WEEKDAYS_ONLY else 0}")
+    print(f"TRIAL_SCHEDULE_WEEKDAYS={TRIAL_SCHEDULE_WEEKDAYS}")
+    print(f"trial_effective_timezone={tz_name}")
+    print(f"trial_effective_local_date={local_now.date().isoformat()}")
+    print(f"trial_effective_weekday={weekday_name}")
+    print(f"trial_allow_weekend_send={'YES' if allow_weekend_send else 'NO'}")
 
 
 def _prefs_links_reachable(timeout_s: float = 2.0) -> tuple[bool, str]:
@@ -844,7 +856,41 @@ def _append_wally_trial_sent_event(run_id_prefix: str) -> None:
         )
 
 
-def run_live_send(db_path: str, customer_config: str, admin_email: str, send_live: bool) -> None:
+def _wally_local_day_context(customer_config: str) -> dict[str, str | bool]:
+    try:
+        with open(customer_config, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+    tz_name = str(cfg.get("timezone") or cfg.get("tz") or "").strip() or "America/Chicago"
+    subscriber_key = str(cfg.get("subscriber_key") or "").strip() or WALLY_TRIAL_SUBSCRIBER_KEY
+    now_local = datetime.now(_resolve_zone(tz_name))
+    weekday_idx = int(now_local.weekday())
+    weekday_name = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"][weekday_idx]
+    return {
+        "subscriber_key": subscriber_key,
+        "timezone": tz_name,
+        "local_date": now_local.date().isoformat(),
+        "weekday_name": weekday_name,
+        "is_weekend": weekday_idx >= 5,
+    }
+
+
+def run_live_send(
+    db_path: str,
+    customer_config: str,
+    admin_email: str,
+    send_live: bool,
+    allow_weekend_send: bool = False,
+) -> None:
+    day_ctx = _wally_local_day_context(customer_config)
+    if send_live and TRIAL_WEEKDAYS_ONLY and (not allow_weekend_send) and bool(day_ctx.get("is_weekend")):
+        print(
+            f"{TRIAL_WEEKEND_SKIP_TOKEN} subscriber_key={day_ctx['subscriber_key']} "
+            f"local_date={day_ctx['local_date']} weekday={day_ctx['weekday_name']} gate=trial_weekdays_only",
+            flush=True,
+        )
+        return
     cmd = [
         sys.executable,
         "deliver_daily.py",
@@ -1015,7 +1061,9 @@ def enable_schedule(task_name: str, batch_path: Path) -> None:
         "/Create",
         "/F",
         "/SC",
-        "DAILY",
+        "WEEKLY",
+        "/D",
+        TRIAL_SCHEDULE_WEEKDAYS,
         "/ST",
         "08:00",
         "/TN",
@@ -1225,6 +1273,11 @@ def main() -> None:
     parser.add_argument("--admin-email", default="support@microflowops.com")
     parser.add_argument("--send-live", action="store_true", help="Trigger first live send to Wally")
     parser.add_argument(
+        "--allow-weekend-send",
+        action="store_true",
+        help="Emergency/manual override: allow trial live send on Sat/Sun.",
+    )
+    parser.add_argument(
         "--test-send",
         action="store_true",
         help="Laptop-safe: force a Starter Snapshot send to cchevali+oshasmoke@gmail.com without mutating send state",
@@ -1239,7 +1292,7 @@ def main() -> None:
         action="store_true",
         help="When used with --test-send-daily, render only (no send).",
     )
-    parser.add_argument("--enable-schedule", action="store_true", help="Create 08:00 local scheduled task")
+    parser.add_argument("--enable-schedule", action="store_true", help="Create 08:00 local weekday scheduled task")
     parser.add_argument("--check-schedule", action="store_true", help="Verify scheduled task action only")
     parser.add_argument("--task-name", default="OSHA Wally Trial Daily")
     parser.add_argument("--preflight-only", action="store_true", help="Check config/env and exit")
@@ -1262,6 +1315,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.status:
+        print(f"TRIAL_WEEKDAYS_ONLY={1 if TRIAL_WEEKDAYS_ONLY else 0}")
+        print(f"TRIAL_SCHEDULE_WEEKDAYS={TRIAL_SCHEDULE_WEEKDAYS}")
         raise SystemExit(
             run_trial_admin.print_trial_status(
                 subscriber_key=WALLY_TRIAL_SUBSCRIBER_KEY,
@@ -1286,7 +1341,7 @@ def main() -> None:
         )
 
     if args.print_config:
-        print_trial_config(customer_path)
+        print_trial_config(customer_path, allow_weekend_send=bool(args.allow_weekend_send))
         raise SystemExit(0)
 
     if args.test_send_daily:
@@ -1345,7 +1400,13 @@ def main() -> None:
     print(f"Preview dry-run sent to Chase override: {args.chase_email}")
 
     if args.send_live:
-        run_live_send(args.db, str(customer_path), args.admin_email, True)
+        run_live_send(
+            args.db,
+            str(customer_path),
+            args.admin_email,
+            True,
+            allow_weekend_send=bool(args.allow_weekend_send),
+        )
         print("First live send triggered via deliver_daily.py")
 
     write_batch_runner(
@@ -1360,7 +1421,8 @@ def main() -> None:
     if args.enable_schedule:
         enable_schedule(args.task_name, batch_path_resolved)
         verify_schedule_action(args.task_name, expected_action)
-        print(f"Scheduled task enabled: {args.task_name} at 08:00 local (set host timezone to America/Chicago)")
+        print(f"SCHEDULE_WEEKDAYS={TRIAL_SCHEDULE_WEEKDAYS}")
+        print(f"Scheduled task enabled: {args.task_name} at 08:00 local weekdays (set host timezone to America/Chicago)")
 
 
 if __name__ == "__main__":

@@ -126,6 +126,12 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 out = buf.getvalue()
                 self.assertIn("trial_target_local_hhmm=09:00", out)
                 self.assertIn("trial_catchup_max_minutes=180", out)
+                self.assertIn("TRIAL_WEEKDAYS_ONLY=1", out)
+                self.assertIn("TRIAL_SCHEDULE_WEEKDAYS=MON,TUE,WED,THU,FRI", out)
+                self.assertIn("trial_effective_timezone=", out)
+                self.assertIn("trial_effective_local_date=", out)
+                self.assertIn("trial_effective_weekday=", out)
+                self.assertIn("trial_allow_weekend_send=NO", out)
             finally:
                 sys.argv = argv0
 
@@ -154,6 +160,8 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 out = buf.getvalue()
                 self.assertIn("trial_target_local_hhmm=10:15", out)
                 self.assertIn("trial_catchup_max_minutes=75", out)
+                self.assertIn("TRIAL_WEEKDAYS_ONLY=1", out)
+                self.assertIn("TRIAL_SCHEDULE_WEEKDAYS=MON,TUE,WED,THU,FRI", out)
             finally:
                 sys.argv = argv0
 
@@ -316,6 +324,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 customer_config="customers/wally_trial_tx_triangle_v1.json",
                 admin_email="support@microflowops.com",
                 send_live=True,
+                allow_weekend_send=True,
             )
         finally:
             run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]
@@ -331,6 +340,76 @@ class TestWallyTrialDoctor(unittest.TestCase):
         self.assertEqual(kwargs.get("variant"), "DAILY")
         self.assertTrue(str(kwargs.get("run_id", "")).startswith("manual_wally_trial_"))
         self.assertIn("+00:00", str(kwargs.get("ts_utc", "")))
+
+    def test_run_live_send_skips_on_weekend_without_override(self) -> None:
+        calls = {"run": 0, "append": 0}
+        orig_run = run_wally_trial.subprocess.run
+        orig_append = run_wally_trial.run_trial_admin.append_event
+        orig_day = run_wally_trial._wally_local_day_context
+
+        def _fake_run(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            calls["run"] += 1
+            class _Done:
+                returncode = 0
+            return _Done()
+
+        def _fake_append(**_kwargs):  # type: ignore[no-untyped-def]
+            calls["append"] += 1
+            return 0
+
+        run_wally_trial.subprocess.run = _fake_run  # type: ignore[assignment]
+        run_wally_trial.run_trial_admin.append_event = _fake_append  # type: ignore[assignment]
+        run_wally_trial._wally_local_day_context = lambda _cfg: {  # type: ignore[assignment]
+            "subscriber_key": "wally_trial",
+            "timezone": "America/Chicago",
+            "local_date": "2026-02-22",
+            "weekday_name": "sun",
+            "is_weekend": True,
+        }
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                run_wally_trial.run_live_send(
+                    db_path="data/osha.sqlite",
+                    customer_config="customers/wally_trial_tx_triangle_v1.json",
+                    admin_email="support@microflowops.com",
+                    send_live=True,
+                )
+        finally:
+            run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]
+            run_wally_trial.run_trial_admin.append_event = orig_append  # type: ignore[assignment]
+            run_wally_trial._wally_local_day_context = orig_day  # type: ignore[assignment]
+
+        self.assertIn(
+            "SKIP_NON_WEEKDAY subscriber_key=wally_trial local_date=2026-02-22 weekday=sun gate=trial_weekdays_only",
+            buf.getvalue(),
+        )
+        self.assertEqual(calls["run"], 0)
+        self.assertEqual(calls["append"], 0)
+
+    def test_enable_schedule_uses_weekly_weekday_trigger(self) -> None:
+        captured: dict[str, object] = {}
+        orig_run = run_wally_trial.subprocess.run
+
+        def _fake_run(cmd, check=True):  # type: ignore[no-untyped-def]
+            captured["cmd"] = list(cmd)
+            captured["check"] = check
+            class _Done:
+                returncode = 0
+            return _Done()
+
+        run_wally_trial.subprocess.run = _fake_run  # type: ignore[assignment]
+        try:
+            run_wally_trial.enable_schedule("OSHA Wally Trial Daily", Path(r"C:\dev\OSHA_Leads\run_wally_trial_daily.bat"))
+        finally:
+            run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]
+
+        cmd = [str(x) for x in (captured.get("cmd") or [])]
+        self.assertIn("/SC", cmd)
+        self.assertIn("WEEKLY", cmd)
+        self.assertIn("/D", cmd)
+        self.assertIn("MON,TUE,WED,THU,FRI", cmd)
+        self.assertTrue(bool(captured.get("check")))
 
     def test_run_live_send_does_not_append_event_on_failure(self) -> None:
         calls = {"append": 0}
@@ -353,6 +432,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
                     customer_config="customers/wally_trial_tx_triangle_v1.json",
                     admin_email="support@microflowops.com",
                     send_live=True,
+                    allow_weekend_send=True,
                 )
         finally:
             run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]

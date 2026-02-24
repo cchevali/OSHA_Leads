@@ -49,7 +49,7 @@ def _parse_task_config(output: str) -> dict[int, dict[str, str]]:
     tasks: dict[int, dict[str, str]] = {}
     for line in (output or "").splitlines():
         match = re.match(
-            r"^TASK_(\d+)_(NAME|TIME|RL|TR|TR_LENGTH|SCHEDULE|START_DATE|START_TIME|START_BOUNDARY_LOCAL|MINUTE_INTERVAL)=(.*)$",
+            r"^TASK_(\d+)_(NAME|TIME|RL|TR|TR_LENGTH|SCHEDULE|START_DATE|START_TIME|START_BOUNDARY_LOCAL|MINUTE_INTERVAL|WEEKDAYS)=(.*)$",
             line.strip(),
         )
         if not match:
@@ -96,6 +96,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         self.assertEqual(proc.returncode, 0, msg=out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_MODE=print-config", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=1", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAY_SCHEDULE=MON,TUE,WED,THU,FRI", out)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_PRINT_CONFIG", out)
 
         tasks = _parse_task_config(out)
@@ -104,7 +106,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         ingest = [t for t in tasks.values() if t.get("NAME") == "OSHA_Osha_Ingest_Daily"]
         self.assertEqual(len(ingest), 1, msg=out)
         ingest_task = ingest[0]
-        self.assertEqual(ingest_task.get("SCHEDULE"), "daily", msg=out)
+        self.assertEqual(ingest_task.get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(ingest_task.get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(ingest_task.get("TIME"), "06:45", msg=out)
         self.assertEqual(ingest_task.get("RL"), "HIGHEST", msg=out)
         self.assertEqual(ingest_task.get("TR"), EXPECTED_INGEST_TR, msg=out)
@@ -115,7 +118,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         generation = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Generation"]
         self.assertEqual(len(generation), 1, msg=out)
         generation_task = generation[0]
-        self.assertEqual(generation_task.get("SCHEDULE"), "daily", msg=out)
+        self.assertEqual(generation_task.get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(generation_task.get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(generation_task.get("TIME"), "07:15", msg=out)
         self.assertEqual(generation_task.get("RL"), "HIGHEST", msg=out)
         self.assertEqual(generation_task.get("TR"), EXPECTED_GENERATION_TR, msg=out)
@@ -125,11 +129,15 @@ class TestInstallScheduledTasks(unittest.TestCase):
 
         discovery = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Discovery"]
         self.assertEqual(len(discovery), 1, msg=out)
+        self.assertEqual(discovery[0].get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(discovery[0].get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(discovery[0].get("TR"), EXPECTED_DISCOVERY_TR, msg=out)
         self._assert_future_boundary(discovery[0].get("START_BOUNDARY_LOCAL", ""), out)
 
         outreach = [t for t in tasks.values() if t.get("NAME") == "OSHA_Outreach_Auto"]
         self.assertEqual(len(outreach), 1, msg=out)
+        self.assertEqual(outreach[0].get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(outreach[0].get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(outreach[0].get("TR"), EXPECTED_OUTREACH_TR, msg=out)
         self._assert_future_boundary(outreach[0].get("START_BOUNDARY_LOCAL", ""), out)
 
@@ -153,6 +161,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_DRY_RUN", out)
         self.assertNotIn("PASS_INSTALL_SCHEDULED_TASKS_APPLY", out)
         self.assertIn("/SC MINUTE /MO 15", out)
+        self.assertIn("/SC WEEKLY /D MON,TUE,WED,THU,FRI", out)
         self.assertIn(EXPECTED_INBOUND_TR, out)
         self.assertIn(EXPECTED_INGEST_TR, out)
         self.assertNotIn(r"C:\dev\OSHA_Leads\run_inbound_triage.ps1", out)
