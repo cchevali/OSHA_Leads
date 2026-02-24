@@ -787,6 +787,169 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertGreater(int((breakdown.get("gates") or {}).get("state_mismatch", 0)), 0)
             self.assertIs((breakdown.get("gates") or {}).get("weekend_block"), False)
 
+    def test_plan_fallback_on_empty_state_switches_and_emits_token(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_tx1",
+                        "contact_name": "Alice TX",
+                        "firm": "TX Co",
+                        "email": "alice.tx@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 7,
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_FALLBACK_ON_EMPTY_STATE": "1",
+            }
+            plan = self._run(["--plan", "--for-date", "2001-01-02"], env)
+            self.assertEqual(plan.returncode, 0, msg=plan.stderr + "\n" + plan.stdout)
+            out = plan.stdout or ""
+            self.assertIn("OUTREACH_PLAN_STATE=TX", out)
+            self.assertIn("OUTREACH_FALLBACK_TRIGGERED=1 from=CA to=TX reason=SENDABLE_ZERO", out)
+            breakdown = json.loads(self._stdout_value(out, "OUTREACH_PLAN_FILTER_BREAKDOWN"))
+            gates = breakdown.get("gates") or {}
+            self.assertEqual(gates.get("rotation_selected_state"), "CA")
+            self.assertEqual(gates.get("selected_state"), "TX")
+            self.assertEqual(gates.get("state_rotation_source"), "fallback_sendable_estimate")
+            self.assertIs(gates.get("fallback_triggered"), True)
+            self.assertEqual(gates.get("fallback_reason"), "SENDABLE_ZERO")
+
+    def test_plan_fallback_trigger_token_format_is_stable_and_opt_in(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_tx1",
+                        "contact_name": "Alice TX",
+                        "firm": "TX Co",
+                        "email": "alice.tx@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 7,
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+
+            base_env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+
+            plan_opt_in = self._run(
+                ["--plan", "--for-date", "2001-01-02"],
+                {**base_env, "OUTREACH_FALLBACK_ON_EMPTY_STATE": "1"},
+            )
+            self.assertEqual(plan_opt_in.returncode, 0, msg=plan_opt_in.stderr + "\n" + plan_opt_in.stdout)
+            lines = [ln.strip() for ln in (plan_opt_in.stdout or "").splitlines() if ln.strip()]
+            fallback_line = next((ln for ln in lines if ln.startswith("OUTREACH_FALLBACK_TRIGGERED=")), "")
+            self.assertEqual(fallback_line, "OUTREACH_FALLBACK_TRIGGERED=1 from=CA to=TX reason=SENDABLE_ZERO")
+
+            plan_default = self._run(
+                ["--plan", "--for-date", "2001-01-02"],
+                {**base_env, "OUTREACH_FALLBACK_ON_EMPTY_STATE": "0"},
+            )
+            self.assertEqual(plan_default.returncode, 0, msg=plan_default.stderr + "\n" + plan_default.stdout)
+            self.assertNotIn("OUTREACH_FALLBACK_TRIGGERED=1", plan_default.stdout or "")
+
+    def test_dry_run_fallback_on_below_floor_switches_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_tx1",
+                        "contact_name": "TX One",
+                        "firm": "TX Co",
+                        "email": "tx1@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 9,
+                    },
+                    {
+                        "prospect_id": "p_tx2",
+                        "contact_name": "TX Two",
+                        "firm": "TX Co",
+                        "email": "tx2@example.com",
+                        "title": "Safety Manager",
+                        "state": "TX",
+                        "score": 8,
+                    },
+                    {
+                        "prospect_id": "p_ca1",
+                        "contact_name": "CA One",
+                        "firm": "CA Co",
+                        "email": "ca1@example.com",
+                        "title": "Owner",
+                        "state": "CA",
+                        "score": 7,
+                    },
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA",
+                "OUTREACH_DAILY_LIMIT": "2",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_FALLBACK_ON_EMPTY_STATE": "1",
+            }
+            dry_run = self._run(["--dry-run", "--for-date", "2001-01-02"], env)
+            self.assertEqual(dry_run.returncode, 0, msg=dry_run.stderr + "\n" + dry_run.stdout)
+            out = dry_run.stdout or ""
+            self.assertIn("OUTREACH_FALLBACK_TRIGGERED=1 from=CA to=TX reason=SENDABLE_BELOW_FLOOR", out)
+            self.assertIn("PASS_AUTO_DRY_RUN state=TX batch=2001-01-02_TX", out)
+
+    def test_plan_fallback_enabled_no_better_state_no_switch(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(crm_db, [])
+            _write_suppression(data_dir / "suppression.csv")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_FALLBACK_ON_EMPTY_STATE": "1",
+            }
+            plan = self._run(["--plan", "--for-date", "2001-01-02"], env)
+            self.assertEqual(plan.returncode, 0, msg=plan.stderr + "\n" + plan.stdout)
+            self.assertIn("OUTREACH_PLAN_STATE=CA", plan.stdout or "")
+            self.assertNotIn("OUTREACH_FALLBACK_TRIGGERED=1", plan.stdout or "")
+            breakdown = json.loads(self._stdout_value(plan.stdout or "", "OUTREACH_PLAN_FILTER_BREAKDOWN"))
+            gates = breakdown.get("gates") or {}
+            self.assertEqual(gates.get("rotation_selected_state"), "CA")
+            self.assertEqual(gates.get("selected_state"), "CA")
+            self.assertEqual(gates.get("state_rotation_source"), "weekday_index")
+            self.assertIs(gates.get("fallback_triggered"), False)
+
     def test_for_date_changes_state_for_no_send_and_blocks_live_non_today(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

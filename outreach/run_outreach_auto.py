@@ -156,6 +156,19 @@ def _parse_states(raw: str) -> list[str]:
     return states
 
 
+def _bool_env(value: str) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_boolish_or_raise(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"invalid_boolish={value}")
+
+
 def _daily_limit_with_source() -> tuple[int, str]:
     raw = (os.getenv("OUTREACH_DAILY_LIMIT") or "").strip()
     if not raw:
@@ -247,6 +260,54 @@ def _choose_state(states: list[str], run_date: date) -> str:
 
 def _batch_id(state: str, run_date: date) -> str:
     return f"{run_date.isoformat()}_{state}"
+
+
+def _empty_state_fallback_decision(
+    states: list[str],
+    rotation_state: str,
+    sendable_by_state: dict[str, int],
+    daily_limit: int,
+    enabled: bool,
+) -> dict[str, object]:
+    rotation = str(rotation_state or "").strip().upper()
+    final_state = rotation
+    selected_sendable = max(0, int(sendable_by_state.get(rotation, 0)))
+    floor = max(0, int(daily_limit))
+    reason = ""
+    if selected_sendable == 0:
+        reason = "SENDABLE_ZERO"
+    elif selected_sendable < floor:
+        reason = "SENDABLE_BELOW_FLOOR"
+
+    out = {
+        "enabled": bool(enabled),
+        "triggered": False,
+        "from_state": rotation,
+        "to_state": final_state,
+        "reason": "",
+        "state_rotation_source": "weekday_index",
+        "selected_sendable": selected_sendable,
+        "floor": floor,
+    }
+    if (not enabled) or (not reason):
+        return out
+
+    best_state = rotation
+    best_sendable = selected_sendable
+    for item in states:
+        s = str(item or "").strip().upper()
+        if not s:
+            continue
+        c = max(0, int(sendable_by_state.get(s, 0)))
+        if c > best_sendable:
+            best_state = s
+            best_sendable = c
+    if best_state != rotation and best_sendable > selected_sendable:
+        out["triggered"] = True
+        out["to_state"] = best_state
+        out["reason"] = reason
+        out["state_rotation_source"] = "fallback_sendable_estimate"
+    return out
 
 
 def _resolve_summary_recipient(explicit_to: str) -> tuple[bool, str, str]:
@@ -886,6 +947,10 @@ def _build_filter_breakdown(
     role_inbox_penalty: int,
     missing_state_pref: int,
     state: str,
+    rotation_selected_state: str = "",
+    state_rotation_source: str = "weekday_index",
+    fallback_triggered: bool = False,
+    fallback_reason: str = "",
 ) -> dict:
     filters: dict[str, int] = {}
     for key in FILTER_BREAKDOWN_FILTER_KEYS:
@@ -906,7 +971,10 @@ def _build_filter_breakdown(
             "missing_state_pref": max(0, int(missing_state_pref)),
             "weekend_block": False,
             "selected_state": _safe_text(state).upper(),
-            "state_rotation_source": "weekday_index",
+            "rotation_selected_state": _safe_text(rotation_selected_state or state).upper(),
+            "state_rotation_source": _safe_text(state_rotation_source) or "weekday_index",
+            "fallback_triggered": bool(fallback_triggered),
+            "fallback_reason": _safe_text(fallback_reason),
         },
     }
 
@@ -920,6 +988,10 @@ def _build_plan_diagnostics(
     skipped: Counter,
     pool_total_all_states: int,
     selection_stats: dict[str, int],
+    rotation_selected_state: str = "",
+    state_rotation_source: str = "weekday_index",
+    fallback_triggered: bool = False,
+    fallback_reason: str = "",
 ) -> dict:
     filter_breakdown = _build_filter_breakdown(
         skipped=skipped,
@@ -930,6 +1002,10 @@ def _build_plan_diagnostics(
         role_inbox_penalty=max(0, int(selection_stats.get("role_inbox_penalty", 0))),
         missing_state_pref=max(0, int(selection_stats.get("missing_state_pref", 0))),
         state=state,
+        rotation_selected_state=rotation_selected_state or state,
+        state_rotation_source=state_rotation_source,
+        fallback_triggered=fallback_triggered,
+        fallback_reason=fallback_reason,
     )
     return {
         "plan_date": run_date.isoformat(),
@@ -1095,6 +1171,14 @@ def _print_plan_output(
     print(f"OUTREACH_PLAN_DIAGNOSTICS_PATH={diagnostics_path}")
     for line in list(state_inventory_lines or []):
         print(line)
+    gates = (filter_breakdown.get("gates") or {}) if isinstance(filter_breakdown, dict) else {}
+    if bool(gates.get("fallback_triggered")):
+        print(
+            "OUTREACH_FALLBACK_TRIGGERED=1 "
+            f"from={_safe_text(gates.get('rotation_selected_state')).upper()} "
+            f"to={state} "
+            f"reason={_safe_text(gates.get('fallback_reason')) or 'SENDABLE_ZERO'}"
+        )
     print("prospect_id,email,domain,segment,role_or_title,state_pref,rank_reason")
     for candidate in selected:
         print(
@@ -1110,6 +1194,17 @@ def _print_plan_output(
                 ]
             )
         )
+
+
+def _print_fallback_trigger_token(decision: dict[str, object]) -> None:
+    if not bool(decision.get("triggered")):
+        return
+    print(
+        "OUTREACH_FALLBACK_TRIGGERED=1 "
+        f"from={_safe_text(decision.get('from_state')).upper()} "
+        f"to={_safe_text(decision.get('to_state')).upper()} "
+        f"reason={_safe_text(decision.get('reason')) or 'SENDABLE_ZERO'}"
+    )
 
 
 def _render_outreach_payload(
@@ -1430,6 +1525,7 @@ def _doctor_parse_env() -> tuple[bool, str, dict]:
     raw_limit = (os.getenv("OUTREACH_DAILY_LIMIT") or "").strip()
     smoke_to = (os.getenv("OSHA_SMOKE_TO") or "").strip()
     raw_max_age = (os.getenv("OUTREACH_SUPPRESSION_MAX_AGE_HOURS") or "").strip()
+    raw_fallback_on_empty_state = (os.getenv("OUTREACH_FALLBACK_ON_EMPTY_STATE") or "").strip()
 
     missing_keys: list[str] = []
     if not raw_states:
@@ -1473,10 +1569,21 @@ def _doctor_parse_env() -> tuple[bool, str, dict]:
             f"value={suppression_max_age_hours}",
         ) + ({},)
     ctx["suppression_max_age_hours"] = suppression_max_age_hours
+    if raw_fallback_on_empty_state:
+        try:
+            ctx["fallback_on_empty_state"] = _parse_boolish_or_raise(raw_fallback_on_empty_state)
+        except Exception:
+            return _doctor_error(
+                ERR_DOCTOR_ENV_INVALID_PREFIX + "OUTREACH_FALLBACK_ON_EMPTY_STATE",
+                f"value={_compact_detail(raw_fallback_on_empty_state)}",
+            ) + ({},)
+    else:
+        ctx["fallback_on_empty_state"] = False
 
     print(
         f"{PASS_DOCTOR_ENV} outreach_states={','.join(states)} daily_limit={daily_limit} "
-        f"smoke_to={ctx['smoke_to']} suppression_max_age_hours={suppression_max_age_hours:.1f}"
+        f"smoke_to={ctx['smoke_to']} suppression_max_age_hours={suppression_max_age_hours:.1f} "
+        f"fallback_on_empty_state={1 if bool(ctx.get('fallback_on_empty_state')) else 0}"
     )
     return True, "", ctx
 
@@ -1857,9 +1964,11 @@ def main() -> int:
         print(f"{ERR_AUTO_ENV} OUTREACH_STATES missing", file=sys.stderr)
         return 2
 
-    state = _choose_state(states, run_date)
+    rotation_state = _choose_state(states, run_date)
+    state = rotation_state
     batch = _batch_id(state, run_date)
     limit = _daily_limit()
+    fallback_on_empty_state = _bool_env(os.getenv("OUTREACH_FALLBACK_ON_EMPTY_STATE", "0"))
     crm_db = _crm_db_path()
     suppression_csv = _suppression_csv_path()
     export_ledger = _export_ledger_path()
@@ -1875,6 +1984,7 @@ def main() -> int:
         print(f"{PASS_AUTO_PRINT_CONFIG} outreach_states={','.join(states)} selected_state={state}")
         print(f"{PASS_AUTO_PRINT_CONFIG} batch_id={batch}")
         print(f"{PASS_AUTO_PRINT_CONFIG} run_date={run_date.isoformat()}")
+        print(f"outreach_fallback_on_empty_state={1 if fallback_on_empty_state else 0}")
         print(f"OUTREACH_WEEKDAYS_ONLY={1 if OUTREACH_WEEKDAYS_ONLY else 0}")
         print(f"outreach_effective_timezone={local_now['timezone']}")
         print(f"outreach_effective_local_date={local_now['date_text']}")
@@ -1932,6 +2042,23 @@ def main() -> int:
             print(str(e), file=sys.stderr)
             return 3
 
+        crm_funnel_for_fallback = _crm_funnel_breakdown_for_summary(
+            conn=conn,
+            states=states,
+            suppressed_emails=suppressed_emails,
+            allow_repeat=bool(args.allow_repeat),
+            selected_state=rotation_state,
+        )
+        fallback_decision = _empty_state_fallback_decision(
+            states=states,
+            rotation_state=rotation_state,
+            sendable_by_state=crm_funnel_for_fallback["uncontacted_sendable_by_state"],
+            daily_limit=limit,
+            enabled=bool(fallback_on_empty_state),
+        )
+        state = str(fallback_decision.get("to_state") or rotation_state).strip().upper() or rotation_state
+        batch = _batch_id(state, run_date)
+
         selected, skipped, manifest_rows, selection_stats = _select_candidates(
             conn=conn,
             state=state,
@@ -1949,6 +2076,10 @@ def main() -> int:
             skipped=skipped,
             pool_total_all_states=pool_total_all_states,
             selection_stats=selection_stats,
+            rotation_selected_state=rotation_state,
+            state_rotation_source=str(fallback_decision.get("state_rotation_source") or "weekday_index"),
+            fallback_triggered=bool(fallback_decision.get("triggered")),
+            fallback_reason=str(fallback_decision.get("reason") or ""),
         )
         diagnostics_path: Path | None = None
         if args.plan or args.dry_run:
@@ -1992,6 +2123,7 @@ def main() -> int:
                 selected=selected,
                 manifest_rows=manifest_rows,
             )
+            _print_fallback_trigger_token(fallback_decision)
             print(
                 f"{PASS_AUTO_DRY_RUN} state={state} batch={batch} daily_limit={limit} crm_db={crm_db} allow_repeat={bool(args.allow_repeat)}"
             )
@@ -2101,6 +2233,7 @@ def main() -> int:
             f"{PASS_AUTO_EXPORT} batch={batch} state={state} contacted_count={contacted_count} "
             f"skipped_count={skipped_count} failed_count={failed_count}"
         )
+        _print_fallback_trigger_token(fallback_decision)
         print(f"{PASS_AUTO_EXPORT} contacted_prospect_ids={','.join([r['prospect_id'] for r in send_results if r.get('ok')]) or '(none)'}")
         print(f"{PASS_AUTO_EXPORT} skipped_top_reasons={top_skip}")
         print(
