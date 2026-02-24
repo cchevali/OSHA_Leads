@@ -608,6 +608,7 @@ def _print_tokens(
 
     print(f"GENERATOR_AUTOGROW_ENABLED={1 if autogrow['enabled'] else 0}")
     print(f"GENERATOR_AUTOGROW_SOURCES={','.join(autogrow['sources'])}")
+    print(f"GENERATOR_AUTOGROW_SOURCES_EMPTY={1 if autogrow.get('sources_empty') else 0}")
     print(f"GENERATOR_AUTOGROW_SELECTED_STATE={autogrow['selected_state']}")
     print(f"GENERATOR_AUTOGROW_BACKLOG_TARGET={autogrow['backlog_target']}")
     print(f"GENERATOR_AUTOGROW_BACKLOG_CURRENT={autogrow['backlog_current']}")
@@ -754,6 +755,7 @@ def main(argv: list[str] | None = None) -> int:
     autogrow_state = {
         "enabled": bool(autogrow_cfg["enabled"]),
         "sources": list(autogrow_cfg["sources"]),
+        "sources_empty": len(list(autogrow_cfg["sources"])) == 0,
         "selected_state": selected_state,
         "backlog_target": int(autogrow_cfg["backlog_target"]),
         "backlog_current": int(selected_backlog_current),
@@ -772,7 +774,11 @@ def main(argv: list[str] | None = None) -> int:
         "cache_used": False,
         "cache_age_days": None,
         "pages_fetched": 0,
-        "parse_mode": "FAILED",
+        "parse_mode": (
+            "SKIP_NO_SOURCES"
+            if bool(autogrow_cfg["enabled"]) and len(list(autogrow_cfg["sources"])) == 0
+            else "FAILED"
+        ),
         "rows_candidate": 0,
         "rows_accepted": 0,
     }
