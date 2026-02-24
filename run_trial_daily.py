@@ -259,7 +259,8 @@ def _send_conversion_email_from_artifact(
     customer_cfg = _load_conversion_customer_config(subscriber_key)
     branding = resolve_branding(customer_cfg)
     customer_id = str(customer_cfg.get("customer_id") or subscriber_key).strip() or subscriber_key
-    footer_disclaimer = "This report contains public OSHA inspection data for informational purposes only. Not legal advice."
+    # Conversion email is a sales/upgrade message, not an inspection-data report.
+    footer_disclaimer = ""
     html_body = _conversion_body_html(body)
 
     sent_ids: list[str] = []
