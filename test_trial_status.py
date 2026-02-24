@@ -1390,10 +1390,12 @@ class TestTrialStatus(unittest.TestCase):
                 self.assertNotIn("Not legal advice", text_body)
                 self.assertIn("Activate checkout", html_body)
                 self.assertIn("click here to unsubscribe", html_body)
+                self.assertEqual(html_body.lower().count("click here to unsubscribe"), 1)
                 self.assertIn("microflowops.com", html_body.lower())
                 self.assertNotIn("Not legal advice", html_body)
                 self.assertEqual(call.get("list_unsub_post"), "List-Unsubscribe=One-Click")
                 self.assertIn("https://unsub.example/", str(call.get("list_unsub") or ""))
+                self.assertEqual(str(call.get("list_unsub") or "").count("https://unsub.example/"), 1)
 
     def test_expired_live_uses_existing_conversion_artifact_verbatim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

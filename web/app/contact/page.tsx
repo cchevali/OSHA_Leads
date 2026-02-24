@@ -32,7 +32,7 @@ export default function ContactPage() {
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-2xl text-ink">Start a free trial</h3>
             <p className="mt-2 mb-5 text-sm text-inkMuted">
-              We will send a sample alert and set up a trial feed for your metros.
+              We will send a sample alert and set up a trial feed for your metros. Add up to 6 recipients for the pilot, and keep your company email as the billing/admin contact.
             </p>
             <TrialRequestForm />
           </div>
@@ -40,7 +40,7 @@ export default function ContactPage() {
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">Email us directly</h3>
               <p className="mt-3 text-inkMuted">
-                We respond same business day. Include your metros (or cities/states — we will translate), recipients, and any timing preferences.
+                We respond same business day. Include your metros (or cities/states — we will translate), recipient names/emails, and any timing preferences.
               </p>
               <div className="mt-4 flex flex-wrap items-center gap-4">
                 <p className="text-sm font-semibold text-ink">{site.ctaEmail}</p>

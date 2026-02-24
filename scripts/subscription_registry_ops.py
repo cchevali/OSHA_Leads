@@ -43,6 +43,11 @@ def _print_config(subscriber_db: Path, command: str) -> None:
             "core": crm_light.PLAN_MAX_METROS.get("core"),
             "multi": crm_light.PLAN_MAX_METROS.get("multi"),
         },
+        "recipient_caps": {
+            "pilot": crm_light.PLAN_MAX_RECIPIENTS.get("pilot"),
+            "core": crm_light.PLAN_MAX_RECIPIENTS.get("core"),
+            "multi": crm_light.PLAN_MAX_RECIPIENTS.get("multi"),
+        },
         "stripe_price_id_mapping": price_map,
         "stripe_price_id_core_present": bool(str(os.getenv("STRIPE_PRICE_ID_CORE", "")).strip()),
         "stripe_price_id_multi_present": bool(str(os.getenv("STRIPE_PRICE_ID_MULTI", "")).strip()),
@@ -125,6 +130,7 @@ def cmd_onboarding_submit(args: argparse.Namespace) -> int:
     payload = _read_json_payload(args)
     cbsa_codes_raw = payload.get("cbsa_codes")
     cbsa_codes = cbsa_codes_raw if isinstance(cbsa_codes_raw, list) else []
+    recipients_payload = payload.get("recipients")
     with crm_light.open_conn(crm_db) as conn:
         crm_light.init_schema(conn)
         result = crm_light.upsert_subscriber_onboarding(
@@ -133,6 +139,7 @@ def cmd_onboarding_submit(args: argparse.Namespace) -> int:
             email=str(payload.get("email") or ""),
             plan_code=str(payload.get("plan_code") or ""),
             cbsa_codes=[str(item or "") for item in cbsa_codes],
+            recipients=recipients_payload,
             source=str(payload.get("source") or "web_onboarding"),
             dry_run=bool(args.dry_run),
         )

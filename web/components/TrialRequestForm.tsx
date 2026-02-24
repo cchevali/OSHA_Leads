@@ -5,6 +5,17 @@ import { trackEvent } from "@/lib/analytics";
 import site from "@/config/site.json";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_TRIAL_RECIPIENTS = 6;
+
+type RecipientRow = {
+  name: string;
+  email: string;
+};
+
+type TrialRecipient = {
+  email: string;
+  name?: string;
+};
 
 type TrialRequestResponse =
   | { ok: true }
@@ -19,17 +30,66 @@ type TrialRequestFormProps = {
   intent?: string;
 };
 
+function collapseWhitespace(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function normalizeRecipients(rows: RecipientRow[]): { recipients: TrialRecipient[]; error: string } {
+  const recipients: TrialRecipient[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const email = row.email.trim().toLowerCase();
+    const name = collapseWhitespace(row.name);
+    if (!EMAIL_REGEX.test(email)) {
+      return { recipients: [], error: "Enter a valid email for each recipient row." };
+    }
+    if (seen.has(email)) {
+      continue;
+    }
+    seen.add(email);
+    recipients.push(name ? { email, name } : { email });
+  }
+  if (recipients.length === 0) {
+    return { recipients: [], error: "At least one recipient is required." };
+  }
+  if (recipients.length > MAX_TRIAL_RECIPIENTS) {
+    return { recipients: [], error: `Trial supports up to ${MAX_TRIAL_RECIPIENTS} recipients.` };
+  }
+  return { recipients, error: "" };
+}
+
 export default function TrialRequestForm({ source = "", intent = "" }: TrialRequestFormProps) {
   const [company, setCompany] = useState("");
   const [email, setEmail] = useState("");
   const [metros, setMetros] = useState("");
   const [notes, setNotes] = useState("");
+  const [recipientRows, setRecipientRows] = useState<RecipientRow[]>([{ name: "", email: "" }]);
   const [honeypot, setHoneypot] = useState("");
   const [emailError, setEmailError] = useState("");
   const [metrosError, setMetrosError] = useState("");
+  const [recipientsError, setRecipientsError] = useState("");
   const [submitError, setSubmitError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+
+  function updateRecipientRow(index: number, key: keyof RecipientRow, value: string): void {
+    setRecipientRows((prev) => prev.map((row, i) => (i === index ? { ...row, [key]: value } : row)));
+    setRecipientsError("");
+  }
+
+  function addRecipientRow(): void {
+    setRecipientRows((prev) => {
+      if (prev.length >= MAX_TRIAL_RECIPIENTS) return prev;
+      return [...prev, { name: "", email: "" }];
+    });
+    setRecipientsError("");
+  }
+
+  function removeRecipientRow(index: number): void {
+    if (index === 0) return;
+    setRecipientRows((prev) => prev.filter((_, i) => i !== index));
+    setRecipientsError("");
+  }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -37,6 +97,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
 
     const trimmedEmail = email.trim();
     const trimmedMetros = metros.trim();
+    const normalizedRecipients = normalizeRecipients(recipientRows);
 
     let hasError = false;
     if (!EMAIL_REGEX.test(trimmedEmail)) {
@@ -51,6 +112,13 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
       hasError = true;
     } else {
       setMetrosError("");
+    }
+
+    if (normalizedRecipients.error) {
+      setRecipientsError(normalizedRecipients.error);
+      hasError = true;
+    } else {
+      setRecipientsError("");
     }
 
     if (hasError) {
@@ -75,6 +143,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
           email: trimmedEmail,
           metros: trimmedMetros,
           notes,
+          recipients: normalizedRecipients.recipients,
           honeypot,
           source: sourceValue,
           intent: intentValue
@@ -106,9 +175,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
     return (
       <div className="rounded-2xl border border-ocean/30 bg-ocean/10 p-6 text-center">
         <p className="font-display text-xl text-ink">Request received. We’ll respond same business day.</p>
-        <p className="mt-2 text-sm text-inkMuted">
-          If you don’t hear back, email {site.ctaEmail}
-        </p>
+        <p className="mt-2 text-sm text-inkMuted">If you don’t hear back, email {site.ctaEmail}</p>
         <button
           type="button"
           onClick={() => {
@@ -137,7 +204,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
         />
       </label>
       <label className="grid gap-1.5 text-sm text-inkMuted">
-        Email
+        Company Email (billing/admin contact)
         <input
           required
           type="email"
@@ -148,6 +215,79 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
         />
         {emailError ? <p className="text-xs font-semibold text-red-700">{emailError}</p> : null}
       </label>
+
+      <div className="grid gap-3 rounded-xl border border-cardBorder bg-card p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm font-semibold text-ink">Recipients (up to 6)</p>
+          <button
+            type="button"
+            onClick={addRecipientRow}
+            disabled={recipientRows.length >= MAX_TRIAL_RECIPIENTS}
+            className="text-xs font-semibold text-ocean underline disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Add recipient
+          </button>
+        </div>
+
+        <div className="grid gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-inkMuted">Primary recipient</p>
+          <div className="grid gap-2 md:grid-cols-[1fr_1fr]">
+            <input
+              type="text"
+              value={recipientRows[0]?.name || ""}
+              onChange={(event) => updateRecipientRow(0, "name", event.target.value)}
+              placeholder="Name (optional)"
+              className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
+            />
+            <input
+              required
+              type="email"
+              value={recipientRows[0]?.email || ""}
+              onChange={(event) => updateRecipientRow(0, "email", event.target.value)}
+              placeholder="recipient@company.com"
+              className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
+            />
+          </div>
+        </div>
+
+        {recipientRows.length > 1 ? (
+          <div className="grid gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-inkMuted">Additional recipients</p>
+            {recipientRows.slice(1).map((row, offset) => {
+              const index = offset + 1;
+              return (
+                <div key={`recipient-${index}`} className="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+                  <input
+                    type="text"
+                    value={row.name}
+                    onChange={(event) => updateRecipientRow(index, "name", event.target.value)}
+                    placeholder="Name (optional)"
+                    className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
+                  />
+                  <input
+                    required
+                    type="email"
+                    value={row.email}
+                    onChange={(event) => updateRecipientRow(index, "email", event.target.value)}
+                    placeholder="recipient@company.com"
+                    className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeRecipientRow(index)}
+                    className="rounded-xl border border-cardBorder px-3 py-2 text-xs font-semibold text-ink transition hover:border-ink/40"
+                  >
+                    Remove
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {recipientsError ? <p className="text-xs font-semibold text-red-700">{recipientsError}</p> : null}
+      </div>
+
       <label className="grid gap-1.5 text-sm text-inkMuted">
         Metros to cover (cities or states work too)
         <input
