@@ -39,6 +39,9 @@ export default function OnboardingPage({ searchParams }: OnboardingPageProps) {
             Core supports up to 4 metros. Multi-Territory supports up to 10 metros. If you need expansion beyond your cap,
             submission is blocked and routed to contact.
           </p>
+          <p className="mt-2 text-sm text-inkMuted">
+            No calls required; onboarding is handled via a short form + email confirmation.
+          </p>
           <OnboardingMetroForm
             options={options}
             initialPlanCode={initialPlanCode}

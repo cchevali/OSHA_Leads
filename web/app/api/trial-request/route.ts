@@ -17,9 +17,15 @@ type TrialRequestPayload = {
   email?: unknown;
   metros?: unknown;
   notes?: unknown;
+  recipients?: unknown;
   honeypot?: unknown;
   source?: unknown;
   intent?: unknown;
+};
+
+type Recipient = {
+  email: string;
+  name?: string;
 };
 
 function sanitizeText(value: unknown, maxLength: number): string {
@@ -34,6 +40,28 @@ function sanitizeText(value: unknown, maxLength: number): string {
 function sanitizeMultilineText(value: unknown, maxLength: number): string {
   if (typeof value !== "string") return "";
   return value.trim().replace(/\s+/g, " ").slice(0, maxLength);
+}
+
+function collapseWhitespace(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function normalizeRecipients(value: unknown): Recipient[] | null {
+  if (!Array.isArray(value)) return null;
+  const recipients: Recipient[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (!item || typeof item !== "object") return null;
+    const row = item as Record<string, unknown>;
+    const email = sanitizeText(row.email, 254).toLowerCase();
+    if (!EMAIL_REGEX.test(email)) return null;
+    if (seen.has(email)) continue;
+    seen.add(email);
+    const name = collapseWhitespace(sanitizeText(row.name, 160));
+    recipients.push(name ? { email, name } : { email });
+  }
+  if (recipients.length === 0 || recipients.length > 6) return null;
+  return recipients;
 }
 
 function getClientIp(request: Request): string {
@@ -110,6 +138,7 @@ export async function POST(request: Request) {
     const email = sanitizeText(payload.email, 254).toLowerCase();
     const metros = sanitizeText(payload.metros, 300);
     const notes = sanitizeMultilineText(payload.notes, 2000);
+    const recipients = normalizeRecipients(payload.recipients);
     const honeypot = sanitizeText(payload.honeypot, 120);
     const source = sanitizeText(payload.source, 80);
     const intent = sanitizeText(payload.intent, 80);
@@ -133,7 +162,7 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!company || !metros || !EMAIL_REGEX.test(email)) {
+    if (!company || !metros || !EMAIL_REGEX.test(email) || !recipients) {
       return NextResponse.json(
         {
           ok: false,
@@ -179,6 +208,10 @@ export async function POST(request: Request) {
       `Company: ${company}`,
       `Email: ${email}`,
       `Metros: ${metros}`,
+      `Recipients (${recipients.length}):`,
+      ...recipients.map((recipient, index) =>
+        `  ${index + 1}. ${recipient.name ? `${recipient.name} <${recipient.email}>` : recipient.email}`
+      ),
       `Notes: ${notes || "(none)"}`,
       "",
       `Source: ${source || "(unspecified)"}`,
@@ -206,8 +239,9 @@ export async function POST(request: Request) {
         "We received your MicroFlowOps trial request.",
         "14-day trial, up to 4 metros, no credit card.",
         "",
-        `We captured: ${metros}`,
-        "",
+      `We captured: ${metros}`,
+      `Recipients: ${recipients.length}`,
+      "",
         "Request received. We'll respond same business day.",
         "If you don't hear back, email support@microflowops.com",
         "",

@@ -112,6 +112,133 @@ class TestMetroEntitlements(unittest.TestCase):
             allowlist = crm_light.get_subscriber_cbsa_allowlist(conn, "sub_core")
             self.assertEqual(len(allowlist), 4)
 
+    def test_onboarding_recipients_fallback_to_email_when_missing(self) -> None:
+        crm_light.ensure_database(self.crm_db)
+        with crm_light.open_conn(self.crm_db) as conn:
+            crm_light.init_schema(conn)
+            accepted = crm_light.upsert_subscriber_onboarding(
+                conn,
+                subscriber_key="sub_fallback",
+                email="Admin@Example.com",
+                plan_code="core",
+                cbsa_codes=["19100"],
+                dry_run=False,
+            )
+            self.assertTrue(accepted.get("ok"))
+            self.assertEqual(accepted.get("recipients"), [{"email": "admin@example.com"}])
+            entitlement = crm_light.get_subscriber_entitlement(conn, subscriber_key="sub_fallback")
+            self.assertEqual(crm_light.entitlement_recipient_emails(entitlement), ["admin@example.com"])
+
+    def test_onboarding_recipients_normalize_and_dedupe_preserve_order(self) -> None:
+        crm_light.ensure_database(self.crm_db)
+        with crm_light.open_conn(self.crm_db) as conn:
+            crm_light.init_schema(conn)
+            accepted = crm_light.upsert_subscriber_onboarding(
+                conn,
+                subscriber_key="sub_multi_recips",
+                email="billing@example.com",
+                plan_code="core",
+                cbsa_codes=["19100"],
+                recipients=[
+                    {"email": "  Primary@Example.com ", "name": "  Jane   Doe "},
+                    {"email": "ops@example.com", "name": " Ops "},
+                    {"email": "PRIMARY@example.com", "name": "Duplicate"},
+                ],
+                dry_run=False,
+            )
+            self.assertTrue(accepted.get("ok"))
+            self.assertEqual(
+                accepted.get("recipients"),
+                [
+                    {"email": "primary@example.com", "name": "Jane Doe"},
+                    {"email": "ops@example.com", "name": "Ops"},
+                ],
+            )
+            entitlement = crm_light.get_subscriber_entitlement(conn, subscriber_key="sub_multi_recips")
+            self.assertEqual(
+                crm_light.entitlement_recipient_emails(entitlement),
+                ["primary@example.com", "ops@example.com"],
+            )
+
+    def test_onboarding_enforces_max_recipients_by_plan(self) -> None:
+        crm_light.ensure_database(self.crm_db)
+        with crm_light.open_conn(self.crm_db) as conn:
+            crm_light.init_schema(conn)
+            core_reject = crm_light.upsert_subscriber_onboarding(
+                conn,
+                subscriber_key="sub_core_cap",
+                email="billing@example.com",
+                plan_code="core",
+                cbsa_codes=["19100"],
+                recipients=[{"email": f"user{i}@example.com"} for i in range(1, 8)],
+                dry_run=False,
+            )
+            self.assertFalse(core_reject.get("ok"))
+            self.assertEqual(core_reject.get("err_code"), "ERR_MAX_RECIPIENTS_EXCEEDED")
+            self.assertEqual(core_reject.get("max_recipients"), 6)
+            self.assertEqual(core_reject.get("selected_recipients"), 7)
+
+            core_accept = crm_light.upsert_subscriber_onboarding(
+                conn,
+                subscriber_key="sub_core_cap",
+                email="billing@example.com",
+                plan_code="core",
+                cbsa_codes=["19100"],
+                recipients=[{"email": f"user{i}@example.com"} for i in range(1, 7)],
+                dry_run=False,
+            )
+            self.assertTrue(core_accept.get("ok"))
+            self.assertEqual(core_accept.get("max_recipients"), 6)
+            self.assertEqual(core_accept.get("selected_recipients"), 6)
+
+            multi_reject = crm_light.upsert_subscriber_onboarding(
+                conn,
+                subscriber_key="sub_multi_cap",
+                email="billing2@example.com",
+                plan_code="multi",
+                cbsa_codes=["19100"],
+                recipients=[{"email": f"multi{i}@example.com"} for i in range(1, 17)],
+                dry_run=False,
+            )
+            self.assertFalse(multi_reject.get("ok"))
+            self.assertEqual(multi_reject.get("err_code"), "ERR_MAX_RECIPIENTS_EXCEEDED")
+            self.assertEqual(multi_reject.get("max_recipients"), 15)
+
+    def test_entitlement_recipient_emails_falls_back_to_legacy_email(self) -> None:
+        self.assertEqual(
+            crm_light.entitlement_recipient_emails({"email": "Legacy@Example.com"}),
+            ["legacy@example.com"],
+        )
+
+    def test_send_collect_recipients_prefers_registry_entitlement_recipients(self) -> None:
+        config = {
+            "recipients": ["config1@example.com", "config2@example.com"],
+            "email_recipients": ["config1@example.com", "config2@example.com"],
+        }
+        subscriber_profile = {
+            "email": "profile@example.com",
+            "recipients": ["profile1@example.com", "profile2@example.com"],
+        }
+        entitlement = {
+            "email": "billing@example.com",
+            "recipients_json": json.dumps(
+                [
+                    {"email": "Primary@Example.com", "name": "Primary User"},
+                    {"email": "ops@example.com"},
+                ]
+            ),
+        }
+        recipients = send_digest_email.collect_recipients(config, subscriber_profile, None, entitlement=entitlement)
+        self.assertEqual(recipients, ["primary@example.com", "ops@example.com"])
+
+        override = send_digest_email.collect_recipients(
+            config,
+            subscriber_profile,
+            "override@example.com",
+            entitlement=entitlement,
+        )
+        self.assertEqual(override, ["override@example.com"])
+
     def test_paid_send_hard_fails_when_dataset_incomplete(self) -> None:
         entitlement = {"plan_code": "core"}
         with mock.patch.object(send_digest_email, "zip_cbsa_dataset_status", return_value={"dataset_incomplete": True}), mock.patch.object(

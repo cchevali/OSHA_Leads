@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import hashlib
+import re
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -20,8 +21,14 @@ PLAN_MAX_METROS: dict[str, int] = {
     "core": 4,
     "multi": 10,
 }
+PLAN_MAX_RECIPIENTS: dict[str, int] = {
+    "pilot": 6,
+    "core": 6,
+    "multi": 15,
+}
 PAID_PLAN_CODES = {"core", "multi"}
-CRM_SCHEMA_VERSION = 6
+CRM_SCHEMA_VERSION = 7
+EMAIL_REGEX = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 def normalize_subscriber_key(value: str | None) -> str:
@@ -60,6 +67,13 @@ def plan_max_metros(plan_code: str | None) -> int | None:
     return None
 
 
+def plan_max_recipients(plan_code: str | None) -> int | None:
+    normalized = normalize_plan_code(plan_code)
+    if normalized in PLAN_MAX_RECIPIENTS:
+        return int(PLAN_MAX_RECIPIENTS[normalized])
+    return None
+
+
 def is_paid_plan(plan_code: str | None) -> bool:
     return normalize_plan_code(plan_code) in PAID_PLAN_CODES
 
@@ -94,6 +108,73 @@ def crm_light_db_path() -> Path:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except Exception:
+        return False
+    return any(str(row[1]).lower() == str(column).lower() for row in rows)
+
+
+def _collapse_ws(value: str | None) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _normalize_recipient_name(value: Any) -> str:
+    return _collapse_ws(str(value or ""))
+
+
+def normalize_onboarding_recipients(value: Any) -> tuple[list[dict[str, str]], str]:
+    if value is None:
+        return [], ""
+    if not isinstance(value, list):
+        return [], "ERR_ONBOARDING_RECIPIENT_INVALID"
+
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            return [], "ERR_ONBOARDING_RECIPIENT_INVALID"
+        email = normalize_email(str(item.get("email") or ""))
+        if not email or not EMAIL_REGEX.match(email):
+            return [], "ERR_ONBOARDING_RECIPIENT_INVALID"
+        if email in seen:
+            continue
+        seen.add(email)
+        entry: dict[str, str] = {"email": email}
+        name = _normalize_recipient_name(item.get("name"))
+        if name:
+            entry["name"] = name
+        normalized.append(entry)
+    return normalized, ""
+
+
+def entitlement_recipient_emails(entitlement: dict[str, Any] | None) -> list[str]:
+    if not entitlement:
+        return []
+    raw = entitlement.get("recipients_json")
+    deduped: list[str] = []
+    seen: set[str] = set()
+    if raw:
+        try:
+            parsed = json.loads(str(raw))
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        email = normalize_email(str(item.get("email") or ""))
+                    else:
+                        email = normalize_email(str(item or ""))
+                    if email and email not in seen:
+                        seen.add(email)
+                        deduped.append(email)
+        except Exception:
+            pass
+    if deduped:
+        return deduped
+    fallback = normalize_email(str(entitlement.get("email") or ""))
+    return [fallback] if fallback else []
 
 
 def connect(db_path: str | Path | None = None) -> sqlite3.Connection:
@@ -313,6 +394,12 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
         )
         _set_schema_version(conn, 6)
         version = 6
+
+    if version < 7:
+        if not _has_column(conn, "subscriber_entitlements", "recipients_json"):
+            conn.execute("ALTER TABLE subscriber_entitlements ADD COLUMN recipients_json TEXT")
+        _set_schema_version(conn, 7)
+        version = 7
 
 def ensure_database(db_path: str | Path | None = None) -> Path:
     path = resolve_crm_db_path(db_path)
@@ -983,6 +1070,7 @@ def upsert_subscriber_entitlement(
     max_metros: int,
     active: bool,
     source: str,
+    recipients: list[dict[str, str]] | None = None,
     commit: bool = True,
 ) -> None:
     sk = normalize_subscriber_key(subscriber_key)
@@ -994,6 +1082,7 @@ def upsert_subscriber_entitlement(
     metros = int(max_metros)
     if metros < 1:
         raise ValueError("max_metros must be >= 1")
+    recipients_json = json.dumps(list(recipients or []), ensure_ascii=True)
     ts = utc_now_iso()
     conn.execute(
         """
@@ -1002,15 +1091,17 @@ def upsert_subscriber_entitlement(
             email,
             plan_code,
             max_metros,
+            recipients_json,
             active,
             source,
             created_at_utc,
             updated_at_utc
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(subscriber_key) DO UPDATE SET
             email=excluded.email,
             plan_code=excluded.plan_code,
             max_metros=excluded.max_metros,
+            recipients_json=excluded.recipients_json,
             active=excluded.active,
             source=excluded.source,
             updated_at_utc=excluded.updated_at_utc
@@ -1020,6 +1111,7 @@ def upsert_subscriber_entitlement(
             normalize_email(email),
             normalized_plan,
             metros,
+            recipients_json,
             1 if active else 0,
             str(source or "").strip(),
             ts,
@@ -1054,7 +1146,7 @@ def get_subscriber_entitlement(
         where = f"({where}) AND active = 1"
     row = conn.execute(
         f"""
-        SELECT subscriber_key, email, plan_code, max_metros, active, source, created_at_utc, updated_at_utc
+        SELECT subscriber_key, email, plan_code, max_metros, recipients_json, active, source, created_at_utc, updated_at_utc
         FROM subscriber_entitlements
         WHERE {where}
         ORDER BY updated_at_utc DESC
@@ -1294,6 +1386,7 @@ def upsert_subscriber_onboarding(
     email: str | None,
     plan_code: str | None,
     cbsa_codes: list[str],
+    recipients: Any = None,
     source: str = "onboarding",
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -1324,6 +1417,30 @@ def upsert_subscriber_onboarding(
     if max_metros_value is None:
         return {"ok": False, "err_code": "ERR_PLAN_CODE_UNKNOWN", "plan_code": effective_plan}
 
+    max_recipients_value = plan_max_recipients(effective_plan)
+    if max_recipients_value is None:
+        return {"ok": False, "err_code": "ERR_PLAN_CODE_UNKNOWN", "plan_code": effective_plan}
+
+    normalized_recipients, recipients_err = normalize_onboarding_recipients(recipients)
+    if recipients is None:
+        if normalized_email:
+            normalized_recipients = [{"email": normalized_email}]
+        else:
+            normalized_recipients = []
+    elif recipients_err:
+        return {"ok": False, "err_code": recipients_err}
+
+    if not normalized_recipients:
+        return {"ok": False, "err_code": "ERR_ONBOARDING_RECIPIENT_REQUIRED"}
+    if len(normalized_recipients) > int(max_recipients_value):
+        return {
+            "ok": False,
+            "err_code": "ERR_MAX_RECIPIENTS_EXCEEDED",
+            "selected_recipients": len(normalized_recipients),
+            "max_recipients": int(max_recipients_value),
+            "plan_code": effective_plan,
+        }
+
     normalized_cbsas = sorted({normalize_cbsa_code(code) for code in cbsa_codes if normalize_cbsa_code(code)})
     if len(normalized_cbsas) > int(max_metros_value):
         return {
@@ -1342,6 +1459,7 @@ def upsert_subscriber_onboarding(
             email=normalized_email,
             plan_code=effective_plan,
             max_metros=int(max_metros_value),
+            recipients=normalized_recipients,
             active=True,
             source=source,
         )
@@ -1357,7 +1475,10 @@ def upsert_subscriber_onboarding(
         "email": normalized_email,
         "plan_code": effective_plan,
         "max_metros": int(max_metros_value),
+        "max_recipients": int(max_recipients_value),
         "selected_count": len(normalized_cbsas),
+        "selected_recipients": len(normalized_recipients),
+        "recipients": normalized_recipients,
         "cbsa_codes": normalized_cbsas,
         "dry_run": bool(dry_run),
     }
