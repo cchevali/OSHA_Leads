@@ -24,6 +24,77 @@ from email_footer import build_footer_html, build_footer_text
 from lead_filters import load_territory_definitions, resolve_territory_code
 from send_digest_email import build_unsubscribe_payload, resolve_branding, send_email
 
+
+def _count_status_live_primary_weekdays(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str,
+    start_date: str,
+    tz_name: str,
+    primary_recipient: str,
+) -> int:
+    zone = crm_light._resolve_tz(tz_name)  # type: ignore[attr-defined]
+    rows = conn.execute(
+        """
+        SELECT ts_utc, variant, meta_json
+        FROM send_events
+        WHERE subscriber_key = ?
+          AND status = 'SENT'
+          AND ts_utc >= ?
+        ORDER BY ts_utc ASC, id ASC
+        """,
+        (subscriber_key, f"{start_date}T00:00:00+00:00"),
+    ).fetchall()
+    local_dates: set[str] = set()
+    for row in rows:
+        meta = crm_light._safe_meta_dict(str(row["meta_json"] or ""))  # type: ignore[attr-defined]
+        if not crm_light._is_trial_delivery_event(  # type: ignore[attr-defined]
+            variant=str(row["variant"] or ""),
+            meta=meta,
+            primary_recipient=primary_recipient,
+        ):
+            continue
+        dt_utc = crm_light._parse_utc_ts(str(row["ts_utc"] or ""))  # type: ignore[attr-defined]
+        if dt_utc is None:
+            continue
+        local_date = dt_utc.astimezone(zone).date()
+        if local_date.weekday() >= 5:
+            continue
+        local_dates.add(local_date.isoformat())
+    return len(local_dates)
+
+
+def _count_status_live_primary_send_rows(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str,
+    start_date: str,
+    primary_recipient: str,
+) -> int:
+    rows = conn.execute(
+        """
+        SELECT variant, meta_json
+        FROM send_events
+        WHERE subscriber_key = ?
+          AND status = 'SENT'
+          AND ts_utc >= ?
+        ORDER BY ts_utc ASC, id ASC
+        """,
+        (subscriber_key, f"{start_date}T00:00:00+00:00"),
+    ).fetchall()
+    count = 0
+    for row in rows:
+        meta = crm_light._safe_meta_dict(str(row["meta_json"] or ""))  # type: ignore[attr-defined]
+        if not crm_light._is_trial_delivery_event(  # type: ignore[attr-defined]
+            variant=str(row["variant"] or ""),
+            meta=meta,
+            primary_recipient=primary_recipient,
+        ):
+            continue
+        count += 1
+    return count
+
+
 _RE_SUBSCRIBER_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 TERRITORY_ALIASES: dict[str, str] = {
     "TX_TRIANGLE_V1": "TX_TRI",
@@ -595,13 +666,18 @@ def build_trial_status(
         sends_limit_raw = trial.get("sends_limit")
         primary_recipient = str(sub.get("email") or "").strip().lower()
         tz_name = str(sub.get("tz") or "").strip() or "America/Chicago"
-        sends_used = crm_light.count_trial_delivery_days(
+        sends_used = _count_status_live_primary_weekdays(
             conn,
-            sk,
-            start_date,
+            subscriber_key=sk,
+            start_date=start_date,
             tz_name=tz_name,
             primary_recipient=primary_recipient,
-            weekdays_only=True,
+        )
+        sends_rows_raw = _count_status_live_primary_send_rows(
+            conn,
+            subscriber_key=sk,
+            start_date=start_date,
+            primary_recipient=primary_recipient,
         )
         first_sent = crm_light.get_first_sent_at(conn, sk, start_date=start_date)
         last_sent = crm_light.get_last_sent_at(conn, sk, start_date=start_date)
@@ -609,7 +685,7 @@ def build_trial_status(
         conn.close()
 
     days_since = (as_of_date - start).days
-    expired_by_sends = 1 if sends_used >= sends_limit else 0
+    expired_by_sends = 1 if sends_rows_raw >= sends_limit else 0
     # Backward-compatible key: now means "14 successful sends elapsed".
     elapsed_14 = 1 if sends_used >= TRIAL_SENDS_TARGET else 0
     trial_expired = 1 if sends_used >= sends_limit else 0
