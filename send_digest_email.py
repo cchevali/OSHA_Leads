@@ -2790,29 +2790,40 @@ def parse_recipients(value: str | None) -> list[str]:
     return [email.strip().lower() for email in value.split(",") if email.strip()]
 
 
-def collect_recipients(config: dict, subscriber_profile: dict, override: str | None) -> list[str]:
+def _dedupe_recipient_emails(items: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen = set()
+    for raw in items:
+        email = str(raw or "").strip().lower()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        deduped.append(email)
+    return deduped
+
+
+def collect_recipients(
+    config: dict,
+    subscriber_profile: dict,
+    override: str | None,
+    entitlement: dict | None = None,
+) -> list[str]:
     if override:
         return parse_recipients(override)
 
-    recipients: list[str] = []
+    entitlement_recipients = crm_light.entitlement_recipient_emails(entitlement)
+    if entitlement_recipients:
+        return _dedupe_recipient_emails(entitlement_recipients)
 
     if subscriber_profile.get("recipients"):
-        recipients.extend(subscriber_profile["recipients"])
-    elif subscriber_profile.get("email"):
-        recipients.append(subscriber_profile["email"])
+        return _dedupe_recipient_emails(list(subscriber_profile["recipients"]))
+    if subscriber_profile.get("email"):
+        return _dedupe_recipient_emails([str(subscriber_profile["email"])])
 
     config_recipients = config.get("recipients") or config.get("email_recipients") or []
     if isinstance(config_recipients, list):
-        recipients.extend(str(email).strip().lower() for email in config_recipients if str(email).strip())
-
-    # Preserve order while deduplicating.
-    deduped = []
-    seen = set()
-    for email in recipients:
-        if email not in seen:
-            seen.add(email)
-            deduped.append(email)
-    return deduped
+        return _dedupe_recipient_emails([str(email) for email in config_recipients])
+    return []
 
 
 def main() -> None:
@@ -2932,7 +2943,7 @@ def main() -> None:
         print(f"CONFIG_ERROR missing variables: {', '.join(missing)}", file=sys.stderr)
         raise SystemExit(1)
 
-    recipients = collect_recipients(config, subscriber_profile, args.recipient_override)
+    recipients = collect_recipients(config, subscriber_profile, args.recipient_override, entitlement=entitlement)
     intended_recipients = list(recipients)
 
     smoke_recipient = (os.getenv("OSHA_SMOKE_TO") or "").strip().lower() or "cchevali+oshasmoke@gmail.com"
