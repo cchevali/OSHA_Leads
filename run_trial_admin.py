@@ -73,9 +73,9 @@ TERRITORY_ALIASES: dict[str, str] = {
 DEFAULT_SENDS_LIMIT = 14
 TRIAL_SENDS_TARGET = 14
 CONVERSION_TEMPLATE_TEXT = (
-    "To: {primary_recipient}\n\n"
+    "To: {to_recipients}\n\n"
     "Subject: Your {territory_label} OSHA digest is wrapping up\n\n"
-    "Hi {recipient_name},\n\n"
+    "{salutation_line}\n\n"
     "You've been getting the weekday OSHA activity digest for {territory_label} over the past couple of weeks. "
     "Wanted to check in before it stops.\n\n"
     "If the digest has been useful, two ways to keep it going:\n\n"
@@ -189,16 +189,50 @@ def _derive_recipient_name(email: str, subscriber_key: str) -> str:
     return sk or "{recipient_name}"
 
 
+def _recipient_names_map(config: dict[str, Any]) -> dict[str, str]:
+    raw = config.get("recipient_names")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for email_raw, name_raw in raw.items():
+        email = str(email_raw or "").strip().lower()
+        name = " ".join(str(name_raw or "").strip().split())
+        if email and name:
+            out[email] = name
+    return out
+
+
+def _build_salutation_line(names: list[str]) -> str:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in list(names or []):
+        name = " ".join(str(item or "").strip().split())
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(name)
+    if not cleaned:
+        return "Hi,"
+    if len(cleaned) == 1:
+        return f"Hi {cleaned[0]},"
+    if len(cleaned) == 2:
+        return f"Hi {cleaned[0]} and {cleaned[1]},"
+    return f"Hi {', '.join(cleaned[:-1])}, and {cleaned[-1]},"
+
+
 def render_conversion_email_text(
     *,
-    recipient_name: str,
-    primary_recipient: str,
+    salutation_line: str,
+    to_recipients: str,
     territory_label: str,
     stripe_link: str,
 ) -> str:
     return CONVERSION_TEMPLATE_TEXT.format(
-        recipient_name=(recipient_name or "").strip() or "there",
-        primary_recipient=(primary_recipient or "").strip().lower() or "{primary_recipient}",
+        salutation_line=(salutation_line or "").strip() or "Hi,",
+        to_recipients=(to_recipients or "").strip().lower() or "{to_recipients}",
         territory_label=(territory_label or "").strip() or "{territory_label}",
         stripe_link=(stripe_link or "").strip() or "{stripe_link}",
     )
@@ -207,7 +241,7 @@ def render_conversion_email_text(
 def _load_conversion_context(
     subscriber_key: str,
     crm_db_path: str | Path | None,
-) -> tuple[Path, dict[str, Any], dict[str, Any], str, str, str]:
+) -> tuple[Path, dict[str, Any], dict[str, Any], str, str, str, list[str], str]:
     sk = _validate_subscriber_key(subscriber_key)
     path = crm_light.resolve_crm_db_path(crm_db_path)
     if not path.exists():
@@ -224,9 +258,17 @@ def _load_conversion_context(
     finally:
         conn.close()
     recipient_email = str(sub.get("email") or "").strip().lower()
-    recipient_name = _derive_recipient_name(recipient_email, sk)
+    _cfg_path, customer_cfg = _resolve_customer_config_for_subscriber(sk)
+    recipients = _collect_customer_recipients(customer_cfg, recipient_email)
+    explicit_names = _recipient_names_map(customer_cfg)
+    salutation_names: list[str] = []
+    for email in recipients:
+        name = explicit_names.get(email) or _derive_recipient_name(email, sk)
+        if str(name or "").strip():
+            salutation_names.append(str(name))
+    salutation_line = _build_salutation_line(salutation_names)
     territory_label = _resolve_territory_label(str(sub.get("territory_code") or ""))
-    return path, sub, trial, recipient_name, recipient_email, territory_label
+    return path, sub, trial, salutation_line, recipient_email, territory_label, recipients, customer_cfg.get("customer_id") or sk
 
 
 def write_conversion_draft(
@@ -234,14 +276,14 @@ def write_conversion_draft(
     crm_db_path: str | Path | None,
     emit_stdout: bool = True,
 ) -> Path:
-    path, sub, trial, recipient_name, recipient_email, territory_label = _load_conversion_context(
+    path, sub, trial, salutation_line, recipient_email, territory_label, recipients, _customer_id = _load_conversion_context(
         subscriber_key=subscriber_key,
         crm_db_path=crm_db_path,
     )
     stripe_link = _resolve_conversion_url()
     body = render_conversion_email_text(
-        recipient_name=recipient_name,
-        primary_recipient=recipient_email,
+        salutation_line=salutation_line,
+        to_recipients=", ".join(recipients or ([recipient_email] if recipient_email else [])),
         territory_label=territory_label,
         stripe_link=stripe_link,
     )
@@ -253,7 +295,8 @@ def write_conversion_draft(
         print(f"subscriber_key={_validate_subscriber_key(subscriber_key)}")
         print(f"crm_db={path}")
         print(f"start_date={str(trial.get('start_date') or '').strip()}")
-        print(f"recipient_name={recipient_name}")
+        print(f"salutation_line={salutation_line}")
+        print(f"to_recipients={','.join(recipients)}")
         print(f"territory_label={territory_label}")
         print(f"stripe_link={stripe_link or '{stripe_link}'}")
         print(f"conversion_path={artifact_path}")
@@ -1111,7 +1154,7 @@ def _render_scope_enhancement_text(*, rows: list[dict[str, Any]], extend_days: i
     lines = [
         f"Subject: {subject}",
         "",
-        "Hi there,",
+        "Hi,",
         "",
         "We’ve shipped an improvement to how MicroFlowOps matches signals to your Texas Triangle (metro footprint and boundary handling). This produces a more complete set of qualifying OSHA activity for the same territory going forward.",
         "",
@@ -1181,7 +1224,7 @@ def _render_scope_enhancement_html(*, rows: list[dict[str, Any]], extend_days: i
     )
     parts.append("</head><body>")
     parts.append(f"<h1>{escape(subject)}</h1>")
-    parts.append("<p>Hi there,</p>")
+    parts.append("<p>Hi,</p>")
     parts.append(
         "<p>We’ve shipped an improvement to how MicroFlowOps matches signals to your Texas Triangle "
         "(metro footprint and boundary handling). This produces a more complete set of qualifying OSHA activity "
