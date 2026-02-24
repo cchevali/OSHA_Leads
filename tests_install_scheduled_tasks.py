@@ -215,12 +215,21 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertNotIn(" -- py -3 ", text)
         self.assertIn(" py -3 ", text)
         self.assertIn("--verify", text)
+        self.assertIn("--status", text)
+        self.assertIn("$modeArg -eq '--verify' -or $modeArg -eq '--status'", text)
 
     def test_invalid_args_emit_err_token(self):
         proc = _run("--dry-run", "--apply")
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         self.assertNotEqual(proc.returncode, 0, msg=out)
         self.assertIn("ERR_INSTALL_SCHEDULED_TASKS_ARGS", out)
+
+    def test_no_arg_error_lists_status_alias(self):
+        proc = _run()
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        self.assertNotEqual(proc.returncode, 0, msg=out)
+        self.assertIn("ERR_INSTALL_SCHEDULED_TASKS_ARGS", out)
+        self.assertIn("--status", out)
 
 
 if __name__ == "__main__":

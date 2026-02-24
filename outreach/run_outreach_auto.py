@@ -835,6 +835,27 @@ def _format_state_counts(states: list[str], counts: dict[str, int]) -> str:
     return "(none)"
 
 
+def _outreach_state_inventory_health_lines(
+    states: list[str],
+    pool_total_by_state: dict[str, int],
+    sendable_by_state: dict[str, int],
+    daily_limit: int,
+) -> list[str]:
+    lines: list[str] = []
+    floor = max(0, int(daily_limit))
+    for state in states:
+        s = str(state or "").strip().upper()
+        if not s:
+            continue
+        total = max(0, int(pool_total_by_state.get(s, 0)))
+        sendable = max(0, int(sendable_by_state.get(s, 0)))
+        lines.append(f"OUTREACH_STATE_POOL_TOTAL state={s} total={total}")
+        lines.append(f"OUTREACH_STATE_SENDABLE_ESTIMATE state={s} sendable={sendable}")
+        if sendable < floor:
+            lines.append(f"OUTREACH_STATE_BELOW_SEND_FLOOR state={s} floor={floor} sendable={sendable}")
+    return lines
+
+
 def _state_rotation_hint(state: str, states: list[str], counts: dict[str, int]) -> str:
     selected_state = str(state or "").strip().upper()
     if max(0, int(counts.get(selected_state, 0))) > 0:
@@ -1047,6 +1068,7 @@ def _print_plan_output(
     skipped: Counter,
     diagnostics: dict,
     diagnostics_path: Path,
+    state_inventory_lines: list[str] | None = None,
 ) -> None:
     breakdown = _plan_skip_breakdown(skipped)
     filter_breakdown = diagnostics.get("filter_breakdown") or {}
@@ -1071,6 +1093,8 @@ def _print_plan_output(
     )
     print(f"OUTREACH_PLAN_FILTER_BREAKDOWN={filter_breakdown_json}")
     print(f"OUTREACH_PLAN_DIAGNOSTICS_PATH={diagnostics_path}")
+    for line in list(state_inventory_lines or []):
+        print(line)
     print("prospect_id,email,domain,segment,role_or_title,state_pref,rank_reason")
     for candidate in selected:
         print(
@@ -1933,6 +1957,19 @@ def main() -> int:
         selected_ids = [str(r["prospect_id"]) for r in selected]
         skipped_count = int(sum(skipped.values()))
         top_skip = _format_top_reasons(skipped, limit=5)
+        crm_funnel_pre = _crm_funnel_breakdown_for_summary(
+            conn=conn,
+            states=states,
+            suppressed_emails=suppressed_emails,
+            allow_repeat=bool(args.allow_repeat),
+            selected_state=state,
+        )
+        state_inventory_lines_pre = _outreach_state_inventory_health_lines(
+            states=states,
+            pool_total_by_state=crm_funnel_pre["pool_total_by_state"],
+            sendable_by_state=crm_funnel_pre["uncontacted_sendable_by_state"],
+            daily_limit=limit,
+        )
 
         if args.plan:
             _print_plan_output(
@@ -1944,6 +1981,7 @@ def main() -> int:
                 skipped=skipped,
                 diagnostics=plan_diagnostics,
                 diagnostics_path=diagnostics_path or _plan_diagnostics_path(batch),
+                state_inventory_lines=state_inventory_lines_pre,
             )
             return 0
 
@@ -2036,6 +2074,12 @@ def main() -> int:
             states=states,
             counts=crm_funnel["uncontacted_raw_by_state"],
         )
+        state_inventory_lines_live = _outreach_state_inventory_health_lines(
+            states=states,
+            pool_total_by_state=crm_funnel["pool_total_by_state"],
+            sendable_by_state=crm_funnel["uncontacted_sendable_by_state"],
+            daily_limit=limit,
+        )
         autogrow_disabled_backlog_gap_line = _generator_autogrow_disabled_backlog_gap_line(
             conn=conn,
             states=states,
@@ -2075,6 +2119,8 @@ def main() -> int:
             f"overall={int(crm_funnel['already_contacted_count_overall'])}"
         )
         print(f"{PASS_AUTO_EXPORT} {autogrow_disabled_backlog_gap_line}")
+        for line in state_inventory_lines_live:
+            print(line)
 
         subject = f"[AUTO] Outreach {batch} contacted={contacted_count} skipped={skipped_count} failed={failed_count}"
         text_body = (
