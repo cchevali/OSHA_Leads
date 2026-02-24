@@ -452,6 +452,180 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertNotIn("OUTREACH_SKIP_NON_WEEKDAY", out_plan.getvalue())
             self.assertNotIn("OUTREACH_SKIP_NON_WEEKDAY", out_dry.getvalue())
 
+    def test_live_summary_includes_additive_crm_pool_and_funnel_breakdown_lines(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_tx_sendable",
+                        "contact_name": "Tx Sendable",
+                        "firm": "TX Co",
+                        "email": "tx.sendable@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 5,
+                    },
+                    {
+                        "prospect_id": "p_ca_sendable",
+                        "contact_name": "Ca Sendable",
+                        "firm": "CA Co",
+                        "email": "ca.sendable@example.com",
+                        "title": "Owner",
+                        "state": "CA",
+                        "score": 9,
+                    },
+                    {
+                        "prospect_id": "p_ca_invalid",
+                        "contact_name": "Ca Invalid",
+                        "firm": "CA Co",
+                        "email": "bad-email",
+                        "title": "Owner",
+                        "state": "CA",
+                        "score": 7,
+                    },
+                    {
+                        "prospect_id": "p_ca_suppressed",
+                        "contact_name": "Ca Supp",
+                        "firm": "CA Co",
+                        "email": "supp.ca@example.com",
+                        "title": "Owner",
+                        "state": "CA",
+                        "score": 6,
+                    },
+                    {
+                        "prospect_id": "p_ca_contacted",
+                        "contact_name": "Ca Contacted",
+                        "firm": "CA Co",
+                        "email": "contacted.ca@example.com",
+                        "title": "Safety Manager",
+                        "state": "CA",
+                        "score": 6,
+                    },
+                    {
+                        "prospect_id": "p_missing_state",
+                        "contact_name": "No State",
+                        "firm": "Mystery Co",
+                        "email": "nostate@example.com",
+                        "title": "Owner",
+                        "state": "",
+                        "score": 5,
+                    },
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv", ["supp.ca@example.com"])
+
+            conn = sqlite3.connect(str(crm_db))
+            try:
+                conn.execute(
+                    "INSERT INTO outreach_events(prospect_id, ts, event_type, batch_id, metadata_json) VALUES (?, ?, 'sent', ?, '{}')",
+                    ("p_ca_contacted", "2026-02-20T12:00:00+00:00", "2026-02-20_CA"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA,FL",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+            weekday_now = {
+                "timezone": "America/New_York",
+                "datetime": datetime(2026, 2, 24, 9, 0, 0),
+                "date": date(2026, 2, 24),
+                "date_text": "2026-02-24",
+                "weekday_idx": 1,
+                "weekday_name": "tue",
+                "is_weekend": False,
+            }
+            summary_capture: dict[str, str] = {}
+
+            def _fake_send(*_args, **kwargs):  # type: ignore[no-untyped-def]
+                row = kwargs.get("row")
+                return {"ok": True, "prospect_id": str((row or {})["prospect_id"])}
+
+            def _fake_summary_send(to_email, subject, text_body, html_body):  # type: ignore[no-untyped-def]
+                summary_capture["to"] = str(to_email)
+                summary_capture["subject"] = str(subject)
+                summary_capture["text"] = str(text_body)
+                summary_capture["html"] = str(html_body)
+                return True, ""
+
+            with mock.patch.dict(os.environ, env, clear=True):
+                with mock.patch.object(roa, "_data_dir", return_value=data_dir), mock.patch.object(
+                    roa, "_crm_db_path", return_value=crm_db
+                ), mock.patch.object(
+                    roa, "_suppression_csv_path", return_value=(data_dir / "suppression.csv")
+                ), mock.patch.object(
+                    roa, "_export_ledger_path", return_value=(data_dir / "outreach_export_ledger.jsonl")
+                ), mock.patch.object(
+                    roa, "_outreach_local_now", return_value=weekday_now
+                ), mock.patch.object(
+                    roa.gm, "_load_local_suppression_set", return_value={"supp.ca@example.com"}
+                ), mock.patch.object(
+                    roa.gm, "_one_click_config_present", return_value=(True, "")
+                ), mock.patch.object(
+                    roa.gm, "_read_template_text", return_value="template"
+                ), mock.patch.object(
+                    roa.gm, "_best_effort_recent_leads_and_refresh", return_value=([], "2026-02-24 08:00 ET")
+                ), mock.patch.object(
+                    roa.gm,
+                    "_build_signal_template_tokens",
+                    return_value={"RECENT_SIGNALS_LINES": "", "RECENT_SIGNALS_HTML": ""},
+                ), mock.patch.object(
+                    roa, "_send_outreach_email", side_effect=_fake_send
+                ), mock.patch.object(
+                    roa, "_write_events_and_status_updates", return_value=None
+                ), mock.patch.object(
+                    roa, "_append_ledger_records", return_value=None
+                ), mock.patch.object(
+                    roa, "_send_summary_email", side_effect=_fake_summary_send
+                ):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            stdout = out.getvalue()
+            self.assertIn("PASS_AUTO_EXPORT outreach_states_config=TX,CA,FL crm_uncontacted_by_state=", stdout)
+            self.assertIn("PASS_AUTO_EXPORT crm_pool_total_by_state=", stdout)
+            self.assertIn("PASS_AUTO_EXPORT crm_uncontacted_sendable_by_state=", stdout)
+            self.assertIn("PASS_AUTO_EXPORT crm_uncontacted_raw_by_state=", stdout)
+            self.assertIn("PASS_AUTO_EXPORT crm_missing_state_count=", stdout)
+            self.assertIn("PASS_AUTO_EXPORT crm_invalid_email_count=", stdout)
+            self.assertIn("PASS_AUTO_EXPORT crm_suppressed_count=", stdout)
+            self.assertIn("PASS_AUTO_EXPORT crm_already_contacted_count=selected_state=", stdout)
+            self.assertIn("PASS_AUTO_SUMMARY to=allow@example.com", stdout)
+
+            text_body = summary_capture.get("text", "")
+            html_body = summary_capture.get("html", "")
+            self.assertIn("- crm_uncontacted_by_state:", text_body)
+            self.assertIn("- crm_pool_total_by_state:", text_body)
+            self.assertIn("- crm_uncontacted_sendable_by_state:", text_body)
+            self.assertIn("- crm_uncontacted_raw_by_state:", text_body)
+            self.assertIn("- crm_missing_state_count:", text_body)
+            self.assertIn("- crm_invalid_email_count:", text_body)
+            self.assertIn("- crm_suppressed_count:", text_body)
+            self.assertIn("- crm_already_contacted_count:", text_body)
+            self.assertIn("- contacted_count:", text_body)
+
+            self.assertIn("<strong>crm_uncontacted_by_state:</strong>", html_body)
+            self.assertIn("<strong>crm_pool_total_by_state:</strong>", html_body)
+            self.assertIn("<strong>crm_uncontacted_sendable_by_state:</strong>", html_body)
+            self.assertIn("<strong>crm_uncontacted_raw_by_state:</strong>", html_body)
+            self.assertIn("<strong>crm_missing_state_count:</strong>", html_body)
+            self.assertIn("<strong>crm_invalid_email_count:</strong>", html_body)
+            self.assertIn("<strong>crm_suppressed_count:</strong>", html_body)
+            self.assertIn("<strong>crm_already_contacted_count:</strong>", html_body)
+            self.assertIn("<strong>contacted_count:</strong>", html_body)
+
     def test_plan_is_deterministic_and_no_db_mutation(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
