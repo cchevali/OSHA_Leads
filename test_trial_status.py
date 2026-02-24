@@ -938,6 +938,7 @@ class TestTrialStatus(unittest.TestCase):
                 self.assertIn('"0 new" days', text)
                 self.assertIn('Reply "go"', text)
                 self.assertIn("activate directly here", text)
+                self.assertIn("Payment link:", text)
                 self.assertIn("confirm coverage before anything is charged", text)
                 self.assertIn("different metros, extra recipients", text)
                 self.assertIn("https://example.com/activate", text)
@@ -1336,6 +1337,8 @@ class TestTrialStatus(unittest.TestCase):
                     "To: wgs@indigocompliance.com, brandon@indigoenergyservices.com\n\n"
                     "Subject: Conversion Test\n\n"
                     "Line one.\n"
+                    "Payment link:\n"
+                    "https://buy.stripe.com/test_link_123\n"
                     "Line two.\n"
                 ),
                 encoding="utf-8",
@@ -1379,10 +1382,13 @@ class TestTrialStatus(unittest.TestCase):
                 text_body = str(call.get("text_body") or "")
                 html_body = str(call.get("html_body") or "")
                 self.assertIn("Line one.", text_body)
+                self.assertIn("Payment link:", text_body)
+                self.assertIn("https://buy.stripe.com/test_link_123", text_body)
                 self.assertIn("11539 Links Dr, Reston, VA 20190", text_body)
                 self.assertIn('Opt out: reply with "unsubscribe"', text_body)
                 self.assertIn("https://unsub.example/", text_body)
                 self.assertNotIn("Not legal advice", text_body)
+                self.assertIn("Activate checkout", html_body)
                 self.assertIn("click here to unsubscribe", html_body)
                 self.assertIn("microflowops.com", html_body.lower())
                 self.assertNotIn("Not legal advice", html_body)

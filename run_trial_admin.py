@@ -82,6 +82,7 @@ CONVERSION_TEMPLATE_TEXT = (
     "1. Reply \"go\" and confirm your coverage area (or request changes \u2014 different metros, extra recipients, etc.). "
     "I'll switch you over the same day.\n"
     "2. Or activate directly here:\n"
+    "Payment link:\n"
     "{stripe_link}\n\n"
     "Not sure yet? Reply with questions or the metros you care about and I'll confirm coverage before anything is charged.\n\n"
     "A few people ask about \"0 new\" days \u2014 that just means no new inspections were first-seen since the last weekday send. "
