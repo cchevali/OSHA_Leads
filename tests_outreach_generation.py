@@ -481,6 +481,37 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_AUTOGROW_TOTAL_ACCEPTED=57", out)
             self.assertIn("GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=0 states=none", out)
 
+    def test_autogrow_enabled_with_empty_sources_emits_explicit_skip_token(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "CA",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "60",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows") as mocked_fetch:
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0)
+            mocked_fetch.assert_not_called()
+
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_ENABLED=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCES=", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCES_EMPTY=1", out)
+            self.assertIn("GENERATOR_AIHA_PAGE_PARSE_MODE=SKIP_NO_SOURCES", out)
+
     def test_transform_mapping_and_invalid_email_exclusion(self):
         from outreach import run_prospect_generation as generator
 
