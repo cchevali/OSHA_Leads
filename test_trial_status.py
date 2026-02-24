@@ -930,9 +930,11 @@ class TestTrialStatus(unittest.TestCase):
                 self.assertEqual(code, 0)
                 artifact = data_dir / "trials" / "wally_trial" / "conversion_email.txt"
                 text = artifact.read_text(encoding="utf-8")
-                self.assertIn("To: wally_trial@example.com", text)
+                self.assertIn("To: wgs@indigocompliance.com, brandon@indigoenergyservices.com", text)
                 self.assertIn("Subject: Your", text)
                 self.assertIn("OSHA digest is wrapping up", text)
+                self.assertIn("Hi Wally and Brandon,", text)
+                self.assertNotIn("Hi there,", text)
                 self.assertIn('"0 new" days', text)
                 self.assertIn('Reply "go"', text)
                 self.assertIn("activate directly here", text)
@@ -1326,6 +1328,65 @@ class TestTrialStatus(unittest.TestCase):
                 else:
                     os.environ["TRIAL_CONVERSION_URL"] = old_conv
 
+    def test_conversion_send_fanout_uses_footer_and_unsub_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "conversion_email.txt"
+            artifact.write_text(
+                (
+                    "To: wgs@indigocompliance.com, brandon@indigoenergyservices.com\n\n"
+                    "Subject: Conversion Test\n\n"
+                    "Line one.\n"
+                    "Line two.\n"
+                ),
+                encoding="utf-8",
+            )
+            seen: list[dict[str, object]] = []
+            orig_build_unsub = run_trial_daily.build_unsubscribe_payload
+            orig_send_email = run_trial_daily.send_email
+
+            def _fake_build_unsub(*, recipient, campaign_id, reply_to_email, dry_run):  # type: ignore[no-untyped-def]
+                self.assertFalse(dry_run)
+                self.assertTrue(str(campaign_id))
+                self.assertTrue(str(reply_to_email))
+                one_click = f"https://unsub.example/{recipient}"
+                return f"<mailto:{reply_to_email}?subject=unsubscribe>, <{one_click}>", "List-Unsubscribe=One-Click", one_click, "tok"
+
+            def _fake_send_email(**kwargs):  # type: ignore[no-untyped-def]
+                seen.append(dict(kwargs))
+                return True, f"<msg-{kwargs.get('recipient')}>", ""
+
+            run_trial_daily.build_unsubscribe_payload = _fake_build_unsub  # type: ignore[assignment]
+            run_trial_daily.send_email = _fake_send_email  # type: ignore[assignment]
+            try:
+                ok, message_id, err = run_trial_daily._send_conversion_email_from_artifact(
+                    artifact_path=artifact,
+                    subscriber_key="wally_trial",
+                    territory_code="TX_TRIANGLE_V1",
+                )
+            finally:
+                run_trial_daily.build_unsubscribe_payload = orig_build_unsub  # type: ignore[assignment]
+                run_trial_daily.send_email = orig_send_email  # type: ignore[assignment]
+
+            self.assertTrue(ok)
+            self.assertTrue(message_id)
+            self.assertEqual(err, "")
+            self.assertEqual(len(seen), 2)
+            self.assertEqual(
+                [str(item.get("recipient")) for item in seen],
+                ["wgs@indigocompliance.com", "brandon@indigoenergyservices.com"],
+            )
+            for call in seen:
+                text_body = str(call.get("text_body") or "")
+                html_body = str(call.get("html_body") or "")
+                self.assertIn("Line one.", text_body)
+                self.assertIn("11539 Links Dr, Reston, VA 20190", text_body)
+                self.assertIn('Opt out: reply with "unsubscribe"', text_body)
+                self.assertIn("https://unsub.example/", text_body)
+                self.assertIn("click here to unsubscribe", html_body)
+                self.assertIn("microflowops.com", html_body.lower())
+                self.assertEqual(call.get("list_unsub_post"), "List-Unsubscribe=One-Click")
+                self.assertIn("https://unsub.example/", str(call.get("list_unsub") or ""))
+
     def test_expired_live_uses_existing_conversion_artifact_verbatim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -1420,6 +1481,14 @@ class TestTrialStatus(unittest.TestCase):
         # Normal names preserved
         self.assertEqual(run_trial_admin._derive_recipient_name("chase@example.com", "chase_trial"), "Chase")
         self.assertEqual(run_trial_admin._derive_recipient_name("jane.doe@example.com", "jane_trial"), "Jane Doe")
+
+    def test_build_salutation_line_avoids_hi_there(self) -> None:
+        self.assertEqual(run_trial_admin._build_salutation_line([]), "Hi,")
+        self.assertEqual(run_trial_admin._build_salutation_line(["Wally"]), "Hi Wally,")
+        self.assertEqual(
+            run_trial_admin._build_salutation_line(["Wally", "wally", "Brandon"]),
+            "Hi Wally and Brandon,",
+        )
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,6 +27,10 @@
     "primary@example.com",
     "coworker@example.com"
   ],
+  "recipient_names": {
+    "primary@example.com": "Wally",
+    "coworker@example.com": "Brandon"
+  },
   "pilot_mode": true,
   "pilot_whitelist": [
     "admin@example.com",
