@@ -634,9 +634,21 @@ def _print_tokens(
             f"aiha_candidate={int(detail.get('aiha_candidate') or 0)} "
             f"aiha_accepted={int(detail.get('aiha_accepted') or 0)}"
         )
+    backlog_target = max(0, int(autogrow.get("backlog_target") or 0))
+    for detail in state_details:
+        state = _normalize_state(str(detail.get("state") or ""))
+        if not state:
+            continue
+        backlog_current = max(0, int(detail.get("backlog_current") or 0))
+        gap = max(0, backlog_target - backlog_current)
+        if gap <= 0:
+            continue
+        print(
+            "GENERATOR_STATE_BACKLOG_BELOW_TARGET "
+            f"state={state} backlog_current={backlog_current} target={backlog_target} gap={gap}"
+        )
     disabled_gap_states: list[str] = []
     if not bool(autogrow.get("enabled")):
-        backlog_target = max(0, int(autogrow.get("backlog_target") or 0))
         for detail in state_details:
             state = _normalize_state(str(detail.get("state") or ""))
             if not state:

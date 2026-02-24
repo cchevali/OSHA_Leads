@@ -471,7 +471,7 @@ function Invoke-Verify([array]$Tasks) {
   Write-Output 'PASS_SCHEDTASK_INSTALL_OK'
 }
 
-$modes = @('--print-config', '--dry-run', '--apply', '--verify')
+$modes = @('--print-config', '--dry-run', '--apply', '--verify', '--status')
 if ($args.Count -ne 1) {
   Fail 'ERR_INSTALL_SCHEDULED_TASKS_ARGS' ('expected one of: ' + ($modes -join ', '))
 }
@@ -515,7 +515,7 @@ if ($modeArg -eq '--dry-run') {
   exit 0
 }
 
-if ($modeArg -eq '--verify') {
+if ($modeArg -eq '--verify' -or $modeArg -eq '--status') {
   Invoke-Verify -Tasks $resolvedTasks
   exit 0
 }
