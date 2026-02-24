@@ -26,6 +26,7 @@ except Exception:  # pragma: no cover
 _RE_SUBSCRIBER_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 _RE_DRAFT_TO = re.compile(r"^To:\s*(.+)$", re.IGNORECASE)
 _RE_DRAFT_SUBJECT = re.compile(r"^Subject:\s*(.+)$", re.IGNORECASE)
+_RE_URL_ONLY_LINE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 _RE_UNRESOLVED_STRIPE_BRACE = re.compile(r"\{[^}\n]*stripe_link[^}\n]*\}", re.IGNORECASE)
 _RE_UNRESOLVED_STRIPE_ANGLE = re.compile(r"<\s*stripe_link\s*>", re.IGNORECASE)
 DEFAULT_SENDS_LIMIT = 14
@@ -210,10 +211,20 @@ def _conversion_body_html(text: str) -> str:
         paras = [""]
     parts = ["<!doctype html><html><body>"]
     for para in paras:
-        lines = [escape(line) for line in str(para).splitlines()]
+        lines = [_conversion_html_line(line) for line in str(para).splitlines()]
         parts.append(f"<p>{'<br>'.join(lines)}</p>")
     parts.append("</body></html>")
     return "".join(parts)
+
+
+def _conversion_html_line(raw_line: str) -> str:
+    line = str(raw_line or "")
+    stripped = line.strip()
+    if _RE_URL_ONLY_LINE.match(stripped):
+        href = escape(stripped, quote=True)
+        label = "Activate checkout" if "buy.stripe.com" in stripped.lower() else stripped
+        return f'<a href="{href}">{escape(label)}</a>'
+    return escape(line)
 
 
 def _load_conversion_customer_config(subscriber_key: str) -> dict[str, Any]:
