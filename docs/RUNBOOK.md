@@ -487,6 +487,8 @@ Tomorrow confirmation (canonical no-send deterministic check):
 - `OUTREACH_PLAN_DIAGNOSTICS_PATH=<absolute_path>`
 
 When `OUTREACH_PLAN_WILL_SEND=0`, root-cause must be interpreted from `OUTREACH_PLAN_POOL_TOTAL*`, `OUTREACH_PLAN_FILTER_BREAKDOWN`, and `OUTREACH_PLAN_DIAGNOSTICS_PATH` (instead of relying on skip totals alone).
+- Optional zero-send-day guard: set `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` to allow auto-switching to the configured state with the highest sendable estimate; verify activation via `OUTREACH_FALLBACK_TRIGGERED=1 from=<STATE> to=<STATE> reason=<...>`.
+- Recommended default remains `0` unless you explicitly want to prevent zero-send days by allowing state fallback.
 
 Dry-run (no sends, writes outbox + manifest artifacts):
 

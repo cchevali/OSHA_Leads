@@ -828,6 +828,50 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIs(gates.get("fallback_triggered"), True)
             self.assertEqual(gates.get("fallback_reason"), "SENDABLE_ZERO")
 
+    def test_plan_fallback_trigger_token_format_is_stable_and_opt_in(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_tx1",
+                        "contact_name": "Alice TX",
+                        "firm": "TX Co",
+                        "email": "alice.tx@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 7,
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+
+            base_env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+
+            plan_opt_in = self._run(
+                ["--plan", "--for-date", "2001-01-02"],
+                {**base_env, "OUTREACH_FALLBACK_ON_EMPTY_STATE": "1"},
+            )
+            self.assertEqual(plan_opt_in.returncode, 0, msg=plan_opt_in.stderr + "\n" + plan_opt_in.stdout)
+            lines = [ln.strip() for ln in (plan_opt_in.stdout or "").splitlines() if ln.strip()]
+            fallback_line = next((ln for ln in lines if ln.startswith("OUTREACH_FALLBACK_TRIGGERED=")), "")
+            self.assertEqual(fallback_line, "OUTREACH_FALLBACK_TRIGGERED=1 from=CA to=TX reason=SENDABLE_ZERO")
+
+            plan_default = self._run(
+                ["--plan", "--for-date", "2001-01-02"],
+                {**base_env, "OUTREACH_FALLBACK_ON_EMPTY_STATE": "0"},
+            )
+            self.assertEqual(plan_default.returncode, 0, msg=plan_default.stderr + "\n" + plan_default.stdout)
+            self.assertNotIn("OUTREACH_FALLBACK_TRIGGERED=1", plan_default.stdout or "")
+
     def test_dry_run_fallback_on_below_floor_switches_state(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
