@@ -163,6 +163,7 @@ def _choose_state(states: list[str], run_date: date) -> str:
 
 def _parse_autogrow_config() -> dict:
     enabled = _bool_env(os.getenv("PROSPECT_AUTOGROW_ENABLED", "0"))
+    safety_net_enabled = _bool_env(os.getenv("PROSPECT_AUTOGROW_SAFETY_NET_ENABLED", "1"))
 
     source_tokens: list[str] = []
     for token in str(os.getenv("PROSPECT_AUTOGROW_SOURCES", "") or "").split(","):
@@ -182,6 +183,7 @@ def _parse_autogrow_config() -> dict:
 
     return {
         "enabled": enabled,
+        "safety_net_enabled": safety_net_enabled,
         "sources": source_tokens,
         "backlog_target": backlog_target,
         "max_fetch_pages": max_fetch_pages,
@@ -497,6 +499,28 @@ def compute_uncontacted_backlog(conn: sqlite3.Connection | None, state: str, sup
     return count
 
 
+def _count_crm_pool_total(conn: sqlite3.Connection | None, state: str) -> int:
+    if conn is None or not _table_exists(conn, "prospects"):
+        return 0
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM prospects
+            WHERE UPPER(TRIM(COALESCE(state, ''))) = ?
+            """,
+            (_normalize_state(state),),
+        ).fetchone()
+    except Exception:
+        return 0
+    if not row:
+        return 0
+    try:
+        return max(0, int(row[0] or 0))
+    except Exception:
+        return 0
+
+
 def _filter_autogrow_candidates(
     rows: list[dict[str, str]],
     target_state: str,
@@ -590,6 +614,25 @@ def _print_tokens(
     print(f"GENERATOR_AUTOGROW_NEW_NEEDED={autogrow['new_needed']}")
     print(f"GENERATOR_AUTOGROW_MAX_FETCH_PAGES_PER_RUN={autogrow['max_fetch_pages']}")
     print(f"GENERATOR_AUTOGROW_HTTP_SLEEP_MS={autogrow['sleep_ms']}")
+    safety_net_forced = bool(autogrow.get("safety_net_forced"))
+    print(f"GENERATOR_AUTOGROW_SAFETY_NET_FORCED={1 if safety_net_forced else 0}")
+    safety_net_states = [str(s or "").strip().upper() for s in list(autogrow.get("safety_net_states") or []) if str(s or "").strip()]
+    print(f"GENERATOR_AUTOGROW_SAFETY_NET_STATES={','.join(safety_net_states) if safety_net_states else 'none'}")
+    state_details = list(autogrow.get("state_details") or [])
+    print(f"GENERATOR_AUTOGROW_TOTAL_STATES={int(autogrow.get('total_states') or len(state_details))}")
+    print(f"GENERATOR_AUTOGROW_TOTAL_ACCEPTED={int(autogrow.get('total_accepted') or 0)}")
+    for detail in state_details:
+        state = _normalize_state(str(detail.get("state") or ""))
+        if not state:
+            continue
+        print(
+            "GENERATOR_AUTOGROW_STATE="
+            f"{state} "
+            f"backlog_current={int(detail.get('backlog_current') or 0)} "
+            f"new_needed={int(detail.get('new_needed') or 0)} "
+            f"aiha_candidate={int(detail.get('aiha_candidate') or 0)} "
+            f"aiha_accepted={int(detail.get('aiha_accepted') or 0)}"
+        )
 
     print(f"GENERATOR_AIHA_CACHE_PATH={Path(aiha_result['cache_path']).resolve()}")
     print(f"GENERATOR_AIHA_CACHE_USED={'YES' if aiha_result.get('cache_used') else 'NO'}")
@@ -646,27 +689,67 @@ def main(argv: list[str] | None = None) -> int:
 
     crm_db = crm_store.crm_db_path()
     conn = _connect_crm_if_exists(crm_db)
+    autogrow_state_details: list[dict[str, object]] = []
+    selected_backlog_current = 0
+    selected_new_needed = 0
+    safety_net_forced_states: list[str] = []
     try:
         suppressed_emails = _load_suppression_set(data_dir=data_dir, conn=conn)
-        backlog_current = compute_uncontacted_backlog(conn=conn, state=selected_state, suppressed_emails=suppressed_emails)
         existing_crm_emails = _existing_crm_emails(conn)
+        for state_item in states:
+            backlog_current_item = compute_uncontacted_backlog(
+                conn=conn,
+                state=state_item,
+                suppressed_emails=suppressed_emails,
+            )
+            pool_total_current = _count_crm_pool_total(conn=conn, state=state_item)
+            safety_forced = bool(
+                (not bool(autogrow_cfg["enabled"]))
+                and bool(autogrow_cfg.get("safety_net_enabled"))
+                and int(pool_total_current) > 0
+                and int(backlog_current_item) == 0
+            )
+            effective_autogrow = bool(autogrow_cfg["enabled"]) or safety_forced
+            new_needed_item = (
+                max(0, int(autogrow_cfg["backlog_target"]) - int(backlog_current_item))
+                if effective_autogrow
+                else 0
+            )
+            state_norm = _normalize_state(state_item)
+            if safety_forced and state_norm and state_norm not in safety_net_forced_states:
+                safety_net_forced_states.append(state_norm)
+            detail: dict[str, object] = {
+                "state": state_norm,
+                "pool_total_current": int(pool_total_current),
+                "backlog_current": int(backlog_current_item),
+                "new_needed": int(new_needed_item),
+                "effective_autogrow": bool(effective_autogrow),
+                "safety_net_forced": bool(safety_forced),
+                "aiha_candidate": 0,
+                "aiha_accepted": 0,
+            }
+            autogrow_state_details.append(detail)
+            if state_norm == _normalize_state(selected_state):
+                selected_backlog_current = int(backlog_current_item)
+                selected_new_needed = int(new_needed_item)
     finally:
         if conn is not None:
             conn.close()
-
-    new_needed = 0
-    if autogrow_cfg["enabled"]:
-        new_needed = max(0, int(autogrow_cfg["backlog_target"]) - int(backlog_current))
 
     autogrow_state = {
         "enabled": bool(autogrow_cfg["enabled"]),
         "sources": list(autogrow_cfg["sources"]),
         "selected_state": selected_state,
         "backlog_target": int(autogrow_cfg["backlog_target"]),
-        "backlog_current": int(backlog_current),
-        "new_needed": int(new_needed),
+        "backlog_current": int(selected_backlog_current),
+        "new_needed": int(selected_new_needed),
         "max_fetch_pages": int(autogrow_cfg["max_fetch_pages"]),
         "sleep_ms": int(autogrow_cfg["sleep_ms"]),
+        "safety_net_forced": bool(safety_net_forced_states),
+        "safety_net_states": list(safety_net_forced_states),
+        "state_details": autogrow_state_details,
+        "total_states": len(autogrow_state_details),
+        "total_accepted": 0,
     }
 
     aiha_result = {
@@ -727,9 +810,24 @@ def main(argv: list[str] | None = None) -> int:
             f"new={generation_inbox_dir.resolve()} files={deprecated_file_count}"
         )
 
-    if autogrow_cfg["enabled"] and "AIHA" in autogrow_cfg["sources"] and new_needed > 0:
+    autogrow_seen_emails: set[str] = set()
+    selected_state_norm = _normalize_state(selected_state)
+    for detail in autogrow_state_details:
+        state_detail = _normalize_state(str(detail.get("state") or ""))
+        if not state_detail:
+            continue
+        if not bool(detail.get("effective_autogrow")):
+            continue
+        state_new_needed = max(0, int(detail.get("new_needed") or 0))
+        if state_new_needed <= 0:
+            continue
+
+        can_fetch_aiha = ("AIHA" in autogrow_cfg["sources"]) or bool(detail.get("safety_net_forced"))
+        if not can_fetch_aiha:
+            continue
+
         result = prospect_sources_aiha.fetch_aiha_state_rows(
-            state=selected_state,
+            state=state_detail,
             run_date=run_date,
             max_pages=int(autogrow_cfg["max_fetch_pages"]),
             sleep_ms=int(autogrow_cfg["sleep_ms"]),
@@ -737,28 +835,49 @@ def main(argv: list[str] | None = None) -> int:
             diagnostics_dir=diagnostics_dir,
             allow_cache_write=not bool(args.dry_run),
         )
-        aiha_result.update(result)
-        aiha_result["rows_candidate"] = len(result.get("rows") or [])
+        rows_candidate = list(result.get("rows") or [])
+        detail["aiha_candidate"] = len(rows_candidate)
 
-        filtered_rows, aiha_rejected = _filter_autogrow_candidates(
-            rows=list(result.get("rows") or []),
-            target_state=selected_state,
+        filtered_rows, rejected = _filter_autogrow_candidates(
+            rows=rows_candidate,
+            target_state=state_detail,
             suppressed_emails=suppressed_emails,
-            existing_crm_emails=existing_crm_emails,
+            existing_crm_emails=set(existing_crm_emails).union(autogrow_seen_emails),
         )
-        autogrow_rows = filtered_rows[:new_needed]
-        aiha_result["rows_accepted"] = len(autogrow_rows)
+        accepted_rows = filtered_rows[:state_new_needed]
+        detail["aiha_accepted"] = len(accepted_rows)
+        autogrow_rows.extend(accepted_rows)
+        for row in accepted_rows:
+            email = _normalize_email(row.get("contact_email") or row.get("email") or "")
+            if email:
+                autogrow_seen_emails.add(email)
 
         diag = result.get("diagnostics_path")
+        resolved_diag: Path | None = None
         if isinstance(diag, Path):
-            diagnostics_path = diag
+            resolved_diag = diag
         elif diag:
-            diagnostics_path = Path(str(diag))
+            resolved_diag = Path(str(diag))
+
+        if resolved_diag is not None:
+            if state_detail == selected_state_norm:
+                diagnostics_path = resolved_diag
+            elif diagnostics_path is None:
+                diagnostics_path = resolved_diag
+
+        if state_detail == selected_state_norm:
+            aiha_result.update(result)
+            aiha_result["rows_candidate"] = len(rows_candidate)
+            aiha_result["rows_accepted"] = len(accepted_rows)
+            aiha_rejected = rejected
 
         if result.get("error"):
-            print(f"{WARN_AUTOGROWTH_SOURCE_FAILED} source=aiha err={result.get('error')}")
+            print(f"{WARN_AUTOGROWTH_SOURCE_FAILED} source=aiha state={state_detail} err={result.get('error')}")
 
-    rows_read_total = rows_read_seed + inbox_rows_read + int(aiha_result.get("rows_candidate") or 0)
+    autogrow_state["total_accepted"] = int(sum(int(d.get("aiha_accepted") or 0) for d in autogrow_state_details))
+    rows_read_total = rows_read_seed + inbox_rows_read + int(
+        sum(int(d.get("aiha_candidate") or 0) for d in autogrow_state_details)
+    )
 
     if args.dry_run:
         seed_rows = _state_rows_to_combined_input(state_rows)
