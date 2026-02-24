@@ -67,6 +67,14 @@ class TestMetroEntitlements(unittest.TestCase):
         zip_cbsa.clear_caches()
         self._tmp.cleanup()
 
+    def _patch_env_without_stripe_price_map(self, **overrides: str) -> mock._patch_dict:
+        env = os.environ.copy()
+        for key in list(env.keys()):
+            if key.startswith("STRIPE_PRICE_"):
+                env.pop(key, None)
+        env.update(overrides)
+        return mock.patch.dict(os.environ, env, clear=True)
+
     def test_pricing_copy_contract(self) -> None:
         pricing_path = Path("web/app/pricing/page.tsx")
         text = pricing_path.read_text(encoding="utf-8")
@@ -230,13 +238,13 @@ class TestMetroEntitlements(unittest.TestCase):
         }
         with crm_light.open_conn(self.crm_db) as conn:
             crm_light.init_schema(conn)
-            with mock.patch.dict(os.environ, {"STRIPE_PRICE_ID_CORE": ""}, clear=False):
+            with self._patch_env_without_stripe_price_map():
                 first = crm_light.ingest_stripe_subscription_event(conn, event_payload, dry_run=False)
                 self.assertFalse(first.get("ok"))
                 self.assertEqual(first.get("token"), "ERR_STRIPE_PRICE_MAP_MISSING")
                 events_before = conn.execute("SELECT COUNT(1) c FROM stripe_event_log").fetchone()
                 self.assertEqual(int(events_before["c"] if events_before else 0), 0)
-            with mock.patch.dict(os.environ, {"STRIPE_PRICE_ID_CORE": "price_core_retry"}, clear=False):
+            with self._patch_env_without_stripe_price_map(STRIPE_PRICE_ID_CORE="price_core_retry"):
                 second = crm_light.ingest_stripe_subscription_event(conn, event_payload, dry_run=False)
                 self.assertTrue(second.get("ok"))
                 self.assertEqual(second.get("token"), "STRIPE_EVENT_PROCESSED")

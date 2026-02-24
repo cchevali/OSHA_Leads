@@ -17,14 +17,21 @@ SCRIPT = REPO_ROOT / "run_prospect_generation.py"
 
 
 class TestProspectGeneration(unittest.TestCase):
-    def _run(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:
+    def _test_env(self, env_overrides: dict[str, str | None]) -> dict[str, str]:
         env = os.environ.copy()
+        for key in list(env.keys()):
+            if key.startswith("PROSPECT_AUTOGROW_"):
+                env.pop(key, None)
         env["PYTHONPATH"] = str(REPO_ROOT)
         for k, v in env_overrides.items():
             if v is None:
                 env.pop(k, None)
             else:
                 env[k] = v
+        return env
+
+    def _run(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:
+        env = self._test_env(env_overrides)
         return subprocess.run(
             [sys.executable, str(SCRIPT)] + args,
             cwd=str(REPO_ROOT),
@@ -34,13 +41,7 @@ class TestProspectGeneration(unittest.TestCase):
         )
 
     def _run_discovery(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(REPO_ROOT)
-        for k, v in env_overrides.items():
-            if v is None:
-                env.pop(k, None)
-            else:
-                env[k] = v
+        env = self._test_env(env_overrides)
         return subprocess.run(
             [sys.executable, str(REPO_ROOT / "run_prospect_discovery.py")] + args,
             cwd=str(REPO_ROOT),
