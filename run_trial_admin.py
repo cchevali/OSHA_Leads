@@ -168,7 +168,7 @@ def _resolve_territory_label(territory_code: str) -> str:
     defs = load_territory_definitions()
     canonical = resolve_territory_code(code, defs)
     terr = defs.get(canonical) or defs.get(code) or {}
-    label = str(terr.get("description") or "").strip()
+    label = str(terr.get("display_name") or terr.get("label") or terr.get("description") or "").strip()
     return label or code or "{territory_label}"
 
 
@@ -197,7 +197,7 @@ def render_conversion_email_text(
     stripe_link: str,
 ) -> str:
     return CONVERSION_TEMPLATE_TEXT.format(
-        recipient_name=(recipient_name or "").strip() or "{recipient_name}",
+        recipient_name=(recipient_name or "").strip() or "there",
         primary_recipient=(primary_recipient or "").strip().lower() or "{primary_recipient}",
         territory_label=(territory_label or "").strip() or "{territory_label}",
         stripe_link=(stripe_link or "").strip() or "{stripe_link}",
