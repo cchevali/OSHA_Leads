@@ -21,7 +21,7 @@ PLAN_MAX_METROS: dict[str, int] = {
     "multi": 10,
 }
 PAID_PLAN_CODES = {"core", "multi"}
-CRM_SCHEMA_VERSION = 5
+CRM_SCHEMA_VERSION = 6
 
 
 def normalize_subscriber_key(value: str | None) -> str:
@@ -279,6 +279,40 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
         _set_schema_version(conn, 5)
         version = 5
 
+    if version < 6:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS trial_adjustments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subscriber_key TEXT NOT NULL,
+                adjustment_key TEXT NOT NULL,
+                adjustment_type TEXT NOT NULL,
+                delta_sends INTEGER NOT NULL DEFAULT 0,
+                reason TEXT NOT NULL DEFAULT '',
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at_utc TEXT NOT NULL,
+                UNIQUE (subscriber_key, adjustment_key),
+                FOREIGN KEY (subscriber_key) REFERENCES subscribers(subscriber_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trial_adjustments_subscriber
+                ON trial_adjustments (subscriber_key, adjustment_type);
+
+            CREATE TABLE IF NOT EXISTS trial_latches (
+                latch_key TEXT PRIMARY KEY,
+                subscriber_key TEXT NOT NULL,
+                action TEXT NOT NULL,
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at_utc TEXT NOT NULL,
+                FOREIGN KEY (subscriber_key) REFERENCES subscribers(subscriber_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trial_latches_subscriber
+                ON trial_latches (subscriber_key, action);
+            """
+        )
+        _set_schema_version(conn, 6)
+        version = 6
 
 def ensure_database(db_path: str | Path | None = None) -> Path:
     path = resolve_crm_db_path(db_path)
@@ -625,6 +659,152 @@ def has_trial_delivery_on_local_date(
         if local_date.isoformat() == target_bucketed:
             return True
     return False
+
+
+def record_trial_adjustment_once(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str,
+    adjustment_key: str,
+    adjustment_type: str,
+    delta_sends: int,
+    reason: str,
+    meta: dict[str, Any] | None = None,
+    commit: bool = True,
+) -> bool:
+    sk = normalize_subscriber_key(subscriber_key)
+    if not sk:
+        raise ValueError("subscriber_key required")
+    key = str(adjustment_key or "").strip()
+    if not key:
+        raise ValueError("adjustment_key required")
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO trial_adjustments (
+            subscriber_key,
+            adjustment_key,
+            adjustment_type,
+            delta_sends,
+            reason,
+            meta_json,
+            created_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            sk,
+            key,
+            str(adjustment_type or "").strip(),
+            int(delta_sends),
+            str(reason or "").strip(),
+            json.dumps(meta or {}, sort_keys=True),
+            utc_now_iso(),
+        ),
+    )
+    if commit:
+        conn.commit()
+    return int(cur.rowcount or 0) > 0
+
+
+def has_trial_adjustment(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str,
+    adjustment_key: str,
+) -> bool:
+    sk = normalize_subscriber_key(subscriber_key)
+    key = str(adjustment_key or "").strip()
+    if not sk or not key:
+        return False
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM trial_adjustments
+        WHERE subscriber_key = ? AND adjustment_key = ?
+        LIMIT 1
+        """,
+        (sk, key),
+    ).fetchone()
+    return row is not None
+
+
+def create_trial_latch_once(
+    conn: sqlite3.Connection,
+    *,
+    latch_key: str,
+    subscriber_key: str,
+    action: str,
+    meta: dict[str, Any] | None = None,
+    commit: bool = True,
+) -> bool:
+    lk = str(latch_key or "").strip()
+    sk = normalize_subscriber_key(subscriber_key)
+    if not lk:
+        raise ValueError("latch_key required")
+    if not sk:
+        raise ValueError("subscriber_key required")
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO trial_latches (
+            latch_key,
+            subscriber_key,
+            action,
+            meta_json,
+            created_at_utc
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            lk,
+            sk,
+            str(action or "").strip(),
+            json.dumps(meta or {}, sort_keys=True),
+            utc_now_iso(),
+        ),
+    )
+    if commit:
+        conn.commit()
+    return int(cur.rowcount or 0) > 0
+
+
+def has_trial_latch(conn: sqlite3.Connection, *, latch_key: str) -> bool:
+    lk = str(latch_key or "").strip()
+    if not lk:
+        return False
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM trial_latches
+        WHERE latch_key = ?
+        LIMIT 1
+        """,
+        (lk,),
+    ).fetchone()
+    return row is not None
+
+
+def upsert_trial_latch(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str,
+    latch_key: str,
+    action: str,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    sk = (subscriber_key or "").strip().lower()
+    lk = (latch_key or "").strip()
+    if not sk or not lk:
+        raise ValueError("subscriber_key and latch_key required")
+    conn.execute(
+        """
+        INSERT INTO trial_latches (latch_key, subscriber_key, action, meta_json, created_at_utc)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(latch_key) DO UPDATE SET
+            subscriber_key=excluded.subscriber_key,
+            action=excluded.action,
+            meta_json=excluded.meta_json
+        """,
+        (lk, sk, str(action or "").strip(), json.dumps(meta or {}), utc_now_iso()),
+    )
+    conn.commit()
 
 
 def get_last_sent_at(conn: sqlite3.Connection, subscriber_key: str, start_date: str | None = None) -> str | None:
