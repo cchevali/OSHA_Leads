@@ -462,6 +462,7 @@ cd C:\dev\OSHA_Leads
 ```
 
 The `--doctor` command must exit `0` before unattended sends. Expected output includes `PASS_DOCTOR_*` plus signal freshness diagnostics (`DOCTOR_SIGNALS_*`, and optional `WARN_SIGNALS_STALE` when data is stale/missing). The dry-run command must complete successfully before live send.
+Weekend live sends are blocked in code for outreach (`OUTREACH_SKIP_NON_WEEKDAY ... gate=outreach_weekdays_only`); `--plan`, `--dry-run`, `--doctor`, and `--print-config` remain available on weekends.
 
 Tomorrow confirmation (canonical no-send deterministic check):
 
@@ -652,29 +653,29 @@ Idempotency and state behavior:
 
 ### Task Scheduler (PC)
 
-Create/update daily tasks (OSHA ingest first, then generation, discovery, outreach).
+Create/update weekday-only tasks (Mon-Fri) (OSHA ingest first, then generation, discovery, outreach).
 Operational expectation is America/New_York local time:
 
 ```powershell
-schtasks /Create /F /SC DAILY /ST 06:45 /TN "OSHA_Osha_Ingest_Daily" `
+schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 06:45 /TN "OSHA_Osha_Ingest_Daily" `
   /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_osha_ingest_daily.ps1" `
   /RL HIGHEST
 ```
 
 ```powershell
-schtasks /Create /F /SC DAILY /ST 07:15 /TN "OSHA_Prospect_Generation" `
+schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:15 /TN "OSHA_Prospect_Generation" `
   /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_generation.ps1" `
   /RL HIGHEST
 ```
 
 ```powershell
-schtasks /Create /F /SC DAILY /ST 07:30 /TN "OSHA_Prospect_Discovery" `
+schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:30 /TN "OSHA_Prospect_Discovery" `
   /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_prospect_discovery.py" `
   /RL HIGHEST
 ```
 
 ```powershell
-schtasks /Create /F /SC DAILY /ST 08:00 /TN "OSHA_Outreach_Auto" `
+schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 08:00 /TN "OSHA_Outreach_Auto" `
   /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_outreach_auto.py" `
   /RL HIGHEST
 ```
@@ -686,6 +687,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --dry-run
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
 ```
+
+Rerun `.\scripts\install_scheduled_tasks.ps1 --apply` to update existing tasks to weekday-only schedules.
 
 ### Recent Signals Troubleshooting
 
@@ -755,11 +758,23 @@ Important:
 
 Trial daily sends are now subscriber-keyed and backed by a minimal SQLite CRM-light registry plus an append-only send ledger.
 Trial policy is 14 weekday sends (Mon-Fri); send-limit is the trial target and weekend/holiday skips extend calendar duration naturally.
+Weekend live sends are blocked in code for both the trial sender and Wally manual live-send path by default (`SKIP_NON_WEEKDAY ... gate=trial_weekdays_only`); the emergency override flag is manual-only and scheduled tasks do not pass it.
+
+Canonical semantics (enforced):
+
+- Default trial = `14` weekday sends.
+- Trial length is successful weekday digests only (Mon-Fri), not calendar days.
+- `trial_state.sends_limit` is the effective max weekday sends allowed.
+- `sent_count` is the count of distinct subscriber-local weekday dates with `status=SENT` and `variant=DAILY` (live delivery semantics).
+- `expired = (sent_count >= sends_limit)`.
+- `sent_rows_raw` is telemetry only and is not used for expiry decisions.
+- A `7` calendar-day extension always equals `+5` weekday sends (any 7-day span has 5 weekdays).
+- Holidays are not modeled; only weekends are excluded.
 
 Source of truth:
 
 - Subscriber registry + trial latches: `out/crm_light.sqlite` (or `${env:DATA_DIR}\crm_light.sqlite` when `DATA_DIR` is set)
-- Send ledger: `send_events` (`TRIAL_SENDS_USED` counts distinct subscriber-local weekday dates for `status=SENT` daily LIVE events to the primary recipient; raw `status=SENT` row count remains telemetry via `TRIAL_EXPIRED_BY_SENDS`)
+- Send ledger: `send_events` (`TRIAL_SENDS_USED` counts distinct subscriber-local weekday dates for `status=SENT` daily LIVE events to the primary recipient)
 - Wally scheduled live runs now mirror successful sends into `send_events` automatically (best-effort, no send-path change)
 
 Check trial days-since-start and sends-used (single command, no sends/no writes):
