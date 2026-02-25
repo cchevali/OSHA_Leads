@@ -1234,8 +1234,15 @@ class TestOutreachRunAuto(unittest.TestCase):
                                     "SIGNALS_FALLBACK_TEXT": "",
                                     "SIGNALS_FALLBACK_HTML": "",
                                 },
+                                recent_leads=[
+                                    {
+                                        "date_opened": "2026-02-18",
+                                        "first_seen_at": "2026-02-18T12:00:00Z",
+                                        "site_state": expected_state,
+                                    }
+                                ],
                             )
-                            self.assertEqual(subject, f"{expected_state} OSHA inspection signals (daily brief)")
+                            self.assertEqual(subject, f"New OSHA inspection in {expected_state} — opened Feb 18")
                             self.assertIn(f"Recent OSHA inspections opened in {expected_state}:", text_body)
                             rendered = "\n".join([subject, text_body, html_body]).lower()
                             for pattern in banned_patterns:

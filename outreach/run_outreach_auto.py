@@ -1330,6 +1330,7 @@ def _render_outreach_payload(
     recent_signals_html: str,
     last_refresh_et: str,
     signal_tokens: dict[str, str] | None = None,
+    recent_leads: list[dict] | None = None,
 ) -> tuple[str, str, str, str]:
     first_name = (str(row["contact_name"] or "").split(" ")[:1] or [""])[0].strip() or "there"
     firm = str(row["firm"] or "").strip() or "your firm"
@@ -1360,7 +1361,8 @@ def _render_outreach_payload(
     )
     signals_fallback_text = token_map.get("SIGNALS_FALLBACK_TEXT", "")
     signals_fallback_html = token_map.get("SIGNALS_FALLBACK_HTML", "")
-    subject = f"{state} OSHA inspection signals (daily brief)"
+    sample_feed_url = (os.getenv("MICROFLOWOPS_SAMPLE_FEED_URL") or gm.DEFAULT_SAMPLE_FEED_URL).strip() or gm.DEFAULT_SAMPLE_FEED_URL
+    subject = gm.build_outreach_subject(state, recent_leads=recent_leads)
 
     text_body = (
         gm._render_template(
@@ -1376,6 +1378,7 @@ def _render_outreach_payload(
                 "SIGNALS_WINDOW_NOTE_TEXT": signals_window_note_text,
                 "SIGNALS_FALLBACK_TEXT": signals_fallback_text,
                 "LAST_REFRESH_ET": last_refresh_et,
+                "SAMPLE_FEED_URL": sample_feed_url,
                 "UNSUBSCRIBE_URL": unsub_url,
                 "PREFS_URL": prefs_link,
             },
@@ -1396,6 +1399,7 @@ def _render_outreach_payload(
                 "{{SIGNALS_WINDOW_NOTE_HTML}}": signals_window_note_html,
                 "{{SIGNALS_FALLBACK_HTML}}": signals_fallback_html,
                 "{{LAST_REFRESH_ET}}": gm._html_escape(last_refresh_et),
+                "{{SAMPLE_FEED_URL}}": gm._html_escape(sample_feed_url),
                 "{{UNSUBSCRIBE_URL}}": gm._html_escape(unsub_url),
                 "{{PREFS_URL}}": gm._html_escape(prefs_link),
                 "{{MAILING_ADDRESS}}": gm._html_escape(gm._resolve_outreach_mailing_address()),
@@ -1425,6 +1429,7 @@ def _send_outreach_email(
     recent_signals_html: str,
     last_refresh_et: str,
     signal_tokens: dict[str, str] | None = None,
+    recent_leads: list[dict] | None = None,
 ) -> dict:
     import send_digest_email as sde
 
@@ -1438,6 +1443,7 @@ def _send_outreach_email(
         recent_signals_html=recent_signals_html,
         last_refresh_et=last_refresh_et,
         signal_tokens=signal_tokens,
+        recent_leads=recent_leads,
     )
 
     branding = sde.resolve_branding({})
@@ -2297,6 +2303,7 @@ def main() -> int:
         signal_tokens = dict(signal_ctx.get("signal_tokens") or {})
         recent_signals_lines = signal_tokens["RECENT_SIGNALS_LINES"]
         recent_signals_html = signal_tokens["RECENT_SIGNALS_HTML"]
+        recent_leads = list(signal_ctx.get("recent_leads") or [])
 
         send_results: list[dict] = []
         for selected_candidate in selected:
@@ -2312,6 +2319,7 @@ def main() -> int:
                     recent_signals_html=recent_signals_html,
                     last_refresh_et=last_refresh_et,
                     signal_tokens=signal_tokens,
+                    recent_leads=recent_leads,
                 )
             )
 
