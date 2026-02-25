@@ -748,7 +748,7 @@ schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:30 /TN "OSHA_Prospe
 
 ```powershell
 schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 08:00 /TN "OSHA_Outreach_Auto" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_outreach_auto.py" `
+  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_outreach_auto.ps1" `
   /RL HIGHEST
 ```
 
@@ -761,6 +761,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_
 ```
 
 Rerun `.\scripts\install_scheduled_tasks.ps1 --apply` to update existing tasks to weekday-only schedules.
+
+### Scheduled Tasks Didn’t Run
+
+From repo root, capture a scheduler health snapshot (read-only):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\scheduler_health.ps1
+```
+
+Interpretation:
+
+- `MISSED_RUNS > 0` means Windows counted missed scheduled triggers for that task.
+- `LAST_TASK_RESULT_DEC=0` means the last run succeeded; nonzero means inspect wrapper logs under `${DATA_DIR}\task_logs\` (or `.\out\task_logs\`) and `TASK_EVENT|...` lines when the Task Scheduler Operational log is enabled.
+- `EXPECTED_TASK|...|PRESENT=0` means the task is not installed on this machine (reinstall the scheduler task).
 
 ### Recent Signals Troubleshooting
 
@@ -1126,4 +1140,3 @@ Operator checks:
 - Confirm each run prints a `RUN_DIAGNOSTICS` line.
 - Confirm dry-run output indicates no live send.
 - On the second run, previously observed leads should not be counted as newly observed.
-
