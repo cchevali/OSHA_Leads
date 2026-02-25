@@ -1065,7 +1065,7 @@ def enable_schedule(task_name: str, batch_path: Path) -> None:
         "/D",
         TRIAL_SCHEDULE_WEEKDAYS,
         "/ST",
-        "08:00",
+        "09:00",
         "/TN",
         task_name,
         "/TR",
@@ -1292,7 +1292,7 @@ def main() -> None:
         action="store_true",
         help="When used with --test-send-daily, render only (no send).",
     )
-    parser.add_argument("--enable-schedule", action="store_true", help="Create 08:00 local weekday scheduled task")
+    parser.add_argument("--enable-schedule", action="store_true", help="Create 09:00 ET weekday scheduled task")
     parser.add_argument("--check-schedule", action="store_true", help="Verify scheduled task action only")
     parser.add_argument("--task-name", default="OSHA Wally Trial Daily")
     parser.add_argument("--preflight-only", action="store_true", help="Check config/env and exit")
@@ -1422,7 +1422,7 @@ def main() -> None:
         enable_schedule(args.task_name, batch_path_resolved)
         verify_schedule_action(args.task_name, expected_action)
         print(f"SCHEDULE_WEEKDAYS={TRIAL_SCHEDULE_WEEKDAYS}")
-        print(f"Scheduled task enabled: {args.task_name} at 08:00 local weekdays (set host timezone to America/Chicago)")
+        print(f"Scheduled task enabled: {args.task_name} at 09:00 ET weekdays (Eastern-time host PC)")
 
 
 if __name__ == "__main__":
