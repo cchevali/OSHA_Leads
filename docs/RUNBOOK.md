@@ -532,6 +532,65 @@ Expected artifacts:
 - `out\outreach\<batch>\outbox_<batch>_dry_run_manifest.csv` (includes `domain`, `segment`, `role_or_title`, `state_pref`, and `rank_reason` audit fields)
 - `out\outreach\<batch>\plan_diagnostics.json` (run-level plan/dry-run diagnostics including pool totals and filter breakdown)
 
+### OSHA Detail Cache + Triage Overlay (Preview Ops)
+
+OSHA inspection-detail cache CLI:
+
+- No secrets required (rules-only cache fetch; no AI calls).
+- Uses DATA_DIR-aware cache path: `${DATA_DIR}\scoring\osha_detail_cache.sqlite` (fallback `.\out\scoring\osha_detail_cache.sqlite`).
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\cache_osha_inspection_detail.py --print-config
+```
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\cache_osha_inspection_detail.py --since-days 14
+```
+
+Trial preview (triage overlay OFF vs ON):
+
+- Requires `.\run_with_secrets.ps1` (trial preview entrypoints load operational env/secrets).
+- Rules-only overlay does not require AI keys. If enabling AI triage separately, set keys via `scripts\set_outreach_env.ps1` and run through the secrets wrapper.
+
+```powershell
+cd C:\dev\OSHA_Leads
+$env:TRIAL_TRIAGE_OVERLAY_ENABLED='0'; .\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --dry-run
+```
+
+```powershell
+cd C:\dev\OSHA_Leads
+$env:TRIAL_TRIAGE_OVERLAY_ENABLED='1'; .\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --dry-run
+```
+
+Trial triage artifacts (only when overlay is enabled):
+
+- `${DATA_DIR}\trials\<subscriber_key>\scoring\triage_<YYYY-MM-DD>.json`
+- `${DATA_DIR}\trials\<subscriber_key>\scoring\triage_report_<YYYY-MM-DD>.txt`
+- Fallback when `DATA_DIR` is unset: `.\out\trials\<subscriber_key>\scoring\...`
+
+Outreach preview (triage overlay OFF vs ON):
+
+- Requires `.\run_with_secrets.ps1` (normal outreach env/secrets workflow).
+- Overlay only affects example-signal selection/preview annotations; it does not change prospect ranking/cadence/order.
+
+```powershell
+cd C:\dev\OSHA_Leads
+$env:OUTREACH_TRIAGE_OVERLAY_ENABLED='0'; .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
+```
+
+```powershell
+cd C:\dev\OSHA_Leads
+$env:OUTREACH_TRIAGE_OVERLAY_ENABLED='1'; .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
+```
+
+Outreach triage artifacts (when overlay is enabled):
+
+- Dry-run outbox/manifest still write under `out\outreach\<batch>\...`
+- Per-example triage JSON writes to `${DATA_DIR}\outreach\<batch>\signals_triage_<batch>_dry_run.json`
+- Fallback when `DATA_DIR` is unset: `.\out\outreach\<batch>\signals_triage_<batch>_dry_run.json`
+
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 
 ```powershell
