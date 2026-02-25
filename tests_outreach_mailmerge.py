@@ -867,6 +867,8 @@ class TestOutreachMailmerge(unittest.TestCase):
             ), mock.patch.object(
                 gm.scoring_triage_overlay, "triage", return_value=list(triage_decisions)
             ), mock.patch.object(
+                gm, "_load_local_suppression_set", return_value=set()
+            ), mock.patch.object(
                 gm, "_is_suppressed", return_value=False
             ), mock.patch.object(sys, "argv", argv):
                 with redirect_stdout(out), redirect_stderr(err):
