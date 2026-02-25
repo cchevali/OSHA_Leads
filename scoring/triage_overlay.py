@@ -349,11 +349,7 @@ def apply_trial_overlay_to_leads(leads: list[dict[str, Any]], decisions: list[di
 
 def summarize_outreach_example_triage(decisions: list[dict[str, Any]]) -> tuple[str, str, str]:
     if not decisions:
-        return "AI_DISABLED", "", ""
-    actions = [str(d.get("action") or "keep") for d in decisions]
-    prov_sources = {str((d.get("provenance") or {}).get("source") or "") for d in decisions}
-    if prov_sources == {"rules_cached_detail"} and not ai_triage.enabled():
-        return "AI_DISABLED", "", ""
+        return "NO_ELIGIBLE_SIGNALS", "", ""
 
     removed = [d for d in decisions if str(d.get("action")) == "remove_from_customer_email"]
     changed = [d for d in decisions if str(d.get("action")) in {"remove_from_customer_email", "downgrade_to_low", "downgrade_to_medium"}]
@@ -415,4 +411,3 @@ def build_outreach_signal_triage_records(
 
 def json_pretty(data: Any) -> str:
     return json.dumps(data, indent=2, sort_keys=True) + "\n"
-

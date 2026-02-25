@@ -114,7 +114,28 @@ class TestTriageOverlay(unittest.TestCase):
         capped = to._apply_ai_caps(rule_decision, ai_payload, {})
         self.assertEqual(capped["action"], "keep")
 
+    def test_outreach_summary_rules_only_returns_action_not_ai_disabled(self):
+        decisions = [
+            {
+                "activity_nr": "1",
+                "action": "remove_from_customer_email",
+                "confidence": 0.92,
+                "reasons": ["referral", "stale"],
+                "provenance": {"source": "rules_cached_detail"},
+            },
+            {
+                "activity_nr": "2",
+                "action": "keep",
+                "confidence": 0.61,
+                "reasons": ["complaint"],
+                "provenance": {"source": "rules_cached_detail"},
+            },
+        ]
+        action, conf, reasons = to.summarize_outreach_example_triage(decisions)
+        self.assertEqual(action, "REPLACED_SOME")
+        self.assertEqual(conf, "0.92")
+        self.assertIn("referral", reasons)
+
 
 if __name__ == "__main__":
     unittest.main()
-

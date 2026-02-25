@@ -35,6 +35,11 @@ def _write_suppression(path: Path, emails: list[str] | None = None) -> None:
             w.writerow({"email": email})
 
 
+def _csv_fieldnames(path: Path) -> list[str]:
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        return list((csv.DictReader(f).fieldnames or []))
+
+
 def _seed_crm(path: Path, rows: list[dict]) -> None:
     conn = crm_store.connect(path)
     try:
@@ -191,6 +196,115 @@ class TestOutreachRunAuto(unittest.TestCase):
                 self.assertEqual(last_contacted, "")
             finally:
                 conn.close()
+
+    def test_dry_run_overlay_adds_preview_columns_but_keeps_candidate_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "Alice A",
+                        "firm": "ACME",
+                        "email": "alice@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 5,
+                    },
+                    {
+                        "prospect_id": "p2",
+                        "contact_name": "Bob B",
+                        "firm": "Beta",
+                        "email": "bob@example.com",
+                        "title": "Safety Manager",
+                        "state": "TX",
+                        "score": 4,
+                    },
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv", [])
+            env_base = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+
+            p_off = self._run(["--dry-run", "--for-date", "2026-02-25"], {**env_base, "OUTREACH_TRIAGE_OVERLAY_ENABLED": "0"})
+            self.assertEqual(p_off.returncode, 0, msg=p_off.stderr + "\n" + p_off.stdout)
+            ids_off = self._stdout_value(p_off.stdout, "PASS_AUTO_DRY_RUN would_contact_prospect_ids")
+            outbox_off = Path(self._stdout_value(p_off.stdout, "PASS_AUTO_DRY_RUN outbox_path"))
+            manifest_off = Path(self._stdout_value(p_off.stdout, "PASS_AUTO_DRY_RUN manifest_path"))
+            self.assertNotIn("ai_triage_action", _csv_fieldnames(outbox_off))
+            self.assertNotIn("ai_triage_action", _csv_fieldnames(manifest_off))
+
+            batch = "2026-02-25_TX"
+            artifact_path = (data_dir / "outreach" / batch / f"signals_triage_{batch}_dry_run.json").resolve()
+            signal_ctx_on = {
+                "recent_leads_original": [
+                    {"activity_nr": "111", "establishment_name": "Keep Co"},
+                    {"activity_nr": "222", "establishment_name": "Drop Co"},
+                ],
+                "recent_leads": [
+                    {"activity_nr": "111", "establishment_name": "Keep Co"},
+                ],
+                "last_refresh_et": "2026-02-25 09:00 ET",
+                "signal_tokens": {
+                    "STATE_FULL_NAME": "Texas",
+                    "STATE_METRO_EXAMPLES": "Houston, DFW",
+                    "RECENT_SIGNALS_LINES": "- Keep Co",
+                    "RECENT_SIGNALS_HTML": "<div>Keep Co</div>",
+                    "SIGNALS_WINDOW_NOTE_TEXT": "",
+                    "SIGNALS_WINDOW_NOTE_HTML": "",
+                    "SIGNALS_FALLBACK_TEXT": "",
+                    "SIGNALS_FALLBACK_HTML": "",
+                },
+                "triage_ctx": {
+                    "enabled": True,
+                    "ai_triage_action": "REPLACED_SOME",
+                    "ai_triage_conf": "0.93",
+                    "ai_triage_reasons": "referral;stale",
+                    "ai_triage_details_relpath": str(Path("outreach") / batch / f"signals_triage_{batch}_dry_run.json"),
+                    "decisions": [
+                        {
+                            "activity_nr": "111",
+                            "action": "keep",
+                            "confidence": 0.61,
+                            "reasons": ["complaint"],
+                            "provenance": {"source": "rules_cached_detail"},
+                        },
+                        {
+                            "activity_nr": "222",
+                            "action": "remove_from_customer_email",
+                            "confidence": 0.93,
+                            "reasons": ["referral", "stale"],
+                            "provenance": {"source": "rules_cached_detail"},
+                        },
+                    ],
+                    "artifact_path": str(artifact_path),
+                },
+            }
+            with mock.patch.dict(os.environ, {**env_base, "OUTREACH_TRIAGE_OVERLAY_ENABLED": "1"}, clear=False):
+                with mock.patch.object(roa.gm, "_load_local_suppression_set", return_value=set()), mock.patch.object(
+                    roa, "_prepare_signal_content_with_triage", return_value=signal_ctx_on
+                ):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--dry-run", "--for-date", "2026-02-25"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc_on = roa.main()
+            self.assertEqual(rc_on, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            ids_on = self._stdout_value(out.getvalue(), "PASS_AUTO_DRY_RUN would_contact_prospect_ids")
+            self.assertEqual(ids_on, ids_off)
+            outbox_on = Path(self._stdout_value(out.getvalue(), "PASS_AUTO_DRY_RUN outbox_path"))
+            manifest_on = Path(self._stdout_value(out.getvalue(), "PASS_AUTO_DRY_RUN manifest_path"))
+            self.assertIn("ai_triage_action", _csv_fieldnames(outbox_on))
+            self.assertIn("ai_triage_details_relpath", _csv_fieldnames(manifest_on))
+            self.assertTrue(artifact_path.exists())
+            self.assertIn("outreach_triage_details=", out.getvalue())
 
     def test_no_repeat_gate_and_allow_repeat_override(self):
         with tempfile.TemporaryDirectory() as d:

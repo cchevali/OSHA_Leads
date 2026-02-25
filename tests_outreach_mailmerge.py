@@ -1,11 +1,16 @@
 import csv
+import io
+import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -38,6 +43,11 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 def _read_csv(path: Path) -> list[dict]:
     with open(path, "r", newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def _csv_fieldnames(path: Path) -> list[str]:
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        return list((csv.DictReader(f).fieldnames or []))
 
 
 def _write_suppression(path: Path, emails: list[str]) -> None:
@@ -707,6 +717,180 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertIn("Sample Industrial Services", body)
             self.assertIn("Example signals (sample, not state-specific):", html_body)
             self.assertIn("Sample Industrial Services", html_body)
+
+    def test_outreach_overlay_flag_off_keeps_mailmerge_schema_without_ai_columns(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            _write_suppression(tmp / "suppression.csv", [])
+            tpl = tmp / "tpl.txt"
+            _write_template(tpl)
+            in_csv = tmp / "in.csv"
+            out_csv = tmp / "outbox.csv"
+            _write_csv(
+                in_csv,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "first_name": "A",
+                        "last_name": "One",
+                        "firm": "Co",
+                        "title": "Ops",
+                        "email": "a@example.com",
+                        "state": "TX",
+                        "city": "Austin",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    }
+                ],
+            )
+            env = {
+                "UNSUB_ENDPOINT_BASE": "https://unsub.example.internal/unsubscribe",
+                "UNSUB_SECRET": "test_secret",
+                "OUTREACH_TRIAGE_OVERLAY_ENABLED": "0",
+            }
+            p = self._run_export(tmp, input_csv=in_csv, out_csv=out_csv, template=tpl, env_overrides=env)
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            manifest = out_csv.with_name(out_csv.stem + "_manifest.csv")
+            self.assertIn("ai_triage_action", _csv_fieldnames(out_csv))
+            self.assertIn("ai_triage_action", _csv_fieldnames(manifest))
+            out_rows = _read_csv(out_csv)
+            self.assertEqual((out_rows[0].get("ai_triage_action") or "").strip(), "AI_DISABLED")
+            self.assertEqual((out_rows[0].get("ai_triage_details_relpath") or "").strip(), "")
+            self.assertFalse((tmp / "outreach" / "TX_W2" / "signals_triage_TX_W2_export.json").exists())
+
+    def test_outreach_overlay_on_filters_examples_and_writes_triage_artifact(self):
+        from outreach import generate_mailmerge as gm
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            _write_suppression(tmp / "suppression.csv", [])
+            tpl = tmp / "tpl.txt"
+            tpl.write_text("Hi FIRST_NAME\nRECENT_SIGNALS_LINES\nPREFS_URL\n", encoding="utf-8")
+
+            in_csv = tmp / "in.csv"
+            out_csv = tmp / "outbox.csv"
+            _write_csv(
+                in_csv,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "first_name": "A",
+                        "last_name": "One",
+                        "firm": "Co",
+                        "title": "Ops",
+                        "email": "a@example.com",
+                        "state": "TX",
+                        "city": "Austin",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    }
+                ],
+            )
+
+            db_path = tmp / "db.sqlite"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("CREATE TABLE inspections(site_state TEXT, date_opened TEXT, parse_invalid INTEGER)")
+            conn.commit()
+            conn.close()
+
+            recent_leads = [
+                {
+                    "activity_nr": "1001",
+                    "establishment_name": "Keep Signal Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "inspection_type": "Complaint",
+                    "date_opened": "2026-02-24",
+                    "first_seen_at": "2026-02-24T00:00:00Z",
+                },
+                {
+                    "activity_nr": "1002",
+                    "establishment_name": "Remove Signal Co",
+                    "site_city": "Dallas",
+                    "site_state": "TX",
+                    "inspection_type": "Referral",
+                    "date_opened": "2026-02-23",
+                    "first_seen_at": "2026-02-23T00:00:00Z",
+                },
+            ]
+            triage_decisions = [
+                {
+                    "activity_nr": "1001",
+                    "current_priority": "medium",
+                    "action": "keep",
+                    "confidence": 0.61,
+                    "reasons": ["complaint"],
+                    "provenance": {"source": "rules_cached_detail"},
+                },
+                {
+                    "activity_nr": "1002",
+                    "current_priority": "medium",
+                    "action": "remove_from_customer_email",
+                    "confidence": 0.93,
+                    "reasons": ["referral", "stale"],
+                    "provenance": {"source": "rules_cached_detail"},
+                },
+            ]
+
+            argv = [
+                "generate_mailmerge.py",
+                "--input",
+                str(in_csv),
+                "--batch",
+                "TEST_TX",
+                "--state",
+                "TX",
+                "--out",
+                str(out_csv),
+                "--template",
+                str(tpl),
+                "--html-template",
+                str(REPO_ROOT / "outreach" / "outreach_card.html"),
+                "--db",
+                str(db_path),
+            ]
+            env = os.environ.copy()
+            env["DATA_DIR"] = str(tmp)
+            env["UNSUB_ENDPOINT_BASE"] = "https://unsub.example.internal/unsubscribe"
+            env["UNSUB_SECRET"] = "test_secret"
+            env["OUTREACH_TRIAGE_OVERLAY_ENABLED"] = "1"
+            out = io.StringIO()
+            err = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                gm, "_best_effort_recent_leads_and_refresh", return_value=(list(recent_leads), "2026-02-25 09:00 ET")
+            ), mock.patch.object(
+                gm.scoring_osha_detail_cache, "ensure_cached_for_activities", return_value={"fetched": 0, "skipped_cached": 2, "failed": 0}
+            ), mock.patch.object(
+                gm.scoring_osha_detail_cache, "load_detail_cache_rows", return_value={}
+            ), mock.patch.object(
+                gm.scoring_triage_overlay, "triage", return_value=list(triage_decisions)
+            ), mock.patch.object(
+                gm, "_is_suppressed", return_value=False
+            ), mock.patch.object(sys, "argv", argv):
+                with redirect_stdout(out), redirect_stderr(err):
+                    rc = gm.main()
+
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            out_rows = _read_csv(out_csv)
+            self.assertEqual(len(out_rows), 1)
+            self.assertIn("Keep Signal Co", out_rows[0]["body"])
+            self.assertNotIn("Remove Signal Co", out_rows[0]["body"])
+            self.assertEqual(out_rows[0]["ai_triage_action"], "REPLACED_SOME")
+            self.assertTrue(out_rows[0]["ai_triage_details_relpath"])
+
+            manifest = out_csv.with_name(out_csv.stem + "_manifest.csv")
+            self.assertIn("ai_triage_action", _csv_fieldnames(out_csv))
+            self.assertIn("ai_triage_details_relpath", _csv_fieldnames(manifest))
+
+            relpath = out_rows[0]["ai_triage_details_relpath"]
+            artifact = tmp / relpath
+            self.assertTrue(artifact.exists(), msg=f"missing artifact: {artifact}")
+            data = json.loads(artifact.read_text(encoding="utf-8"))
+            self.assertGreaterEqual(len(data), 2)
+            self.assertTrue(any(int(r.get("final_included", 0)) == 0 for r in data))
+            self.assertIn("outreach_triage_details=", out.getvalue())
 
 
 if __name__ == "__main__":
