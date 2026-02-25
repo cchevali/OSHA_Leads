@@ -74,10 +74,13 @@ Use `--output` for tests/automation to avoid mutating repo-root `PROJECT_CONTEXT
 Project Files are injected by the platform into ChatGPT context during chats.
 The assistant cannot browse ChatGPT Project Settings -> Files UI to verify what is uploaded.
 Verification is repo-side only: confirm `PACK_HASH` in `PROJECT_CONTEXT_PACK.md` and the upload marker in `.local/project_upload_state.json` via `--mark-uploaded` and `--check`.
+`PACK_GIT_SHA` in the pack header is the doc-base commit (latest commit that touched canonical pack inputs), not repo `HEAD`. `PACK_BUILD_UTC` is that doc-base commit time in UTC.
+
+Do not run `--build` unless you changed canonical pack inputs; for a re-upload of the same pack, just upload the existing `PROJECT_CONTEXT_PACK.md` and run `--mark-uploaded`.
 
 Operator flow:
 
-1. Run `--build`.
+1. Run `--build` only when canonical pack inputs changed.
 2. Upload only `PROJECT_CONTEXT_PACK.md` in ChatGPT Project Settings -> Files (replace prior file).
 3. Run `--mark-uploaded`.
 4. Run strict `--check` at session start to fail fast on stale context.
@@ -444,7 +447,7 @@ Canonical daily sequence:
 3. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
 4. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
 
-Context pack hygiene (when docs/contracts changed or WARN_CONTEXT_PACK_STALE appears):
+Context pack hygiene (when docs/contracts changed or `WARN_CONTEXT_PACK_SOURCE_HASH_MISMATCH` appears):
 
 1. `py -3 tools/project_context_pack.py --build`
 2. Upload `PROJECT_CONTEXT_PACK.md` in ChatGPT Project Settings -> Files
