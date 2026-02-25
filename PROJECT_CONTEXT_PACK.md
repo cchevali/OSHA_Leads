@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=9590175a06761e5074d8634c1d0160d6d884d0d5
-PACK_BUILD_UTC=2026-02-24T20:36:06Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=f3e62f40f21f983dfe49d130fe2aa17b2df4b58f22487740f547ab3307f3a9a6 docs/DECISIONS.md=1758502d3e6184b10722c80fd4aed3d1c79d57aecee0c5025c9d12f0d363d88d docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=bc25e88fd4c08ca7fde324046a72e495d600e45f050eb2cfb10b0371f17fdfaf docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=446385be81783780dfc8728f39a2e2c5e1d2bcff5ee07de9319a24dc8f3615fb
+PACK_GIT_SHA=15aff4f8d471d9ba0d0dbfe5c0db68218839d151
+PACK_BUILD_UTC=2026-02-25T02:22:03Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=f3e62f40f21f983dfe49d130fe2aa17b2df4b58f22487740f547ab3307f3a9a6 docs/DECISIONS.md=1758502d3e6184b10722c80fd4aed3d1c79d57aecee0c5025c9d12f0d363d88d docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=a2cd85f4f71f9e2fa8d8c4e9293f0873771cc59beece6e97aab4eafeccc8b7ab docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=c80cd5a673baf6f1ff4149d0029fd53d58a839c9967c2247c8bb3870d84bb6a7
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -501,10 +501,13 @@ Use `--output` for tests/automation to avoid mutating repo-root `PROJECT_CONTEXT
 Project Files are injected by the platform into ChatGPT context during chats.
 The assistant cannot browse ChatGPT Project Settings -> Files UI to verify what is uploaded.
 Verification is repo-side only: confirm `PACK_HASH` in `PROJECT_CONTEXT_PACK.md` and the upload marker in `.local/project_upload_state.json` via `--mark-uploaded` and `--check`.
+`PACK_GIT_SHA` in the pack header is the doc-base commit (latest commit that touched canonical pack inputs), not repo `HEAD`. `PACK_BUILD_UTC` is that doc-base commit time in UTC.
+
+Do not run `--build` unless you changed canonical pack inputs; for a re-upload of the same pack, just upload the existing `PROJECT_CONTEXT_PACK.md` and run `--mark-uploaded`.
 
 Operator flow:
 
-1. Run `--build`.
+1. Run `--build` only when canonical pack inputs changed.
 2. Upload only `PROJECT_CONTEXT_PACK.md` in ChatGPT Project Settings -> Files (replace prior file).
 3. Run `--mark-uploaded`.
 4. Run strict `--check` at session start to fail fast on stale context.
@@ -871,7 +874,7 @@ Canonical daily sequence:
 3. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
 4. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
 
-Context pack hygiene (when docs/contracts changed or WARN_CONTEXT_PACK_STALE appears):
+Context pack hygiene (when docs/contracts changed or `WARN_CONTEXT_PACK_SOURCE_HASH_MISMATCH` appears):
 
 1. `py -3 tools/project_context_pack.py --build`
 2. Upload `PROJECT_CONTEXT_PACK.md` in ChatGPT Project Settings -> Files

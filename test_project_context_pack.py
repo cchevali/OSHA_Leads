@@ -354,6 +354,7 @@ class TestProjectContextPack(unittest.TestCase):
             self.assertEqual(code1, 0, msg=first.getvalue())
             pack_path = root / pcp.PACK_FILENAME
             before_bytes = pack_path.read_bytes()
+            self.assertNotIn(b"\r\n", before_bytes)
 
             second = io.StringIO()
             with redirect_stdout(second):
@@ -380,6 +381,7 @@ class TestProjectContextPack(unittest.TestCase):
             self.assertEqual(code2, 0, msg=second.getvalue())
             self.assertIn("PACK_BUILD_NOOP=1", second.getvalue())
 
+            self.assertNotIn(b"\r\n", (root / pcp.PACK_FILENAME).read_bytes())
             status = self._run_cmd(["git", "status", "--porcelain"], cwd=root)
             self.assertEqual((status.stdout or "").strip(), "")
 

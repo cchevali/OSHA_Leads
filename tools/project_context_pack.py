@@ -173,6 +173,7 @@ def _render_pack_text(
             ]
         )
     template = "\n".join(header + body).rstrip("\n") + "\n"
+    template = template.replace("\r\n", "\n").replace("\r", "\n")
     pack_hash = compute_pack_hash_from_text(template)
     return template.replace(PACK_HASH_PLACEHOLDER, pack_hash)
 
@@ -238,7 +239,8 @@ def build_pack(repo_root: Path, *, output_path: Path | None = None) -> int:
                 return 0
         except Exception:
             pass
-    pack_path.write_bytes(output_bytes)
+    with pack_path.open("w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
     meta = parse_pack_metadata(text)
     print(f"PASS_CONTEXT_PACK_BUILT path={pack_path} pack_hash={meta.get('pack_hash','')}")
     return 0
