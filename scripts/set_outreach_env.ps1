@@ -5,6 +5,7 @@ param(
   [Nullable[int]] $OutreachSuppressionMaxAgeHours = $null,
   [Nullable[int]] $OutreachFallbackOnEmptyState = $null,
   [Nullable[int]] $ProspectAutoGrowEnabled = $null,
+  [string] $ProspectAutoGrowStates = '',
   [string] $ProspectAutoGrowSources = '',
   [Nullable[int]] $ProspectAutoGrowBacklogTarget = $null,
   [Nullable[int]] $ProspectAutoGrowMaxFetchPagesPerRun = $null,
@@ -281,6 +282,7 @@ try {
     'OutreachSuppressionMaxAgeHours',
     'OutreachFallbackOnEmptyState',
     'ProspectAutoGrowEnabled',
+    'ProspectAutoGrowStates',
     'ProspectAutoGrowSources',
     'ProspectAutoGrowBacklogTarget',
     'ProspectAutoGrowMaxFetchPagesPerRun',
@@ -561,6 +563,10 @@ try {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_ENABLED' -Value ([string]$ProspectAutoGrowEnabled) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_ENABLED')) {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_ENABLED' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAutoGrowStates')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_STATES' -Value (Normalize-OutreachStates $ProspectAutoGrowStates) -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSources')) {

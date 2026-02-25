@@ -1429,18 +1429,23 @@ def _is_trial_subscriber(subscriber_key: str | None) -> bool:
     sk = str(subscriber_key or "").strip().lower()
     if not sk:
         return False
+    heuristic_trial = (
+        sk == WALLY_TRIAL_SUBSCRIBER_KEY.lower()
+        or sk.endswith("_trial")
+        or sk.startswith("trial_")
+    )
     db_path = crm_light.resolve_crm_db_path(None)
     if not db_path.exists():
-        return False
+        return heuristic_trial
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         row = conn.execute(
             "SELECT 1 FROM trial_state WHERE subscriber_key = ? LIMIT 1",
             (sk,),
         ).fetchone()
-        return row is not None
+        return (row is not None) or heuristic_trial
     except Exception:
-        return False
+        return heuristic_trial
     finally:
         try:
             conn.close()

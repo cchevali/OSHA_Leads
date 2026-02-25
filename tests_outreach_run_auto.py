@@ -708,6 +708,9 @@ class TestOutreachRunAuto(unittest.TestCase):
 
             self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
             stdout = out.getvalue()
+            self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", stdout)
+            self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=CA", stdout)
+            self.assertIn("OUTREACH_RAMP_READY=0 desired_daily_limit=10", stdout)
             self.assertIn("PASS_AUTO_EXPORT outreach_states_config=TX,CA,FL crm_uncontacted_by_state=", stdout)
             self.assertIn("PASS_AUTO_EXPORT crm_pool_total_by_state=", stdout)
             self.assertIn("PASS_AUTO_EXPORT crm_uncontacted_sendable_by_state=", stdout)
@@ -933,14 +936,17 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertEqual(plan.returncode, 0, msg=plan.stderr + "\n" + plan.stdout)
             out = plan.stdout or ""
             self.assertIn("OUTREACH_PLAN_STATE=TX", out)
-            self.assertIn("OUTREACH_FALLBACK_TRIGGERED=1 from=CA to=TX reason=SENDABLE_ZERO", out)
+            self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", out)
+            self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=TX", out)
+            self.assertIn("OUTREACH_RAMP_READY=0 desired_daily_limit=10", out)
+            self.assertIn("OUTREACH_FALLBACK_TRIGGERED=1 from=CA to=TX reason=SENDABLE_BELOW_FLOOR", out)
             breakdown = json.loads(self._stdout_value(out, "OUTREACH_PLAN_FILTER_BREAKDOWN"))
             gates = breakdown.get("gates") or {}
             self.assertEqual(gates.get("rotation_selected_state"), "CA")
             self.assertEqual(gates.get("selected_state"), "TX")
             self.assertEqual(gates.get("state_rotation_source"), "fallback_sendable_estimate")
             self.assertIs(gates.get("fallback_triggered"), True)
-            self.assertEqual(gates.get("fallback_reason"), "SENDABLE_ZERO")
+            self.assertEqual(gates.get("fallback_reason"), "SENDABLE_BELOW_FLOOR")
 
     def test_plan_fallback_trigger_token_format_is_stable_and_opt_in(self):
         with tempfile.TemporaryDirectory() as d:
@@ -977,7 +983,9 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertEqual(plan_opt_in.returncode, 0, msg=plan_opt_in.stderr + "\n" + plan_opt_in.stdout)
             lines = [ln.strip() for ln in (plan_opt_in.stdout or "").splitlines() if ln.strip()]
             fallback_line = next((ln for ln in lines if ln.startswith("OUTREACH_FALLBACK_TRIGGERED=")), "")
-            self.assertEqual(fallback_line, "OUTREACH_FALLBACK_TRIGGERED=1 from=CA to=TX reason=SENDABLE_ZERO")
+            self.assertEqual(fallback_line, "OUTREACH_FALLBACK_TRIGGERED=1 from=CA to=TX reason=SENDABLE_BELOW_FLOOR")
+            self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", plan_opt_in.stdout or "")
+            self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=TX", plan_opt_in.stdout or "")
 
             plan_default = self._run(
                 ["--plan", "--for-date", "2001-01-02"],
@@ -985,6 +993,8 @@ class TestOutreachRunAuto(unittest.TestCase):
             )
             self.assertEqual(plan_default.returncode, 0, msg=plan_default.stderr + "\n" + plan_default.stdout)
             self.assertNotIn("OUTREACH_FALLBACK_TRIGGERED=1", plan_default.stdout or "")
+            self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", plan_default.stdout or "")
+            self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=CA", plan_default.stdout or "")
 
     def test_dry_run_fallback_on_below_floor_switches_state(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1035,6 +1045,9 @@ class TestOutreachRunAuto(unittest.TestCase):
             dry_run = self._run(["--dry-run", "--for-date", "2001-01-02"], env)
             self.assertEqual(dry_run.returncode, 0, msg=dry_run.stderr + "\n" + dry_run.stdout)
             out = dry_run.stdout or ""
+            self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", out)
+            self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=TX", out)
+            self.assertIn("OUTREACH_RAMP_READY=0 desired_daily_limit=2", out)
             self.assertIn("OUTREACH_FALLBACK_TRIGGERED=1 from=CA to=TX reason=SENDABLE_BELOW_FLOOR", out)
             self.assertIn("PASS_AUTO_DRY_RUN state=TX batch=2001-01-02_TX", out)
 
@@ -1057,12 +1070,60 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertEqual(plan.returncode, 0, msg=plan.stderr + "\n" + plan.stdout)
             self.assertIn("OUTREACH_PLAN_STATE=CA", plan.stdout or "")
             self.assertNotIn("OUTREACH_FALLBACK_TRIGGERED=1", plan.stdout or "")
+            self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", plan.stdout or "")
+            self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=CA", plan.stdout or "")
             breakdown = json.loads(self._stdout_value(plan.stdout or "", "OUTREACH_PLAN_FILTER_BREAKDOWN"))
             gates = breakdown.get("gates") or {}
             self.assertEqual(gates.get("rotation_selected_state"), "CA")
             self.assertEqual(gates.get("selected_state"), "CA")
             self.assertEqual(gates.get("state_rotation_source"), "weekday_index")
             self.assertIs(gates.get("fallback_triggered"), False)
+
+    def test_plan_emits_ramp_ready_when_all_send_states_meet_floor(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_tx",
+                        "contact_name": "TX Person",
+                        "firm": "TX Co",
+                        "email": "tx@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 7,
+                    },
+                    {
+                        "prospect_id": "p_ca",
+                        "contact_name": "CA Person",
+                        "firm": "CA Co",
+                        "email": "ca@example.com",
+                        "title": "Owner",
+                        "state": "CA",
+                        "score": 7,
+                    },
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA",
+                "OUTREACH_DAILY_LIMIT": "1",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+            plan = self._run(["--plan", "--for-date", "2001-01-02"], env)
+            self.assertEqual(plan.returncode, 0, msg=plan.stderr + "\n" + plan.stdout)
+            out = plan.stdout or ""
+            self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", out)
+            self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=CA", out)
+            self.assertIn(
+                "OUTREACH_RAMP_READY=1 desired_daily_limit=1 states_ready=2 states_total=2 ready_states=TX,CA",
+                out,
+            )
 
     def test_for_date_changes_state_for_no_send_and_blocks_live_non_today(self):
         with tempfile.TemporaryDirectory() as d:
