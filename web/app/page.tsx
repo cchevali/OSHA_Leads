@@ -4,10 +4,15 @@ import SectionHeading from "@/components/SectionHeading";
 import site from "@/config/site.json";
 
 export const metadata: Metadata = {
+  title: "OSHA Activity Signals for Safety and Defense Teams",
+  description:
+    "MicroFlowOps surfaces public OSHA inspection activity with timestamps and territory routing so teams can act before citation timelines compress.",
   alternates: { canonical: "/" }
 };
 
 export default function HomePage() {
+  const founderBlurb =
+    "I'm Chase. I built MicroFlowOps to surface public OSHA inspection activity faster than teams can find it manually. My background is data engineering, not law, so the product focuses on monitoring, timestamps, and territory routing.";
   const sampleSignals = [
     {
       severityTier: "High",
@@ -54,6 +59,13 @@ export default function HomePage() {
               employer-side attorneys and safety consultants prioritize outreach while the window is still open.
             </p>
             <CTAButtons />
+            <div className="rounded-2xl border border-cardBorder bg-card p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
+                Founder
+              </p>
+              <p className="mt-2 text-sm text-inkMuted">{founderBlurb}</p>
+              <p className="mt-2 text-sm font-semibold text-inkMuted">Not legal advice.</p>
+            </div>
             <p className="text-sm text-inkMuted">
               Core starts at $299/mo for up to 4 metros. Tell us your metros and we confirm coverage during onboarding.
             </p>
@@ -236,6 +248,15 @@ export default function HomePage() {
                 We will send a sample alert and set up a short trial feed so you can evaluate signal
                 quality.
               </p>
+              <div className="mt-4 rounded-2xl border border-white/15 bg-white/5 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/70">
+                  Verify in 30 seconds
+                </p>
+                <p className="mt-2 text-sm text-white/80">
+                  Every item includes opened/observed timestamps and a direct link to the public OSHA
+                  record.
+                </p>
+              </div>
             </div>
             <CTAButtons variant="dark" />
           </div>

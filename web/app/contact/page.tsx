@@ -6,6 +6,9 @@ import site from "@/config/site.json";
 import { resolveCheckoutCta } from "@/lib/checkout";
 
 export const metadata: Metadata = {
+  title: "Contact",
+  description:
+    "Request a trial feed, confirm metro coverage, or contact MicroFlowOps about OSHA activity signal delivery for your team.",
   alternates: { canonical: "/contact" }
 };
 

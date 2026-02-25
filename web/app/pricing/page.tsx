@@ -7,6 +7,9 @@ import site from "@/config/site.json";
 import { resolveCheckoutCta } from "@/lib/checkout";
 
 export const metadata: Metadata = {
+  title: "Pricing",
+  description:
+    "OSHA activity signal plans priced by metro coverage. Core starts at $299/mo with daily delivery, onboarding, and coverage confirmation.",
   alternates: { canonical: "/pricing" }
 };
 
@@ -85,8 +88,10 @@ export default function PricingPage() {
           description="Coverage is based on metro areas. Choose the plan that fits your footprint — we confirm everything during onboarding. No per-metro billing, no surprises."
           align="center"
         />
-        <p className="mx-auto mt-4 max-w-2xl text-center text-sm font-semibold text-ocean">
-          Founding customer rate locked for 12 months while your subscription remains active.
+        <p className="mx-auto mt-4 max-w-2xl text-center text-sm text-inkMuted">
+          What this replaces: manually checking OSHA sources, filtering, and routing updates across
+          multiple metros. For most teams, that&apos;s several hours/week. Core starts at $299/mo, less
+          than one billable hour for many practices.
         </p>
       </section>
 

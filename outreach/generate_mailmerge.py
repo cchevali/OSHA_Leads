@@ -42,6 +42,7 @@ REQUIRED_INPUT_COLUMNS = [
 ]
 
 DEFAULT_REPLY_TO_EMAIL = "support@microflowops.com"
+DEFAULT_SAMPLE_FEED_URL = "https://microflowops.com/sample"
 ERR_ONE_CLICK_REQUIRED = "ERR_ONE_CLICK_REQUIRED"
 ERR_SUPPRESSION_REQUIRED = "ERR_SUPPRESSION_REQUIRED"
 ET_TZ = ZoneInfo("America/New_York")
@@ -288,6 +289,29 @@ def _observed_date(lead: dict) -> str:
     return _date_str(lead.get("date_opened"))
 
 
+def _subject_short_date(value: object) -> str:
+    date_value = _date_str(value)
+    if not date_value:
+        return ""
+    try:
+        dt = datetime.strptime(date_value, "%Y-%m-%d")
+    except Exception:
+        return str(date_value)
+    return f"{dt.strftime('%b')} {dt.day}"
+
+
+def _subject_opened_or_observed_date(lead: dict) -> str:
+    opened = _subject_short_date(lead.get("date_opened"))
+    if opened:
+        return opened
+    for key in ["first_seen_at", "changed_at", "last_seen_at"]:
+        label = _subject_short_date(lead.get(key))
+        if label:
+            return label
+    observed = _subject_short_date(_observed_date(lead))
+    return observed or "recently"
+
+
 def _format_recent_signal_line(lead: dict) -> str:
     est = _truncate_text((lead.get("establishment_name") or "").strip() or "Unknown establishment", 52)
     city = (lead.get("site_city") or "").strip()
@@ -514,6 +538,23 @@ def _history_rows_for_state(db_path: str, state: str, limit: int = 3) -> tuple[l
 
 def _sample_rows() -> list[dict]:
     return [dict(r) for r in SAMPLE_SIGNALS]
+
+
+def _subject_source_rows(db_path: str | None, state: str, recent_leads: list[dict] | None) -> list[dict]:
+    if recent_leads:
+        return list(recent_leads)
+    if db_path:
+        historical_rows, _max_opened = _history_rows_for_state(db_path=db_path, state=state, limit=3)
+        if historical_rows:
+            return list(historical_rows)
+    return _sample_rows()
+
+
+def build_outreach_subject(state_or_label: str, recent_leads: list[dict] | None = None, db_path: str | None = None) -> str:
+    label = (_norm_state(state_or_label) or str(state_or_label or "").strip() or "OSHA").strip()
+    source_rows = _subject_source_rows(db_path=db_path, state=label, recent_leads=recent_leads)
+    opened_label = _subject_opened_or_observed_date(source_rows[0]) if source_rows else "recently"
+    return f"New OSHA inspection in {label} — opened {opened_label}"
 
 
 def _build_signal_template_tokens(db_path: str, state: str, recent_leads: list[dict], lookback_days: int = 14) -> dict[str, str]:
@@ -1064,8 +1105,13 @@ def main() -> int:
         first_name = (r.get("first_name") or "").strip()
         firm = (r.get("firm") or "").strip() or "your firm"
         prefs_link = prefs_url or unsub_url or ""
+        sample_feed_url = (os.getenv("MICROFLOWOPS_SAMPLE_FEED_URL") or DEFAULT_SAMPLE_FEED_URL).strip() or DEFAULT_SAMPLE_FEED_URL
 
-        subject = f"{state_filter} OSHA inspection signals (daily brief)"
+        subject = build_outreach_subject(
+            state_filter,
+            recent_leads=recent_leads,
+            db_path=str(args.db),
+        )
         text_body = _render_template(
             template_text,
             {
@@ -1079,6 +1125,7 @@ def main() -> int:
                 "SIGNALS_WINDOW_NOTE_TEXT": signal_tokens["SIGNALS_WINDOW_NOTE_TEXT"],
                 "SIGNALS_FALLBACK_TEXT": signal_tokens["SIGNALS_FALLBACK_TEXT"],
                 "LAST_REFRESH_ET": last_refresh_et,
+                "SAMPLE_FEED_URL": sample_feed_url,
                 "UNSUBSCRIBE_URL": unsub_url or "",
                 "PREFS_URL": prefs_url or prefs_link,
             },
@@ -1101,6 +1148,7 @@ def main() -> int:
                     "{{SIGNALS_WINDOW_NOTE_HTML}}": signal_tokens["SIGNALS_WINDOW_NOTE_HTML"],
                     "{{SIGNALS_FALLBACK_HTML}}": signal_tokens["SIGNALS_FALLBACK_HTML"],
                     "{{LAST_REFRESH_ET}}": _html_escape(last_refresh_et),
+                    "{{SAMPLE_FEED_URL}}": _html_escape(sample_feed_url),
                     "{{UNSUBSCRIBE_URL}}": _html_escape(unsub_url or prefs_link),
                     "{{PREFS_URL}}": _html_escape(prefs_url or prefs_link),
                     "{{MAILING_ADDRESS}}": _html_escape(mailing_address),

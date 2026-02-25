@@ -11,9 +11,9 @@ SIGNALS_FALLBACK_TEXT
 
 Last refresh: LAST_REFRESH_ET
 
-Reply with your metros (e.g., STATE_METRO_EXAMPLES) and I'll start a free 14-day trial (no card).
+See a live sample feed (real public data) -> SAMPLE_FEED_URL
 
-See a sample: https://microflowops.com/sample
+If you want daily coverage for your metros, reply with the cities you care about (e.g., STATE_METRO_EXAMPLES) and I'll set up a trial.
 
 Notes:
 - Accident, Complaint, and Referral describe OSHA activity signals (not citations).

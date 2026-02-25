@@ -541,7 +541,7 @@ class TestOutreachMailmerge(unittest.TestCase):
             pre_footer = html_body[:addr_idx]
             self.assertNotIn("unsub.example.internal/unsubscribe?token=", pre_footer)
             self.assertNotIn("unsub.example.internal/prefs?token=", pre_footer)
-            self.assertEqual(subject, "TX OSHA inspection signals (daily brief)")
+            self.assertEqual(subject, "New OSHA inspection in TX — opened Feb 1")
 
     def test_fallback_uses_older_state_rows_when_recent_window_empty(self):
         with tempfile.TemporaryDirectory() as d:
@@ -648,9 +648,15 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertIn("No recent signals in the last 14 days for Florida.", body)
             self.assertIn("Most recent signals we have for Florida", body)
             self.assertIn("Legacy FL Co", body)
+            self.assertIn("See a live sample feed (real public data)", body)
+            self.assertIn("https://microflowops.com/sample", body)
+            self.assertLess(
+                body.find("See a live sample feed (real public data)"),
+                body.find("reply with the cities you care about"),
+            )
             self.assertIn("outside the 14-day window", html_body)
             self.assertIn("Legacy FL Co", html_body)
-            self.assertEqual((out_rows[0].get("subject") or "").strip(), "FL OSHA inspection signals (daily brief)")
+            self.assertEqual((out_rows[0].get("subject") or "").strip(), "New OSHA inspection in FL — opened Dec 15")
 
     def test_fallback_uses_deterministic_sample_when_state_has_no_history(self):
         with tempfile.TemporaryDirectory() as d:
@@ -717,6 +723,7 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertIn("Sample Industrial Services", body)
             self.assertIn("Example signals (sample, not state-specific):", html_body)
             self.assertIn("Sample Industrial Services", html_body)
+            self.assertEqual((out_rows[0].get("subject") or "").strip(), "New OSHA inspection in FL — opened Feb 1")
 
     def test_outreach_overlay_flag_off_keeps_mailmerge_schema_without_ai_columns(self):
         with tempfile.TemporaryDirectory() as d:
