@@ -44,6 +44,8 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "TrialSendsLimitDefault",
             "TrialExpiredBehaviorDefault",
             "TrialConversionUrl",
+            "AiTriageEnabled",
+            "AiTriageOpenAiModel",
             "StripePriceIdCore",
             "StripePriceIdMulti",
             "StripePriceIdPilot",
@@ -92,6 +94,14 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("stripe_price_id_core_present", text)
         self.assertIn("stripe_price_id_multi_present", text)
         self.assertIn("web_stripe_webhook_secret_present", text)
+        self.assertIn("AI_TRIAGE_ENABLED", text)
+        self.assertIn("AI_TRIAGE_OPENAI_MODEL", text)
+        self.assertIn("OPENAI_API_KEY", text)
+        self.assertIn("missing_shell_OPENAI_API_KEY", text)
+        self.assertIn("ai_triage_enabled=", text)
+        self.assertIn("ai_triage_openai_model=", text)
+        self.assertIn("openai_api_key_present=", text)
+        self.assertNotIn("Write-Output ('OPENAI_API_KEY='", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_ENABLED", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_SOURCES", text)
 

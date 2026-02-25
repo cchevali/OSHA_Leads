@@ -12,6 +12,8 @@ param(
   [Nullable[int]] $TrialSendsLimitDefault = $null,
   [string] $TrialExpiredBehaviorDefault = '',
   [string] $TrialConversionUrl = '',
+  [Nullable[int]] $AiTriageEnabled = $null,
+  [string] $AiTriageOpenAiModel = '',
   [string] $HudApiToken = '',
   [string] $StripePriceIdCore = '',
   [string] $StripePriceIdMulti = '',
@@ -286,6 +288,8 @@ try {
     'TrialSendsLimitDefault',
     'TrialExpiredBehaviorDefault',
     'TrialConversionUrl',
+    'AiTriageEnabled',
+    'AiTriageOpenAiModel',
     'HudApiToken',
     'StripePriceIdCore',
     'StripePriceIdMulti',
@@ -338,6 +342,9 @@ try {
   if ($PSBoundParameters.ContainsKey('TrialSendsLimitDefault') -and $TrialSendsLimitDefault -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TrialSendsLimitDefault'
   }
+  if ($PSBoundParameters.ContainsKey('AiTriageEnabled') -and $AiTriageEnabled -notin @(0, 1)) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_AiTriageEnabled'
+  }
   if ($PSBoundParameters.ContainsKey('BounceImapPort') -and $BounceImapPort -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapPort'
   }
@@ -363,6 +370,12 @@ try {
     $beh = ($TrialExpiredBehaviorDefault -as [string]).Trim()
     if (-not $beh) {
       Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TrialExpiredBehaviorDefault'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('AiTriageOpenAiModel')) {
+    $aiModel = ($AiTriageOpenAiModel -as [string]).Trim()
+    if (-not $aiModel) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_AiTriageOpenAiModel'
     }
   }
   if ($PSBoundParameters.ContainsKey('HudApiToken')) {
@@ -442,6 +455,29 @@ try {
 
     if ($PrintConfig) {
       Run-PrintConfigCheck -RunWithSecretsPath $runWithSecretsPath -RepoRoot $repoRoot
+      try {
+        $printPlain = Decrypt-DotenvSopsFile -SopsExe $sopsExe -EnvSopsPath $envSopsPath
+      } catch {
+        Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG ('decrypt_failed detail=' + (Compact-Detail $_.Exception.Message))
+      }
+      $printMap = Parse-DotenvMap $printPlain
+      $aiTriageEnabledValue = '0'
+      if (Map-HasValue $printMap 'AI_TRIAGE_ENABLED') {
+        $rawAiEnabled = ([string]$printMap['AI_TRIAGE_ENABLED']).Trim().ToLowerInvariant()
+        if ($rawAiEnabled -in @('1','true','yes','on')) {
+          $aiTriageEnabledValue = '1'
+        } else {
+          $aiTriageEnabledValue = '0'
+        }
+      }
+      $aiTriageModelValue = 'gpt-4.1-mini'
+      if (Map-HasValue $printMap 'AI_TRIAGE_OPENAI_MODEL') {
+        $aiTriageModelValue = ([string]$printMap['AI_TRIAGE_OPENAI_MODEL']).Trim()
+      }
+      $openAiKeyPresent = if (Map-HasValue $printMap 'OPENAI_API_KEY') { 'YES' } else { 'NO' }
+      Write-Output ('ai_triage_enabled=' + $aiTriageEnabledValue)
+      Write-Output ('ai_triage_openai_model=' + $aiTriageModelValue)
+      Write-Output ('openai_api_key_present=' + $openAiKeyPresent)
       Pass-Token $PASS_SET_OUTREACH_ENV_COMPLETE 'mode=print_config'
       exit 0
     }
@@ -577,6 +613,29 @@ try {
         Set-MapValue -Map $map -Key 'TRIAL_CONVERSION_URL' -Value $conv -TouchedList $touched
       }
     }
+
+    if ($PSBoundParameters.ContainsKey('AiTriageEnabled')) {
+      $aiEnabledText = [string]$AiTriageEnabled
+      Set-MapValue -Map $map -Key 'AI_TRIAGE_ENABLED' -Value $aiEnabledText -TouchedList $touched
+      if ($AiTriageEnabled -eq 1) {
+        $shellOpenAiKey = ($env:OPENAI_API_KEY -as [string])
+        if ($null -eq $shellOpenAiKey) { $shellOpenAiKey = '' }
+        $shellOpenAiKey = $shellOpenAiKey.Trim()
+        if (-not $shellOpenAiKey) {
+          Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'missing_shell_OPENAI_API_KEY'
+        }
+        Set-MapValue -Map $map -Key 'OPENAI_API_KEY' -Value $shellOpenAiKey -TouchedList $touched
+      }
+    } elseif (-not (Map-HasValue $map 'AI_TRIAGE_ENABLED')) {
+      Set-MapValue -Map $map -Key 'AI_TRIAGE_ENABLED' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('AiTriageOpenAiModel')) {
+      Set-MapValue -Map $map -Key 'AI_TRIAGE_OPENAI_MODEL' -Value (($AiTriageOpenAiModel -as [string]).Trim()) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'AI_TRIAGE_OPENAI_MODEL')) {
+      Set-MapValue -Map $map -Key 'AI_TRIAGE_OPENAI_MODEL' -Value 'gpt-4.1-mini' -TouchedList $touched
+    }
+
     if ($PSBoundParameters.ContainsKey('HudApiToken')) {
       Set-MapValue -Map $map -Key 'HUD_API_TOKEN' -Value (($HudApiToken -as [string]).Trim()) -TouchedList $touched
     }

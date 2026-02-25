@@ -23,6 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from scoring import osha_detail_cache as scoring_osha_detail_cache
+from scoring import paths as scoring_paths
+from scoring import triage_overlay as scoring_triage_overlay
 
 REQUIRED_INPUT_COLUMNS = [
     "prospect_id",
@@ -59,6 +62,26 @@ def _ledger_path() -> Path:
     data_dir = (os.getenv("DATA_DIR") or "").strip()
     base = Path(data_dir) if data_dir else (REPO_ROOT / "out")
     return base / "outreach_export_ledger.jsonl"
+
+
+def _bool_env_enabled(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _outreach_triage_artifact_path(batch: str, dry_run_suffix: str) -> Path:
+    safe_batch = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (batch or "batch")).strip("_") or "batch"
+    return scoring_paths.data_root() / "outreach" / safe_batch / f"signals_triage_{safe_batch}_{dry_run_suffix}.json"
+
+
+def _relpath_to_data_root(path: Path) -> str:
+    root = scoring_paths.data_root()
+    try:
+        return str(path.resolve(strict=False).relative_to(root.resolve(strict=False)))
+    except Exception:
+        return str(path)
 
 
 def _load_ledger_prospect_ids(path: Path) -> set[str]:
@@ -571,6 +594,73 @@ def _build_signal_template_tokens(db_path: str, state: str, recent_leads: list[d
     return tokens
 
 
+def _triage_recent_signals_for_outreach(
+    *,
+    batch: str,
+    recent_leads: list[dict],
+    dry_run_suffix: str = "export",
+) -> tuple[list[dict], dict]:
+    overlay_enabled = _bool_env_enabled("OUTREACH_TRIAGE_OVERLAY_ENABLED", default=False)
+    if not overlay_enabled:
+        return list(recent_leads or []), {
+            "enabled": False,
+            "ai_triage_action": "AI_DISABLED",
+            "ai_triage_conf": "",
+            "ai_triage_reasons": "",
+            "ai_triage_details_relpath": "",
+            "decisions": [],
+            "artifact_path": None,
+        }
+
+    items = [
+        {"activity_nr": str(r.get("activity_nr") or "").strip(), "url": str(r.get("source_url") or "").strip()}
+        for r in (recent_leads or [])
+        if str(r.get("activity_nr") or "").strip()
+    ]
+    try:
+        cache_result = scoring_osha_detail_cache.ensure_cached_for_activities(
+            activity_items=items,
+            sleep_ms=800,
+            ttl_days=30,
+            dry_run=False,
+        )
+        cache_rows = scoring_osha_detail_cache.load_detail_cache_rows(
+            None,
+            [str(r.get("activity_nr") or "") for r in (recent_leads or [])],
+        )
+        decisions = scoring_triage_overlay.triage(list(recent_leads or []), cache_rows, mode="outreach_examples")
+    except Exception:
+        decisions = []
+        cache_result = {"fetched": 0, "skipped_cached": 0, "failed": 0}
+
+    remove_keys = {
+        str(d.get("activity_nr") or d.get("lead_key") or "").strip()
+        for d in (decisions or [])
+        if str(d.get("action") or "") == "remove_from_customer_email"
+    }
+    filtered = [r for r in (recent_leads or []) if str(r.get("activity_nr") or r.get("lead_key") or "").strip() not in remove_keys]
+    action, conf, reasons = scoring_triage_overlay.summarize_outreach_example_triage(decisions)
+    artifact_path = _outreach_triage_artifact_path(batch=batch, dry_run_suffix=dry_run_suffix)
+    relpath = _relpath_to_data_root(artifact_path)
+    print(
+        "OUTREACH_TRIAGE_OVERLAY "
+        f"enabled=1 recent_before={len(recent_leads or [])} recent_after={len(filtered)} "
+        f"removed={max(0, len(recent_leads or []) - len(filtered))} "
+        f"cache_fetched={int(cache_result.get('fetched', 0))} "
+        f"cache_skipped={int(cache_result.get('skipped_cached', 0))} "
+        f"cache_failed={int(cache_result.get('failed', 0))}"
+    )
+    return filtered, {
+        "enabled": True,
+        "ai_triage_action": action,
+        "ai_triage_conf": conf,
+        "ai_triage_reasons": reasons,
+        "ai_triage_details_relpath": relpath,
+        "decisions": decisions,
+        "artifact_path": artifact_path,
+    }
+
+
 def _resolve_outreach_mailing_address() -> str:
     """
     Outreach cold email must include a real physical address. Default to the proven
@@ -750,7 +840,19 @@ def _manifest_path_for_outbox(out_path: str) -> str:
 
 def _write_manifest_csv(path: str, rows: list[dict]) -> None:
     _ensure_parent_dir(path)
-    fields = ["ts_utc", "batch", "state", "prospect_id", "email", "status", "reason"]
+    fields = [
+        "ts_utc",
+        "batch",
+        "state",
+        "prospect_id",
+        "email",
+        "status",
+        "reason",
+        "ai_triage_action",
+        "ai_triage_conf",
+        "ai_triage_reasons",
+        "ai_triage_details_relpath",
+    ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
@@ -805,12 +907,22 @@ def main() -> int:
     except Exception:
         html_template_text = ""
 
+    overlay_enabled = _bool_env_enabled("OUTREACH_TRIAGE_OVERLAY_ENABLED", default=False)
+    signal_fetch_limit = 12 if overlay_enabled else 5
+
     # Precompute state-level snippets for template rendering.
     recent_leads, last_refresh_et = _best_effort_recent_leads_and_refresh(
         db_path=str(args.db),
         state=state_filter,
-        limit=5,
+        limit=signal_fetch_limit,
     )
+    recent_leads_original = list(recent_leads or [])
+    recent_leads, triage_ctx = _triage_recent_signals_for_outreach(
+        batch=batch,
+        recent_leads=recent_leads,
+        dry_run_suffix="export",
+    )
+    recent_leads = list(recent_leads[:5])
     signal_tokens = _build_signal_template_tokens(
         db_path=str(args.db),
         state=state_filter,
@@ -897,6 +1009,7 @@ def main() -> int:
     ledger_dropped = 0
     exported: list[dict] = []
     ledger_records: list[dict] = []
+    triage_detail_records: list[dict] = []
     for r in unique_rows:
         prospect_id = (r.get("prospect_id") or "").strip()
         if prospect_id and prospect_id in existing_exported_ids:
@@ -1016,6 +1129,10 @@ def main() -> int:
                 "body": text_body,
                 "text_body": text_body,
                 "html_body": html_body,
+                "ai_triage_action": triage_ctx["ai_triage_action"],
+                "ai_triage_conf": triage_ctx["ai_triage_conf"],
+                "ai_triage_reasons": triage_ctx["ai_triage_reasons"],
+                "ai_triage_details_relpath": triage_ctx["ai_triage_details_relpath"],
             }
         )
         exported.append(out_row)
@@ -1028,8 +1145,22 @@ def main() -> int:
                 "email": email,
                 "status": "exported",
                 "reason": "",
+                "ai_triage_action": triage_ctx["ai_triage_action"],
+                "ai_triage_conf": triage_ctx["ai_triage_conf"],
+                "ai_triage_reasons": triage_ctx["ai_triage_reasons"],
+                "ai_triage_details_relpath": triage_ctx["ai_triage_details_relpath"],
             }
         )
+        if triage_ctx.get("enabled"):
+            triage_detail_records.extend(
+                scoring_triage_overlay.build_outreach_signal_triage_records(
+                    batch_id=batch,
+                    prospect_id=prospect_id,
+                    original_signals=list(recent_leads_original),
+                    final_signals=list(recent_leads),
+                    decisions=list(triage_ctx.get("decisions") or []),
+                )
+            )
         if prospect_id:
             ledger_records.append(
                 {
@@ -1049,10 +1180,18 @@ def main() -> int:
         "body",
         "text_body",
         "html_body",
+        "ai_triage_action",
+        "ai_triage_conf",
+        "ai_triage_reasons",
+        "ai_triage_details_relpath",
     ]
     _write_outbox_csv(args.out, exported, out_fields)
 
     manifest_path = _manifest_path_for_outbox(args.out)
+    if triage_ctx.get("enabled") and triage_ctx.get("artifact_path"):
+        artifact_path = Path(triage_ctx["artifact_path"])
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(json.dumps(triage_detail_records, indent=2) + "\n", encoding="utf-8")
     _write_manifest_csv(manifest_path, manifest_rows)
     _append_ledger_records(ledger_path, ledger_records)
 
@@ -1073,6 +1212,11 @@ def main() -> int:
             "suppressed_dropped": int(suppressed_dropped),
             "exported": int(len(exported)),
         },
+        "triage_overlay": {
+            "enabled": bool(triage_ctx.get("enabled")),
+            "action": triage_ctx.get("ai_triage_action"),
+            "details_relpath": triage_ctx.get("ai_triage_details_relpath"),
+        },
     }
     log_path = _append_run_log(batch, run_payload)
 
@@ -1085,6 +1229,8 @@ def main() -> int:
     print(f"run_log={log_path}")
     print(f"outbox={args.out}")
     print(f"manifest={manifest_path}")
+    if triage_ctx.get("enabled") and triage_ctx.get("artifact_path"):
+        print(f"outreach_triage_details={triage_ctx['artifact_path']}")
     return 0
 
 

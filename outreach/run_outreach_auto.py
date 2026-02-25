@@ -1057,6 +1057,73 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
             writer.writerow(row)
 
 
+def _prepare_signal_content_with_triage(
+    *,
+    batch: str,
+    state: str,
+    osha_db: str,
+    dry_run_suffix: str,
+) -> dict[str, object]:
+    overlay_enabled = gm._bool_env_enabled("OUTREACH_TRIAGE_OVERLAY_ENABLED", default=False)
+    signal_fetch_limit = 12 if overlay_enabled else 5
+    recent_leads, last_refresh_et = gm._best_effort_recent_leads_and_refresh(
+        db_path=osha_db,
+        state=state,
+        limit=signal_fetch_limit,
+    )
+    recent_leads_original = list(recent_leads or [])
+    recent_leads, triage_ctx = gm._triage_recent_signals_for_outreach(
+        batch=batch,
+        recent_leads=recent_leads,
+        dry_run_suffix=dry_run_suffix,
+    )
+    recent_leads = list((recent_leads or [])[:5])
+    signal_tokens = gm._build_signal_template_tokens(
+        db_path=osha_db,
+        state=state,
+        recent_leads=recent_leads,
+        lookback_days=14,
+    )
+    return {
+        "recent_leads_original": recent_leads_original,
+        "recent_leads": recent_leads,
+        "last_refresh_et": last_refresh_et,
+        "signal_tokens": signal_tokens,
+        "triage_ctx": triage_ctx,
+    }
+
+
+def _write_outreach_signal_triage_details_if_enabled(
+    *,
+    batch: str,
+    selected: list[dict],
+    recent_leads_original: list[dict],
+    recent_leads: list[dict],
+    triage_ctx: dict[str, object],
+) -> Path | None:
+    if not bool(triage_ctx.get("enabled")):
+        return None
+    artifact_path_value = triage_ctx.get("artifact_path")
+    if not artifact_path_value:
+        return None
+    artifact_path = Path(str(artifact_path_value))
+    decisions = list(triage_ctx.get("decisions") or [])
+    records: list[dict] = []
+    for candidate in list(selected or []):
+        records.extend(
+            gm.scoring_triage_overlay.build_outreach_signal_triage_records(
+                batch_id=batch,
+                prospect_id=str(candidate.get("prospect_id") or ""),
+                original_signals=list(recent_leads_original or []),
+                final_signals=list(recent_leads or []),
+                decisions=decisions,
+            )
+        )
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
+    return artifact_path
+
+
 def _write_plan_diagnostics(batch: str, payload: dict) -> Path:
     path = _plan_diagnostics_path(batch)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1066,27 +1133,58 @@ def _write_plan_diagnostics(batch: str, payload: dict) -> Path:
     return path
 
 
-def _write_dry_run_artifacts(batch: str, state: str, selected: list[dict], manifest_rows: list[dict]) -> tuple[Path, Path]:
+def _write_dry_run_artifacts(
+    batch: str,
+    state: str,
+    selected: list[dict],
+    manifest_rows: list[dict],
+    triage_ctx: dict[str, object] | None = None,
+) -> tuple[Path, Path]:
     outbox_path, manifest_path = _dry_run_paths(batch)
+    triage = dict(triage_ctx or {})
+    triage_enabled = bool(triage.get("enabled"))
+    triage_action = str(triage.get("ai_triage_action") or ("AI_DISABLED" if not triage_enabled else "KEEP_ALL"))
+    triage_conf = str(triage.get("ai_triage_conf") or "")
+    triage_reasons = str(triage.get("ai_triage_reasons") or "")
+    triage_relpath = str(triage.get("ai_triage_details_relpath") or "")
     outbox_rows: list[dict] = []
     for candidate in selected:
         row = _candidate_csv_row(candidate)
         row.update({"batch": batch, "state": state})
+        if triage_enabled:
+            row.update(
+                {
+                    "ai_triage_action": triage_action,
+                    "ai_triage_conf": triage_conf,
+                    "ai_triage_reasons": triage_reasons,
+                    "ai_triage_details_relpath": triage_relpath,
+                }
+            )
         outbox_rows.append(row)
+    outbox_fields = [
+        "prospect_id",
+        "email",
+        "domain",
+        "segment",
+        "role_or_title",
+        "state_pref",
+        "rank_reason",
+        "rank_tuple",
+        "batch",
+        "state",
+    ]
+    if triage_enabled:
+        outbox_fields.extend(
+            [
+                "ai_triage_action",
+                "ai_triage_conf",
+                "ai_triage_reasons",
+                "ai_triage_details_relpath",
+            ]
+        )
     _write_csv(
         outbox_path,
-        [
-            "prospect_id",
-            "email",
-            "domain",
-            "segment",
-            "role_or_title",
-            "state_pref",
-            "rank_reason",
-            "rank_tuple",
-            "batch",
-            "state",
-        ],
+        outbox_fields,
         outbox_rows,
     )
 
@@ -1097,24 +1195,39 @@ def _write_dry_run_artifacts(batch: str, state: str, selected: list[dict], manif
         row["ts_utc"] = ts_utc
         row["batch"] = batch
         row["state"] = state
+        if triage_enabled:
+            row["ai_triage_action"] = triage_action
+            row["ai_triage_conf"] = triage_conf
+            row["ai_triage_reasons"] = triage_reasons
+            row["ai_triage_details_relpath"] = triage_relpath
         manifest_out.append(row)
+    manifest_fields = [
+        "ts_utc",
+        "batch",
+        "state",
+        "prospect_id",
+        "email",
+        "domain",
+        "segment",
+        "role_or_title",
+        "state_pref",
+        "status",
+        "reason",
+        "rank_reason",
+        "rank_tuple",
+    ]
+    if triage_enabled:
+        manifest_fields.extend(
+            [
+                "ai_triage_action",
+                "ai_triage_conf",
+                "ai_triage_reasons",
+                "ai_triage_details_relpath",
+            ]
+        )
     _write_csv(
         manifest_path,
-        [
-            "ts_utc",
-            "batch",
-            "state",
-            "prospect_id",
-            "email",
-            "domain",
-            "segment",
-            "role_or_title",
-            "state_pref",
-            "status",
-            "reason",
-            "rank_reason",
-            "rank_tuple",
-        ],
+        manifest_fields,
         manifest_out,
     )
     return outbox_path, manifest_path
@@ -2117,11 +2230,27 @@ def main() -> int:
             return 0
 
         if args.dry_run:
+            osha_db = str((os.getenv("OUTREACH_SIGNAL_DB") or "").strip() or (REPO_ROOT / "data" / "osha.sqlite"))
+            signal_ctx = _prepare_signal_content_with_triage(
+                batch=batch,
+                state=state,
+                osha_db=osha_db,
+                dry_run_suffix="dry_run",
+            )
+            triage_ctx = dict(signal_ctx.get("triage_ctx") or {})
+            triage_artifact_path = _write_outreach_signal_triage_details_if_enabled(
+                batch=batch,
+                selected=selected,
+                recent_leads_original=list(signal_ctx.get("recent_leads_original") or []),
+                recent_leads=list(signal_ctx.get("recent_leads") or []),
+                triage_ctx=triage_ctx,
+            )
             outbox_path, manifest_path = _write_dry_run_artifacts(
                 batch=batch,
                 state=state,
                 selected=selected,
                 manifest_rows=manifest_rows,
+                triage_ctx=triage_ctx,
             )
             _print_fallback_trigger_token(fallback_decision)
             print(
@@ -2132,6 +2261,8 @@ def main() -> int:
             print(f"{PASS_AUTO_DRY_RUN} summary_to={summary_to}")
             print(f"{PASS_AUTO_DRY_RUN} outbox_path={outbox_path}")
             print(f"{PASS_AUTO_DRY_RUN} manifest_path={manifest_path}")
+            if triage_artifact_path is not None:
+                print(f"outreach_triage_details={triage_artifact_path}")
             print(f"OUTREACH_PLAN_DIAGNOSTICS_PATH={diagnostics_path or _plan_diagnostics_path(batch)}")
             return 0
 
@@ -2147,17 +2278,23 @@ def main() -> int:
             html_template_text = ""
 
         osha_db = str((os.getenv("OUTREACH_SIGNAL_DB") or "").strip() or (REPO_ROOT / "data" / "osha.sqlite"))
-        recent_leads, last_refresh_et = gm._best_effort_recent_leads_and_refresh(
-            db_path=osha_db,
+        signal_ctx = _prepare_signal_content_with_triage(
+            batch=batch,
             state=state,
-            limit=5,
+            osha_db=osha_db,
+            dry_run_suffix="live",
         )
-        signal_tokens = gm._build_signal_template_tokens(
-            db_path=osha_db,
-            state=state,
-            recent_leads=recent_leads,
-            lookback_days=14,
+        _live_triage_artifact_path = _write_outreach_signal_triage_details_if_enabled(
+            batch=batch,
+            selected=selected,
+            recent_leads_original=list(signal_ctx.get("recent_leads_original") or []),
+            recent_leads=list(signal_ctx.get("recent_leads") or []),
+            triage_ctx=dict(signal_ctx.get("triage_ctx") or {}),
         )
+        if _live_triage_artifact_path is not None:
+            print(f"outreach_triage_details={_live_triage_artifact_path}")
+        last_refresh_et = str(signal_ctx.get("last_refresh_et") or "")
+        signal_tokens = dict(signal_ctx.get("signal_tokens") or {})
         recent_signals_lines = signal_tokens["RECENT_SIGNALS_LINES"]
         recent_signals_html = signal_tokens["RECENT_SIGNALS_HTML"]
 

@@ -41,6 +41,8 @@ except Exception:  # pragma: no cover
     load_dotenv = None
 
 import crm_light
+from scoring import osha_detail_cache as scoring_osha_detail_cache
+from scoring import triage_overlay as scoring_triage_overlay
 from lead_filters import (
     apply_content_filter,
     dedupe_by_activity_nr,
@@ -2086,6 +2088,186 @@ def write_tier_audit_artifact(
     out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return str(out_path)
 
+
+def _bool_env_enabled(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _trial_triage_artifact_dir(subscriber_key: str) -> Path | None:
+    sk = (subscriber_key or "").strip().lower()
+    if not sk:
+        return None
+    out_dir = crm_light.data_dir() / "trials" / sk / "scoring"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _write_trial_triage_artifacts(
+    *,
+    subscriber_key: str,
+    gen_date: str,
+    decisions: list[dict[str, Any]],
+    overlay_stats: dict[str, int],
+    removed_rows: list[dict[str, Any]],
+    promoted_rows: list[dict[str, Any]],
+    before_count: int,
+    after_count: int,
+) -> tuple[str | None, str | None]:
+    out_dir = _trial_triage_artifact_dir(subscriber_key)
+    if out_dir is None:
+        return None, None
+    json_path = out_dir / f"triage_{gen_date}.json"
+    txt_path = out_dir / f"triage_report_{gen_date}.txt"
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "subscriber_key": (subscriber_key or "").strip().lower(),
+        "gen_date": gen_date,
+        "counts": {
+            "before": int(before_count),
+            "after": int(after_count),
+            "removed": int(overlay_stats.get("removed", 0)),
+            "downgraded_to_medium": int(overlay_stats.get("downgraded_to_medium", 0)),
+            "downgraded_to_low": int(overlay_stats.get("downgraded_to_low", 0)),
+            "promote_candidates": int(overlay_stats.get("promote_candidates", 0)),
+        },
+        "decisions": list(decisions or []),
+        "removed_rows": [
+            {
+                "activity_nr": str(r.get("activity_nr") or ""),
+                "company": str(r.get("establishment_name") or ""),
+                "city": str(r.get("site_city") or ""),
+                "inspection_type": str(r.get("inspection_type") or ""),
+            }
+            for r in (removed_rows or [])
+        ],
+        "promote_candidates": [
+            {
+                "activity_nr": str(r.get("activity_nr") or ""),
+                "company": str(r.get("establishment_name") or ""),
+                "city": str(r.get("site_city") or ""),
+                "inspection_type": str(r.get("inspection_type") or ""),
+            }
+            for r in (promoted_rows or [])
+        ],
+    }
+    json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    lines = [
+        "# Trial Triage Overlay Report",
+        "",
+        f"- Subscriber: `{(subscriber_key or '').strip().lower()}`",
+        f"- Date: `{gen_date}`",
+        f"- Before count: `{int(before_count)}`",
+        f"- After count: `{int(after_count)}`",
+        f"- Removed highs/mediums: `{int(overlay_stats.get('removed', 0))}`",
+        f"- Downgraded to medium: `{int(overlay_stats.get('downgraded_to_medium', 0))}`",
+        f"- Downgraded to low: `{int(overlay_stats.get('downgraded_to_low', 0))}`",
+        f"- Promote candidates: `{int(overlay_stats.get('promote_candidates', 0))}`",
+        "",
+        "## Removed Rows",
+    ]
+    if removed_rows:
+        for r in removed_rows:
+            lines.append(
+                f"- {str(r.get('activity_nr') or '')} | {str(r.get('establishment_name') or 'Unknown')} | "
+                f"{str(r.get('inspection_type') or '-')}"
+            )
+    else:
+        lines.append("- NONE")
+    lines.extend(["", "## Promote Candidates (Appendix)"])
+    if promoted_rows:
+        for r in promoted_rows:
+            lines.append(
+                f"- {str(r.get('activity_nr') or '')} | {str(r.get('establishment_name') or 'Unknown')} | "
+                f"{str(r.get('inspection_type') or '-')}"
+            )
+    else:
+        lines.append("- NONE")
+    txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return str(json_path), str(txt_path)
+
+
+def _apply_trial_triage_overlay_if_enabled(
+    *,
+    subscriber_key: str,
+    gen_date: str,
+    leads: list[dict[str, Any]],
+    dry_run: bool,
+) -> tuple[list[dict[str, Any]], dict[str, int], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    if not _bool_env_enabled("TRIAL_TRIAGE_OVERLAY_ENABLED", default=False):
+        return leads, {}, [], [], []
+    if not _is_trial_subscriber(subscriber_key):
+        return leads, {}, [], [], []
+    if not leads:
+        print("TRIAL_TRIAGE_OVERLAY enabled=1 before=0 after=0")
+        return leads, {"kept": 0}, [], [], []
+
+    activity_items = [
+        {
+            "activity_nr": str(row.get("activity_nr") or "").strip(),
+            "url": str(row.get("source_url") or "").strip(),
+        }
+        for row in leads
+        if str(row.get("activity_nr") or "").strip()
+    ]
+    try:
+        cache_result = scoring_osha_detail_cache.ensure_cached_for_activities(
+            activity_items=activity_items,
+            sleep_ms=800,
+            ttl_days=30,
+            dry_run=bool(dry_run),
+        )
+        cache_rows = scoring_osha_detail_cache.load_detail_cache_rows(
+            None,
+            [str(r.get("activity_nr") or "") for r in leads],
+        )
+        decisions = scoring_triage_overlay.triage(leads, cache_rows, mode="trial_render")
+    except Exception as exc:
+        logger.warning("Trial triage overlay failed; using original leads: %s", exc)
+        print(f"TRIAL_TRIAGE_OVERLAY_ERROR detail={exc.__class__.__name__}")
+        return leads, {}, [], [], []
+
+    original_rows = [dict(x) for x in leads]
+    adjusted_leads, overlay_stats, promoted_rows = scoring_triage_overlay.apply_trial_overlay_to_leads(leads, decisions)
+    kept_keys = {
+        str(r.get("activity_nr") or r.get("lead_key") or "").strip()
+        for r in adjusted_leads
+    }
+    removed_rows = [
+        r for r in original_rows if str(r.get("activity_nr") or r.get("lead_key") or "").strip() not in kept_keys
+    ]
+    before_count = len(leads)
+    after_count = len(adjusted_leads)
+    print(
+        "TRIAL_TRIAGE_OVERLAY "
+        f"enabled=1 before={before_count} after={after_count} "
+        f"removed={int(overlay_stats.get('removed', 0))} "
+        f"downgraded_medium={int(overlay_stats.get('downgraded_to_medium', 0))} "
+        f"downgraded_low={int(overlay_stats.get('downgraded_to_low', 0))} "
+        f"promote_candidates={int(overlay_stats.get('promote_candidates', 0))} "
+        f"cache_fetched={int(cache_result.get('fetched', 0))} "
+        f"cache_skipped={int(cache_result.get('skipped_cached', 0))} "
+        f"cache_failed={int(cache_result.get('failed', 0))}"
+    )
+    json_path, txt_path = _write_trial_triage_artifacts(
+        subscriber_key=subscriber_key,
+        gen_date=gen_date,
+        decisions=decisions,
+        overlay_stats=overlay_stats,
+        removed_rows=removed_rows,
+        promoted_rows=promoted_rows,
+        before_count=before_count,
+        after_count=after_count,
+    )
+    if json_path:
+        print(f"TRIAL_TRIAGE_ARTIFACT_JSON path={json_path}")
+    if txt_path:
+        print(f"TRIAL_TRIAGE_ARTIFACT_TXT path={txt_path}")
+    return adjusted_leads, overlay_stats, promoted_rows, decisions, removed_rows
+
 def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, tz: ZoneInfo) -> str:
     if not rows:
         return "<p><em>No leads match this section.</em></p>"
@@ -3240,6 +3422,29 @@ def main() -> None:
         except Exception as exc:
             logger.warning("Territory debug artifact write failed: %s", exc)
 
+    triage_overlay_stats: dict[str, int] = {}
+    triage_promote_candidates: list[dict[str, Any]] = []
+    if args.mode == "daily":
+        leads, triage_overlay_stats, triage_promote_candidates, _triage_decisions, _triage_removed_rows = (
+            _apply_trial_triage_overlay_if_enabled(
+                subscriber_key=str(config.get("subscriber_key") or ""),
+                gen_date=gen_date,
+                leads=leads,
+                dry_run=bool(args.dry_run),
+            )
+        )
+        if triage_overlay_stats:
+            shown_counts = {"high": 0, "medium": 0, "low": 0}
+            for lead in leads:
+                score = int(lead.get("lead_score") or 0)
+                if score >= 10:
+                    shown_counts["high"] += 1
+                elif score >= 6:
+                    shown_counts["medium"] += 1
+                else:
+                    shown_counts["low"] += 1
+            filter_stats["shown_priority_counts"] = shown_counts
+
     logger.info("Leads after filters: %d", len(leads))
     logger.info(
         "Filter stages: total=%d time_window=%d territory=%d content=%d dedupe=%d final=%d",
@@ -3282,6 +3487,11 @@ def main() -> None:
         "selected_for_digest": int(len(leads)),
         "dedupe_dropped_due_to_first_seen_before_window": int(filter_stats.get("excluded_by_time_window", 0)),
     }
+    if triage_overlay_stats:
+        diagnostics_row["triage_removed"] = int(triage_overlay_stats.get("removed", 0))
+        diagnostics_row["triage_downgraded_to_medium"] = int(triage_overlay_stats.get("downgraded_to_medium", 0))
+        diagnostics_row["triage_downgraded_to_low"] = int(triage_overlay_stats.get("downgraded_to_low", 0))
+        diagnostics_row["triage_promote_candidates"] = int(triage_overlay_stats.get("promote_candidates", 0))
     log_run_diagnostics(run_diagnostics_path, diagnostics_row)
     print(
         "RUN_DIAGNOSTICS "

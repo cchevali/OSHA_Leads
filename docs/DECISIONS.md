@@ -216,3 +216,34 @@ Pricing and onboarding copy already referenced multi-recipient delivery, but pub
 - Onboarding runbooks and operator docs must document canonical `recipients[]` schema and plan caps.
 - Legacy entitlement rows without `recipients_json` continue to work via single-email fallback.
 
+## ADR-0008: OSHA Inspection Detail Caching + Triage Overlay (Rules-First, AI Optional, Default Off)
+
+Date: 2026-02-25
+Status: Accepted
+
+### Context
+
+OSHA establishment detail pages expose structured inspection metadata (for example inspection type and case status) that is useful for conservative triage decisions, but the model cannot browse/click those pages directly during runtime. Trial and outreach example-signal presentation also needed a safe way to suppress obviously low-value examples without changing production ranking, cadence, or sending behavior by default.
+
+### Decision
+
+- Add a DATA_DIR-aware OSHA inspection-detail cache (`scoring/osha_detail_cache.py`, `tools/cache_osha_inspection_detail.py`) that fetches and stores raw page content + extracted fields keyed by `activity_nr`.
+- Add a rules-first triage overlay (`scoring/triage_overlay.py`) that consumes cached detail fields and produces stable triage decisions.
+- Keep AI triage optional, env-gated, and cache-backed (`scoring/ai_triage.py`) with hard caps so AI cannot override severity constraints.
+- Integrate the overlay only in render/example selection paths:
+  - trial daily digest render (optional, default off)
+  - outreach recent-signal example selection/preview annotations (optional, default off)
+
+### Rationale
+
+- Caching makes downstream triage deterministic, auditable, and independent from live page fetches during repeated runs.
+- Rules-first design guarantees a conservative baseline without secrets or AI availability.
+- Default-off gating preserves existing production behavior and lowers rollout risk.
+- Cache-backed AI results improve repeatability and operator trust when AI is explicitly enabled.
+
+### Consequences
+
+- New runtime artifacts are written under DATA_DIR-aware `scoring/`, `trials/<subscriber>/scoring/`, and `outreach/<batch>/` paths.
+- Operators must populate OSHA detail cache (or allow programmatic fill) before expecting enriched triage decisions.
+- AI triage enablement requires secrets workflow updates and key presence validation, but rules-only overlay remains fully functional.
+
