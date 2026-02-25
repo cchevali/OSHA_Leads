@@ -61,6 +61,7 @@ DEFAULT_CONFIG = {
 # Placeholder patterns to reject
 PLACEHOLDER_PATTERNS = ["123 main street", "suite 100", "your address here", "example"]
 REQUIRED_REPLY_TO = "support@microflowops.com"
+SAMPLE_FEED_URL = (os.getenv("MICROFLOWOPS_SAMPLE_FEED_URL") or "https://microflowops.com/sample").strip() or "https://microflowops.com/sample"
 
 
 def html_escape(s: str) -> str:
@@ -102,6 +103,40 @@ def get_observed_date(lead: dict) -> str:
             pass
     opened = (lead.get("date_opened") or "").strip()
     return opened
+
+
+def _format_subject_short_date(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            dt = datetime.strptime(text[:10], "%Y-%m-%d")
+        except ValueError:
+            return text
+    return f"{dt.strftime('%b')} {dt.day}"
+
+
+def _subject_opened_or_observed_label(lead: dict) -> str:
+    opened = (lead.get("date_opened") or "").strip()
+    if opened:
+        label = _format_subject_short_date(opened)
+        if label:
+            return label
+
+    for key in ("first_seen_at", "changed_at", "last_seen_at"):
+        raw = (lead.get(key) or "").strip()
+        if not raw:
+            continue
+        label = _format_subject_short_date(raw)
+        if label:
+            return label
+
+    observed = get_observed_date(lead)
+    label = _format_subject_short_date(observed)
+    return label or "recently"
 
 
 def validate_environment() -> tuple:
@@ -825,15 +860,11 @@ def select_sample_leads_with_reason(
 # EMAIL GENERATION
 # =============================================================================
 def generate_email_subject(recipient: dict, sample_leads: list, is_test: bool = False) -> str:
-    """Generate polished subject line with dash."""
-    state = recipient.get("state_pref") or (sample_leads[0]["site_state"] if sample_leads else "")
-    firm = recipient.get("firm_name", "").strip()
-    
-    territory = state if state else "OSHA"
-    
-    if is_test or not firm:
-        return f"{territory} OSHA activity signals (sample)"
-    return f"{territory} OSHA activity signals - {firm}"
+    """Generate subject line keyed to a real opened/observed date."""
+    del is_test  # subject copy stays the same for preview and live sends
+    territory = (recipient.get("state_pref") or (sample_leads[0].get("site_state") if sample_leads else "") or "OSHA").strip()
+    opened_label = _subject_opened_or_observed_label(sample_leads[0]) if sample_leads else "recently"
+    return f"New OSHA inspection in {territory} — opened {opened_label}"
 
 
 def format_lead_for_text(lead: dict, index: int) -> str:
@@ -948,7 +979,9 @@ def generate_email_body(recipient: dict, sample_leads: list,
 
 {leads_text}
 
-We surface these daily by region. If a short morning brief like this would be useful, reply "yes" and I'll start a 7-day trial.
+See a live sample feed (real public data) -> {SAMPLE_FEED_URL}
+
+If you want daily coverage for your metros, reply with the cities you care about and I'll set up a trial.
 
 Chase
 MicroFlowOps · microflowops.com
@@ -980,7 +1013,11 @@ support@microflowops.com
 </div>
 
 <p style="font-size: 14px; line-height: 1.6; margin: 0 0 24px 0;">
-We surface these daily by region. If a short morning brief like this would be useful, reply &ldquo;yes&rdquo; and I&rsquo;ll start a 7-day trial.
+See a live sample feed (real public data) &rarr; <a href="{html_escape(SAMPLE_FEED_URL)}" style="color: #1a1a1a; text-decoration: underline;">{html_escape(SAMPLE_FEED_URL)}</a>
+</p>
+
+<p style="font-size: 14px; line-height: 1.6; margin: 0 0 24px 0;">
+If you want daily coverage for your metros, reply with the cities you care about and I&rsquo;ll set up a trial.
 </p>
 
 <p style="font-size: 14px; margin: 0 0 2px 0; color: #1a1a1a;">Chase</p>
