@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=f04101549724974c2ff0a2b65a8dde5c567ee063
-PACK_BUILD_UTC=2026-02-24T05:01:16Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=4e8df407acb604b0eeeef43ecfaa9e6b8bba55fa77ab96de7e506f67a25f2342 docs/DECISIONS.md=4b7373693c287f12bfd6f140bf79ce063cf5c072b28e323ca28a90e58a5caab6 docs/PROJECT_BRIEF.md=a32d87e6fafaf55e584ed4dfc2d4d3d5aa0251c978e87323464c099cd453eb90 docs/RUNBOOK.md=3e508f84c08319a8afd602619fdc38c792aec2fdcb7724bd71c6db607297d371 docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=770e7f080ff1696f3293728192cf2a3aa47ba9f0371c145e5c142c13815e221a
+PACK_GIT_SHA=324a3359cd6832be392507717ed83805aabdcb72
+PACK_BUILD_UTC=2026-02-24T20:08:19Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=f3e62f40f21f983dfe49d130fe2aa17b2df4b58f22487740f547ab3307f3a9a6 docs/DECISIONS.md=1758502d3e6184b10722c80fd4aed3d1c79d57aecee0c5025c9d12f0d363d88d docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=962f4781f48aff92d49c9b9dd528cb0a070325d3c8c3a50a5c71732be12d4b62 docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=b9f41a51f756556b86e7f0e486fb903e84ca6bb96a8b782882029f1898cebb14
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -130,12 +130,23 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - `outreach/generate_mailmerge.py` remains available to generate outbox CSV + manifest for preview/debug workflows.
 - This path is no longer required for normal daily operations.
 
+## Customer/Trial Onboarding Recipient Flow
+
+1. Website forms:
+   - Trial requests (`web/app/contact` -> `web/app/api/trial-request`) capture company/admin email, metros, and structured `recipients[]`.
+   - Paid onboarding (`web/app/onboarding` -> `web/app/api/onboarding`) captures metros/CBSA selections plus structured `recipients[]`.
+2. Web onboarding API invokes `scripts/subscription_registry_ops.py onboarding-submit` (CLI contract preserved with `--print-config` and `--dry-run`).
+3. `subscription_registry_ops.py` writes onboarding state into `crm_light` (`subscriber_entitlements`, `subscriber_cbsa`) including canonical `recipients_json`.
+4. `send_digest_email.py` loads `crm_light` entitlements/CBSA allowlist and prefers entitlement recipients for per-recipient fan-out delivery (one message per recipient; no To/CC batching).
+5. Suppression and unsubscribe remain email-keyed and are enforced per recipient send attempt.
+
 ## Operational Artifacts
 
 - `out/crm.sqlite` (or `${DATA_DIR}/crm.sqlite`): prospects/outreach/trials/suppression source of truth
 - `out/prospect_discovery/prospects_latest.csv` (or `${DATA_DIR}/prospect_discovery/prospects_latest.csv`): canonical generated discovery feed input
 - `out/unsub_tokens.csv`: token store for one-click unsubscribe links (when enabled)
 - `out/suppression.csv`: suppression list enforced by exports and sending paths
+- `out/crm_light.sqlite` (or `${DATA_DIR}/crm_light.sqlite`): onboarding entitlements + CBSA allowlists + canonical onboarding recipients
 - `out/outreach_export_ledger.jsonl`: optional compatibility ledger for contacted records
 - `out/outreach/<batch>/outbox_*_dry_run.csv` + manifest: non-sending artifact output from `run_outreach_auto.py --dry-run`
 
@@ -334,6 +345,39 @@ Adopt a single upstream feed path:
 - Daily scheduler flow becomes generation -> discovery -> outreach.
 - Operators now monitor both `GENERATOR_*` and `DISCOVERY_*` machine-readable outputs.
 - Suppression and campaign tracking artifacts remain separate from the discovery feed.
+
+## ADR-0007: Canonical Onboarding Recipients Schema And Recipient-Aware Fan-Out
+
+Date: 2026-02-24
+Status: Accepted
+
+### Context
+
+Pricing and onboarding copy already referenced multi-recipient delivery, but public trial and paid onboarding flows did not consistently capture structured recipient data end-to-end. Send fan-out and opt-out plumbing were already email-keyed and recipient-safe, but onboarding ingestion only persisted a single email in entitlement records.
+
+### Decision
+
+- Canonical onboarding recipients schema is `recipients: [{ email, name? }]` for trial request and paid onboarding submissions.
+- Paid onboarding retains `email` as admin/billing contact (back-compat and entitlement lookup), while delivery recipients come from `recipients[]`.
+- `crm_light.subscriber_entitlements` stores canonical onboarding recipients in `recipients_json` with forward-only migration and legacy `email` fallback.
+- Send-time recipient precedence is:
+  1. CLI override
+  2. `crm_light` entitlement recipients
+  3. Legacy subscriber profile recipients/email
+  4. Config recipients fallback
+- Delivery remains one message per recipient; unsubscribe/suppression semantics remain email-keyed per recipient.
+
+### Rationale
+
+- Aligns website capture and backend persistence with published pricing claims (`Up to 6` / `Up to 15` recipients).
+- Preserves privacy (no recipient list exposure via To/CC batching) and existing compliance behavior.
+- Minimizes product risk by changing only onboarding capture/registry/send recipient source selection, not outreach templates/cadence/scoring.
+
+### Consequences
+
+- Recipient cap enforcement is now duplicated intentionally (web UI/API + backend authoritative validation).
+- Onboarding runbooks and operator docs must document canonical `recipients[]` schema and plan caps.
+- Legacy entitlement rows without `recipients_json` continue to work via single-email fallback.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -366,6 +410,7 @@ Success metric (funnel): **reply -> call -> paid** (track conversion per batch).
 
 - All outreach exports/sends must include an opt-out mechanism.
 - Suppression must be enforced for all exports and sends (email and, where available, domain).
+- Trial and paid onboarding must capture structured recipient data (`recipients[]`) so recipient-aware delivery is configured deterministically.
 
 ## Do Not Break
 
@@ -373,6 +418,7 @@ Success metric (funnel): **reply -> call -> paid** (track conversion per batch).
 - Secrets-required commands run via `.\run_with_secrets.ps1 -- py -3 ...`.
 - Automation scripts keep `--print-config` and `--dry-run` behaviors side-effect-safe.
 - Preserve List-Unsubscribe + footer opt-out links; do not duplicate unsubscribe links.
+- Do not change outreach cadence/scoring/templates/sending behavior during onboarding/registry form work.
 - This repo provides operational monitoring and outreach tooling, not legal advice.
 - Documentation/process alignment work must not alter product behavior.
 ```
@@ -455,10 +501,13 @@ Use `--output` for tests/automation to avoid mutating repo-root `PROJECT_CONTEXT
 Project Files are injected by the platform into ChatGPT context during chats.
 The assistant cannot browse ChatGPT Project Settings -> Files UI to verify what is uploaded.
 Verification is repo-side only: confirm `PACK_HASH` in `PROJECT_CONTEXT_PACK.md` and the upload marker in `.local/project_upload_state.json` via `--mark-uploaded` and `--check`.
+`PACK_GIT_SHA` in the pack header is the doc-base commit (latest commit that touched canonical pack inputs), not repo `HEAD`. `PACK_BUILD_UTC` is that doc-base commit time in UTC.
+
+Do not run `--build` unless you changed canonical pack inputs; for a re-upload of the same pack, just upload the existing `PROJECT_CONTEXT_PACK.md` and run `--mark-uploaded`.
 
 Operator flow:
 
-1. Run `--build`.
+1. Run `--build` only when canonical pack inputs changed.
 2. Upload only `PROJECT_CONTEXT_PACK.md` in ChatGPT Project Settings -> Files (replace prior file).
 3. Run `--mark-uploaded`.
 4. Run strict `--check` at session start to fail fast on stale context.
@@ -825,7 +874,7 @@ Canonical daily sequence:
 3. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
 4. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
 
-Context pack hygiene (when docs/contracts changed or WARN_CONTEXT_PACK_STALE appears):
+Context pack hygiene (when docs/contracts changed or `WARN_CONTEXT_PACK_SOURCE_HASH_MISMATCH` appears):
 
 1. `py -3 tools/project_context_pack.py --build`
 2. Upload `PROJECT_CONTEXT_PACK.md` in ChatGPT Project Settings -> Files
@@ -868,6 +917,8 @@ Tomorrow confirmation (canonical no-send deterministic check):
 - `OUTREACH_PLAN_DIAGNOSTICS_PATH=<absolute_path>`
 
 When `OUTREACH_PLAN_WILL_SEND=0`, root-cause must be interpreted from `OUTREACH_PLAN_POOL_TOTAL*`, `OUTREACH_PLAN_FILTER_BREAKDOWN`, and `OUTREACH_PLAN_DIAGNOSTICS_PATH` (instead of relying on skip totals alone).
+- Optional zero-send-day guard: set `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` to allow auto-switching to the configured state with the highest sendable estimate; verify activation via `OUTREACH_FALLBACK_TRIGGERED=1 from=<STATE> to=<STATE> reason=<...>`.
+- Recommended default remains `0` unless you explicitly want to prevent zero-send days by allowing state fallback.
 
 Dry-run (no sends, writes outbox + manifest artifacts):
 
@@ -1251,6 +1302,43 @@ cd C:\dev\OSHA_Leads
 py -3 scripts\subscription_registry_ops.py onboarding-submit --print-config
 py -3 scripts\subscription_registry_ops.py onboarding-submit --stdin-json --dry-run
 ```
+
+Canonical onboarding payload fields (trial and paid onboarding web paths both normalize to this shape):
+
+- `subscriber_key` (optional; derived from admin email when omitted)
+- `email` (required admin/billing contact email)
+- `plan_code` (`pilot|core|multi`)
+- `cbsa_codes` (required list of 5-digit CBSA codes; plan-capped)
+- `recipients` (required list of `{ email, name? }`; order preserved, index 0 = primary recipient)
+
+Recipient caps (web validates and backend onboarding-submit enforces authoritatively):
+
+- `pilot`: max `6` recipients
+- `core`: max `6` recipients
+- `multi`: max `15` recipients
+
+Example dry-run onboarding payload (PowerShell):
+
+```powershell
+@'
+{
+  "subscriber_key": "sub_example",
+  "email": "billing@example.com",
+  "plan_code": "core",
+  "cbsa_codes": ["19100","12420"],
+  "recipients": [
+    { "email": "ops@example.com", "name": "Ops Lead" },
+    { "email": "safety@example.com", "name": "Safety Manager" }
+  ]
+}
+'@ | py -3 scripts\subscription_registry_ops.py onboarding-submit --stdin-json --dry-run
+```
+
+Post-onboarding recipient changes:
+
+- Current supported operator path: customer emails support with add/remove recipient names/emails.
+- Support updates onboarding recipient configuration and re-runs onboarding-submit (dry-run first, then apply) with the updated `recipients[]`.
+- Do not change outreach templates/cadence/scoring while processing recipient-only updates.
 
 Metro match audit command ("present?", "matched?", "if not, why?"):
 
