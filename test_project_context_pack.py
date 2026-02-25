@@ -28,6 +28,23 @@ def _seed_required_docs(repo_root: Path) -> None:
 
 
 class TestProjectContextPack(unittest.TestCase):
+    def _run_cmd(self, args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+        try:
+            proc = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True)
+        except FileNotFoundError:
+            self.skipTest(f"missing command: {args[0]}")
+        self.assertEqual(proc.returncode, 0, msg=(proc.stderr or "") + "\n" + (proc.stdout or ""))
+        return proc
+
+    def _init_git_repo_with_canonical_docs(self, repo_root: Path) -> None:
+        _seed_required_docs(repo_root)
+        self._run_cmd(["git", "init"], cwd=repo_root)
+        self._run_cmd(["git", "config", "user.email", "tests@example.com"], cwd=repo_root)
+        self._run_cmd(["git", "config", "user.name", "Test User"], cwd=repo_root)
+        self._run_cmd(["git", "config", "core.autocrlf", "false"], cwd=repo_root)
+        self._run_cmd(["git", "add", "AGENTS.md", "docs"], cwd=repo_root)
+        self._run_cmd(["git", "commit", "-m", "seed canonical docs"], cwd=repo_root)
+
     def _run_fingerprint_lines(self, repo_root: Path) -> list[str]:
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -101,8 +118,26 @@ class TestProjectContextPack(unittest.TestCase):
                 code = pcp.check_pack(root, soft=False, current_git_sha="sha0")
             out = buf.getvalue()
             self.assertEqual(code, 1)
-            self.assertIn("ERR_CONTEXT_PACK_STALE", out)
+            self.assertIn("ERR_CONTEXT_PACK_SOURCE_HASH_MISMATCH", out)
+            self.assertIn("Rebuild first: py -3 tools/project_context_pack.py --build", out)
             self.assertIn(pcp.UPLOAD_INSTRUCTION, out)
+
+    def test_strict_check_ignores_head_only_mismatch_when_source_hashes_match(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_required_docs(root)
+            pack = pcp.generate_pack_text(root, pack_git_sha="sha_head0", pack_build_utc="2026-02-12T00:00:00Z")
+            (root / pcp.PACK_FILENAME).write_text(pack, encoding="utf-8")
+            self.assertEqual(pcp.mark_uploaded(root), 0)
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = pcp.check_pack(root, soft=False, current_git_sha="sha_head1")
+            out = buf.getvalue()
+            self.assertEqual(code, 0, msg=out)
+            self.assertIn("PASS_CONTEXT_PACK_CHECK mode=strict", out)
+            self.assertNotIn("CONTEXT_PACK_SOURCE_HASH_MISMATCH", out)
+            self.assertNotIn("ERR_CONTEXT_PACK_STALE", out)
 
     def test_strict_check_fails_when_upload_marker_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -307,6 +342,70 @@ class TestProjectContextPack(unittest.TestCase):
 
         after = repo_pack.read_text(encoding="utf-8")
         self.assertEqual(after, before)
+
+    def test_build_pack_noop_when_bytes_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_required_docs(root)
+
+            first = io.StringIO()
+            with redirect_stdout(first):
+                code1 = pcp.build_pack(root)
+            self.assertEqual(code1, 0, msg=first.getvalue())
+            pack_path = root / pcp.PACK_FILENAME
+            before_bytes = pack_path.read_bytes()
+
+            second = io.StringIO()
+            with redirect_stdout(second):
+                code2 = pcp.build_pack(root)
+            self.assertEqual(code2, 0, msg=second.getvalue())
+            self.assertIn("PACK_BUILD_NOOP=1", second.getvalue())
+            self.assertEqual(pack_path.read_bytes(), before_bytes)
+
+    def test_double_build_in_git_repo_keeps_status_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo_with_canonical_docs(root)
+
+            first = io.StringIO()
+            with redirect_stdout(first):
+                code1 = pcp.build_pack(root)
+            self.assertEqual(code1, 0, msg=first.getvalue())
+            self._run_cmd(["git", "add", pcp.PACK_FILENAME], cwd=root)
+            self._run_cmd(["git", "commit", "-m", "add context pack"], cwd=root)
+
+            second = io.StringIO()
+            with redirect_stdout(second):
+                code2 = pcp.build_pack(root)
+            self.assertEqual(code2, 0, msg=second.getvalue())
+            self.assertIn("PACK_BUILD_NOOP=1", second.getvalue())
+
+            status = self._run_cmd(["git", "status", "--porcelain"], cwd=root)
+            self.assertEqual((status.stdout or "").strip(), "")
+
+    def test_check_passes_after_code_only_commit_when_source_hashes_match(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo_with_canonical_docs(root)
+
+            build_out = io.StringIO()
+            with redirect_stdout(build_out):
+                self.assertEqual(pcp.build_pack(root), 0, msg=build_out.getvalue())
+            self._run_cmd(["git", "add", pcp.PACK_FILENAME], cwd=root)
+            self._run_cmd(["git", "commit", "-m", "add context pack"], cwd=root)
+            self.assertEqual(pcp.mark_uploaded(root), 0)
+
+            _write_file(root / "scratch_code.py", "print('ok')\n")
+            self._run_cmd(["git", "add", "scratch_code.py"], cwd=root)
+            self._run_cmd(["git", "commit", "-m", "code only change"], cwd=root)
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = pcp.check_pack(root, soft=False)
+            out = buf.getvalue()
+            self.assertEqual(code, 0, msg=out)
+            self.assertIn("PASS_CONTEXT_PACK_CHECK mode=strict", out)
+            self.assertNotIn("CONTEXT_PACK_SOURCE_HASH_MISMATCH", out)
 
 
 if __name__ == "__main__":

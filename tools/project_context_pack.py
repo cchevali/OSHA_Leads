@@ -73,6 +73,32 @@ def _git_head_sha(repo_root: Path) -> str:
     return "UNKNOWN"
 
 
+def _utc_from_epoch_seconds(epoch_seconds: int) -> str:
+    return (
+        datetime.fromtimestamp(epoch_seconds, tz=timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _git_pack_base_commit(repo_root: Path) -> tuple[str, str]:
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(repo_root), "log", "-1", "--format=%H%n%ct", "--", *REQUIRED_DOCS],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        lines = [(ln or "").strip() for ln in (out or "").splitlines() if (ln or "").strip()]
+        if len(lines) >= 2:
+            sha = lines[0]
+            epoch = int(lines[1])
+            return sha, _utc_from_epoch_seconds(epoch)
+    except Exception:
+        pass
+    return "UNKNOWN", "UNKNOWN"
+
+
 def _source_doc_paths(repo_root: Path) -> list[Path]:
     docs: list[Path] = []
     for rel in REQUIRED_DOCS:
@@ -157,8 +183,14 @@ def generate_pack_text(
     pack_git_sha: str | None = None,
     pack_build_utc: str | None = None,
 ) -> str:
-    git_sha = pack_git_sha or _git_head_sha(repo_root)
-    build_utc = pack_build_utc or _utc_now()
+    git_sha = pack_git_sha
+    build_utc = pack_build_utc
+    if git_sha is None or build_utc is None:
+        base_sha, base_utc = _git_pack_base_commit(repo_root)
+        if git_sha is None:
+            git_sha = base_sha
+        if build_utc is None:
+            build_utc = base_utc
     hashes = source_hashes(repo_root)
     return _render_pack_text(repo_root=repo_root, pack_git_sha=git_sha, pack_build_utc=build_utc, hashes=hashes)
 
@@ -196,7 +228,17 @@ def build_pack(repo_root: Path, *, output_path: Path | None = None) -> int:
     if not pack_path.is_absolute():
         pack_path = (repo_root / pack_path).resolve()
     pack_path.parent.mkdir(parents=True, exist_ok=True)
-    pack_path.write_text(text, encoding="utf-8")
+    output_bytes = text.encode("utf-8")
+    if pack_path.exists():
+        try:
+            if pack_path.read_bytes() == output_bytes:
+                print("PACK_BUILD_NOOP=1")
+                meta = parse_pack_metadata(text)
+                print(f"PASS_CONTEXT_PACK_BUILT path={pack_path} pack_hash={meta.get('pack_hash','')}")
+                return 0
+        except Exception:
+            pass
+    pack_path.write_bytes(output_bytes)
     meta = parse_pack_metadata(text)
     print(f"PASS_CONTEXT_PACK_BUILT path={pack_path} pack_hash={meta.get('pack_hash','')}")
     return 0
@@ -284,16 +326,18 @@ def check_pack(repo_root: Path, *, soft: bool = False, current_git_sha: str | No
         elif embedded_hash != computed_pack_hash:
             issues.append(Issue("ERR_CONTEXT_PACK_HASH_MISMATCH", "embedded PACK_HASH does not match file content"))
 
-        expected_git_sha = current_git_sha or _git_head_sha(repo_root)
         try:
             expected_source_hashes = source_hashes(repo_root)
         except FileNotFoundError as e:
             issues.append(Issue("ERR_CONTEXT_PACK_SOURCE_MISSING", str(e)))
             expected_source_hashes = {}
-        if embedded_sha and expected_git_sha and embedded_sha != expected_git_sha:
-            issues.append(Issue("ERR_CONTEXT_PACK_STALE", f"PACK_GIT_SHA mismatch expected={expected_git_sha} actual={embedded_sha}"))
         if embedded_source_hashes and expected_source_hashes and embedded_source_hashes != expected_source_hashes:
-            issues.append(Issue("ERR_CONTEXT_PACK_STALE", "SOURCE_HASHES mismatch"))
+            issues.append(
+                Issue(
+                    "ERR_CONTEXT_PACK_SOURCE_HASH_MISMATCH",
+                    "SOURCE_HASHES mismatch (rebuild pack, upload PROJECT_CONTEXT_PACK.md, then mark uploaded)",
+                )
+            )
 
         state = _load_upload_state(repo_root)
         if state is None:
@@ -308,8 +352,11 @@ def check_pack(repo_root: Path, *, soft: bool = False, current_git_sha: str | No
                 issues.append(Issue("ERR_CONTEXT_PACK_UPLOAD_STATE_STALE", "marked uploaded hash does not match current pack"))
 
     if issues:
+        has_source_hash_mismatch = any(issue.code == "ERR_CONTEXT_PACK_SOURCE_HASH_MISMATCH" for issue in issues)
         for issue in issues:
             _emit_issue(issue, soft=soft)
+        if has_source_hash_mismatch:
+            print("Rebuild first: py -3 tools/project_context_pack.py --build")
         print(UPLOAD_INSTRUCTION)
         print("Then run: py -3 tools/project_context_pack.py --mark-uploaded")
         if soft:
