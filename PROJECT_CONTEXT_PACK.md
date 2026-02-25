@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=15aff4f8d471d9ba0d0dbfe5c0db68218839d151
-PACK_BUILD_UTC=2026-02-25T02:22:03Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=f3e62f40f21f983dfe49d130fe2aa17b2df4b58f22487740f547ab3307f3a9a6 docs/DECISIONS.md=1758502d3e6184b10722c80fd4aed3d1c79d57aecee0c5025c9d12f0d363d88d docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=a2cd85f4f71f9e2fa8d8c4e9293f0873771cc59beece6e97aab4eafeccc8b7ab docs/TODO.md=993b0e80d01e7c6439d1c1e31b7e42d6c503ebc84f12ae37a9a90042d4a7af70 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=c80cd5a673baf6f1ff4149d0029fd53d58a839c9967c2247c8bb3870d84bb6a7
+PACK_GIT_SHA=e7cea5f80cdb0bb3aea49a0f0deb22c42fa11e83
+PACK_BUILD_UTC=2026-02-25T03:31:14Z
+SOURCE_HASHES: AGENTS.md=417e021598811fea289c6a53c48f57319eedc9b03f90fe2970f83b7144981219 docs/ARCHITECTURE.md=b2e5149fce23f70222a40e3b90010b94eb3255cb643b43608f72370af67842d4 docs/DECISIONS.md=b0b86562b88a860500b5ebdde492418328985e1210315b6cf2eeaf98324ed9a6 docs/PROJECT_BRIEF.md=7dc7d06e7ce0d886defa79f01fe836eae63b926293b837267fa92f84125dfb41 docs/RUNBOOK.md=57489debf57f9637090596b5235d49678d11b4940b248bf390181b14ca05a8fb docs/TODO.md=850e68442840cad6c15492319f7e98fbcf9b4f3207fab33434398fe2911da730 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=6e4886d7091637f64d1a210195693816c8426e376732c410865ffbc756cb51c1
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -378,6 +378,37 @@ Pricing and onboarding copy already referenced multi-recipient delivery, but pub
 - Recipient cap enforcement is now duplicated intentionally (web UI/API + backend authoritative validation).
 - Onboarding runbooks and operator docs must document canonical `recipients[]` schema and plan caps.
 - Legacy entitlement rows without `recipients_json` continue to work via single-email fallback.
+
+## ADR-0008: OSHA Inspection Detail Caching + Triage Overlay (Rules-First, AI Optional, Default Off)
+
+Date: 2026-02-25
+Status: Accepted
+
+### Context
+
+OSHA establishment detail pages expose structured inspection metadata (for example inspection type and case status) that is useful for conservative triage decisions, but the model cannot browse/click those pages directly during runtime. Trial and outreach example-signal presentation also needed a safe way to suppress obviously low-value examples without changing production ranking, cadence, or sending behavior by default.
+
+### Decision
+
+- Add a DATA_DIR-aware OSHA inspection-detail cache (`scoring/osha_detail_cache.py`, `tools/cache_osha_inspection_detail.py`) that fetches and stores raw page content + extracted fields keyed by `activity_nr`.
+- Add a rules-first triage overlay (`scoring/triage_overlay.py`) that consumes cached detail fields and produces stable triage decisions.
+- Keep AI triage optional, env-gated, and cache-backed (`scoring/ai_triage.py`) with hard caps so AI cannot override severity constraints.
+- Integrate the overlay only in render/example selection paths:
+  - trial daily digest render (optional, default off)
+  - outreach recent-signal example selection/preview annotations (optional, default off)
+
+### Rationale
+
+- Caching makes downstream triage deterministic, auditable, and independent from live page fetches during repeated runs.
+- Rules-first design guarantees a conservative baseline without secrets or AI availability.
+- Default-off gating preserves existing production behavior and lowers rollout risk.
+- Cache-backed AI results improve repeatability and operator trust when AI is explicitly enabled.
+
+### Consequences
+
+- New runtime artifacts are written under DATA_DIR-aware `scoring/`, `trials/<subscriber>/scoring/`, and `outreach/<batch>/` paths.
+- Operators must populate OSHA detail cache (or allow programmatic fill) before expecting enriched triage decisions.
+- AI triage enablement requires secrets workflow updates and key presence validation, but rules-only overlay remains fully functional.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -959,6 +990,65 @@ Expected artifacts:
 - `out\outreach\<batch>\outbox_<batch>_dry_run_manifest.csv` (includes `domain`, `segment`, `role_or_title`, `state_pref`, and `rank_reason` audit fields)
 - `out\outreach\<batch>\plan_diagnostics.json` (run-level plan/dry-run diagnostics including pool totals and filter breakdown)
 
+### OSHA Detail Cache + Triage Overlay (Preview Ops)
+
+OSHA inspection-detail cache CLI:
+
+- No secrets required (rules-only cache fetch; no AI calls).
+- Uses DATA_DIR-aware cache path: `${DATA_DIR}\scoring\osha_detail_cache.sqlite` (fallback `.\out\scoring\osha_detail_cache.sqlite`).
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\cache_osha_inspection_detail.py --print-config
+```
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\cache_osha_inspection_detail.py --since-days 14
+```
+
+Trial preview (triage overlay OFF vs ON):
+
+- Requires `.\run_with_secrets.ps1` (trial preview entrypoints load operational env/secrets).
+- Rules-only overlay does not require AI keys. If enabling AI triage separately, set keys via `scripts\set_outreach_env.ps1` and run through the secrets wrapper.
+
+```powershell
+cd C:\dev\OSHA_Leads
+$env:TRIAL_TRIAGE_OVERLAY_ENABLED='0'; .\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --dry-run
+```
+
+```powershell
+cd C:\dev\OSHA_Leads
+$env:TRIAL_TRIAGE_OVERLAY_ENABLED='1'; .\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --dry-run
+```
+
+Trial triage artifacts (only when overlay is enabled):
+
+- `${DATA_DIR}\trials\<subscriber_key>\scoring\triage_<YYYY-MM-DD>.json`
+- `${DATA_DIR}\trials\<subscriber_key>\scoring\triage_report_<YYYY-MM-DD>.txt`
+- Fallback when `DATA_DIR` is unset: `.\out\trials\<subscriber_key>\scoring\...`
+
+Outreach preview (triage overlay OFF vs ON):
+
+- Requires `.\run_with_secrets.ps1` (normal outreach env/secrets workflow).
+- Overlay only affects example-signal selection/preview annotations; it does not change prospect ranking/cadence/order.
+
+```powershell
+cd C:\dev\OSHA_Leads
+$env:OUTREACH_TRIAGE_OVERLAY_ENABLED='0'; .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
+```
+
+```powershell
+cd C:\dev\OSHA_Leads
+$env:OUTREACH_TRIAGE_OVERLAY_ENABLED='1'; .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
+```
+
+Outreach triage artifacts (when overlay is enabled):
+
+- Dry-run outbox/manifest still write under `out\outreach\<batch>\...`
+- Per-example triage JSON writes to `${DATA_DIR}\outreach\<batch>\signals_triage_<batch>_dry_run.json`
+- Fallback when `DATA_DIR` is unset: `.\out\outreach\<batch>\signals_triage_<batch>_dry_run.json`
+
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 
 ```powershell
@@ -1509,6 +1599,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 - [ ] After any PR/commit that changes docs/contracts/templates/workflow (or any time `WARN_CONTEXT_PACK_STALE` appears): run build + fingerprint + upload + mark-uploaded + check (in that order).
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
 - [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
+- [ ] If enabling AI triage, set `AI_TRIAGE_ENABLED` / `AI_TRIAGE_OPENAI_MODEL` via `scripts\set_outreach_env.ps1` and load `OPENAI_API_KEY` in the shell first (no manual `.env` / `.env.sops` edits).
 
 - [ ] Ensure email provider account/sender credentials are configured for production and validated with daily doctor checks (`run_outreach_auto.py --doctor`).
 
