@@ -45,6 +45,14 @@ GENERATION_CACHE_ROOT_SUBDIR = ("prospect_generation", "cache")
 GENERATION_DIAGNOSTICS_SUBDIR = ("prospect_generation", "diagnostics")
 
 AUTOGROW_ALLOWED_SOURCES = {"AIHA", "OHS_BG"}
+AUTOGROW_REJECT_KEYS = (
+    "invalid_email",
+    "free_domain",
+    "suppressed",
+    "already_in_crm",
+    "state_mismatch",
+    "duplicate_in_batch",
+)
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
 
 
@@ -631,6 +639,8 @@ def _print_tokens(
 
     print(f"GENERATOR_AUTOGROW_ENABLED={1 if autogrow['enabled'] else 0}")
     print(f"GENERATOR_AUTOGROW_SOURCES={','.join(autogrow['sources'])}")
+    autogrow_states = [str(s or "").strip().upper() for s in list(autogrow.get("states") or []) if str(s or "").strip()]
+    print(f"GENERATOR_AUTOGROW_STATES={','.join(autogrow_states)}")
     print(f"GENERATOR_AUTOGROW_SOURCES_EMPTY={1 if autogrow.get('sources_empty') else 0}")
     print(f"GENERATOR_AUTOGROW_SELECTED_STATE={autogrow['selected_state']}")
     print(f"GENERATOR_AUTOGROW_BACKLOG_TARGET={autogrow['backlog_target']}")
@@ -659,6 +669,20 @@ def _print_tokens(
             f"ohs_bg_candidate={int(detail.get('ohs_bg_candidate') or 0)} "
             f"ohs_bg_accepted={int(detail.get('ohs_bg_accepted') or 0)}"
         )
+        for source_label, prefix in (("AIHA", "aiha"), ("OHS_BG", "ohs_bg")):
+            print(
+                "GENERATOR_AUTOGROW_SOURCE_STATE "
+                f"source={source_label} "
+                f"state={state} "
+                f"rows_candidate={int(detail.get(f'{prefix}_candidate') or 0)} "
+                f"rows_accepted={int(detail.get(f'{prefix}_accepted') or 0)} "
+                f"rejected_invalid_email={int(detail.get(f'{prefix}_rejected_invalid_email') or 0)} "
+                f"rejected_free_domain={int(detail.get(f'{prefix}_rejected_free_domain') or 0)} "
+                f"rejected_suppressed={int(detail.get(f'{prefix}_rejected_suppressed') or 0)} "
+                f"rejected_already_in_crm={int(detail.get(f'{prefix}_rejected_already_in_crm') or 0)} "
+                f"rejected_state_mismatch={int(detail.get(f'{prefix}_rejected_state_mismatch') or 0)} "
+                f"rejected_duplicate_in_batch={int(detail.get(f'{prefix}_rejected_duplicate_in_batch') or 0)}"
+            )
     backlog_target = max(0, int(autogrow.get("backlog_target") or 0))
     for detail in state_details:
         state = _normalize_state(str(detail.get("state") or ""))
@@ -796,6 +820,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{ERR_GENERATOR_FAILED} stage=states err=OUTREACH_STATES empty", file=sys.stderr)
         return 2
     selected_state = _choose_state(states, run_date)
+    autogrow_states = _parse_states(os.getenv("PROSPECT_AUTOGROW_STATES", "")) or list(states)
 
     try:
         autogrow_cfg = _parse_autogrow_config()
@@ -812,7 +837,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         suppressed_emails = _load_suppression_set(data_dir=data_dir, conn=conn)
         existing_crm_emails = _existing_crm_emails(conn)
-        for state_item in states:
+        for state_item in autogrow_states:
             backlog_current_item = compute_uncontacted_backlog(
                 conn=conn,
                 state=state_item,
@@ -846,6 +871,9 @@ def main(argv: list[str] | None = None) -> int:
                 "ohs_bg_candidate": 0,
                 "ohs_bg_accepted": 0,
             }
+            for reject_key in AUTOGROW_REJECT_KEYS:
+                detail[f"aiha_rejected_{reject_key}"] = 0
+                detail[f"ohs_bg_rejected_{reject_key}"] = 0
             autogrow_state_details.append(detail)
             if state_norm == _normalize_state(selected_state):
                 selected_backlog_current = int(backlog_current_item)
@@ -856,6 +884,7 @@ def main(argv: list[str] | None = None) -> int:
 
     autogrow_state = {
         "enabled": bool(autogrow_cfg["enabled"]),
+        "states": list(autogrow_states),
         "sources": list(autogrow_cfg["sources"]),
         "sources_empty": len(list(autogrow_cfg["sources"])) == 0,
         "selected_state": selected_state,
@@ -989,6 +1018,10 @@ def main(argv: list[str] | None = None) -> int:
             elif source_token == "OHS_BG":
                 detail["ohs_bg_candidate"] = len(rows_candidate)
                 detail["ohs_bg_accepted"] = len(accepted_rows)
+            source_prefix = "aiha" if source_token == "AIHA" else ("ohs_bg" if source_token == "OHS_BG" else "")
+            if source_prefix:
+                for reject_key in AUTOGROW_REJECT_KEYS:
+                    detail[f"{source_prefix}_rejected_{reject_key}"] = int(rejected.get(reject_key, 0))
 
             autogrow_rows.extend(accepted_rows)
             for row in accepted_rows:

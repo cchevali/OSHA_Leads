@@ -76,6 +76,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("git -C $repoRoot diff --cached --name-only -- .env.sops", text)
         self.assertIn("ERR_ENV_SOPS_STAGED", text)
         self.assertIn("PROSPECT_AUTOGROW_ENABLED", text)
+        self.assertIn("PROSPECT_AUTOGROW_STATES", text)
         self.assertIn("PROSPECT_AUTOGROW_SOURCES", text)
         self.assertIn("OUTREACH_FALLBACK_ON_EMPTY_STATE", text)
         self.assertIn("OHS_BG", text)
