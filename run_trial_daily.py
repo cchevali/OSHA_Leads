@@ -4,19 +4,19 @@ import argparse
 import json
 import os
 import re
+import smtplib
 import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from html import escape
+from email.message import EmailMessage
+from email.utils import make_msgid
 from pathlib import Path
 from typing import Any
 
 import crm_light
 import run_trial_admin
-from email_footer import build_footer_html, build_footer_text
 from lead_filters import load_territory_definitions, resolve_territory_code
-from send_digest_email import build_unsubscribe_payload, resolve_branding, send_email
 
 try:
     from zoneinfo import ZoneInfo
@@ -26,7 +26,6 @@ except Exception:  # pragma: no cover
 _RE_SUBSCRIBER_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 _RE_DRAFT_TO = re.compile(r"^To:\s*(.+)$", re.IGNORECASE)
 _RE_DRAFT_SUBJECT = re.compile(r"^Subject:\s*(.+)$", re.IGNORECASE)
-_RE_URL_ONLY_LINE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 _RE_UNRESOLVED_STRIPE_BRACE = re.compile(r"\{[^}\n]*stripe_link[^}\n]*\}", re.IGNORECASE)
 _RE_UNRESOLVED_STRIPE_ANGLE = re.compile(r"<\s*stripe_link\s*>", re.IGNORECASE)
 DEFAULT_SENDS_LIMIT = 14
@@ -159,29 +158,17 @@ def _resolve_conversion_url() -> str:
     return (os.getenv("TRIAL_CONVERSION_URL") or "").strip()
 
 
-def _split_conversion_recipients(value: str) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for part in str(value or "").split(","):
-        email = part.strip().lower()
-        if not email or email in seen:
-            continue
-        seen.add(email)
-        out.append(email)
-    return out
-
-
-def _parse_conversion_artifact(text: str) -> tuple[list[str], str, str]:
+def _parse_conversion_artifact(text: str) -> tuple[str, str, str]:
     lines = (text or "").splitlines(keepends=True)
-    recipient_line = ""
+    recipient = ""
     subject = ""
     body_offset = -1
     offset = 0
     for line in lines:
-        if not recipient_line:
+        if not recipient:
             m_to = _RE_DRAFT_TO.match((line or "").strip())
             if m_to:
-                recipient_line = m_to.group(1).strip()
+                recipient = m_to.group(1).strip().lower()
                 offset += len(line)
                 continue
         if not subject:
@@ -191,55 +178,14 @@ def _parse_conversion_artifact(text: str) -> tuple[list[str], str, str]:
                 body_offset = offset + len(line)
                 break
         offset += len(line)
-    if not recipient_line:
-        raise RuntimeError("CONFIG_ERROR conversion artifact missing To header")
-    recipients = _split_conversion_recipients(recipient_line)
-    if not recipients:
+    if not recipient:
         raise RuntimeError("CONFIG_ERROR conversion artifact missing To header")
     if not subject:
         raise RuntimeError("CONFIG_ERROR conversion artifact missing Subject header")
     body = (text or "")[body_offset:] if body_offset >= 0 else ""
     if not body.strip():
         raise RuntimeError("CONFIG_ERROR conversion artifact missing body")
-    return recipients, subject, body
-
-
-def _conversion_body_html(text: str) -> str:
-    body = str(text or "").strip()
-    paras = [chunk for chunk in re.split(r"\n\s*\n", body) if str(chunk or "").strip()]
-    if not paras:
-        paras = [""]
-    parts = ["<!doctype html><html><body>"]
-    for para in paras:
-        lines = [_conversion_html_line(line) for line in str(para).splitlines()]
-        parts.append(f"<p>{'<br>'.join(lines)}</p>")
-    parts.append("</body></html>")
-    return "".join(parts)
-
-
-def _conversion_html_line(raw_line: str) -> str:
-    line = str(raw_line or "")
-    stripped = line.strip()
-    if _RE_URL_ONLY_LINE.match(stripped):
-        href = escape(stripped, quote=True)
-        label = "Activate checkout" if "buy.stripe.com" in stripped.lower() else stripped
-        return f'<a href="{href}">{escape(label)}</a>'
-    return escape(line)
-
-
-def _load_conversion_customer_config(subscriber_key: str) -> dict[str, Any]:
-    _path, cfg = run_trial_admin._resolve_customer_config_for_subscriber(subscriber_key)
-    if isinstance(cfg, dict) and cfg:
-        return dict(cfg)
-    return {
-        "customer_id": subscriber_key,
-        "subscriber_key": subscriber_key,
-        "brand_name": (os.getenv("BRAND_NAME") or "MicroFlowOps").strip() or "MicroFlowOps",
-        "mailing_address": (
-            os.getenv("MAILING_ADDRESS") or "11539 Links Dr, Reston, VA 20190"
-        ).strip()
-        or "11539 Links Dr, Reston, VA 20190",
-    }
+    return recipient, subject, body
 
 
 def _has_unresolved_conversion_link(text: str) -> bool:
@@ -264,62 +210,52 @@ def _send_conversion_email_from_artifact(
 ) -> tuple[bool, str, str]:
     try:
         text = artifact_path.read_text(encoding="utf-8")
-        recipients, subject, body = _parse_conversion_artifact(text)
+        recipient, subject, body = _parse_conversion_artifact(text)
     except Exception as exc:
         return False, "", str(exc)
-    customer_cfg = _load_conversion_customer_config(subscriber_key)
-    branding = resolve_branding(customer_cfg)
-    customer_id = str(customer_cfg.get("customer_id") or subscriber_key).strip() or subscriber_key
-    # Conversion email is a sales/upgrade message, not an inspection-data report.
-    footer_disclaimer = ""
-    html_body = _conversion_body_html(body)
 
-    sent_ids: list[str] = []
-    errors: list[str] = []
-    for recipient in recipients:
-        list_unsub, list_unsub_post, one_click_url, _token = build_unsubscribe_payload(
-            recipient=recipient,
-            campaign_id=customer_id,
-            reply_to_email=branding["reply_to"],
-            dry_run=False,
-        )
-        footer_text = build_footer_text(
-            brand_name=branding.get("brand_legal_name") or branding.get("brand_name") or "",
-            mailing_address=branding.get("mailing_address") or "",
-            disclaimer=footer_disclaimer,
-            reply_to=branding.get("reply_to") or "",
-            unsub_url=one_click_url or None,
-            include_separator=True,
-        )
-        footer_html = build_footer_html(
-            brand_name=branding.get("brand_legal_name") or branding.get("brand_name") or "",
-            mailing_address=branding.get("mailing_address") or "",
-            disclaimer=footer_disclaimer,
-            reply_to=branding.get("reply_to") or "",
-            unsub_url=one_click_url or None,
-        )
-        text_body_with_footer = body.rstrip() + "\n\n" + footer_text.strip() + "\n"
-        html_body_with_footer = html_body.replace("</body></html>", f"{footer_html}</body></html>")
-        ok, message_id, error = send_email(
-            recipient=recipient,
-            subject=subject,
-            html_body=html_body_with_footer,
-            text_body=text_body_with_footer,
-            customer_id=customer_id,
-            territory_code=territory_code,
-            branding=branding,
-            dry_run=False,
-            list_unsub=list_unsub,
-            list_unsub_post=list_unsub_post,
-        )
-        if ok:
-            if message_id:
-                sent_ids.append(f"{recipient}:{message_id}")
+    smtp_host = (os.getenv("SMTP_HOST") or "").strip()
+    smtp_port_text = (os.getenv("SMTP_PORT") or "").strip()
+    smtp_user = (os.getenv("SMTP_USER") or "").strip()
+    smtp_pass = (os.getenv("SMTP_PASS") or "").strip()
+
+    missing = [k for k, v in (("SMTP_HOST", smtp_host), ("SMTP_PORT", smtp_port_text), ("SMTP_USER", smtp_user), ("SMTP_PASS", smtp_pass)) if not v]
+    if missing:
+        return False, "", f"missing SMTP env: {','.join(missing)}"
+
+    try:
+        smtp_port = int(smtp_port_text)
+    except Exception:
+        return False, "", "invalid SMTP_PORT"
+
+    from_email = (os.getenv("FROM_EMAIL") or smtp_user).strip() or smtp_user
+    reply_to = (os.getenv("REPLY_TO_EMAIL") or from_email).strip() or from_email
+    support_email = (os.getenv("SUPPORT_EMAIL") or "support@microflowops.com").strip() or "support@microflowops.com"
+
+    msg = EmailMessage()
+    msg["Message-ID"] = make_msgid()
+    msg["Subject"] = subject
+    msg["From"] = from_email
+    msg["To"] = recipient
+    msg["Reply-To"] = reply_to
+    msg["X-Customer-ID"] = subscriber_key
+    msg["X-Territory-Code"] = territory_code
+    msg["List-Unsubscribe"] = f"<mailto:{support_email}?subject=unsubscribe>"
+    msg.set_content(body)
+
+    try:
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port) as server:
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
         else:
-            errors.append(f"{recipient}:{error}")
-    if errors:
-        return False, ";".join(sent_ids), ";".join(errors)
-    return True, ";".join(sent_ids), ""
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+        return True, str(msg.get("Message-ID") or ""), ""
+    except Exception as exc:
+        return False, "", str(exc)
 
 
 def _territory_states(territory_code: str) -> list[str]:

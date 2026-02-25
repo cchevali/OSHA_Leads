@@ -139,12 +139,6 @@ def write_customer_config(
     brand_name: str,
     mailing_address: str,
 ) -> None:
-    recipients_lower = [email.lower() for email in recipients]
-    recipient_names: dict[str, str] = {}
-    if recipients_lower:
-        recipient_names[recipients_lower[0]] = "Wally"
-    if len(recipients_lower) > 1:
-        recipient_names[recipients_lower[1]] = "Brandon"
     config = {
         "customer_id": customer_id,
         "subscriber_key": "wally_trial",
@@ -161,11 +155,10 @@ def write_customer_config(
         "new_only_days": 1,
         "top_k_overall": 30,
         "top_k_per_state": 30,
-        "recipients": recipients_lower,
-        "email_recipients": recipients_lower,
-        "recipient_names": recipient_names,
+        "recipients": [email.lower() for email in recipients],
+        "email_recipients": [email.lower() for email in recipients],
         "pilot_mode": True,
-        "pilot_whitelist": [chase_email.lower()] + recipients_lower,
+        "pilot_whitelist": [chase_email.lower()] + [email.lower() for email in recipients],
         "brand_name": brand_name,
         "mailing_address": mailing_address,
     }

@@ -73,22 +73,19 @@ TERRITORY_ALIASES: dict[str, str] = {
 DEFAULT_SENDS_LIMIT = 14
 TRIAL_SENDS_TARGET = 14
 CONVERSION_TEMPLATE_TEXT = (
-    "To: {to_recipients}\n\n"
-    "Subject: Your {territory_label} OSHA digest is wrapping up\n\n"
-    "{salutation_line}\n\n"
-    "You've been getting the weekday OSHA activity digest for {territory_label} over the past couple of weeks. "
-    "Wanted to check in before it stops.\n\n"
-    "If the digest has been useful, two ways to keep it going:\n\n"
-    "1. Reply \"go\" and confirm your coverage area (or request changes \u2014 different metros, extra recipients, etc.). "
-    "I'll switch you over the same day.\n"
-    "2. Or activate directly here:\n"
-    "Payment link:\n"
-    "{stripe_link}\n\n"
-    "Not sure yet? Reply with questions or the metros you care about and I'll confirm coverage before anything is charged.\n\n"
-    "A few people ask about \"0 new\" days \u2014 that just means no new inspections were first-seen since the last weekday send. "
-    "Nothing missed, nothing broken.\n\n"
-    "\u2014 Chase\n"
-    "MicroFlowOps\n"
+    "To: {primary_recipient}\n\n"
+    "Subject: Keep your OSHA signal digest running - {territory_label}\n\n"
+    "Hi {recipient_name},\n\n"
+    "Thanks for trying MicroFlowOps. Over the trial you've been receiving the weekday OSHA activity digest for {territory_label}.\n\n"
+    "Quick note on \"0 new\": it simply means nothing new was first-seen since the prior weekday send, so there's nothing to report that day.\n\n"
+    "If you'd like to keep the feed running without interruption:\n"
+    "• Reply \"go\" and confirm the metros/cities you want covered (current default: {territory_label}), and I'll switch you to the paid feed the same day.\n"
+    "• Or activate via Stripe here: {stripe_link}\n\n"
+    "If you'd rather confirm fit before paying, reply with your target metros/cities and I'll confirm coverage first.\n\n"
+    "Want any tweaks (add/remove metros, add recipients, different send time)? Just reply with what you want and I'll tune it.\n\n"
+    "— Chase\n"
+    "MicroFlowOps\n\n"
+    "P.S. If it's not a fit, just reply \"stop\" and I'll close it out.\n"
 )
 
 
@@ -169,7 +166,7 @@ def _resolve_territory_label(territory_code: str) -> str:
     defs = load_territory_definitions()
     canonical = resolve_territory_code(code, defs)
     terr = defs.get(canonical) or defs.get(code) or {}
-    label = str(terr.get("display_name") or terr.get("label") or terr.get("description") or "").strip()
+    label = str(terr.get("description") or "").strip()
     return label or code or "{territory_label}"
 
 
@@ -179,61 +176,21 @@ def _derive_recipient_name(email: str, subscriber_key: str) -> str:
         text = local.replace(".", " ").replace("_", " ").replace("-", " ")
         cleaned = " ".join(part for part in text.split() if part)
         if cleaned:
-            # Reject abbreviations / non-name prefixes
-            first_token = cleaned.split()[0] if cleaned.split() else cleaned
-            if len(first_token) < 2:
-                return ""
-            if not re.search(r"[aeiouAEIOU]", first_token):
-                return ""
             return cleaned.title()
     sk = (subscriber_key or "").strip()
     return sk or "{recipient_name}"
 
 
-def _recipient_names_map(config: dict[str, Any]) -> dict[str, str]:
-    raw = config.get("recipient_names")
-    if not isinstance(raw, dict):
-        return {}
-    out: dict[str, str] = {}
-    for email_raw, name_raw in raw.items():
-        email = str(email_raw or "").strip().lower()
-        name = " ".join(str(name_raw or "").strip().split())
-        if email and name:
-            out[email] = name
-    return out
-
-
-def _build_salutation_line(names: list[str]) -> str:
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    for item in list(names or []):
-        name = " ".join(str(item or "").strip().split())
-        if not name:
-            continue
-        key = name.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        cleaned.append(name)
-    if not cleaned:
-        return "Hi,"
-    if len(cleaned) == 1:
-        return f"Hi {cleaned[0]},"
-    if len(cleaned) == 2:
-        return f"Hi {cleaned[0]} and {cleaned[1]},"
-    return f"Hi {', '.join(cleaned[:-1])}, and {cleaned[-1]},"
-
-
 def render_conversion_email_text(
     *,
-    salutation_line: str,
-    to_recipients: str,
+    recipient_name: str,
+    primary_recipient: str,
     territory_label: str,
     stripe_link: str,
 ) -> str:
     return CONVERSION_TEMPLATE_TEXT.format(
-        salutation_line=(salutation_line or "").strip() or "Hi,",
-        to_recipients=(to_recipients or "").strip().lower() or "{to_recipients}",
+        recipient_name=(recipient_name or "").strip() or "{recipient_name}",
+        primary_recipient=(primary_recipient or "").strip().lower() or "{primary_recipient}",
         territory_label=(territory_label or "").strip() or "{territory_label}",
         stripe_link=(stripe_link or "").strip() or "{stripe_link}",
     )
@@ -242,7 +199,7 @@ def render_conversion_email_text(
 def _load_conversion_context(
     subscriber_key: str,
     crm_db_path: str | Path | None,
-) -> tuple[Path, dict[str, Any], dict[str, Any], str, str, str, list[str], str]:
+) -> tuple[Path, dict[str, Any], dict[str, Any], str, str, str]:
     sk = _validate_subscriber_key(subscriber_key)
     path = crm_light.resolve_crm_db_path(crm_db_path)
     if not path.exists():
@@ -259,17 +216,9 @@ def _load_conversion_context(
     finally:
         conn.close()
     recipient_email = str(sub.get("email") or "").strip().lower()
-    _cfg_path, customer_cfg = _resolve_customer_config_for_subscriber(sk)
-    recipients = _collect_customer_recipients(customer_cfg, recipient_email)
-    explicit_names = _recipient_names_map(customer_cfg)
-    salutation_names: list[str] = []
-    for email in recipients:
-        name = explicit_names.get(email) or _derive_recipient_name(email, sk)
-        if str(name or "").strip():
-            salutation_names.append(str(name))
-    salutation_line = _build_salutation_line(salutation_names)
+    recipient_name = _derive_recipient_name(recipient_email, sk)
     territory_label = _resolve_territory_label(str(sub.get("territory_code") or ""))
-    return path, sub, trial, salutation_line, recipient_email, territory_label, recipients, customer_cfg.get("customer_id") or sk
+    return path, sub, trial, recipient_name, recipient_email, territory_label
 
 
 def write_conversion_draft(
@@ -277,14 +226,14 @@ def write_conversion_draft(
     crm_db_path: str | Path | None,
     emit_stdout: bool = True,
 ) -> Path:
-    path, sub, trial, salutation_line, recipient_email, territory_label, recipients, _customer_id = _load_conversion_context(
+    path, sub, trial, recipient_name, recipient_email, territory_label = _load_conversion_context(
         subscriber_key=subscriber_key,
         crm_db_path=crm_db_path,
     )
     stripe_link = _resolve_conversion_url()
     body = render_conversion_email_text(
-        salutation_line=salutation_line,
-        to_recipients=", ".join(recipients or ([recipient_email] if recipient_email else [])),
+        recipient_name=recipient_name,
+        primary_recipient=recipient_email,
         territory_label=territory_label,
         stripe_link=stripe_link,
     )
@@ -296,8 +245,7 @@ def write_conversion_draft(
         print(f"subscriber_key={_validate_subscriber_key(subscriber_key)}")
         print(f"crm_db={path}")
         print(f"start_date={str(trial.get('start_date') or '').strip()}")
-        print(f"salutation_line={salutation_line}")
-        print(f"to_recipients={','.join(recipients)}")
+        print(f"recipient_name={recipient_name}")
         print(f"territory_label={territory_label}")
         print(f"stripe_link={stripe_link or '{stripe_link}'}")
         print(f"conversion_path={artifact_path}")
@@ -1155,7 +1103,7 @@ def _render_scope_enhancement_text(*, rows: list[dict[str, Any]], extend_days: i
     lines = [
         f"Subject: {subject}",
         "",
-        "Hi,",
+        "Hi there,",
         "",
         "We’ve shipped an improvement to how MicroFlowOps matches signals to your Texas Triangle (metro footprint and boundary handling). This produces a more complete set of qualifying OSHA activity for the same territory going forward.",
         "",
@@ -1225,7 +1173,7 @@ def _render_scope_enhancement_html(*, rows: list[dict[str, Any]], extend_days: i
     )
     parts.append("</head><body>")
     parts.append(f"<h1>{escape(subject)}</h1>")
-    parts.append("<p>Hi,</p>")
+    parts.append("<p>Hi there,</p>")
     parts.append(
         "<p>We’ve shipped an improvement to how MicroFlowOps matches signals to your Texas Triangle "
         "(metro footprint and boundary handling). This produces a more complete set of qualifying OSHA activity "
