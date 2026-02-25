@@ -20,7 +20,7 @@ EXPECTED_DISCOVERY_TR = (
 )
 EXPECTED_OUTREACH_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
-    r"C:\dev\OSHA_Leads\run_with_secrets.ps1 py -3 C:\dev\OSHA_Leads\run_outreach_auto.py"
+    r"C:\dev\OSHA_Leads\scripts\scheduled\run_outreach_auto.ps1"
 )
 EXPECTED_INBOUND_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
@@ -98,6 +98,9 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("INSTALL_SCHEDULED_TASKS_MODE=print-config", out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=1", out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAY_SCHEDULE=MON,TUE,WED,THU,FRI", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_SETTING_START_WHEN_AVAILABLE=1", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_SETTING_WAKE_TO_RUN=1", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_SETTING_MULTIPLE_INSTANCES=IgnoreNew", out)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_PRINT_CONFIG", out)
 
         tasks = _parse_task_config(out)
@@ -210,6 +213,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("ERR_INSTALL_SCHEDULED_TASKS_APPLY_ACTION_STUCK", text)
         self.assertIn("function Invoke-SchtasksCommand([string[]]$SchtasksArgs)", text)
         self.assertNotIn("function Invoke-SchtasksCommand([string[]]$Args)", text)
+        self.assertIn("-WakeToRun", text)
+        self.assertIn("-MultipleInstances IgnoreNew", text)
         self.assertIn("last_run_result_hex=0x41303", text)
         self.assertNotIn("last_result=0x41303", text)
         self.assertNotIn(" -- py -3 ", text)

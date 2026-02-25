@@ -32,8 +32,8 @@ Run this on the PC that hosts Task Scheduler (PC-only check), and also send a **
 
 Only one production setup is supported:
 1. Place a real `.env` file in repo root (`C:\dev\OSHA_Leads\.env`) using `.env.template`.
-2. Use `run_wally_trial_daily.bat` from Task Scheduler.
-3. Ensure the batch starts with `cd /d C:\dev\OSHA_Leads` so `.env` is loaded reliably.
+2. Use `python run_wally_trial.py ... --enable-schedule` so Task Scheduler points at the wrapper `scripts\scheduled\run_wally_trial_daily.ps1`.
+3. The wrapper runs from repo root and calls `run_wally_trial_daily.bat`, so `.env` loading and working-directory behavior stay deterministic.
 
 ## 1) Create `.env` from Template
 
@@ -102,7 +102,7 @@ Behavior:
 - Opt-in scheduler verification:
   - `python run_wally_trial.py wally_trial_tx_triangle_v1.json --doctor --doctor-check-scheduler`
   - Prints `DOCTOR_NOTE scheduler_check=SKIPPED ...` if the task is missing or `schtasks` is unavailable.
-  - Fails (`DOCTOR_FAIL scheduler_check=BAD ...`) if a task exists but its `/TR` action does not match the expected `run_wally_trial_daily.bat` action string.
+  - Fails (`DOCTOR_FAIL scheduler_check=BAD ...`) if a task exists but its `/TR` action does not match the expected wrapper action string.
 ## Reliability Sequence (Before Any Live Send)
 
 Recommended operator sequence before `--send-live` (keeps onboarding email-only and reduces surprises):
@@ -174,12 +174,12 @@ Note: Task Scheduler runs on the local PC. The machine must be on at the schedul
 
 Use this exact action to avoid trailing-quote regressions:
 
-- Program/script: `C:\Windows\System32\cmd.exe`
-- Add arguments: `/c ""C:\dev\OSHA_Leads\run_wally_trial_daily.bat""`
-- Start in: `C:\dev\OSHA_Leads`
+- Program/script: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` (or `powershell.exe`)
+- Add arguments: `-NoProfile -ExecutionPolicy Bypass -File "C:\dev\OSHA_Leads\scripts\scheduled\run_wally_trial_daily.ps1"`
+- Start in: `C:\dev\OSHA_Leads` (optional; wrapper also sets repo root)
 
 Expected `/TR` string (what `--check-schedule` verifies):
-- `cmd /c ""C:\dev\OSHA_Leads\run_wally_trial_daily.bat""`
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\dev\OSHA_Leads\scripts\scheduled\run_wally_trial_daily.ps1"`
 
 
 
