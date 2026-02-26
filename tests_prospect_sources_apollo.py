@@ -2,6 +2,8 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest import mock
+import json
 
 
 class TestProspectSourcesApollo(unittest.TestCase):
@@ -195,6 +197,205 @@ class TestProspectSourcesApollo(unittest.TestCase):
         self.assertEqual(result["parse_mode"], "FAILED")
         self.assertIn("error", result)
         self.assertTrue(result.get("diagnostics_path"))
+        self.assertIn("apollo_search_request_failed", str(result.get("error") or ""))
+
+    def test_forbidden_403_records_structured_diagnostic_and_flag(self):
+        from outreach import prospect_sources_apollo as apollo
+
+        def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            return 403, {"error": "Forbidden: master key required"}
+
+        with tempfile.TemporaryDirectory() as d:
+            result = apollo.fetch_apollo_state_rows(
+                state="TX",
+                run_date=date(2026, 2, 24),
+                max_pages=1,
+                sleep_ms=0,
+                cache_dir=Path(d) / "cache",
+                diagnostics_dir=Path(d) / "diag",
+                api_key="k",
+                enrich_enabled=True,
+                enrich_limit=1,
+                person_titles=["owner"],
+                fetcher=_fetch,
+                allow_cache_write=False,
+            )
+            diag_path = Path(str(result.get("diagnostics_path")))
+            diag_payload = __import__("json").loads(diag_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result.get("forbidden"))
+        self.assertEqual(result.get("error_status"), 403)
+        self.assertEqual(result.get("error_endpoint"), "api/v1/mixed_people/api_search")
+        self.assertIn("status=403 retryable=0", str(result.get("error") or ""))
+        self.assertEqual(diag_payload.get("status"), 403)
+        self.assertEqual(diag_payload.get("endpoint"), "api/v1/mixed_people/api_search")
+        self.assertIn("master key", str(diag_payload.get("apollo_error") or "").lower())
+
+    def test_retries_transient_429_then_success(self):
+        from outreach import prospect_sources_apollo as apollo
+
+        calls = {"search": 0, "enrich": 0}
+
+        def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            if "api_search" in url:
+                calls["search"] += 1
+                if calls["search"] < 3:
+                    return 429, {"error": "rate_limited"}
+                return 200, {"people": [{"id": "p1", "has_email": True}]}
+            calls["enrich"] += 1
+            return 200, {"matches": [{"id": "p1", "email": "p1@example.com", "organization": {"name": "P1"}}]}
+
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch("outreach.prospect_sources_apollo.time.sleep") as sleep_mock:
+                result = apollo.fetch_apollo_state_rows(
+                    state="TX",
+                    run_date=date(2026, 2, 24),
+                    max_pages=1,
+                    sleep_ms=1,
+                    cache_dir=Path(d) / "cache",
+                    diagnostics_dir=Path(d) / "diag",
+                    api_key="k",
+                    enrich_enabled=True,
+                    enrich_limit=1,
+                    person_titles=["owner"],
+                    fetcher=_fetch,
+                    allow_cache_write=False,
+                )
+
+        self.assertEqual(calls["search"], 3)
+        self.assertEqual(calls["enrich"], 1)
+        self.assertEqual(result["enriched"], 1)
+        self.assertGreaterEqual(sleep_mock.call_count, 2)
+
+    def test_parse_failure_returns_stable_error(self):
+        from outreach import prospect_sources_apollo as apollo
+
+        def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            return 200, []  # invalid parse shape for client contract
+
+        with tempfile.TemporaryDirectory() as d:
+            result = apollo.fetch_apollo_state_rows(
+                state="TX",
+                run_date=date(2026, 2, 24),
+                max_pages=1,
+                sleep_ms=0,
+                cache_dir=Path(d) / "cache",
+                diagnostics_dir=Path(d) / "diag",
+                api_key="k",
+                enrich_enabled=True,
+                enrich_limit=1,
+                person_titles=["owner"],
+                fetcher=_fetch,
+                allow_cache_write=False,
+            )
+
+        self.assertEqual(result["parse_mode"], "FAILED")
+        self.assertIn("apollo_search_parse_failed", str(result.get("error") or ""))
+
+    def test_cache_reuse_reports_cache_used_and_age(self):
+        from outreach import prospect_sources_apollo as apollo
+
+        calls = {"search": 0}
+
+        def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            if "api_search" in url:
+                calls["search"] += 1
+                return 200, {"people": []}
+            raise AssertionError("enrich should not be called")
+
+        with tempfile.TemporaryDirectory() as d:
+            cache_dir = Path(d) / "cache"
+            diag_dir = Path(d) / "diag"
+            first = apollo.fetch_apollo_state_rows(
+                state="TX",
+                run_date=date(2026, 2, 24),
+                max_pages=1,
+                sleep_ms=0,
+                cache_dir=cache_dir,
+                diagnostics_dir=diag_dir,
+                api_key="k",
+                enrich_enabled=False,
+                enrich_limit=0,
+                person_titles=["owner"],
+                fetcher=_fetch,
+                allow_cache_write=True,
+            )
+            second = apollo.fetch_apollo_state_rows(
+                state="TX",
+                run_date=date(2026, 2, 24),
+                max_pages=1,
+                sleep_ms=0,
+                cache_dir=cache_dir,
+                diagnostics_dir=diag_dir,
+                api_key="k",
+                enrich_enabled=False,
+                enrich_limit=0,
+                person_titles=["owner"],
+                fetcher=_fetch,
+                allow_cache_write=True,
+            )
+
+        self.assertFalse(first["cache_used"])
+        self.assertTrue(second["cache_used"])
+        self.assertEqual(calls["search"], 1)
+        self.assertIsNotNone(second["cache_age_days"])
+
+    def test_doctor_forbidden_returns_flag_and_hintable_state(self):
+        from outreach import prospect_sources_apollo as apollo
+
+        def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            self.assertIn("usage_stats/api_usage_stats", url)
+            self.assertEqual(payload, {})
+            return 403, {"error": "Forbidden"}
+
+        result = apollo.doctor_apollo_api(api_key="k", fetcher=_fetch, sleep_ms=0)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["forbidden"])
+        self.assertEqual(result["status"], 403)
+        self.assertEqual(result["endpoint"], "api/v1/usage_stats/api_usage_stats")
+
+    def test_doctor_post_success_path_returns_ok(self):
+        from outreach import prospect_sources_apollo as apollo
+
+        def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            self.assertIn("usage_stats/api_usage_stats", url)
+            self.assertEqual(payload, {})
+            return 200, {"ok": True}
+
+        result = apollo.doctor_apollo_api(api_key="k", fetcher=_fetch, sleep_ms=0)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["forbidden"])
+        self.assertEqual(result["status"], 200)
+
+    def test_doctor_404_non_json_writes_diagnostic_and_does_not_throw(self):
+        from outreach import prospect_sources_apollo as apollo
+
+        def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            return {
+                "status": 404,
+                "content_type": "text/html; charset=utf-8",
+                "body_preview": "<html>not found</html>",
+                "json": None,
+            }
+
+        with tempfile.TemporaryDirectory() as d:
+            result = apollo.doctor_apollo_api(
+                api_key="k",
+                fetcher=_fetch,
+                sleep_ms=0,
+                diagnostics_dir=Path(d) / "diag",
+            )
+            diag_path = Path(str(result.get("diagnostics_path")))
+            diag = json.loads(diag_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["forbidden"])
+        self.assertTrue(result["not_found"])
+        self.assertEqual(result["status"], 404)
+        self.assertEqual(result["content_type"], "text/html; charset=utf-8")
+        self.assertEqual(diag.get("status"), 404)
+        self.assertEqual(diag.get("endpoint"), "api/v1/usage_stats/api_usage_stats")
+        self.assertIn("text/html", str(diag.get("content_type") or ""))
 
 
 if __name__ == "__main__":

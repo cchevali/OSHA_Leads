@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=e7cea5f80cdb0bb3aea49a0f0deb22c42fa11e83
-PACK_BUILD_UTC=2026-02-25T03:31:14Z
-SOURCE_HASHES: AGENTS.md=417e021598811fea289c6a53c48f57319eedc9b03f90fe2970f83b7144981219 docs/ARCHITECTURE.md=b2e5149fce23f70222a40e3b90010b94eb3255cb643b43608f72370af67842d4 docs/DECISIONS.md=b0b86562b88a860500b5ebdde492418328985e1210315b6cf2eeaf98324ed9a6 docs/PROJECT_BRIEF.md=7dc7d06e7ce0d886defa79f01fe836eae63b926293b837267fa92f84125dfb41 docs/RUNBOOK.md=57489debf57f9637090596b5235d49678d11b4940b248bf390181b14ca05a8fb docs/TODO.md=850e68442840cad6c15492319f7e98fbcf9b4f3207fab33434398fe2911da730 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=6e4886d7091637f64d1a210195693816c8426e376732c410865ffbc756cb51c1
+PACK_GIT_SHA=a024b540ad37c005057e27ae426608cfc5d9be56
+PACK_BUILD_UTC=2026-02-26T03:23:45Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=3058f6b64b950d173e3d1c8526968e36fa09944fd13f96477d784bb3836da44d docs/DECISIONS.md=c70980dc78a7b2a64771f177fa9368db5c5a2a8de7b41e34efb5687cdcd15ca4 docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=db7592aabe6d5d4622f58cd03ecfb86f84f964f44822cc0303ce2f5252f9938c docs/TODO.md=5d74e443c60d8cf0e834080a581990ffdd4bbe78e69311be2dbfcd99eb621fcb docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=4ca3ff8148d88ecbc9774ce196e47a31674d6fa0d2fcd1d93f12b02ccaae249a
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -729,10 +729,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachSuppressionMaxAgeHours 240 `
   -ProspectAutoGrowEnabled 1 `
   -ProspectAutoGrowSafetyNetEnabled 1 `
-  -ProspectAutoGrowSources AIHA `
+  -ProspectAutoGrowSources AIHA,OHS_BG,APOLLO `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
+  -ApolloApiKey <your_apollo_api_key> `
+  -ApolloEnrichEnabled 1 `
+  -ApolloEnrichMaxPerRun 50 `
+  -ApolloPersonLocationsMode state `
   -TrialSendsLimitDefault 14 `
   -TrialExpiredBehaviorDefault notify_once
 ```
@@ -788,7 +792,8 @@ Auto-growth (env-gated, optional):
 - Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
 - APOLLO v1 flow: People Search (`has_email=true` gating) + Bulk People Enrichment in batches of 10; no waterfall/webhook mode.
-- APOLLO consumes enrichment credits and is capped per run by `APOLLO_ENRICH_MAX_PER_RUN` (free-tier credits may be insufficient for sustained ramping).
+- APOLLO consumes enrichment credits. Search can be low/no-credit; enrichment is credit-capped by `APOLLO_ENRICH_MAX_PER_RUN`.
+- Apollo free-tier credits are limited; validate refill volume against actual credit usage before increasing send limits.
 - `--for-date YYYY-MM-DD` controls `selected_state` plus per-state backlog/new-needed previews in `--print-config` and `--dry-run`.
 
 Dry-run generation (no writes):
@@ -810,16 +815,28 @@ Generator emits machine-readable lines:
 - `GENERATOR_ROWS_READ`
 - `GENERATOR_ROWS_WRITTEN`
 - `GENERATOR_AUTOGROW_*`
-- `GENERATOR_AUTOGROW_STATES`
 - `GENERATOR_AUTOGROW_SAFETY_NET_FORCED`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
 - `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
 - `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
+- `GENERATOR_AUTOGROW_STATES`
 - `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG|APOLLO> state=<STATE> ...`
 - `GENERATOR_AIHA_*`
 - `GENERATOR_OHS_BG_*`
 - `GENERATOR_APOLLO_*`
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
+
+APOLLO telemetry highlights:
+
+- `GENERATOR_APOLLO_SEARCH_PAGES_FETCHED`
+- `GENERATOR_APOLLO_SEARCH_ROWS_RETURNED`
+- `GENERATOR_APOLLO_SEARCH_ROWS_HAS_EMAIL_TRUE`
+- `GENERATOR_APOLLO_SEARCH_ROWS_DEDUPED_ID`
+- `GENERATOR_APOLLO_ENRICH_ATTEMPTED`
+- `GENERATOR_APOLLO_ENRICHED`
+- `GENERATOR_APOLLO_ENRICH_NO_MATCH`
+- `GENERATOR_APOLLO_ENRICH_SKIPPED_CREDIT_CAP`
+- `GENERATOR_APOLLO_CREDIT_CAP_HIT`
 
 Optional empty-state planner fallback:
 - `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default) preserves weekday rotation-selected state.

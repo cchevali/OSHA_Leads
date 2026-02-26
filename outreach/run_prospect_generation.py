@@ -31,6 +31,8 @@ import seed_recipients_pools as pools
 ERR_GENERATOR_FAILED = "ERR_GENERATOR_FAILED"
 PASS_GENERATOR_PRINT_CONFIG = "PASS_GENERATOR_PRINT_CONFIG"
 WARN_AUTOGROWTH_SOURCE_FAILED = "WARN_AUTOGROWTH_SOURCE_FAILED"
+APOLLO_FORBIDDEN_HINT = "CHECK_MASTER_KEY_OR_ENDPOINT_SCOPES"
+APOLLO_DOCTOR_NOT_FOUND_HINT = "CHECK_METHOD_AND_BASE_URL"
 
 OUTPUT_SUBDIR = ("prospect_discovery",)
 OUTPUT_FILENAME = "prospects_latest.csv"
@@ -689,6 +691,11 @@ def _print_tokens(
     print(f"GENERATOR_APOLLO_ENRICH_MAX_PER_RUN={int(apollo_cfg.get('enrich_max_per_run') or 0)}")
     print(f"GENERATOR_APOLLO_PERSON_TITLES={','.join(list(apollo_cfg.get('person_titles') or []))}")
     print(f"GENERATOR_APOLLO_PERSON_LOCATIONS_MODE={apollo_cfg.get('person_locations_mode') or 'state'}")
+    print(f"GENERATOR_APOLLO_CACHE_PATH={Path(apollo_result['cache_path']).resolve()}")
+    print(f"GENERATOR_APOLLO_CACHE_USED={'YES' if apollo_result.get('cache_used') else 'NO'}")
+    apollo_cache_age = apollo_result.get("cache_age_days")
+    print(f"GENERATOR_APOLLO_CACHE_AGE_DAYS={apollo_cache_age if apollo_cache_age is not None else -1}")
+    print(f"GENERATOR_APOLLO_PAGE_PARSE_MODE={apollo_result.get('parse_mode') or 'FAILED'}")
     print(f"GENERATOR_APOLLO_SEARCH_PAGES_FETCHED={int(apollo_result.get('search_pages_fetched') or 0)}")
     print(f"GENERATOR_APOLLO_SEARCH_ROWS_RETURNED={int(apollo_result.get('search_rows_returned') or 0)}")
     print(f"GENERATOR_APOLLO_SEARCH_ROWS_HAS_EMAIL_TRUE={int(apollo_result.get('search_rows_has_email_true') or 0)}")
@@ -698,6 +705,11 @@ def _print_tokens(
     print(f"GENERATOR_APOLLO_ENRICH_NO_MATCH={int(apollo_result.get('enrich_no_match') or 0)}")
     print(f"GENERATOR_APOLLO_ENRICH_SKIPPED_CREDIT_CAP={int(apollo_result.get('enrich_skipped_credit_cap') or 0)}")
     print(f"GENERATOR_APOLLO_CREDIT_CAP_HIT={1 if apollo_result.get('credit_cap_hit') else 0}")
+    print(
+        "GENERATOR_APOLLO_FORBIDDEN="
+        f"{1 if apollo_result.get('forbidden') else 0} "
+        f"hint={APOLLO_FORBIDDEN_HINT}"
+    )
     print(f"GENERATOR_APOLLO_REJECTED_INVALID_EMAIL={int(apollo_rejected.get('invalid_email', 0))}")
     print(f"GENERATOR_APOLLO_REJECTED_FREE_DOMAIN={int(apollo_rejected.get('free_domain', 0))}")
     print(f"GENERATOR_APOLLO_REJECTED_SUPPRESSED={int(apollo_rejected.get('suppressed', 0))}")
@@ -780,6 +792,7 @@ def _fetch_autogrow_source_rows(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate deterministic discovery CSV feed from seed pools + optional autogrow.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved output path and exit.")
+    ap.add_argument("--apollo-doctor", action="store_true", help="Check Apollo master-key endpoint access and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Compute rows only; do not write output files.")
     ap.add_argument("--for-date", default="", help="Override run date (YYYY-MM-DD) for selected_state/backlog preview.")
     args = ap.parse_args(argv)
@@ -795,6 +808,45 @@ def main(argv: list[str] | None = None) -> int:
     cache_dir = _generation_cache_dir(data_dir)
     cache_root_dir = _generation_cache_root_dir(data_dir)
     diagnostics_dir = _generation_diagnostics_dir(data_dir)
+
+    if args.apollo_doctor:
+        try:
+            apollo_cfg_for_doctor = _parse_apollo_config(["APOLLO"])
+        except Exception as exc:
+            print(f"APOLLO_DOCTOR_ERROR=1 stage=config err={exc}")
+            return 0
+        try:
+            doctor = prospect_sources_apollo.doctor_apollo_api(
+                api_key=str(apollo_cfg_for_doctor.get("api_key") or ""),
+                sleep_ms=0,
+                diagnostics_dir=diagnostics_dir,
+            )
+        except Exception as exc:
+            print(f"APOLLO_DOCTOR_ERROR=1 stage=request err={exc}")
+            return 0
+        diag = doctor.get("diagnostics_path")
+        resolved_diag: Path | None = diag if isinstance(diag, Path) else (Path(str(diag)) if diag else None)
+        if doctor.get("forbidden"):
+            print(f"APOLLO_DOCTOR_FORBIDDEN=1 hint={APOLLO_FORBIDDEN_HINT}")
+            if resolved_diag is not None:
+                print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
+            return 0
+        if doctor.get("not_found"):
+            print(f"APOLLO_DOCTOR_NOT_FOUND=1 hint={APOLLO_DOCTOR_NOT_FOUND_HINT}")
+            if resolved_diag is not None:
+                print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
+            return 0
+        if doctor.get("ok"):
+            print("APOLLO_DOCTOR_OK=1")
+            return 0
+        print(
+            "APOLLO_DOCTOR_HTTP_ERROR=1 "
+            f"status={int(doctor.get('status') or 0)} "
+            f"content_type={doctor.get('content_type') or 'unknown'}"
+        )
+        if resolved_diag is not None:
+            print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
+        return 0
 
     states = _parse_states(os.getenv("OUTREACH_STATES", "TX"))
     if not states:
@@ -895,6 +947,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     ohs_bg_rejected: Counter = Counter()
     apollo_result: dict[str, object] = {
+        "cache_path": prospect_sources_apollo._cache_path(_autogrow_source_cache_dir(cache_root_dir, "APOLLO"), selected_state),
+        "cache_used": False,
+        "cache_age_days": None,
+        "parse_mode": ("SKIP_NO_SOURCES" if sources_empty else "FAILED"),
         "search_pages_fetched": 0,
         "search_rows_returned": 0,
         "search_rows_has_email_true": 0,
@@ -904,6 +960,7 @@ def main(argv: list[str] | None = None) -> int:
         "enrich_no_match": 0,
         "enrich_skipped_credit_cap": 0,
         "credit_cap_hit": False,
+        "forbidden": False,
     }
     apollo_rejected: Counter = Counter()
     apollo_enrich_remaining = int(apollo_cfg.get("enrich_max_per_run") or 0)
@@ -1026,6 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
                 apollo_result["credit_cap_hit"] = bool(apollo_result.get("credit_cap_hit")) or bool(
                     result.get("credit_cap_hit")
                 )
+                apollo_result["forbidden"] = bool(apollo_result.get("forbidden")) or bool(result.get("forbidden"))
                 apollo_rejected.update(rejected)
                 apollo_enrich_remaining = max(0, apollo_enrich_remaining - int(result.get("enrich_attempted") or 0))
 
@@ -1054,6 +1112,15 @@ def main(argv: list[str] | None = None) -> int:
                     ohs_bg_result["rows_candidate"] = len(rows_candidate)
                     ohs_bg_result["rows_accepted"] = len(accepted_rows)
                     ohs_bg_rejected = rejected
+                elif source_token == "APOLLO":
+                    apollo_result.update(
+                        {
+                            "cache_path": result.get("cache_path") or apollo_result.get("cache_path"),
+                            "cache_used": bool(result.get("cache_used")),
+                            "cache_age_days": result.get("cache_age_days"),
+                            "parse_mode": result.get("parse_mode") or apollo_result.get("parse_mode"),
+                        }
+                    )
 
             if result.get("error"):
                 source_label = "aiha" if source_token == "AIHA" else ("ohs_bg" if source_token == "OHS_BG" else "apollo")
