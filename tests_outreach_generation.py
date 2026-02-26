@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -799,6 +799,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "APOLLO_ENRICH_ENABLED": "1",
             }
             buf = io.StringIO()
+            err_buf = io.StringIO()
             with mock.patch.dict(os.environ, env, clear=False):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
@@ -811,12 +812,13 @@ class TestProspectGeneration(unittest.TestCase):
                         "error": "apollo_doctor_request_failed err=http_status status=403 retryable=0",
                     },
                 ) as doctor_mock:
-                    with redirect_stdout(buf):
+                    with redirect_stdout(buf), redirect_stderr(err_buf):
                         rc = generator.main(["--apollo-doctor"])
             self.assertEqual(rc, 0)
             doctor_mock.assert_called_once()
             out = buf.getvalue()
             self.assertIn("APOLLO_DOCTOR_FORBIDDEN=1 hint=CHECK_MASTER_KEY_OR_ENDPOINT_SCOPES", out)
+            self.assertNotIn("ERR_GENERATOR_FAILED stage=apollo_doctor", out + (err_buf.getvalue() or ""))
             self.assertFalse((data_dir / "prospect_discovery" / "prospects_latest.csv").exists())
 
     def test_apollo_doctor_ok(self):
@@ -836,6 +838,35 @@ class TestProspectGeneration(unittest.TestCase):
                     rc = generator.main(["--apollo-doctor"])
         self.assertEqual(rc, 0)
         self.assertIn("APOLLO_DOCTOR_OK=1", buf.getvalue())
+
+    def test_apollo_doctor_404_not_found_token_and_no_err(self):
+        from outreach import run_prospect_generation as generator
+
+        env = {
+            "APOLLO_API_KEY": "test-key",
+            "APOLLO_ENRICH_ENABLED": "1",
+        }
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch(
+                "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
+                return_value={
+                    "ok": False,
+                    "forbidden": False,
+                    "not_found": True,
+                    "status": 404,
+                    "endpoint": "api/v1/usage_stats/api_usage_stats",
+                    "content_type": "text/html",
+                    "error": "apollo_doctor_request_failed err=http_status status=404 retryable=0",
+                },
+            ):
+                with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                    rc = generator.main(["--apollo-doctor"])
+        self.assertEqual(rc, 0)
+        out = out_buf.getvalue()
+        self.assertIn("APOLLO_DOCTOR_NOT_FOUND=1 hint=CHECK_METHOD_AND_BASE_URL", out)
+        self.assertNotIn("ERR_GENERATOR_FAILED stage=apollo_doctor", out + (err_buf.getvalue() or ""))
 
     def test_apollo_multi_source_refills_after_aiha_ohs_rejections(self):
         from outreach import run_prospect_generation as generator

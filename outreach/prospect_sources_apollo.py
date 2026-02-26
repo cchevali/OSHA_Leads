@@ -167,6 +167,44 @@ def _default_get_json(url: str, payload: dict, api_key: str) -> tuple[int, dict]
     return status_code, parsed
 
 
+def _default_post_doctor_response(url: str, payload: dict, api_key: str) -> dict:
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Api-Key": api_key,
+        "User-Agent": USER_AGENT,
+    }
+    try:
+        resp = requests.post(url, json=(payload or {}), headers=headers, timeout=HTTP_TIMEOUT_SECONDS)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"request_exception exc={type(exc).__name__}") from exc
+
+    status_code = int(resp.status_code)
+    content_type = _normalize_text(resp.headers.get("Content-Type") or "").lower()
+    body_text = str(resp.text or "")
+    looks_json = "json" in content_type
+
+    parsed_json = None
+    parse_error = ""
+    if status_code == 200 or looks_json:
+        try:
+            maybe_json = resp.json()
+            if isinstance(maybe_json, dict):
+                parsed_json = maybe_json
+            else:
+                parse_error = "payload_not_object"
+        except Exception as exc:
+            parse_error = type(exc).__name__
+
+    return {
+        "status": status_code,
+        "content_type": content_type or "unknown",
+        "json": parsed_json,
+        "parse_error": parse_error,
+        "body_preview": _normalize_text(body_text)[:160],
+    }
+
+
 def _apollo_error_text(payload: dict) -> str:
     if not isinstance(payload, dict):
         return ""
@@ -183,6 +221,50 @@ def _apollo_error_text(payload: dict) -> str:
         if text:
             return text
     return ""
+
+
+def _doctor_fetch_result(
+    fetcher: Callable[..., object],
+    url: str,
+    payload: dict,
+    api_key: str,
+) -> dict:
+    raw = fetcher(url, payload, api_key)
+    if isinstance(raw, dict):
+        status = int(raw.get("status") or 0)
+        content_type = _normalize_text(str(raw.get("content_type") or "unknown")).lower() or "unknown"
+        body_preview = _normalize_text(str(raw.get("body_preview") or raw.get("body") or ""))[:160]
+        json_payload = raw.get("json")
+        parse_error = _normalize_text(str(raw.get("parse_error") or ""))
+        if json_payload is not None and not isinstance(json_payload, dict):
+            parse_error = parse_error or "payload_not_object"
+            json_payload = None
+        return {
+            "status": status,
+            "content_type": content_type,
+            "json": (json_payload if isinstance(json_payload, dict) else None),
+            "parse_error": parse_error,
+            "body_preview": body_preview,
+        }
+    if isinstance(raw, tuple) and len(raw) >= 2:
+        status = int(raw[0] or 0)
+        payload_obj = raw[1]
+        if isinstance(payload_obj, dict):
+            return {
+                "status": status,
+                "content_type": "application/json",
+                "json": payload_obj,
+                "parse_error": "",
+                "body_preview": "",
+            }
+        return {
+            "status": status,
+            "content_type": "unknown",
+            "json": None,
+            "parse_error": "payload_not_object",
+            "body_preview": _normalize_text(str(payload_obj or ""))[:160],
+        }
+    raise ValueError("invalid_doctor_fetcher_response")
 
 
 def _retry_backoff_seconds(attempt_number: int, sleep_ms: int) -> float:
@@ -657,38 +739,118 @@ def fetch_apollo_state_rows(
 def doctor_apollo_api(
     api_key: str,
     *,
-    fetcher: Callable[[str, dict, str], tuple[int, dict]] | None = None,
+    fetcher: Callable[..., object] | None = None,
     sleep_ms: int = 0,
+    diagnostics_dir: Path | None = None,
 ) -> dict:
     if not _normalize_text(api_key):
         raise ValueError("missing_apollo_api_key")
-    get_json = fetcher or _default_get_json
+    post_doctor = fetcher or _default_post_doctor_response
     endpoint = _endpoint_label(USAGE_STATS_URL)
-    try:
-        status, payload = _post_json_with_retry(
-            post_json=get_json,
-            url=USAGE_STATS_URL,
-            payload={},
-            api_key=api_key,
-            stage="doctor",
-            sleep_ms=sleep_ms,
-        )
-        _ = status
+    max_attempts = max(1, int(HTTP_MAX_ATTEMPTS))
+    last_result: dict | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            current = _doctor_fetch_result(post_doctor, USAGE_STATS_URL, {}, api_key)
+        except Exception as exc:
+            if attempt >= max_attempts:
+                result = {
+                    "ok": False,
+                    "forbidden": False,
+                    "not_found": False,
+                    "endpoint": endpoint,
+                    "status": 0,
+                    "content_type": "unknown",
+                    "apollo_error": "",
+                    "error": f"apollo_doctor_request_failed err=request_exception exc={type(exc).__name__}",
+                    "diagnostics_path": None,
+                }
+                if diagnostics_dir is not None:
+                    diag = {
+                        "source": "apollo_doctor",
+                        "endpoint": endpoint,
+                        "status": 0,
+                        "content_type": "unknown",
+                        "error": result["error"],
+                        "generated_at_utc": _utc_now_iso(),
+                    }
+                    result["diagnostics_path"] = _write_diagnostic(diagnostics_dir, "doctor", diag)
+                return result
+            backoff_seconds = _retry_backoff_seconds(attempt, sleep_ms)
+            if backoff_seconds > 0:
+                time.sleep(backoff_seconds)
+            continue
+
+        last_result = current
+        status_code = int(current.get("status") or 0)
+        retryable = status_code in RETRYABLE_STATUS_CODES
+        if status_code == 200 or not retryable or attempt >= max_attempts:
+            break
+        backoff_seconds = _retry_backoff_seconds(attempt, sleep_ms)
+        if backoff_seconds > 0:
+            time.sleep(backoff_seconds)
+
+    current = dict(last_result or {})
+    status_code = int(current.get("status") or 0)
+    content_type = str(current.get("content_type") or "unknown")
+    payload_json = current.get("json") if isinstance(current.get("json"), dict) else None
+    parse_error = _normalize_text(str(current.get("parse_error") or ""))
+    body_preview = _normalize_text(str(current.get("body_preview") or ""))
+    apollo_error = _apollo_error_text(payload_json or {})
+    diagnostics_path = None
+
+    if status_code == 200 and payload_json is not None and not parse_error:
         return {
             "ok": True,
             "forbidden": False,
+            "not_found": False,
             "endpoint": endpoint,
             "status": 200,
-            "apollo_error": _apollo_error_text(payload),
+            "content_type": content_type,
+            "apollo_error": apollo_error,
             "error": "",
+            "diagnostics_path": None,
         }
-    except ApolloApiError as exc:
-        status_code = int(exc.status or 0) if exc.status is not None else 0
-        return {
-            "ok": False,
-            "forbidden": status_code == 403,
-            "endpoint": exc.endpoint or endpoint,
+
+    if status_code in {401, 403}:
+        error = f"apollo_doctor_request_failed err=http_status status={status_code} retryable=0"
+    elif status_code == 404:
+        error = "apollo_doctor_request_failed err=http_status status=404 retryable=0"
+    elif status_code == 200 and parse_error:
+        error = f"apollo_doctor_parse_failed err={parse_error}"
+    else:
+        retryable = status_code in RETRYABLE_STATUS_CODES
+        error = (
+            f"apollo_doctor_request_failed err=http_status status={status_code} "
+            f"retryable={1 if retryable else 0}"
+        )
+
+    if diagnostics_dir is not None:
+        diag = {
+            "source": "apollo_doctor",
+            "endpoint": endpoint,
             "status": status_code,
-            "apollo_error": exc.apollo_error,
-            "error": str(exc),
+            "content_type": content_type,
+            "generated_at_utc": _utc_now_iso(),
+            "error": error,
         }
+        if apollo_error:
+            diag["apollo_error"] = apollo_error
+        if body_preview:
+            diag["body_preview"] = body_preview
+        if parse_error:
+            diag["parse_error"] = parse_error
+        diagnostics_path = _write_diagnostic(diagnostics_dir, "doctor", diag)
+
+    return {
+        "ok": False,
+        "forbidden": status_code in {401, 403},
+        "not_found": status_code == 404,
+        "endpoint": endpoint,
+        "status": status_code,
+        "content_type": content_type,
+        "apollo_error": apollo_error,
+        "error": error,
+        "diagnostics_path": diagnostics_path,
+        "parse_error": parse_error,
+    }

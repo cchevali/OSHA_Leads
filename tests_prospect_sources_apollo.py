@@ -3,6 +3,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 from unittest import mock
+import json
 
 
 class TestProspectSourcesApollo(unittest.TestCase):
@@ -344,6 +345,7 @@ class TestProspectSourcesApollo(unittest.TestCase):
 
         def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
             self.assertIn("usage_stats/api_usage_stats", url)
+            self.assertEqual(payload, {})
             return 403, {"error": "Forbidden"}
 
         result = apollo.doctor_apollo_api(api_key="k", fetcher=_fetch, sleep_ms=0)
@@ -352,16 +354,48 @@ class TestProspectSourcesApollo(unittest.TestCase):
         self.assertEqual(result["status"], 403)
         self.assertEqual(result["endpoint"], "api/v1/usage_stats/api_usage_stats")
 
-    def test_doctor_ok_returns_success(self):
+    def test_doctor_post_success_path_returns_ok(self):
         from outreach import prospect_sources_apollo as apollo
 
         def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            self.assertIn("usage_stats/api_usage_stats", url)
+            self.assertEqual(payload, {})
             return 200, {"ok": True}
 
         result = apollo.doctor_apollo_api(api_key="k", fetcher=_fetch, sleep_ms=0)
         self.assertTrue(result["ok"])
         self.assertFalse(result["forbidden"])
         self.assertEqual(result["status"], 200)
+
+    def test_doctor_404_non_json_writes_diagnostic_and_does_not_throw(self):
+        from outreach import prospect_sources_apollo as apollo
+
+        def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            return {
+                "status": 404,
+                "content_type": "text/html; charset=utf-8",
+                "body_preview": "<html>not found</html>",
+                "json": None,
+            }
+
+        with tempfile.TemporaryDirectory() as d:
+            result = apollo.doctor_apollo_api(
+                api_key="k",
+                fetcher=_fetch,
+                sleep_ms=0,
+                diagnostics_dir=Path(d) / "diag",
+            )
+            diag_path = Path(str(result.get("diagnostics_path")))
+            diag = json.loads(diag_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["forbidden"])
+        self.assertTrue(result["not_found"])
+        self.assertEqual(result["status"], 404)
+        self.assertEqual(result["content_type"], "text/html; charset=utf-8")
+        self.assertEqual(diag.get("status"), 404)
+        self.assertEqual(diag.get("endpoint"), "api/v1/usage_stats/api_usage_stats")
+        self.assertIn("text/html", str(diag.get("content_type") or ""))
 
 
 if __name__ == "__main__":
