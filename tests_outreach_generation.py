@@ -728,6 +728,115 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("WARN_AUTOGROWTH_SOURCE_FAILED source=apollo state=TX err=rate_limited", out)
             self.assertIn("GENERATOR_COMPLETE status=DRY_RUN", out)
 
+    def test_apollo_forbidden_emits_stable_token_and_warn(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "APOLLO",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "1",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+                "APOLLO_API_KEY": "test-key",
+                "APOLLO_ENRICH_ENABLED": "1",
+            }
+
+            apollo_result = {
+                "rows": [],
+                "cache_used": False,
+                "cache_age_days": None,
+                "cache_path": data_dir / "prospect_generation" / "cache" / "apollo" / "state_TX.json",
+                "pages_fetched": 0,
+                "parse_mode": "FAILED",
+                "search_rows_returned": 0,
+                "search_rows_has_email_true": 0,
+                "search_rows_deduped_id": 0,
+                "enrich_attempted": 0,
+                "enriched": 0,
+                "enrich_no_match": 0,
+                "enrich_skipped_credit_cap": 0,
+                "credit_cap_hit": False,
+                "diagnostics_path": None,
+                "forbidden": True,
+                "error_status": 403,
+                "error_endpoint": "api/v1/mixed_people/api_search",
+                "apollo_error": "Forbidden",
+                "error": "apollo_search_request_failed err=http_status status=403 retryable=0",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows",
+                    return_value=apollo_result,
+                ):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_APOLLO_FORBIDDEN=1 hint=CHECK_MASTER_KEY_OR_ENDPOINT_SCOPES", out)
+            self.assertIn(
+                "WARN_AUTOGROWTH_SOURCE_FAILED source=apollo state=TX err=apollo_search_request_failed err=http_status status=403 retryable=0",
+                out,
+            )
+
+    def test_apollo_doctor_forbidden_is_side_effect_free_and_actionable(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            env = {
+                "DATA_DIR": str(data_dir),
+                "APOLLO_API_KEY": "test-key",
+                "APOLLO_ENRICH_ENABLED": "1",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
+                    return_value={
+                        "ok": False,
+                        "forbidden": True,
+                        "status": 403,
+                        "endpoint": "api/v1/usage_stats/api_usage_stats",
+                        "apollo_error": "Forbidden",
+                        "error": "apollo_doctor_request_failed err=http_status status=403 retryable=0",
+                    },
+                ) as doctor_mock:
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--apollo-doctor"])
+            self.assertEqual(rc, 0)
+            doctor_mock.assert_called_once()
+            out = buf.getvalue()
+            self.assertIn("APOLLO_DOCTOR_FORBIDDEN=1 hint=CHECK_MASTER_KEY_OR_ENDPOINT_SCOPES", out)
+            self.assertFalse((data_dir / "prospect_discovery" / "prospects_latest.csv").exists())
+
+    def test_apollo_doctor_ok(self):
+        from outreach import run_prospect_generation as generator
+
+        env = {
+            "APOLLO_API_KEY": "test-key",
+            "APOLLO_ENRICH_ENABLED": "1",
+        }
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch(
+                "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
+                return_value={"ok": True, "forbidden": False, "status": 200, "endpoint": "api/v1/usage_stats/api_usage_stats"},
+            ):
+                with redirect_stdout(buf):
+                    rc = generator.main(["--apollo-doctor"])
+        self.assertEqual(rc, 0)
+        self.assertIn("APOLLO_DOCTOR_OK=1", buf.getvalue())
+
     def test_apollo_multi_source_refills_after_aiha_ohs_rejections(self):
         from outreach import run_prospect_generation as generator
 
