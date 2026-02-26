@@ -35,15 +35,15 @@ function Get-TaskDefinitions([string]$RepoRoot) {
   $ingestRunner = Join-Path $RepoRoot 'scripts\scheduled\run_osha_ingest_daily.ps1'
   $generationRunner = Join-Path $RepoRoot 'scripts\scheduled\run_prospect_generation.ps1'
   $inboundRunner = Join-Path $RepoRoot 'scripts\scheduled\run_inbound_triage.ps1'
-  $outreachRunner = Join-Path $RepoRoot 'scripts\scheduled\run_outreach_auto.ps1'
   $wrapper = Join-Path $RepoRoot 'run_with_secrets.ps1'
   $discovery = Join-Path $RepoRoot 'run_prospect_discovery.py'
+  $outreach = Join-Path $RepoRoot 'run_outreach_auto.py'
 
   return @(
     (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '06:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestRunner)),
     (New-TaskDefinition -Name 'OSHA_Prospect_Generation' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $generationRunner)),
     (New-TaskDefinition -Name 'OSHA_Prospect_Discovery' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:30' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $discovery)),
-    (New-TaskDefinition -Name 'OSHA_Outreach_Auto' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $outreachRunner)),
+    (New-TaskDefinition -Name 'OSHA_Outreach_Auto' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $outreach)),
     (New-TaskDefinition -Name 'OSHA_Inbound_Triage' -ScheduleType 'minute' -StartTime '' -MinuteInterval 15 -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $inboundRunner))
   )
 }
@@ -119,12 +119,6 @@ function Emit-TaskConfig([array]$Tasks, [string]$Mode) {
   Write-Output ('INSTALL_SCHEDULED_TASKS_TASK_COUNT=' + $Tasks.Count)
   Write-Output 'INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=1'
   Write-Output 'INSTALL_SCHEDULED_TASKS_WEEKDAY_SCHEDULE=MON,TUE,WED,THU,FRI'
-  Write-Output 'INSTALL_SCHEDULED_TASKS_SETTING_START_WHEN_AVAILABLE=1'
-  Write-Output 'INSTALL_SCHEDULED_TASKS_SETTING_WAKE_TO_RUN=1'
-  Write-Output 'INSTALL_SCHEDULED_TASKS_SETTING_MULTIPLE_INSTANCES=IgnoreNew'
-  Write-Output 'INSTALL_SCHEDULED_TASKS_SETTING_EXECUTION_TIME_LIMIT=02:00:00'
-  Write-Output 'INSTALL_SCHEDULED_TASKS_SETTING_RESTART_COUNT=2'
-  Write-Output 'INSTALL_SCHEDULED_TASKS_SETTING_RESTART_INTERVAL=00:05:00'
   for ($i = 0; $i -lt $Tasks.Count; $i++) {
     $idx = $i + 1
     $task = $Tasks[$i]
@@ -345,15 +339,7 @@ function Set-TaskOperationalSettings([hashtable]$Task) {
   }
 
   try {
-    $settings = New-ScheduledTaskSettingsSet `
-      -StartWhenAvailable `
-      -WakeToRun `
-      -AllowStartIfOnBatteries `
-      -DontStopIfGoingOnBatteries `
-      -MultipleInstances IgnoreNew `
-      -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
-      -RestartCount 2 `
-      -RestartInterval (New-TimeSpan -Minutes 5)
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Set-ScheduledTask -TaskName $Task.Name -Settings $settings | Out-Null
   }
   catch {

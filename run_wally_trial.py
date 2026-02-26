@@ -1054,8 +1054,8 @@ def write_batch_runner(batch_path: Path, project_root: Path, customer_config: st
     batch_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def enable_schedule(task_name: str, task_script_path: Path) -> None:
-    task_script_text = _sanitize_task_path(task_script_path)
+def enable_schedule(task_name: str, batch_path: Path) -> None:
+    batch_text = _sanitize_task_path(batch_path)
     cmd = [
         "schtasks",
         "/Create",
@@ -1069,10 +1069,9 @@ def enable_schedule(task_name: str, task_script_path: Path) -> None:
         "/TN",
         task_name,
         "/TR",
-        build_powershell_script_task_action(task_script_text),
+        build_task_action(batch_text),
     ]
     subprocess.run(cmd, check=True)
-    apply_task_scheduler_hardening(task_name)
 
 
 def _sanitize_task_path(path: Path) -> str:
@@ -1099,40 +1098,6 @@ def _relative_batch_path(project_root: Path, path_text: str) -> str:
 
 def build_task_action(batch_text: str) -> str:
     return f'cmd /c ""{batch_text}""'
-
-
-def build_powershell_script_task_action(script_text: str) -> str:
-    arguments = f'-NoProfile -ExecutionPolicy Bypass -File "{script_text}"'
-    return format_task_to_run("powershell.exe", arguments)
-
-
-def apply_task_scheduler_hardening(task_name: str) -> None:
-    ps_script = (
-        "$ErrorActionPreference='Stop';"
-        "$taskName=[string]$args[0];"
-        "$settings=New-ScheduledTaskSettingsSet "
-        "-StartWhenAvailable "
-        "-WakeToRun "
-        "-AllowStartIfOnBatteries "
-        "-DontStopIfGoingOnBatteries "
-        "-MultipleInstances IgnoreNew "
-        "-ExecutionTimeLimit (New-TimeSpan -Hours 2) "
-        "-RestartCount 2 "
-        "-RestartInterval (New-TimeSpan -Minutes 5);"
-        "Set-ScheduledTask -TaskName $taskName -Settings $settings | Out-Null"
-    )
-    subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            ps_script,
-            task_name,
-        ],
-        check=True,
-    )
 
 
 def _strip_quotes(value: str) -> str:
@@ -1200,10 +1165,6 @@ def verify_schedule_action_from_actual(expected_action: str, actual: str | None)
     print(f"SCHEDULE_OK /TR={actual}")
 
 
-def wally_scheduler_wrapper_path(repo_root: Path) -> Path:
-    return (repo_root / "scripts" / "scheduled" / "run_wally_trial_daily.ps1").resolve()
-
-
 def run_project_context_soft_check(repo_root: Path) -> None:
     script_path = repo_root / "tools" / "project_context_pack.py"
     if not script_path.exists():
@@ -1257,8 +1218,8 @@ def run_doctor(customer_path: Path, repo_root: Path, task_name: str, check_sched
         # Task Scheduler verification (best-effort): do not attempt to create/modify tasks.
         if "query_task_to_run" in globals() and "build_task_action" in globals():
             try:
-                task_script_path = wally_scheduler_wrapper_path(repo_root)
-                expected_action = build_powershell_script_task_action(_sanitize_task_path(task_script_path))
+                batch_path = (repo_root / "run_wally_trial_daily.bat").resolve()
+                expected_action = build_task_action(_sanitize_task_path(batch_path))
                 actual = query_task_to_run(task_name)
                 if not actual:
                     print("DOCTOR_NOTE scheduler_check=SKIPPED (task missing or schtasks unavailable)")
@@ -1417,8 +1378,8 @@ def main() -> None:
         raise SystemExit(0 if ok else 1)
 
     batch_path = repo_root / "run_wally_trial_daily.bat"
-    task_script_path = wally_scheduler_wrapper_path(repo_root)
-    expected_action = build_powershell_script_task_action(_sanitize_task_path(task_script_path))
+    batch_path_resolved = batch_path.resolve()
+    expected_action = build_task_action(_sanitize_task_path(batch_path_resolved))
 
     if args.check_schedule:
         verify_schedule_action(args.task_name, expected_action)
@@ -1458,7 +1419,7 @@ def main() -> None:
     print(f"Batch runner written: {batch_path.name}")
 
     if args.enable_schedule:
-        enable_schedule(args.task_name, task_script_path)
+        enable_schedule(args.task_name, batch_path_resolved)
         verify_schedule_action(args.task_name, expected_action)
         print(f"SCHEDULE_WEEKDAYS={TRIAL_SCHEDULE_WEEKDAYS}")
         print(f"Scheduled task enabled: {args.task_name} at 08:00 local weekdays (set host timezone to America/Chicago)")

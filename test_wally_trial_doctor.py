@@ -195,8 +195,8 @@ class TestWallyTrialDoctor(unittest.TestCase):
             )
 
             called = {"n": 0}
-            wrapper_path = run_wally_trial.wally_scheduler_wrapper_path(Path(run_wally_trial.__file__).resolve().parent)
-            expected = run_wally_trial.build_powershell_script_task_action(run_wally_trial._sanitize_task_path(wrapper_path))
+            batch_path = (Path(run_wally_trial.__file__).resolve().parent / "run_wally_trial_daily.bat").resolve()
+            expected = run_wally_trial.build_task_action(run_wally_trial._sanitize_task_path(batch_path))
 
             def _fake_query(task_name: str) -> str | None:
                 called["n"] += 1
@@ -388,37 +388,28 @@ class TestWallyTrialDoctor(unittest.TestCase):
         self.assertEqual(calls["append"], 0)
 
     def test_enable_schedule_uses_weekly_weekday_trigger(self) -> None:
-        captured_calls: list[list[str]] = []
+        captured: dict[str, object] = {}
         orig_run = run_wally_trial.subprocess.run
 
         def _fake_run(cmd, check=True):  # type: ignore[no-untyped-def]
-            captured_calls.append([str(x) for x in list(cmd)])
-            self.assertTrue(check)
+            captured["cmd"] = list(cmd)
+            captured["check"] = check
             class _Done:
                 returncode = 0
             return _Done()
 
         run_wally_trial.subprocess.run = _fake_run  # type: ignore[assignment]
         try:
-            run_wally_trial.enable_schedule("OSHA Wally Trial Daily", Path(r"C:\dev\OSHA_Leads\scripts\scheduled\run_wally_trial_daily.ps1"))
+            run_wally_trial.enable_schedule("OSHA Wally Trial Daily", Path(r"C:\dev\OSHA_Leads\run_wally_trial_daily.bat"))
         finally:
             run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]
 
-        self.assertEqual(len(captured_calls), 2)
-        schtasks_cmd = captured_calls[0]
-        self.assertIn("schtasks", schtasks_cmd)
-        self.assertIn("/SC", schtasks_cmd)
-        self.assertIn("WEEKLY", schtasks_cmd)
-        self.assertIn("/D", schtasks_cmd)
-        self.assertIn("MON,TUE,WED,THU,FRI", schtasks_cmd)
-        self.assertIn("/TR", schtasks_cmd)
-        self.assertIn("powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\dev\\OSHA_Leads\\scripts\\scheduled\\run_wally_trial_daily.ps1\"", schtasks_cmd)
-
-        harden_cmd = captured_calls[1]
-        self.assertIn("powershell", harden_cmd[0].lower())
-        self.assertIn("-Command", harden_cmd)
-        self.assertTrue(any("New-ScheduledTaskSettingsSet" in part for part in harden_cmd))
-        self.assertIn("OSHA Wally Trial Daily", harden_cmd)
+        cmd = [str(x) for x in (captured.get("cmd") or [])]
+        self.assertIn("/SC", cmd)
+        self.assertIn("WEEKLY", cmd)
+        self.assertIn("/D", cmd)
+        self.assertIn("MON,TUE,WED,THU,FRI", cmd)
+        self.assertTrue(bool(captured.get("check")))
 
     def test_run_live_send_does_not_append_event_on_failure(self) -> None:
         calls = {"append": 0}

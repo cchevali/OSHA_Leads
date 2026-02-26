@@ -5,10 +5,20 @@ param(
   [Nullable[int]] $OutreachSuppressionMaxAgeHours = $null,
   [Nullable[int]] $OutreachFallbackOnEmptyState = $null,
   [Nullable[int]] $ProspectAutoGrowEnabled = $null,
+  [string] $ProspectAutoGrowStates = '',
   [string] $ProspectAutoGrowSources = '',
   [Nullable[int]] $ProspectAutoGrowBacklogTarget = $null,
   [Nullable[int]] $ProspectAutoGrowMaxFetchPagesPerRun = $null,
   [Nullable[int]] $ProspectAutoGrowHttpSleepMs = $null,
+  [string] $ProspectAutoGrowStateLicTxLicenseTypes = '',
+  [Nullable[int]] $ProspectEnrichDomainEnabled = $null,
+  [Nullable[int]] $ProspectEnrichHunterEnabled = $null,
+  [string] $HunterApiKey = '',
+  [string] $ApolloApiKey = '',
+  [Nullable[int]] $ApolloEnrichEnabled = $null,
+  [Nullable[int]] $ApolloEnrichMaxPerRun = $null,
+  [string] $ApolloPersonTitles = '',
+  [string] $ApolloPersonLocationsMode = '',
   [Nullable[int]] $TrialSendsLimitDefault = $null,
   [string] $TrialExpiredBehaviorDefault = '',
   [string] $TrialConversionUrl = '',
@@ -103,6 +113,18 @@ function Normalize-OutreachStates([string]$Raw) {
     }
   }
   if ($tokens.Count -lt 1) { return $null }
+  return ($tokens -join ',')
+}
+
+function Normalize-CommaList([string]$Raw) {
+  $tokens = @()
+  foreach ($part in ($Raw -split ',')) {
+    $item = ($part -as [string]).Trim()
+    if (-not $item) { continue }
+    if ($tokens -notcontains $item) {
+      $tokens += $item
+    }
+  }
   return ($tokens -join ',')
 }
 
@@ -281,10 +303,20 @@ try {
     'OutreachSuppressionMaxAgeHours',
     'OutreachFallbackOnEmptyState',
     'ProspectAutoGrowEnabled',
+    'ProspectAutoGrowStates',
     'ProspectAutoGrowSources',
     'ProspectAutoGrowBacklogTarget',
     'ProspectAutoGrowMaxFetchPagesPerRun',
     'ProspectAutoGrowHttpSleepMs',
+    'ProspectAutoGrowStateLicTxLicenseTypes',
+    'ProspectEnrichDomainEnabled',
+    'ProspectEnrichHunterEnabled',
+    'HunterApiKey',
+    'ApolloApiKey',
+    'ApolloEnrichEnabled',
+    'ApolloEnrichMaxPerRun',
+    'ApolloPersonTitles',
+    'ApolloPersonLocationsMode',
     'TrialSendsLimitDefault',
     'TrialExpiredBehaviorDefault',
     'TrialConversionUrl',
@@ -338,6 +370,12 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowHttpSleepMs') -and $ProspectAutoGrowHttpSleepMs -lt 0) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowHttpSleepMs'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectEnrichDomainEnabled') -and $ProspectEnrichDomainEnabled -notin @(0, 1)) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectEnrichDomainEnabled'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectEnrichHunterEnabled') -and $ProspectEnrichHunterEnabled -notin @(0, 1)) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectEnrichHunterEnabled'
   }
   if ($PSBoundParameters.ContainsKey('TrialSendsLimitDefault') -and $TrialSendsLimitDefault -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TrialSendsLimitDefault'
@@ -414,12 +452,57 @@ try {
     foreach ($part in ($rawSources -split ',')) {
       $src = ($part -as [string]).Trim().ToUpperInvariant()
       if (-not $src) { continue }
-      if (($src -ne 'AIHA') -and ($src -ne 'OHS_BG')) {
+      if (
+        ($src -ne 'AIHA') -and
+        ($src -ne 'OHS_BG') -and
+        ($src -ne 'APOLLO') -and
+        ($src -ne 'BCSP') -and
+        ($src -ne 'OSHA_NEWS') -and
+        ($src -ne 'STATE_LIC') -and
+        ($src -ne 'AGC') -and
+        ($src -ne 'BLUEBOOK') -and
+        ($src -ne 'THOMASNET') -and
+        ($src -ne 'BBB')
+      ) {
         Fail-Token $ERR_SET_OUTREACH_ENV_ARGS ('invalid_ProspectAutoGrowSources value=' + $src)
       }
       if ($srcTokens -notcontains $src) {
         $srcTokens += $src
       }
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectAutoGrowStateLicTxLicenseTypes')) {
+    if (-not (Normalize-CommaList ($ProspectAutoGrowStateLicTxLicenseTypes -as [string]))) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowStateLicTxLicenseTypes'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('HunterApiKey')) {
+    if (-not (($HunterApiKey -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_HunterApiKey'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ApolloApiKey')) {
+    if (-not (($ApolloApiKey -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ApolloApiKey'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ApolloEnrichEnabled')) {
+    if ($ApolloEnrichEnabled -notin @(0, 1)) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ApolloEnrichEnabled'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ApolloEnrichMaxPerRun') -and $ApolloEnrichMaxPerRun -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ApolloEnrichMaxPerRun'
+  }
+  if ($PSBoundParameters.ContainsKey('ApolloPersonTitles')) {
+    if (-not (Normalize-CommaList ($ApolloPersonTitles -as [string]))) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ApolloPersonTitles'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ApolloPersonLocationsMode')) {
+    $locMode = (($ApolloPersonLocationsMode -as [string]).Trim().ToLowerInvariant())
+    if ($locMode -ne 'state') {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ApolloPersonLocationsMode'
     }
   }
   if ($PSBoundParameters.ContainsKey('BounceImapHost')) {
@@ -475,9 +558,23 @@ try {
         $aiTriageModelValue = ([string]$printMap['AI_TRIAGE_OPENAI_MODEL']).Trim()
       }
       $openAiKeyPresent = if (Map-HasValue $printMap 'OPENAI_API_KEY') { 'YES' } else { 'NO' }
+      $apolloApiKeyPresent = if (Map-HasValue $printMap 'APOLLO_API_KEY') { 'YES' } else { 'NO' }
+      $hunterApiKeyPresent = if (Map-HasValue $printMap 'HUNTER_API_KEY') { 'YES' } else { 'NO' }
+      $apolloEnrichEnabledValue = if (Map-HasValue $printMap 'APOLLO_ENRICH_ENABLED') { ([string]$printMap['APOLLO_ENRICH_ENABLED']).Trim() } else { '0' }
+      $apolloEnrichMaxValue = if (Map-HasValue $printMap 'APOLLO_ENRICH_MAX_PER_RUN') { ([string]$printMap['APOLLO_ENRICH_MAX_PER_RUN']).Trim() } else { '50' }
+      $apolloLocationsModeValue = if (Map-HasValue $printMap 'APOLLO_PERSON_LOCATIONS_MODE') { ([string]$printMap['APOLLO_PERSON_LOCATIONS_MODE']).Trim() } else { 'state' }
+      $prospectEnrichDomainEnabledValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_DOMAIN_ENABLED') { ([string]$printMap['PROSPECT_ENRICH_DOMAIN_ENABLED']).Trim() } else { '0' }
+      $prospectEnrichHunterEnabledValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_HUNTER_ENABLED') { ([string]$printMap['PROSPECT_ENRICH_HUNTER_ENABLED']).Trim() } else { '0' }
       Write-Output ('ai_triage_enabled=' + $aiTriageEnabledValue)
       Write-Output ('ai_triage_openai_model=' + $aiTriageModelValue)
       Write-Output ('openai_api_key_present=' + $openAiKeyPresent)
+      Write-Output ('apollo_api_key_present=' + $apolloApiKeyPresent)
+      Write-Output ('hunter_api_key_present=' + $hunterApiKeyPresent)
+      Write-Output ('apollo_enrich_enabled=' + $apolloEnrichEnabledValue)
+      Write-Output ('apollo_enrich_max_per_run=' + $apolloEnrichMaxValue)
+      Write-Output ('apollo_person_locations_mode=' + $apolloLocationsModeValue)
+      Write-Output ('prospect_enrich_domain_enabled=' + $prospectEnrichDomainEnabledValue)
+      Write-Output ('prospect_enrich_hunter_enabled=' + $prospectEnrichHunterEnabledValue)
       Pass-Token $PASS_SET_OUTREACH_ENV_COMPLETE 'mode=print_config'
       exit 0
     }
@@ -563,6 +660,10 @@ try {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_ENABLED' -Value '0' -TouchedList $touched
     }
 
+    if ($PSBoundParameters.ContainsKey('ProspectAutoGrowStates')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_STATES' -Value (Normalize-OutreachStates $ProspectAutoGrowStates) -TouchedList $touched
+    }
+
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSources')) {
       $srcTokens = @()
       foreach ($part in (($ProspectAutoGrowSources -as [string]) -split ',')) {
@@ -593,6 +694,52 @@ try {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_HTTP_SLEEP_MS' -Value ([string]$ProspectAutoGrowHttpSleepMs) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_HTTP_SLEEP_MS')) {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_HTTP_SLEEP_MS' -Value '800' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAutoGrowStateLicTxLicenseTypes')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_STATE_LIC_TX_LICENSE_TYPES' -Value (Normalize-CommaList ($ProspectAutoGrowStateLicTxLicenseTypes -as [string])) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectEnrichDomainEnabled')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_DOMAIN_ENABLED' -Value ([string]$ProspectEnrichDomainEnabled) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_ENRICH_DOMAIN_ENABLED')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_DOMAIN_ENABLED' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectEnrichHunterEnabled')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_HUNTER_ENABLED' -Value ([string]$ProspectEnrichHunterEnabled) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_ENRICH_HUNTER_ENABLED')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_HUNTER_ENABLED' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('HunterApiKey')) {
+      Set-MapValue -Map $map -Key 'HUNTER_API_KEY' -Value (($HunterApiKey -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ApolloApiKey')) {
+      Set-MapValue -Map $map -Key 'APOLLO_API_KEY' -Value (($ApolloApiKey -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ApolloEnrichEnabled')) {
+      Set-MapValue -Map $map -Key 'APOLLO_ENRICH_ENABLED' -Value ([string]$ApolloEnrichEnabled) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'APOLLO_ENRICH_ENABLED')) {
+      Set-MapValue -Map $map -Key 'APOLLO_ENRICH_ENABLED' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ApolloEnrichMaxPerRun')) {
+      Set-MapValue -Map $map -Key 'APOLLO_ENRICH_MAX_PER_RUN' -Value ([string]$ApolloEnrichMaxPerRun) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'APOLLO_ENRICH_MAX_PER_RUN')) {
+      Set-MapValue -Map $map -Key 'APOLLO_ENRICH_MAX_PER_RUN' -Value '50' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ApolloPersonTitles')) {
+      Set-MapValue -Map $map -Key 'APOLLO_PERSON_TITLES' -Value (Normalize-CommaList ($ApolloPersonTitles -as [string])) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ApolloPersonLocationsMode')) {
+      Set-MapValue -Map $map -Key 'APOLLO_PERSON_LOCATIONS_MODE' -Value (($ApolloPersonLocationsMode -as [string]).Trim().ToLowerInvariant()) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'APOLLO_PERSON_LOCATIONS_MODE')) {
+      Set-MapValue -Map $map -Key 'APOLLO_PERSON_LOCATIONS_MODE' -Value 'state' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('TrialSendsLimitDefault')) {

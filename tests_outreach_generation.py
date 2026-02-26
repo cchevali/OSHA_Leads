@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -20,7 +20,7 @@ class TestProspectGeneration(unittest.TestCase):
     def _test_env(self, env_overrides: dict[str, str | None]) -> dict[str, str]:
         env = os.environ.copy()
         for key in list(env.keys()):
-            if key.startswith("PROSPECT_AUTOGROW_"):
+            if key.startswith("PROSPECT_AUTOGROW_") or key.startswith("APOLLO_"):
                 env.pop(key, None)
         env["PYTHONPATH"] = str(REPO_ROOT)
         for k, v in env_overrides.items():
@@ -59,14 +59,14 @@ class TestProspectGeneration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "data"
             out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
-            inbox_dir = data_dir / "prospect_generation" / "inbox"
             p = self._run(["--print-config", "--for-date", "2026-02-18"], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX,CA,FL"})
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             out = p.stdout or ""
             self.assertIn("PASS_GENERATOR_PRINT_CONFIG", out)
             self.assertIn(f"output_path={out_path.resolve()}", out)
-            self.assertIn(f"inbox_dir={inbox_dir.resolve()}", out)
             self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL", out)
+            self.assertIn("GENERATOR_APOLLO_ENABLED=0", out)
             self.assertFalse(out_path.exists(), msg="--print-config must not write output")
 
     def test_dry_run_no_writes(self):
@@ -84,184 +84,6 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=1 states=TX:60", out)
             self.assertIn("GENERATOR_COMPLETE status=DRY_RUN", out)
             self.assertFalse(out_path.exists(), msg="--dry-run must not write output")
-
-    def test_inbox_rows_merge_into_discovery_output(self):
-        with tempfile.TemporaryDirectory() as d:
-            data_dir = Path(d) / "data"
-            inbox_dir = data_dir / "prospect_generation" / "inbox"
-            inbox_dir.mkdir(parents=True, exist_ok=True)
-            inbox_csv = inbox_dir / "new.csv"
-            with open(inbox_csv, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(
-                    f,
-                    fieldnames=[
-                        "prospect_id",
-                        "email",
-                        "contact_email",
-                        "firm",
-                        "company_name",
-                        "title",
-                        "contact_role",
-                        "contact_name",
-                        "website",
-                        "city",
-                        "state",
-                        "source",
-                    ],
-                )
-                writer.writeheader()
-                writer.writerow(
-                    {
-                        "prospect_id": "custom_inbox_001",
-                        "email": "owner@inboxfirm-a.com",
-                        "firm": "Inbox Firm A",
-                        "title": "Owner",
-                        "contact_name": "Owner A",
-                        "website": "https://inbox-a.example",
-                        "city": "Houston",
-                        "state": "TX",
-                        "source": "manual_upload",
-                    }
-                )
-                writer.writerow(
-                    {
-                        "contact_email": "ops@inboxfirm-b.com",
-                        "company_name": "Inbox Firm B",
-                        "contact_role": "Safety Manager",
-                        "city": "Austin",
-                        "state": "TX",
-                    }
-                )
-
-            p = self._run([], {"DATA_DIR": str(data_dir)})
-            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
-            out = p.stdout or ""
-            self.assertIn("GENERATOR_INBOX_FILES_FOUND=1", out)
-            self.assertIn("GENERATOR_INBOX_ROWS_READ=2", out)
-            self.assertIn("GENERATOR_INBOX_ROWS_ACCEPTED=2", out)
-            self.assertIn("GENERATOR_INBOX_FILES_ARCHIVED=1", out)
-
-            out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
-            self.assertTrue(out_path.exists(), msg=f"missing output: {out_path}")
-            by_email: dict[str, dict[str, str]] = {}
-            with open(out_path, "r", newline="", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    by_email[(row.get("email") or "").strip().lower()] = row
-
-            row_a = by_email.get("owner@inboxfirm-a.com")
-            self.assertIsNotNone(row_a, msg="inbox row A missing from output")
-            self.assertEqual((row_a or {}).get("prospect_id"), "custom_inbox_001")
-            self.assertEqual((row_a or {}).get("firm"), "Inbox Firm A")
-            self.assertEqual((row_a or {}).get("title"), "Owner")
-            self.assertEqual((row_a or {}).get("source"), "manual_upload")
-            self.assertEqual((row_a or {}).get("contact_name"), "Owner A")
-            self.assertEqual((row_a or {}).get("website"), "https://inbox-a.example")
-
-    def test_legacy_inbox_still_supported_with_warning(self):
-        with tempfile.TemporaryDirectory() as d:
-            data_dir = Path(d) / "data"
-            old_inbox = data_dir / "prospect_discovery" / "inbox"
-            old_inbox.mkdir(parents=True, exist_ok=True)
-            old_csv = old_inbox / "old.csv"
-            old_csv.write_text("email,firm,title,city,state\nlegacy@inbox.com,Legacy Firm,Owner,Dallas,TX\n", encoding="utf-8")
-
-            p = self._run([], {"DATA_DIR": str(data_dir)})
-            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
-            out = p.stdout or ""
-            self.assertIn("WARN_INBOX_PATH_DEPRECATED", out)
-            self.assertIn("files=1", out)
-
-            processed = old_inbox / "processed" / datetime.now().date().isoformat() / "old.csv"
-            self.assertTrue(processed.exists(), msg=f"expected old inbox file moved to {processed}")
-
-    def test_dual_inbox_precedence_new_first(self):
-        with tempfile.TemporaryDirectory() as d:
-            data_dir = Path(d) / "data"
-            new_inbox = data_dir / "prospect_generation" / "inbox"
-            old_inbox = data_dir / "prospect_discovery" / "inbox"
-            new_inbox.mkdir(parents=True, exist_ok=True)
-            old_inbox.mkdir(parents=True, exist_ok=True)
-
-            new_inbox.joinpath("a.csv").write_text(
-                "email,firm,title,city,state,source\nshared@example.com,New Priority Firm,Owner,Houston,TX,new_inbox\n",
-                encoding="utf-8",
-            )
-            old_inbox.joinpath("b.csv").write_text(
-                "email,firm,title,city,state,source\nshared@example.com,Legacy Firm,Owner,Houston,TX,legacy_inbox\n",
-                encoding="utf-8",
-            )
-
-            p = self._run([], {"DATA_DIR": str(data_dir)})
-            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
-
-            out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
-            row = None
-            with open(out_path, "r", newline="", encoding="utf-8") as f:
-                for candidate in csv.DictReader(f):
-                    if (candidate.get("email") or "").strip().lower() == "shared@example.com":
-                        row = candidate
-                        break
-            self.assertIsNotNone(row)
-            self.assertEqual((row or {}).get("firm"), "New Priority Firm")
-            self.assertEqual((row or {}).get("source"), "new_inbox")
-
-    def test_dry_run_does_not_archive_or_write_output(self):
-        with tempfile.TemporaryDirectory() as d:
-            data_dir = Path(d) / "data"
-            inbox_dir = data_dir / "prospect_generation" / "inbox"
-            inbox_dir.mkdir(parents=True, exist_ok=True)
-            inbox_csv = inbox_dir / "new.csv"
-            inbox_csv.write_text(
-                "email,firm,title,city,state\nowner@dry-run-check.com,Dry Run LLC,Owner,Dallas,TX\n",
-                encoding="utf-8",
-            )
-
-            out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
-            p = self._run(["--dry-run"], {"DATA_DIR": str(data_dir)})
-            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
-            out = p.stdout or ""
-            self.assertIn("GENERATOR_INBOX_FILES_FOUND=1", out)
-            self.assertIn("GENERATOR_INBOX_ROWS_READ=1", out)
-            self.assertIn("GENERATOR_INBOX_ROWS_ACCEPTED=1", out)
-            self.assertNotIn("GENERATOR_INBOX_FILES_ARCHIVED=", out)
-            self.assertTrue(inbox_csv.exists(), msg="dry-run must not move inbox files")
-            self.assertFalse(out_path.exists(), msg="dry-run must not write discovery feed")
-
-    def test_inbox_row_overrides_seed_duplicate_email(self):
-        import seed_recipients_pools as pools
-
-        deduped = pools.dedupe_rows(pools.TX_POOL)
-        cleaned, _stats = pools.apply_hygiene(deduped)
-        self.assertGreater(len(cleaned), 0, msg="expected at least one cleaned TX seed row")
-        seed_email = str(cleaned[0].get("contact_email") or "").strip().lower()
-        self.assertIn("@", seed_email, msg="expected valid seed email")
-
-        with tempfile.TemporaryDirectory() as d:
-            data_dir = Path(d) / "data"
-            inbox_dir = data_dir / "prospect_generation" / "inbox"
-            inbox_dir.mkdir(parents=True, exist_ok=True)
-            inbox_csv = inbox_dir / "new.csv"
-            inbox_csv.write_text(
-                "email,firm,title,city,state,source\n"
-                f"{seed_email},Override Inbox Firm,Managing Partner,Austin,TX,inbox_override\n",
-                encoding="utf-8",
-            )
-
-            p = self._run([], {"DATA_DIR": str(data_dir)})
-            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
-
-            out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
-            self.assertTrue(out_path.exists(), msg=f"missing output: {out_path}")
-            matched = None
-            with open(out_path, "r", newline="", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    if str(row.get("email") or "").strip().lower() == seed_email:
-                        matched = row
-                        break
-            self.assertIsNotNone(matched, msg=f"missing expected email {seed_email}")
-            self.assertEqual((matched or {}).get("firm"), "Override Inbox Firm")
-            self.assertEqual((matched or {}).get("title"), "Managing Partner")
-            self.assertEqual((matched or {}).get("source"), "inbox_override")
 
     def test_for_date_controls_selected_state(self):
         with tempfile.TemporaryDirectory() as d:
@@ -612,15 +434,570 @@ class TestProspectGeneration(unittest.TestCase):
             mocked_ohs.assert_called_once()
             out = buf.getvalue()
             self.assertIn("GENERATOR_AUTOGROW_SOURCES=AIHA,OHS_BG", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=FL", out)
             self.assertIn("GENERATOR_OHS_BG_ROWS_CANDIDATE=5", out)
             self.assertIn("GENERATOR_OHS_BG_ROWS_ACCEPTED=1", out)
             self.assertIn("GENERATOR_OHS_BG_REJECTED_INVALID_EMAIL=1", out)
             self.assertIn("GENERATOR_OHS_BG_REJECTED_ALREADY_IN_CRM=1", out)
             self.assertIn("GENERATOR_OHS_BG_REJECTED_STATE_MISMATCH=1", out)
             self.assertIn("GENERATOR_OHS_BG_REJECTED_DUPLICATE_IN_BATCH=1", out)
+            self.assertIn(
+                "GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=FL rows_candidate=2 rows_accepted=2",
+                out,
+            )
+            self.assertIn(
+                "GENERATOR_AUTOGROW_SOURCE_STATE source=OHS_BG state=FL rows_candidate=5 rows_accepted=1",
+                out,
+            )
             self.assertIn("ohs_bg_candidate=5", out)
             self.assertIn("ohs_bg_accepted=1", out)
             self.assertIn("GENERATOR_AUTOGROW_TOTAL_ACCEPTED=3", out)
+
+    def test_autogrow_states_decouple_inventory_build_from_send_rotation(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+
+            def _aiha_fetch(**kwargs):  # type: ignore[no-untyped-def]
+                state = str(kwargs["state"]).upper()
+                cache_path = data_dir / "prospect_generation" / "cache" / "aiha" / f"state_{state}.json"
+                return {
+                    "rows": [
+                        {
+                            "email": f"{state.lower()}person@example{state.lower()}.com",
+                            "state": state,
+                            "firm": f"{state} Firm",
+                            "source": "aiha_consultants_listing:1",
+                        }
+                    ],
+                    "cache_used": False,
+                    "cache_age_days": 0,
+                    "cache_path": cache_path,
+                    "pages_fetched": 1,
+                    "parse_mode": "TEXT_CONTAINER",
+                    "diagnostics_path": None,
+                }
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "CA",
+                "PROSPECT_AUTOGROW_STATES": "TX,FL",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "2",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
+                    side_effect=_aiha_fetch,
+                ) as mocked_aiha:
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0)
+            self.assertEqual([c.kwargs.get("state") for c in mocked_aiha.call_args_list], ["TX", "FL"])
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,FL", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=TX rows_candidate=1 rows_accepted=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=FL rows_candidate=1 rows_accepted=1", out)
+
+    def test_depleted_state_can_be_refilled_via_second_source_with_autogrow_states(self):
+        from outreach import crm_store
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO prospects(
+                      prospect_id, firm, contact_name, email, title, city, state, website, source,
+                      score, status, created_at, last_contacted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "crm_fl_contacted",
+                        "Existing FL Contacted",
+                        "",
+                        "crmdup@examplefl.com",
+                        "Owner",
+                        "Tampa",
+                        "FL",
+                        "",
+                        "seed",
+                        0,
+                        "new",
+                        now,
+                        now,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            aiha_cache = data_dir / "prospect_generation" / "cache" / "aiha" / "state_FL.json"
+            ohs_cache = data_dir / "prospect_generation" / "cache" / "ohs_bg" / "state_FL.json"
+            aiha_result = {
+                "rows": [
+                    {"email": "crmdup@examplefl.com", "state": "FL", "firm": "CRM Dup", "source": "aiha_consultants_listing:1"},
+                    {"email": "bad-email", "state": "FL", "firm": "Bad", "source": "aiha_consultants_listing:2"},
+                    {"email": "txperson@exampletx.com", "state": "TX", "firm": "TX", "source": "aiha_consultants_listing:3"},
+                ],
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": aiha_cache,
+                "pages_fetched": 1,
+                "parse_mode": "TEXT_CONTAINER",
+                "diagnostics_path": None,
+            }
+            ohs_result = {
+                "rows": [
+                    {"email": "bravo@examplefl.com", "state": "FL", "firm": "Bravo", "source": "ohs_buyers_guide:1"},
+                    {"email": "crmdup@examplefl.com", "state": "FL", "firm": "CRM Dup", "source": "ohs_buyers_guide:2"},
+                    {"email": "bad-email", "state": "FL", "firm": "Bad", "source": "ohs_buyers_guide:3"},
+                    {"email": "txperson@exampletx.com", "state": "TX", "firm": "TX Person", "source": "ohs_buyers_guide:4"},
+                    {"email": "bravo@examplefl.com", "state": "FL", "firm": "Bravo Dup", "source": "ohs_buyers_guide:5"},
+                ],
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": ohs_cache,
+                "pages_fetched": 2,
+                "parse_mode": "TEXT",
+                "diagnostics_path": None,
+            }
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "CA",
+                "PROSPECT_AUTOGROW_STATES": "FL",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA,OHS_BG",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "6",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
+                    return_value=aiha_result,
+                ) as mocked_aiha:
+                    with mock.patch(
+                        "outreach.run_prospect_generation.prospect_sources_ohs_bg.fetch_ohs_bg_state_rows",
+                        return_value=ohs_result,
+                    ) as mocked_ohs:
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0)
+            mocked_aiha.assert_called_once()
+            mocked_ohs.assert_called_once()
+            self.assertEqual(mocked_aiha.call_args.kwargs["state"], "FL")
+            self.assertEqual(mocked_ohs.call_args.kwargs["state"], "FL")
+
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=FL", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=FL rows_candidate=3 rows_accepted=0", out)
+            self.assertIn("rejected_invalid_email=1", out)
+            self.assertIn("rejected_already_in_crm=1", out)
+            self.assertIn("rejected_state_mismatch=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=OHS_BG state=FL rows_candidate=5 rows_accepted=1", out)
+            self.assertIn("rejected_duplicate_in_batch=1", out)
+
+            out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
+            self.assertTrue(out_path.exists(), msg=f"missing output: {out_path}")
+            with open(out_path, "r", newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            emails = {(row.get("email") or "").strip().lower() for row in rows}
+            self.assertIn("bravo@examplefl.com", emails)
+
+    def test_apollo_source_emits_deterministic_tokens(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            apollo_cache = data_dir / "prospect_generation" / "cache" / "apollo" / "state_TX.json"
+            apollo_result = {
+                "rows": [
+                    {"email": "apollo1@exampletx.com", "state": "TX", "company_name": "Apollo One", "source": "apollo:bulk_match:1"}
+                ],
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": apollo_cache,
+                "pages_fetched": 2,
+                "parse_mode": "API",
+                "search_rows_returned": 20,
+                "search_rows_has_email_true": 8,
+                "search_rows_deduped_id": 1,
+                "enrich_attempted": 1,
+                "enriched": 1,
+                "enrich_no_match": 0,
+                "enrich_skipped_credit_cap": 0,
+                "credit_cap_hit": False,
+                "diagnostics_path": None,
+            }
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "APOLLO",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "2",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+                "APOLLO_API_KEY": "test-key",
+                "APOLLO_ENRICH_ENABLED": "1",
+                "APOLLO_ENRICH_MAX_PER_RUN": "5",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows",
+                    return_value=apollo_result,
+                ) as mocked_apollo:
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0)
+            mocked_apollo.assert_called_once()
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SOURCES=APOLLO", out)
+            self.assertIn("GENERATOR_APOLLO_ENABLED=1", out)
+            self.assertIn("GENERATOR_APOLLO_ENRICH_ENABLED=1", out)
+            self.assertIn("GENERATOR_APOLLO_CACHE_USED=NO", out)
+            self.assertIn("GENERATOR_APOLLO_CACHE_AGE_DAYS=", out)
+            self.assertIn("GENERATOR_APOLLO_PAGE_PARSE_MODE=", out)
+            self.assertIn("GENERATOR_APOLLO_SEARCH_PAGES_FETCHED=2", out)
+            self.assertIn("GENERATOR_APOLLO_SEARCH_ROWS_HAS_EMAIL_TRUE=8", out)
+            self.assertIn("GENERATOR_APOLLO_ENRICH_ATTEMPTED=1", out)
+            self.assertIn("GENERATOR_APOLLO_ENRICHED=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=TX rows_candidate=1 rows_accepted=1", out)
+
+    def test_apollo_warn_and_continue_on_source_failure(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "APOLLO",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "2",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+                "APOLLO_API_KEY": "test-key",
+                "APOLLO_ENRICH_ENABLED": "1",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows",
+                    return_value={"rows": [], "cache_path": data_dir / "apollo.json", "error": "rate_limited", "diagnostics_path": None},
+                ):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("WARN_AUTOGROWTH_SOURCE_FAILED source=apollo state=TX err=rate_limited", out)
+            self.assertIn("GENERATOR_COMPLETE status=DRY_RUN", out)
+
+    def test_apollo_forbidden_emits_stable_token_and_warn(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "APOLLO",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "1",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+                "APOLLO_API_KEY": "test-key",
+                "APOLLO_ENRICH_ENABLED": "1",
+            }
+
+            apollo_result = {
+                "rows": [],
+                "cache_used": False,
+                "cache_age_days": None,
+                "cache_path": data_dir / "prospect_generation" / "cache" / "apollo" / "state_TX.json",
+                "pages_fetched": 0,
+                "parse_mode": "FAILED",
+                "search_rows_returned": 0,
+                "search_rows_has_email_true": 0,
+                "search_rows_deduped_id": 0,
+                "enrich_attempted": 0,
+                "enriched": 0,
+                "enrich_no_match": 0,
+                "enrich_skipped_credit_cap": 0,
+                "credit_cap_hit": False,
+                "diagnostics_path": None,
+                "forbidden": True,
+                "error_status": 403,
+                "error_endpoint": "api/v1/mixed_people/api_search",
+                "apollo_error": "Forbidden",
+                "error": "apollo_search_request_failed err=http_status status=403 retryable=0",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows",
+                    return_value=apollo_result,
+                ):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_APOLLO_FORBIDDEN=1 hint=CHECK_MASTER_KEY_OR_ENDPOINT_SCOPES", out)
+            self.assertIn(
+                "WARN_AUTOGROWTH_SOURCE_FAILED source=apollo state=TX err=apollo_search_request_failed err=http_status status=403 retryable=0",
+                out,
+            )
+
+    def test_apollo_doctor_forbidden_is_side_effect_free_and_actionable(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            env = {
+                "DATA_DIR": str(data_dir),
+                "APOLLO_API_KEY": "test-key",
+                "APOLLO_ENRICH_ENABLED": "1",
+            }
+            buf = io.StringIO()
+            err_buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
+                    return_value={
+                        "ok": False,
+                        "forbidden": True,
+                        "status": 403,
+                        "endpoint": "api/v1/usage_stats/api_usage_stats",
+                        "apollo_error": "Forbidden",
+                        "error": "apollo_doctor_request_failed err=http_status status=403 retryable=0",
+                    },
+                ) as doctor_mock:
+                    with redirect_stdout(buf), redirect_stderr(err_buf):
+                        rc = generator.main(["--apollo-doctor"])
+            self.assertEqual(rc, 0)
+            doctor_mock.assert_called_once()
+            out = buf.getvalue()
+            self.assertIn("APOLLO_DOCTOR_FORBIDDEN=1 hint=CHECK_MASTER_KEY_OR_ENDPOINT_SCOPES", out)
+            self.assertNotIn("ERR_GENERATOR_FAILED stage=apollo_doctor", out + (err_buf.getvalue() or ""))
+            self.assertFalse((data_dir / "prospect_discovery" / "prospects_latest.csv").exists())
+
+    def test_apollo_doctor_ok(self):
+        from outreach import run_prospect_generation as generator
+
+        env = {
+            "APOLLO_API_KEY": "test-key",
+            "APOLLO_ENRICH_ENABLED": "1",
+        }
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch(
+                "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
+                return_value={"ok": True, "forbidden": False, "status": 200, "endpoint": "api/v1/usage_stats/api_usage_stats"},
+            ):
+                with redirect_stdout(buf):
+                    rc = generator.main(["--apollo-doctor"])
+        self.assertEqual(rc, 0)
+        self.assertIn("APOLLO_DOCTOR_OK=1", buf.getvalue())
+
+    def test_apollo_doctor_404_not_found_token_and_no_err(self):
+        from outreach import run_prospect_generation as generator
+
+        env = {
+            "APOLLO_API_KEY": "test-key",
+            "APOLLO_ENRICH_ENABLED": "1",
+        }
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch(
+                "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
+                return_value={
+                    "ok": False,
+                    "forbidden": False,
+                    "not_found": True,
+                    "status": 404,
+                    "endpoint": "api/v1/usage_stats/api_usage_stats",
+                    "content_type": "text/html",
+                    "error": "apollo_doctor_request_failed err=http_status status=404 retryable=0",
+                },
+            ):
+                with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                    rc = generator.main(["--apollo-doctor"])
+        self.assertEqual(rc, 0)
+        out = out_buf.getvalue()
+        self.assertIn("APOLLO_DOCTOR_NOT_FOUND=1 hint=CHECK_METHOD_AND_BASE_URL", out)
+        self.assertNotIn("ERR_GENERATOR_FAILED stage=apollo_doctor", out + (err_buf.getvalue() or ""))
+
+    def test_apollo_multi_source_refills_after_aiha_ohs_rejections(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            aiha_cache = data_dir / "prospect_generation" / "cache" / "aiha" / "state_FL.json"
+            ohs_cache = data_dir / "prospect_generation" / "cache" / "ohs_bg" / "state_FL.json"
+            apollo_cache = data_dir / "prospect_generation" / "cache" / "apollo" / "state_FL.json"
+            aiha_result = {
+                "rows": [{"email": "bad-email", "state": "FL", "firm": "Bad", "source": "aiha_consultants_listing:1"}],
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": aiha_cache,
+                "pages_fetched": 1,
+                "parse_mode": "TEXT_CONTAINER",
+                "diagnostics_path": None,
+            }
+            ohs_result = {
+                "rows": [{"email": "wrong@exampletx.com", "state": "TX", "firm": "Wrong", "source": "ohs_buyers_guide:1"}],
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": ohs_cache,
+                "pages_fetched": 1,
+                "parse_mode": "TEXT",
+                "diagnostics_path": None,
+            }
+            apollo_result = {
+                "rows": [{"email": "apollorefill@examplefl.com", "state": "FL", "company_name": "Apollo Refill", "source": "apollo:bulk_match:abc"}],
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": apollo_cache,
+                "pages_fetched": 1,
+                "parse_mode": "API",
+                "search_rows_returned": 5,
+                "search_rows_has_email_true": 2,
+                "search_rows_deduped_id": 0,
+                "enrich_attempted": 1,
+                "enriched": 1,
+                "enrich_no_match": 0,
+                "enrich_skipped_credit_cap": 0,
+                "credit_cap_hit": False,
+                "diagnostics_path": None,
+            }
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "CA",
+                "PROSPECT_AUTOGROW_STATES": "FL",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA,OHS_BG,APOLLO",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "2",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+                "APOLLO_API_KEY": "test-key",
+                "APOLLO_ENRICH_ENABLED": "1",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows", return_value=aiha_result):
+                    with mock.patch("outreach.run_prospect_generation.prospect_sources_ohs_bg.fetch_ohs_bg_state_rows", return_value=ohs_result):
+                        with mock.patch("outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows", return_value=apollo_result):
+                            with redirect_stdout(buf):
+                                rc = generator.main(["--for-date", "2026-02-24"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SOURCES=AIHA,OHS_BG,APOLLO", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=FL rows_candidate=1 rows_accepted=1", out)
+            self.assertIn("GENERATOR_APOLLO_ENRICHED=1", out)
+
+            out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
+            with open(out_path, "r", newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            self.assertIn("apollorefill@examplefl.com", {(r.get("email") or "").strip().lower() for r in rows})
+
+    def test_apollo_autogrow_states_decouple_inventory_build_from_send_rotation(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            calls: list[str] = []
+
+            def _apollo_fetch(**kwargs):  # type: ignore[no-untyped-def]
+                state = str(kwargs.get("state") or "").upper()
+                calls.append(state)
+                return {
+                    "rows": [{"email": f"{state.lower()}@example.com", "state": state, "company_name": f"{state} Co", "source": "apollo:bulk_match:test"}],
+                    "cache_used": False,
+                    "cache_age_days": 0,
+                    "cache_path": data_dir / "prospect_generation" / "cache" / "apollo" / f"state_{state}.json",
+                    "pages_fetched": 1,
+                    "parse_mode": "API",
+                    "search_rows_returned": 1,
+                    "search_rows_has_email_true": 1,
+                    "search_rows_deduped_id": 0,
+                    "enrich_attempted": 1,
+                    "enriched": 1,
+                    "enrich_no_match": 0,
+                    "enrich_skipped_credit_cap": 0,
+                    "credit_cap_hit": False,
+                    "diagnostics_path": None,
+                }
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "CA",
+                "PROSPECT_AUTOGROW_STATES": "TX,FL",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "APOLLO",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "1",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+                "APOLLO_API_KEY": "test-key",
+                "APOLLO_ENRICH_ENABLED": "1",
+                "APOLLO_ENRICH_MAX_PER_RUN": "5",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows", side_effect=_apollo_fetch):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(calls, ["TX", "FL"])
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,FL", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=TX rows_candidate=1 rows_accepted=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=FL rows_candidate=1 rows_accepted=1", out)
 
     def test_invalid_autogrow_source_fails_fast(self):
         p = self._run(
@@ -731,6 +1108,290 @@ class TestProspectGeneration(unittest.TestCase):
                 self.assertIn("source", reader.fieldnames or [])
                 self.assertIn("contact_name", reader.fieldnames or [])
                 self.assertIn("website", reader.fieldnames or [])
+
+    def test_print_config_includes_crawl4ai_and_new_source_availability(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "BCSP,OSHA_NEWS,STATE_LIC",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_crawl4ai_runtime", return_value={"crawl4ai_installed": False, "playwright_browsers_installed": False, "error_reason": "missing"}):
+                    with mock.patch(
+                        "outreach.run_prospect_generation.scraper_engine.probe_source_availability",
+                        side_effect=[
+                            {"source": "BCSP", "available": True, "reason": "http_html"},
+                            {"source": "OSHA_NEWS", "available": False, "reason": "crawl4ai_not_installed"},
+                            {"source": "STATE_LIC", "available": True, "reason": "http_api"},
+                        ],
+                    ):
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--print-config", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("crawl4ai_installed=NO", out)
+            self.assertIn("playwright_browsers_installed=NO", out)
+            self.assertIn("BCSP_available=YES reason=http_html", out)
+            self.assertIn("OSHA_NEWS_available=NO reason=crawl4ai_not_installed", out)
+            self.assertIn("STATE_LIC_available=YES reason=http_api", out)
+            self.assertIn("enrich_domain_enabled=NO", out)
+            self.assertIn("enrich_hunter_enabled=NO", out)
+            self.assertIn("apollo_api_accessible=NO free_plan_web_ui_manual", out)
+
+    def test_state_lic_enrichment_domain_resolution_and_email_guess_in_dry_run(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            state_lic_cache = data_dir / "prospect_generation" / "cache" / "state_lic" / "state_TX.json"
+            state_lic_result = {
+                "rows": [
+                    {
+                        "firm": "BASSETT ELECTRIC LLC",
+                        "contact_name": "JOHN BASSETT",
+                        "email": "",
+                        "contact_email": "",
+                        "state": "TX",
+                        "city": "Houston",
+                        "title": "Electrical Contractor",
+                        "source": "STATE_LIC",
+                        "website": "",
+                    }
+                ],
+                "cache_path": state_lic_cache,
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "SOCRATA",
+                "diagnostics_path": None,
+            }
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "STATE_LIC",
+                "PROSPECT_ENRICH_DOMAIN_ENABLED": "1",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows",
+                    return_value=state_lic_result,
+                ):
+                    with mock.patch(
+                        "outreach.run_prospect_generation.prospect_enrich_email._default_head_fetcher",
+                        return_value={"status": 200, "url": "https://bassettelectric.com", "headers": {}},
+                    ):
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_ENRICH_DOMAIN_RESOLVED=1", out)
+            self.assertIn("GENERATOR_ENRICH_EMAIL_GUESSED=1", out)
+            self.assertIn("GENERATOR_STATE_LIC_ROWS_ACCEPTED=1", out)
+
+    def test_state_lic_enrichment_default_off_no_behavior_change(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            state_lic_cache = data_dir / "prospect_generation" / "cache" / "state_lic" / "state_TX.json"
+            state_lic_result = {
+                "rows": [
+                    {
+                        "firm": "BASSETT ELECTRIC LLC",
+                        "contact_name": "JOHN BASSETT",
+                        "email": "",
+                        "contact_email": "",
+                        "state": "TX",
+                        "city": "Houston",
+                        "title": "Electrical Contractor",
+                        "source": "STATE_LIC",
+                        "website": "",
+                    }
+                ],
+                "cache_path": state_lic_cache,
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "SOCRATA",
+                "diagnostics_path": None,
+            }
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "STATE_LIC",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows",
+                    return_value=state_lic_result,
+                ):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_ENRICH_ATTEMPTED=0", out)
+            self.assertIn("GENERATOR_ENRICH_DOMAIN_RESOLVED=0", out)
+            self.assertIn("GENERATOR_ENRICH_EMAIL_GUESSED=0", out)
+            self.assertIn("GENERATOR_STATE_LIC_ROWS_ACCEPTED=0", out)
+
+    def test_bcsp_source_emits_tokens(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            bcsp_cache = data_dir / "prospect_generation" / "cache" / "bcsp" / "state_TX.json"
+            bcsp_result = {
+                "rows": [
+                    {"email": "bcsp1@exampletx.com", "state": "TX", "company_name": "BCSP Co", "source": "BCSP", "title": "BCSP Credential Holder"}
+                ],
+                "cache_path": bcsp_cache,
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "BCSP_CARDS",
+                "diagnostics_path": None,
+            }
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "BCSP",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.fetch_bcsp_state_rows", return_value=bcsp_result):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=BCSP state=TX rows_candidate=1 rows_accepted=1", out)
+            self.assertIn("GENERATOR_BCSP_ROWS_CANDIDATE=1", out)
+            self.assertIn("GENERATOR_BCSP_ROWS_ACCEPTED=1", out)
+
+    def test_crawl4ai_missing_warns_and_state_lic_still_runs(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "BCSP,STATE_LIC",
+            }
+            bcsp_fail = {
+                "rows": [],
+                "cache_path": data_dir / "prospect_generation" / "cache" / "bcsp" / "state_TX.json",
+                "cache_used": False,
+                "cache_age_days": None,
+                "pages_fetched": 0,
+                "parse_mode": "FAILED",
+                "diagnostics_path": None,
+                "error": "bcsp_parse_failed",
+            }
+            state_lic_ok = {
+                "rows": [
+                    {"email": "txlicense@example.com", "state": "TX", "company_name": "TX License Co", "source": "STATE_LIC", "title": "Electrician"}
+                ],
+                "cache_path": data_dir / "prospect_generation" / "cache" / "state_lic" / "state_TX.json",
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "SOCRATA",
+                "diagnostics_path": None,
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.fetch_bcsp_state_rows", return_value=bcsp_fail):
+                    with mock.patch("outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows", return_value=state_lic_ok):
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("WARN_AUTOGROWTH_SOURCE_FAILED source=bcsp state=TX err=bcsp_parse_failed", out)
+            self.assertIn("GENERATOR_STATE_LIC_ROWS_ACCEPTED=1", out)
+
+    def test_apollo_forbidden_emits_free_tier_warning_token(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "APOLLO",
+                "APOLLO_API_KEY": "test-key",
+            }
+            apollo_result = {
+                "rows": [],
+                "cache_path": data_dir / "prospect_generation" / "cache" / "apollo" / "state_TX.json",
+                "cache_used": False,
+                "cache_age_days": 0,
+                "parse_mode": "FAILED",
+                "pages_fetched": 1,
+                "search_pages_fetched": 1,
+                "search_rows_returned": 0,
+                "search_rows_has_email_true": 0,
+                "search_rows_deduped_id": 0,
+                "enrich_attempted": 0,
+                "enriched": 0,
+                "enrich_no_match": 0,
+                "enrich_skipped_credit_cap": 0,
+                "credit_cap_hit": False,
+                "forbidden": True,
+                "error_status": 403,
+                "error": "apollo_search_request_failed err=http_status status=403 retryable=0",
+                "diagnostics_path": None,
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows", return_value=apollo_result):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            self.assertIn("WARN_APOLLO_FREE_TIER_API_BLOCKED state=TX", buf.getvalue())
+
+    def test_generator_doctor_aggregate_warning_level(self):
+        from outreach import run_prospect_generation as generator
+
+        env = {
+            "OUTREACH_STATES": "TX",
+            "PROSPECT_AUTOGROW_SOURCES": "BCSP,STATE_LIC",
+        }
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_crawl4ai_runtime", return_value={"crawl4ai_installed": False, "playwright_browsers_installed": False, "error_reason": "missing"}):
+                with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_source_availability", side_effect=[{"available": True, "reason": "http_html"}, {"available": True, "reason": "http_api"}]):
+                    with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.doctor_probe_bcsp", return_value={"ok": True, "status": 200, "url": "https://directory.bcsp.org/"}):
+                        with mock.patch("outreach.run_prospect_generation.prospect_sources_state_lic.doctor_probe_state_lic", return_value={"ok": True, "status": 200, "url": "https://data.texas.gov/resource/7358-krk7.json?$limit=1"}):
+                            with redirect_stdout(buf):
+                                rc = generator.main(["--doctor"])
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("WARN_DOCTOR_CRAWL4AI", out)
+        self.assertIn("PASS_DOCTOR_STATE_LIC", out)
+        self.assertIn("GENERATOR_DOCTOR_COMPLETE", out)
 
 
 if __name__ == "__main__":

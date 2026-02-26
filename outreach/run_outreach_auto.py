@@ -274,9 +274,7 @@ def _empty_state_fallback_decision(
     selected_sendable = max(0, int(sendable_by_state.get(rotation, 0)))
     floor = max(0, int(daily_limit))
     reason = ""
-    if selected_sendable == 0:
-        reason = "SENDABLE_ZERO"
-    elif selected_sendable < floor:
+    if selected_sendable < floor:
         reason = "SENDABLE_BELOW_FLOOR"
 
     out = {
@@ -308,6 +306,49 @@ def _empty_state_fallback_decision(
         out["reason"] = reason
         out["state_rotation_source"] = "fallback_sendable_estimate"
     return out
+
+
+def _print_state_selection_tokens(rotation_state: str, effective_state: str) -> None:
+    print(f"OUTREACH_STATE_ROTATION_SELECTED={_safe_text(rotation_state).upper()}")
+    print(f"OUTREACH_STATE_EFFECTIVE_SEND={_safe_text(effective_state).upper()}")
+
+
+def _ramp_readiness_decision(
+    states: list[str],
+    sendable_by_state: dict[str, int],
+    desired_daily_limit: int,
+) -> dict[str, object]:
+    desired = max(0, int(desired_daily_limit))
+    ordered_states: list[str] = []
+    ready_states: list[str] = []
+    for item in states:
+        state = str(item or "").strip().upper()
+        if not state or state in ordered_states:
+            continue
+        ordered_states.append(state)
+        sendable = max(0, int(sendable_by_state.get(state, 0)))
+        if sendable >= desired:
+            ready_states.append(state)
+    states_total = len(ordered_states)
+    states_ready = len(ready_states)
+    return {
+        "ready": bool(states_total > 0 and states_ready >= states_total),
+        "desired_daily_limit": desired,
+        "states_ready": states_ready,
+        "states_total": states_total,
+        "ready_states": ready_states,
+    }
+
+
+def _print_ramp_ready_token(decision: dict[str, object]) -> None:
+    ready_states = [str(s or "").strip().upper() for s in list(decision.get("ready_states") or []) if str(s or "").strip()]
+    print(
+        f"OUTREACH_RAMP_READY={1 if bool(decision.get('ready')) else 0} "
+        f"desired_daily_limit={max(0, int(decision.get('desired_daily_limit') or 0))} "
+        f"states_ready={max(0, int(decision.get('states_ready') or 0))} "
+        f"states_total={max(0, int(decision.get('states_total') or 0))} "
+        f"ready_states={','.join(ready_states) if ready_states else 'none'}"
+    )
 
 
 def _resolve_summary_recipient(explicit_to: str) -> tuple[bool, str, str]:
@@ -1290,7 +1331,7 @@ def _print_plan_output(
             "OUTREACH_FALLBACK_TRIGGERED=1 "
             f"from={_safe_text(gates.get('rotation_selected_state')).upper()} "
             f"to={state} "
-            f"reason={_safe_text(gates.get('fallback_reason')) or 'SENDABLE_ZERO'}"
+            f"reason={_safe_text(gates.get('fallback_reason')) or 'SENDABLE_BELOW_FLOOR'}"
         )
     print("prospect_id,email,domain,segment,role_or_title,state_pref,rank_reason")
     for candidate in selected:
@@ -1316,7 +1357,7 @@ def _print_fallback_trigger_token(decision: dict[str, object]) -> None:
         "OUTREACH_FALLBACK_TRIGGERED=1 "
         f"from={_safe_text(decision.get('from_state')).upper()} "
         f"to={_safe_text(decision.get('to_state')).upper()} "
-        f"reason={_safe_text(decision.get('reason')) or 'SENDABLE_ZERO'}"
+        f"reason={_safe_text(decision.get('reason')) or 'SENDABLE_BELOW_FLOOR'}"
     )
 
 
@@ -2220,8 +2261,15 @@ def main() -> int:
             sendable_by_state=crm_funnel_pre["uncontacted_sendable_by_state"],
             daily_limit=limit,
         )
+        ramp_ready_decision = _ramp_readiness_decision(
+            states=states,
+            sendable_by_state=crm_funnel_pre["uncontacted_sendable_by_state"],
+            desired_daily_limit=limit,
+        )
 
         if args.plan:
+            _print_state_selection_tokens(rotation_state=rotation_state, effective_state=state)
+            _print_ramp_ready_token(ramp_ready_decision)
             _print_plan_output(
                 run_date=run_date,
                 state=state,
@@ -2258,6 +2306,8 @@ def main() -> int:
                 manifest_rows=manifest_rows,
                 triage_ctx=triage_ctx,
             )
+            _print_state_selection_tokens(rotation_state=rotation_state, effective_state=state)
+            _print_ramp_ready_token(ramp_ready_decision)
             _print_fallback_trigger_token(fallback_decision)
             print(
                 f"{PASS_AUTO_DRY_RUN} state={state} batch={batch} daily_limit={limit} crm_db={crm_db} allow_repeat={bool(args.allow_repeat)}"
@@ -2374,11 +2424,13 @@ def main() -> int:
         if contacted_count == 0:
             next_actions = "Seed more prospects in crm.sqlite or use --allow-repeat for follow-up."
 
+        _print_state_selection_tokens(rotation_state=rotation_state, effective_state=state)
+        _print_ramp_ready_token(ramp_ready_decision)
+        _print_fallback_trigger_token(fallback_decision)
         print(
             f"{PASS_AUTO_EXPORT} batch={batch} state={state} contacted_count={contacted_count} "
             f"skipped_count={skipped_count} failed_count={failed_count}"
         )
-        _print_fallback_trigger_token(fallback_decision)
         print(f"{PASS_AUTO_EXPORT} contacted_prospect_ids={','.join([r['prospect_id'] for r in send_results if r.get('ok')]) or '(none)'}")
         print(f"{PASS_AUTO_EXPORT} skipped_top_reasons={top_skip}")
         print(

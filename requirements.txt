@@ -3,3 +3,4 @@ beautifulsoup4>=4.11.0
 python-dotenv>=1.0.0
 google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.1.0
+crawl4ai>=0.4.0
