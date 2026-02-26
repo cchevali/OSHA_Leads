@@ -9,6 +9,7 @@ import requests
 
 SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
 ENRICH_URL = "https://api.apollo.io/api/v1/people/bulk_match"
+USAGE_STATS_URL = "https://api.apollo.io/api/v1/usage_stats/api_usage_stats"
 USER_AGENT = "OSHA_Leads/1.0 (+https://microflowops.com)"
 CACHE_MAX_AGE_DAYS = 7
 SEARCH_PAGE_SIZE = 100
@@ -16,6 +17,23 @@ ENRICH_BATCH_SIZE = 10
 HTTP_TIMEOUT_SECONDS = 30
 HTTP_MAX_ATTEMPTS = 3
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+class ApolloApiError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        endpoint: str,
+        status: int | None = None,
+        retryable: bool | None = None,
+        apollo_error: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.endpoint = str(endpoint or "")
+        self.status = (int(status) if status is not None else None)
+        self.retryable = (bool(retryable) if retryable is not None else None)
+        self.apollo_error = str(apollo_error or "")
 
 
 def _utc_now_iso() -> str:
@@ -80,6 +98,15 @@ def _write_diagnostic(diagnostics_dir: Path, state: str, payload: dict) -> Path:
     return path
 
 
+def _endpoint_label(url: str) -> str:
+    text = str(url or "").strip()
+    marker = "api.apollo.io/"
+    idx = text.find(marker)
+    if idx >= 0:
+        return text[idx + len(marker) :].strip("/") or text
+    return text
+
+
 def _normalize_text(value: str) -> str:
     return " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split()).strip()
 
@@ -119,6 +146,45 @@ def _default_post_json(url: str, payload: dict, api_key: str) -> tuple[int, dict
     return status_code, parsed
 
 
+def _default_get_json(url: str, payload: dict, api_key: str) -> tuple[int, dict]:
+    _ = payload
+    headers = {
+        "Content-Type": "application/json",
+        "X-Api-Key": api_key,
+        "User-Agent": USER_AGENT,
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT_SECONDS)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"request_exception exc={type(exc).__name__}") from exc
+    status_code = int(resp.status_code)
+    try:
+        parsed = resp.json()
+    except Exception as exc:
+        raise ValueError(f"json_parse_failed status={status_code} exc={type(exc).__name__}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"json_parse_failed status={status_code} exc=payload_not_object")
+    return status_code, parsed
+
+
+def _apollo_error_text(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    candidates = [
+        payload.get("error"),
+        payload.get("message"),
+        ((payload.get("errors") or [None])[0] if isinstance(payload.get("errors"), list) and payload.get("errors") else None),
+    ]
+    for item in candidates:
+        if isinstance(item, dict):
+            text = _normalize_text(item.get("message") or item.get("error") or "")
+        else:
+            text = _normalize_text(str(item or ""))
+        if text:
+            return text
+    return ""
+
+
 def _retry_backoff_seconds(attempt_number: int, sleep_ms: int) -> float:
     base_seconds = max(0.0, float(max(0, int(sleep_ms))) / 1000.0)
     if base_seconds <= 0:
@@ -135,36 +201,71 @@ def _post_json_with_retry(
     sleep_ms: int,
 ) -> tuple[int, dict]:
     max_attempts = max(1, int(HTTP_MAX_ATTEMPTS))
+    endpoint = _endpoint_label(url)
     last_err = f"apollo_{stage}_request_failed err=unknown"
+    last_status: int | None = None
+    last_retryable: bool | None = None
+    last_apollo_error = ""
     for attempt in range(1, max_attempts + 1):
         try:
             status, parsed = post_json(url, payload, api_key)
         except ValueError as exc:
-            raise RuntimeError(f"apollo_{stage}_parse_failed err={_normalize_text(str(exc))}") from exc
+            raise ApolloApiError(
+                f"apollo_{stage}_parse_failed err={_normalize_text(str(exc))}",
+                endpoint=endpoint,
+            ) from exc
         except Exception as exc:
             last_err = f"apollo_{stage}_request_failed err=request_exception exc={type(exc).__name__}"
             retryable = True
+            last_status = None
+            last_retryable = retryable
+            last_apollo_error = ""
         else:
             if not isinstance(parsed, dict):
-                raise RuntimeError(f"apollo_{stage}_parse_failed err=response_not_object")
+                raise ApolloApiError(
+                    f"apollo_{stage}_parse_failed err=response_not_object",
+                    endpoint=endpoint,
+                )
             status_int = int(status)
             if status_int == 200:
                 return status_int, parsed
             retryable = status_int in RETRYABLE_STATUS_CODES
+            apollo_error = _apollo_error_text(parsed)
             last_err = (
                 f"apollo_{stage}_request_failed err=http_status status={status_int} "
                 f"retryable={1 if retryable else 0}"
             )
+            last_status = status_int
+            last_retryable = retryable
+            last_apollo_error = apollo_error
             if not retryable:
-                raise RuntimeError(last_err)
+                raise ApolloApiError(
+                    last_err,
+                    endpoint=endpoint,
+                    status=last_status,
+                    retryable=last_retryable,
+                    apollo_error=last_apollo_error,
+                )
 
         if attempt >= max_attempts:
-            raise RuntimeError(last_err)
+            raise ApolloApiError(
+                last_err,
+                endpoint=endpoint,
+                status=last_status,
+                retryable=last_retryable,
+                apollo_error=last_apollo_error,
+            )
         backoff_seconds = _retry_backoff_seconds(attempt, sleep_ms)
         if backoff_seconds > 0:
             time.sleep(backoff_seconds)
 
-    raise RuntimeError(last_err)
+    raise ApolloApiError(
+        last_err,
+        endpoint=endpoint,
+        status=last_status,
+        retryable=last_retryable,
+        apollo_error=last_apollo_error,
+    )
 
 
 def _chunked(items: list[dict], size: int) -> list[list[dict]]:
@@ -515,6 +616,19 @@ def fetch_apollo_state_rows(
             "generated_at_utc": _utc_now_iso(),
             "cache_path": str(cache_path),
         }
+        forbidden = False
+        status_code = None
+        endpoint = ""
+        apollo_error = ""
+        if isinstance(exc, ApolloApiError):
+            forbidden = int(exc.status or 0) == 403
+            status_code = exc.status
+            endpoint = exc.endpoint
+            apollo_error = exc.apollo_error
+            diagnostics_payload["endpoint"] = endpoint
+            diagnostics_payload["status"] = status_code
+            if apollo_error:
+                diagnostics_payload["apollo_error"] = apollo_error
         diagnostics_path = _write_diagnostic(diagnostics_dir, state_norm, diagnostics_payload)
         return {
             "rows": [],
@@ -532,5 +646,49 @@ def fetch_apollo_state_rows(
             "enrich_skipped_credit_cap": 0,
             "credit_cap_hit": False,
             "diagnostics_path": diagnostics_path,
+            "error": str(exc),
+            "forbidden": forbidden,
+            "error_status": status_code,
+            "error_endpoint": endpoint,
+            "apollo_error": apollo_error,
+        }
+
+
+def doctor_apollo_api(
+    api_key: str,
+    *,
+    fetcher: Callable[[str, dict, str], tuple[int, dict]] | None = None,
+    sleep_ms: int = 0,
+) -> dict:
+    if not _normalize_text(api_key):
+        raise ValueError("missing_apollo_api_key")
+    get_json = fetcher or _default_get_json
+    endpoint = _endpoint_label(USAGE_STATS_URL)
+    try:
+        status, payload = _post_json_with_retry(
+            post_json=get_json,
+            url=USAGE_STATS_URL,
+            payload={},
+            api_key=api_key,
+            stage="doctor",
+            sleep_ms=sleep_ms,
+        )
+        _ = status
+        return {
+            "ok": True,
+            "forbidden": False,
+            "endpoint": endpoint,
+            "status": 200,
+            "apollo_error": _apollo_error_text(payload),
+            "error": "",
+        }
+    except ApolloApiError as exc:
+        status_code = int(exc.status or 0) if exc.status is not None else 0
+        return {
+            "ok": False,
+            "forbidden": status_code == 403,
+            "endpoint": exc.endpoint or endpoint,
+            "status": status_code,
+            "apollo_error": exc.apollo_error,
             "error": str(exc),
         }

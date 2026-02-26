@@ -31,6 +31,7 @@ import seed_recipients_pools as pools
 ERR_GENERATOR_FAILED = "ERR_GENERATOR_FAILED"
 PASS_GENERATOR_PRINT_CONFIG = "PASS_GENERATOR_PRINT_CONFIG"
 WARN_AUTOGROWTH_SOURCE_FAILED = "WARN_AUTOGROWTH_SOURCE_FAILED"
+APOLLO_FORBIDDEN_HINT = "CHECK_MASTER_KEY_OR_ENDPOINT_SCOPES"
 
 OUTPUT_SUBDIR = ("prospect_discovery",)
 OUTPUT_FILENAME = "prospects_latest.csv"
@@ -703,6 +704,11 @@ def _print_tokens(
     print(f"GENERATOR_APOLLO_ENRICH_NO_MATCH={int(apollo_result.get('enrich_no_match') or 0)}")
     print(f"GENERATOR_APOLLO_ENRICH_SKIPPED_CREDIT_CAP={int(apollo_result.get('enrich_skipped_credit_cap') or 0)}")
     print(f"GENERATOR_APOLLO_CREDIT_CAP_HIT={1 if apollo_result.get('credit_cap_hit') else 0}")
+    print(
+        "GENERATOR_APOLLO_FORBIDDEN="
+        f"{1 if apollo_result.get('forbidden') else 0} "
+        f"hint={APOLLO_FORBIDDEN_HINT}"
+    )
     print(f"GENERATOR_APOLLO_REJECTED_INVALID_EMAIL={int(apollo_rejected.get('invalid_email', 0))}")
     print(f"GENERATOR_APOLLO_REJECTED_FREE_DOMAIN={int(apollo_rejected.get('free_domain', 0))}")
     print(f"GENERATOR_APOLLO_REJECTED_SUPPRESSED={int(apollo_rejected.get('suppressed', 0))}")
@@ -785,6 +791,7 @@ def _fetch_autogrow_source_rows(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate deterministic discovery CSV feed from seed pools + optional autogrow.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved output path and exit.")
+    ap.add_argument("--apollo-doctor", action="store_true", help="Check Apollo master-key endpoint access and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Compute rows only; do not write output files.")
     ap.add_argument("--for-date", default="", help="Override run date (YYYY-MM-DD) for selected_state/backlog preview.")
     args = ap.parse_args(argv)
@@ -800,6 +807,29 @@ def main(argv: list[str] | None = None) -> int:
     cache_dir = _generation_cache_dir(data_dir)
     cache_root_dir = _generation_cache_root_dir(data_dir)
     diagnostics_dir = _generation_diagnostics_dir(data_dir)
+
+    if args.apollo_doctor:
+        try:
+            apollo_cfg_for_doctor = _parse_apollo_config(["APOLLO"])
+        except Exception as exc:
+            print(f"{ERR_GENERATOR_FAILED} stage=apollo_doctor_config err={exc}", file=sys.stderr)
+            return 2
+        try:
+            doctor = prospect_sources_apollo.doctor_apollo_api(
+                api_key=str(apollo_cfg_for_doctor.get("api_key") or ""),
+                sleep_ms=0,
+            )
+        except Exception as exc:
+            print(f"{ERR_GENERATOR_FAILED} stage=apollo_doctor err={exc}", file=sys.stderr)
+            return 2
+        if doctor.get("forbidden"):
+            print(f"APOLLO_DOCTOR_FORBIDDEN=1 hint={APOLLO_FORBIDDEN_HINT}")
+            return 0
+        if doctor.get("ok"):
+            print("APOLLO_DOCTOR_OK=1")
+            return 0
+        print(f"{ERR_GENERATOR_FAILED} stage=apollo_doctor err={doctor.get('error') or 'unknown'}", file=sys.stderr)
+        return 2
 
     states = _parse_states(os.getenv("OUTREACH_STATES", "TX"))
     if not states:
@@ -913,6 +943,7 @@ def main(argv: list[str] | None = None) -> int:
         "enrich_no_match": 0,
         "enrich_skipped_credit_cap": 0,
         "credit_cap_hit": False,
+        "forbidden": False,
     }
     apollo_rejected: Counter = Counter()
     apollo_enrich_remaining = int(apollo_cfg.get("enrich_max_per_run") or 0)
@@ -1035,6 +1066,7 @@ def main(argv: list[str] | None = None) -> int:
                 apollo_result["credit_cap_hit"] = bool(apollo_result.get("credit_cap_hit")) or bool(
                     result.get("credit_cap_hit")
                 )
+                apollo_result["forbidden"] = bool(apollo_result.get("forbidden")) or bool(result.get("forbidden"))
                 apollo_rejected.update(rejected)
                 apollo_enrich_remaining = max(0, apollo_enrich_remaining - int(result.get("enrich_attempted") or 0))
 

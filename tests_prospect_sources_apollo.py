@@ -198,6 +198,38 @@ class TestProspectSourcesApollo(unittest.TestCase):
         self.assertTrue(result.get("diagnostics_path"))
         self.assertIn("apollo_search_request_failed", str(result.get("error") or ""))
 
+    def test_forbidden_403_records_structured_diagnostic_and_flag(self):
+        from outreach import prospect_sources_apollo as apollo
+
+        def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            return 403, {"error": "Forbidden: master key required"}
+
+        with tempfile.TemporaryDirectory() as d:
+            result = apollo.fetch_apollo_state_rows(
+                state="TX",
+                run_date=date(2026, 2, 24),
+                max_pages=1,
+                sleep_ms=0,
+                cache_dir=Path(d) / "cache",
+                diagnostics_dir=Path(d) / "diag",
+                api_key="k",
+                enrich_enabled=True,
+                enrich_limit=1,
+                person_titles=["owner"],
+                fetcher=_fetch,
+                allow_cache_write=False,
+            )
+            diag_path = Path(str(result.get("diagnostics_path")))
+            diag_payload = __import__("json").loads(diag_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result.get("forbidden"))
+        self.assertEqual(result.get("error_status"), 403)
+        self.assertEqual(result.get("error_endpoint"), "api/v1/mixed_people/api_search")
+        self.assertIn("status=403 retryable=0", str(result.get("error") or ""))
+        self.assertEqual(diag_payload.get("status"), 403)
+        self.assertEqual(diag_payload.get("endpoint"), "api/v1/mixed_people/api_search")
+        self.assertIn("master key", str(diag_payload.get("apollo_error") or "").lower())
+
     def test_retries_transient_429_then_success(self):
         from outreach import prospect_sources_apollo as apollo
 
@@ -306,6 +338,30 @@ class TestProspectSourcesApollo(unittest.TestCase):
         self.assertTrue(second["cache_used"])
         self.assertEqual(calls["search"], 1)
         self.assertIsNotNone(second["cache_age_days"])
+
+    def test_doctor_forbidden_returns_flag_and_hintable_state(self):
+        from outreach import prospect_sources_apollo as apollo
+
+        def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            self.assertIn("usage_stats/api_usage_stats", url)
+            return 403, {"error": "Forbidden"}
+
+        result = apollo.doctor_apollo_api(api_key="k", fetcher=_fetch, sleep_ms=0)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["forbidden"])
+        self.assertEqual(result["status"], 403)
+        self.assertEqual(result["endpoint"], "api/v1/usage_stats/api_usage_stats")
+
+    def test_doctor_ok_returns_success(self):
+        from outreach import prospect_sources_apollo as apollo
+
+        def _fetch(url, payload, api_key):  # type: ignore[no-untyped-def]
+            return 200, {"ok": True}
+
+        result = apollo.doctor_apollo_api(api_key="k", fetcher=_fetch, sleep_ms=0)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["forbidden"])
+        self.assertEqual(result["status"], 200)
 
 
 if __name__ == "__main__":
