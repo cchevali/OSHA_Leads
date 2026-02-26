@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=e7cea5f80cdb0bb3aea49a0f0deb22c42fa11e83
-PACK_BUILD_UTC=2026-02-25T03:31:14Z
-SOURCE_HASHES: AGENTS.md=417e021598811fea289c6a53c48f57319eedc9b03f90fe2970f83b7144981219 docs/ARCHITECTURE.md=b2e5149fce23f70222a40e3b90010b94eb3255cb643b43608f72370af67842d4 docs/DECISIONS.md=b0b86562b88a860500b5ebdde492418328985e1210315b6cf2eeaf98324ed9a6 docs/PROJECT_BRIEF.md=7dc7d06e7ce0d886defa79f01fe836eae63b926293b837267fa92f84125dfb41 docs/RUNBOOK.md=57489debf57f9637090596b5235d49678d11b4940b248bf390181b14ca05a8fb docs/TODO.md=850e68442840cad6c15492319f7e98fbcf9b4f3207fab33434398fe2911da730 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=6e4886d7091637f64d1a210195693816c8426e376732c410865ffbc756cb51c1
+PACK_GIT_SHA=a024b540ad37c005057e27ae426608cfc5d9be56
+PACK_BUILD_UTC=2026-02-26T03:23:45Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=cb866cbd8d076445e2d27f951055bb8b2931d69cf9ae13b11025e84e27cb4a67 docs/DECISIONS.md=714ae49bcc8dd5690ef56cc6282afb1fddd4e09884945f7d28be9608ab6f0890 docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=63c347ea2f930fcb9a44155394358e0e64c52dcbee4a252318d1e969e669b9ce docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=c18f04dd7a282d9926b954413fc32f26bf1cf6bc5234803e1b518f57586d068d
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -107,8 +107,10 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 ## Outreach CRM Auto-Run Data Flow
 
 1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).
-   - Optional env-gated auto-growth sources: AIHA, OHS_BG, and APOLLO (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+   - Optional env-gated auto-growth sources: AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
    - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
+   - BCSP and OSHA_NEWS use a lazy-loaded Crawl4AI wrapper (`outreach/scraper_engine.py`) with warning-level degradation when Crawl4AI/Playwright browsers are unavailable.
+   - STATE_LIC Phase 1 uses the Texas TDLR public Socrata dataset (`7358-krk7`) instead of browser scraping.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts the generated CSV into `crm.sqlite`.
@@ -409,6 +411,33 @@ OSHA establishment detail pages expose structured inspection metadata (for examp
 - New runtime artifacts are written under DATA_DIR-aware `scoring/`, `trials/<subscriber>/scoring/`, and `outreach/<batch>/` paths.
 - Operators must populate OSHA detail cache (or allow programmatic fill) before expecting enriched triage decisions.
 - AI triage enablement requires secrets workflow updates and key presence validation, but rules-only overlay remains fully functional.
+
+## ADR-0009: Prospect Autogrow Crawl4AI Runtime Is Lazy And Warning-Level
+
+Date: 2026-02-26
+Status: Accepted
+
+### Context
+
+Prospect autogrow is expanding to browser-backed scraping sources (for example BCSP and OSHA_NEWS) using Crawl4AI + Playwright, but existing generator/discovery/outreach flows must not fail on machines that have not completed the one-time browser install step.
+
+### Decision
+
+- Add `outreach/scraper_engine.py` as a shared autogrow scraping wrapper with lazy Crawl4AI imports (no eager import in generator startup paths).
+- Treat missing Crawl4AI package or Playwright browsers as warning-level conditions for Crawl4AI-backed sources (`WARN_CRAWL4AI_*`), not hard generator failures.
+- Add `run_prospect_generation.py --doctor` as an aggregate readiness command; keep `--apollo-doctor` for backward compatibility.
+- Keep `STATE_LIC` Phase 1 on Texas TDLR Socrata API (no browser dependency) so at least one new source remains available without Crawl4AI runtime setup.
+
+### Rationale
+
+- Preserves non-breaking daily operations on systems that only use legacy sources or API-based sources.
+- Makes readiness issues explicit and machine-readable without blocking dry-run/print-config workflows.
+- Reduces rollout risk while enabling incremental source expansion.
+
+### Consequences
+
+- Operators must perform a one-time `crawl4ai-setup` when enabling BCSP/OSHA_NEWS in production.
+- Generator output now includes additional readiness/availability tokens in `--print-config` and `--doctor` paths.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -729,10 +758,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachSuppressionMaxAgeHours 240 `
   -ProspectAutoGrowEnabled 1 `
   -ProspectAutoGrowSafetyNetEnabled 1 `
-  -ProspectAutoGrowSources AIHA `
+  -ProspectAutoGrowSources AIHA,OHS_BG,APOLLO `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
+  -ApolloApiKey <your_apollo_api_key> `
+  -ApolloEnrichEnabled 1 `
+  -ApolloEnrichMaxPerRun 50 `
+  -ApolloPersonLocationsMode state `
   -TrialSendsLimitDefault 14 `
   -TrialExpiredBehaviorDefault notify_once
 ```
@@ -778,17 +811,22 @@ No-arg generation output path:
 Auto-growth (env-gated, optional):
 
 - Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_STATES`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
+- Crawl4AI runtime keys (optional, default zero-cost): `PROSPECT_AUTOGROW_LLM_ENABLED` (default `0`), `PROSPECT_AUTOGROW_BCSP_CREDENTIALS`, `PROSPECT_AUTOGROW_BCSP_INDUSTRY`, `PROSPECT_AUTOGROW_STATE_LIC_TX_LICENSE_TYPES`.
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
-- Source scope: `AIHA`, `OHS_BG`, and `APOLLO` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG,APOLLO`).
+- Source scope: `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG,BCSP,STATE_LIC`).
 - Cache paths:
   - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
   - OHS_BG: `${DATA_DIR}\prospect_generation\cache\ohs_bg\state_<STATE>.json`
   - APOLLO: `${DATA_DIR}\prospect_generation\cache\apollo\state_<STATE>.json`
+  - BCSP: `${DATA_DIR}\prospect_generation\cache\bcsp\state_<STATE>.json`
+  - OSHA_NEWS: `${DATA_DIR}\prospect_generation\cache\osha_news\state_<STATE>.json`
+  - STATE_LIC: `${DATA_DIR}\prospect_generation\cache\state_lic\state_<STATE>.json`
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
 - Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
 - APOLLO v1 flow: People Search (`has_email=true` gating) + Bulk People Enrichment in batches of 10; no waterfall/webhook mode.
-- APOLLO consumes enrichment credits and is capped per run by `APOLLO_ENRICH_MAX_PER_RUN` (free-tier credits may be insufficient for sustained ramping).
+- APOLLO consumes enrichment credits. Search can be low/no-credit; enrichment is credit-capped by `APOLLO_ENRICH_MAX_PER_RUN`.
+- Apollo free-tier credits are limited; validate refill volume against actual credit usage before increasing send limits.
 - `--for-date YYYY-MM-DD` controls `selected_state` plus per-state backlog/new-needed previews in `--print-config` and `--dry-run`.
 
 Dry-run generation (no writes):
@@ -804,22 +842,49 @@ Print resolved generation config:
 .\\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config --for-date 2026-02-18
 ```
 
+Generation doctor (readiness checks only, warning-level for Crawl4AI/APOLLO free-tier blocks):
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --doctor
+```
+
+One-time Crawl4AI setup (human step, not auto-run by app code):
+
+```powershell
+pip install crawl4ai
+crawl4ai-setup
+```
+
 Generator emits machine-readable lines:
 
 - `GENERATOR_OUTPUT_PATH`
 - `GENERATOR_ROWS_READ`
 - `GENERATOR_ROWS_WRITTEN`
 - `GENERATOR_AUTOGROW_*`
-- `GENERATOR_AUTOGROW_STATES`
 - `GENERATOR_AUTOGROW_SAFETY_NET_FORCED`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
 - `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
 - `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
-- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG|APOLLO> state=<STATE> ...`
+- `GENERATOR_AUTOGROW_STATES`
+- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG|APOLLO|BCSP|OSHA_NEWS|STATE_LIC> state=<STATE> ...`
 - `GENERATOR_AIHA_*`
 - `GENERATOR_OHS_BG_*`
 - `GENERATOR_APOLLO_*`
+- `GENERATOR_BCSP_*`, `GENERATOR_OSHA_NEWS_*`, `GENERATOR_STATE_LIC_*`
+- `crawl4ai_installed`, `playwright_browsers_installed`, `<SOURCE>_available` (via `--print-config`)
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
+
+APOLLO telemetry highlights:
+
+- `GENERATOR_APOLLO_SEARCH_PAGES_FETCHED`
+- `GENERATOR_APOLLO_SEARCH_ROWS_RETURNED`
+- `GENERATOR_APOLLO_SEARCH_ROWS_HAS_EMAIL_TRUE`
+- `GENERATOR_APOLLO_SEARCH_ROWS_DEDUPED_ID`
+- `GENERATOR_APOLLO_ENRICH_ATTEMPTED`
+- `GENERATOR_APOLLO_ENRICHED`
+- `GENERATOR_APOLLO_ENRICH_NO_MATCH`
+- `GENERATOR_APOLLO_ENRICH_SKIPPED_CREDIT_CAP`
+- `GENERATOR_APOLLO_CREDIT_CAP_HIT`
 
 Optional empty-state planner fallback:
 - `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default) preserves weekday rotation-selected state.
@@ -1599,6 +1664,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Codex-owned engineering backlog
 
+- [ ] Add follow-on autogrow sources on top of `outreach/scraper_engine.py` foundation: `AGC`, `BLUEBOOK`, `THOMASNET`, `BBB` (source modules + fixtures + generator tests).
 - [ ] Wire landing page conversion CTA references to paid path after Stripe link is set.
   Reference points: `web/config/site.json`, `web/components/CTAButtons.tsx`, `web/app/pricing/page.tsx`, `web/app/contact/page.tsx`.
 - [ ] Define trial -> paid email-only sequence using existing lifecycle states (`replied`, `trial_started`, `converted`) and conversion artifacts in `run_trial_daily.py`.
