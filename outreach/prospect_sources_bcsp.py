@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,13 +10,15 @@ from urllib.parse import urlencode
 import requests
 from bs4 import BeautifulSoup
 
-from outreach import scraper_engine
-
 
 BASE_URL = "https://directory.bcsp.org/"
-SEARCH_URL = "https://directory.bcsp.org/search"
+SEARCH_URL = "https://directory.bcsp.org/search_results.php"
 USER_AGENT = "OSHA_Leads/1.0 (+https://microflowops.com)"
 CACHE_MAX_AGE_DAYS = 7
+PAGE_SIZE = 20
+
+US_COUNTRY_TOKENS = {"US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA"}
+NON_ACTIVE_MARKERS = {"INACTIVE", "EXPIRED", "SUSPENDED"}
 
 
 def _utc_now_iso() -> str:
@@ -100,44 +103,122 @@ def _split_name(full_name: str) -> tuple[str, str]:
     return parts[0], parts[-1]
 
 
+def _parse_location(location_text: str, fallback_state: str) -> tuple[str, str, str]:
+    text = _normalize_text(location_text)
+    if not text:
+        return "", _normalize_text(fallback_state).upper(), ""
+    parts = [p.strip() for p in re.split(r"\s*[|,]\s*", text) if p.strip()]
+    city = ""
+    state = _normalize_text(fallback_state).upper()
+    country = ""
+    if len(parts) >= 1:
+        city = _normalize_text(parts[0])
+    if len(parts) >= 2 and re.fullmatch(r"[A-Za-z]{2}", parts[1] or ""):
+        state = _normalize_text(parts[1]).upper()
+        if len(parts) >= 3:
+            country = _normalize_text(parts[2]).upper()
+    else:
+        m = re.search(r"^(.*?),\s*([A-Z]{2})(?:\s+(.*))?$", text)
+        if m:
+            city = _normalize_text(m.group(1))
+            state = _normalize_text(m.group(2)).upper() or state
+            country = _normalize_text(m.group(3)).upper()
+    return city, state, country
+
+
+def _country_is_us(country_text: str, location_text: str, state_text: str) -> bool:
+    country = _normalize_text(country_text).upper()
+    if country:
+        return country in US_COUNTRY_TOKENS
+    state = _normalize_text(state_text).upper()
+    if re.fullmatch(r"[A-Z]{2}", state):
+        return True
+    text = _normalize_text(location_text).upper()
+    if "UNITED STATES" in text or re.search(r"\bUSA\b", text):
+        return True
+    return False
+
+
+def _is_active_listing(node: Any) -> bool:
+    status_node = None
+    try:
+        status_node = node.select_one(".listing_status, .listing-status, .status")
+    except Exception:
+        status_node = None
+    status_text = _normalize_text(status_node.get_text(" ", strip=True) if status_node is not None else "")
+    blob = _normalize_text(node.get_text(" ", strip=True))
+    blob_upper = blob.upper()
+    status_upper = status_text.upper()
+    if any(marker in status_upper for marker in NON_ACTIVE_MARKERS):
+        return False
+    if any(marker in blob_upper for marker in NON_ACTIVE_MARKERS):
+        return False
+    if status_upper:
+        return "ACTIVE" in status_upper
+    return "ACTIVE" in blob_upper
+
+
+def _listing_nodes(soup: BeautifulSoup) -> list[Any]:
+    selectors = [
+        ".bcsp-listing",
+        ".search-result",
+        ".directory-result",
+        ".listing",
+        ".result-card",
+    ]
+    nodes: list[Any] = []
+    seen: set[int] = set()
+    for selector in selectors:
+        for node in soup.select(selector):
+            ident = id(node)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            nodes.append(node)
+    if nodes:
+        return nodes
+    for name_node in soup.select(".listing_name, .listing-name"):
+        parent = name_node.find_parent(["div", "article", "li", "tr"])
+        if parent is None:
+            continue
+        ident = id(parent)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        nodes.append(parent)
+    return nodes
+
+
 def parse_bcsp_page(page_html: str, *, state: str, page_ref: str) -> tuple[list[dict[str, str]], str]:
     soup = BeautifulSoup(page_html or "", "html.parser")
-    cards = soup.select(".bcsp-card, .directory-result, .result-card")
-    if not cards:
-        cards = soup.select("article, .card")
+    cards = _listing_nodes(soup)
     rows: list[dict[str, str]] = []
     seen_keys: set[str] = set()
-    for idx, card in enumerate(cards):
+    state_filter = _normalize_text(state).upper()
+    for card in cards:
         card_text = _normalize_text(card.get_text(" ", strip=True))
         if not card_text:
             continue
-        state_match = re.search(r"\b([A-Z]{2})\b", card_text)
-        state_val = _normalize_text(state_match.group(1) if state_match else state).upper()
-        if state and state_val and state_val != str(state or "").strip().upper():
+        if not _is_active_listing(card):
             continue
 
-        name_node = card.select_one(".name, .credential-holder, h2, h3")
-        name = _normalize_text(name_node.get_text(" ", strip=True) if name_node is not None else "")
-        company_node = card.select_one(".company, .employer, .organization")
-        company = _normalize_text(company_node.get_text(" ", strip=True) if company_node is not None else "")
-        city_node = card.select_one(".city, .locality")
-        city = _normalize_text(city_node.get_text(" ", strip=True) if city_node is not None else "")
-        cred_node = card.select_one(".credentials, .certifications")
-        credentials = _normalize_text(cred_node.get_text(" ", strip=True) if cred_node is not None else "")
-        industry_node = card.select_one(".industry, .specialty")
-        industry = _normalize_text(industry_node.get_text(" ", strip=True) if industry_node is not None else "")
-        link_node = card.select_one("a[href]")
-        website = ""
-        if link_node is not None:
-            href = _normalize_text(link_node.get("href") or "")
-            if href.lower().startswith(("http://", "https://")) and "bcsp" not in href.lower():
-                website = href
-        contacts = scraper_engine.extract_contacts_regex(str(card))
-        email = _normalize_text((contacts.get("emails") or [""])[0]).lower()
-        phone = _normalize_text((contacts.get("phones") or [""])[0])
+        name_node = card.select_one(".listing_name, .listing-name, .name, h2, h3")
+        location_node = card.select_one(".listing_location, .listing-location, .location, .locality")
+        cred_node = card.select_one(".listing_credential, .listing-credential, .credentials, .credential")
+        status_node = card.select_one(".listing_status, .listing-status, .status")
 
-        first_name, last_name = _split_name(name)
-        key = "|".join([name.lower(), company.lower(), city.lower(), state_val])
+        contact_name = _normalize_text(name_node.get_text(" ", strip=True) if name_node is not None else "")
+        location_text = _normalize_text(location_node.get_text(" ", strip=True) if location_node is not None else "")
+        city, state_val, country = _parse_location(location_text, fallback_state=state_filter)
+        if not _country_is_us(country, location_text, state_val):
+            continue
+        if state_filter and state_val and state_val != state_filter:
+            continue
+
+        credentials = _normalize_text(cred_node.get_text(" ", strip=True) if cred_node is not None else "")
+        status_text = _normalize_text(status_node.get_text(" ", strip=True) if status_node is not None else "ACTIVE")
+        first_name, last_name = _split_name(contact_name)
+        key = "|".join([contact_name.lower(), city.lower(), state_val.upper(), credentials.lower()])
         if key in seen_keys:
             continue
         seen_keys.add(key)
@@ -145,26 +226,27 @@ def parse_bcsp_page(page_html: str, *, state: str, page_ref: str) -> tuple[list[
         rows.append(
             {
                 "prospect_id": "",
-                "firm": company or _normalize_text(f"{first_name} {last_name}").strip(),
-                "company_name": company or _normalize_text(f"{first_name} {last_name}").strip(),
-                "email": email,
-                "contact_email": email,
-                "contact_name": name,
+                "firm": "",
+                "company_name": "",
+                "email": "",
+                "contact_email": "",
+                "contact_name": contact_name,
                 "first_name": first_name,
                 "last_name": last_name,
                 "title": "BCSP Credential Holder",
                 "contact_role": "BCSP Credential Holder",
                 "credentials": credentials,
-                "industry": industry,
                 "city": city,
                 "state": state_val,
-                "website": website,
-                "phone": phone,
+                "website": "",
+                "phone": "",
+                "listing_status": status_text or "ACTIVE",
+                "listing_location": location_text,
                 "source": "BCSP",
                 "source_detail": page_ref,
             }
         )
-    return rows, ("BCSP_CARDS" if rows else "FAILED")
+    return rows, ("BCSP_LISTINGS" if rows else "FAILED")
 
 
 def _default_fetcher(url: str) -> tuple[int, str]:
@@ -172,15 +254,14 @@ def _default_fetcher(url: str) -> tuple[int, str]:
     return int(resp.status_code), str(resp.text or "")
 
 
-def _build_page_url(state: str, page_idx: int, credentials: list[str], industry: str) -> str:
+def _build_page_url(state: str, credential: str, offset: int) -> str:
     params = {
+        "directory_search": "",
         "state": str(state or "").strip().upper(),
-        "page": int(page_idx) + 1,
+        "credential": _normalize_text(credential),
+        "start_on_page": int(offset),
+        "show_per_page": PAGE_SIZE,
     }
-    if credentials:
-        params["credentials"] = ",".join(credentials)
-    if industry:
-        params["industry"] = industry
     return f"{SEARCH_URL}?{urlencode(params)}"
 
 
@@ -224,55 +305,46 @@ def fetch_bcsp_state_rows(
             "diagnostics_path": None,
         }
 
-    if fetcher is None:
-        availability = scraper_engine.probe_source_availability("BCSP")
-        if not availability.get("available"):
-            warn_token = str(availability.get("warn_token") or "")
-            reason = str(availability.get("reason") or "unavailable")
-            return {
-                "rows": [],
-                "cache_used": False,
-                "cache_age_days": _cache_age_days(cached_payload or {}),
-                "cache_path": cache_path,
-                "pages_fetched": 0,
-                "parse_mode": "FAILED",
-                "diagnostics_path": None,
-                "error": f"bcsp_unavailable err={reason}",
-                "warn_token": warn_token,
-            }
-
     credentials = _parse_csv_env("PROSPECT_AUTOGROW_BCSP_CREDENTIALS", ["CSP", "ASP", "CHST", "OHST"])
-    industry = _normalize_text(os.getenv("PROSPECT_AUTOGROW_BCSP_INDUSTRY", ""))
     pages_fetched = 0
     rows_all: list[dict[str, Any]] = []
     page_modes: list[str] = []
     page_urls: list[str] = []
+    fetch = fetcher or _default_fetcher
 
     try:
-        for page_idx in range(max_pages):
-            url = _build_page_url(state_norm, page_idx, credentials=credentials, industry=industry)
-            page_urls.append(url)
-            if fetcher is not None:
-                status, html = fetcher(url)
-                page = {"ok": int(status) == 200, "status": int(status), "html": str(html or ""), "url": url}
-            else:
-                page = scraper_engine.crawl_page(url, mode="browser", sleep_ms=(sleep_ms if page_idx > 0 else 0))
-            pages_fetched += 1
-            if not page.get("ok"):
-                page_modes.append("FAILED")
-                continue
-            parsed_rows, mode = parse_bcsp_page(str(page.get("html") or ""), state=state_norm, page_ref=f"page={page_idx + 1}")
-            page_modes.append(mode)
-            rows_all.extend(parsed_rows)
-            if not parsed_rows and page_idx > 0:
-                break
+        for credential in credentials:
+            offset = 0
+            while pages_fetched < max_pages:
+                if pages_fetched > 0 and sleep_ms > 0:
+                    time.sleep(float(sleep_ms) / 1000.0)
+                url = _build_page_url(state_norm, credential=credential, offset=offset)
+                page_urls.append(url)
+                status, html = fetch(url)
+                pages_fetched += 1
+                if int(status) != 200:
+                    page_modes.append("FAILED")
+                    break
+                parsed_rows, mode = parse_bcsp_page(
+                    str(html or ""),
+                    state=state_norm,
+                    page_ref=f"credential={_normalize_text(credential)}&start_on_page={offset}",
+                )
+                page_modes.append(mode)
+                rows_all.extend(parsed_rows)
+                if not parsed_rows:
+                    break
+                offset += PAGE_SIZE
+                if pages_fetched >= max_pages:
+                    break
 
-        rows_all = scraper_engine.apply_email_resolution_waterfall(rows_all, sleep_ms=0)
         parse_mode = "FAILED"
         if rows_all:
             parse_mode = page_modes[0] if len(set(page_modes)) == 1 else "MULTI"
-        if parse_mode == "FAILED":
-            raise RuntimeError("page_parse_failed")
+        if parse_mode == "FAILED" and pages_fetched > 0:
+            parse_mode = page_modes[0] if page_modes else "FAILED"
+        if pages_fetched == 0:
+            raise RuntimeError("page_fetch_failed")
 
         payload = {
             "source": "BCSP",
@@ -319,4 +391,3 @@ def fetch_bcsp_state_rows(
             "diagnostics_path": diag,
             "error": str(exc),
         }
-

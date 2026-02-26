@@ -97,7 +97,9 @@ def probe_crawl4ai_runtime() -> dict[str, Any]:
 
 def probe_source_availability(source_key: str) -> dict[str, Any]:
     token = _normalize_text(source_key).upper()
-    if token in {"BCSP", "OSHA_NEWS"}:
+    if token == "BCSP":
+        return {"source": token, "available": True, "reason": "http_html", "warn_token": ""}
+    if token == "OSHA_NEWS":
         runtime = probe_crawl4ai_runtime()
         if not runtime.get("crawl4ai_installed"):
             return {
@@ -368,4 +370,3 @@ def apply_email_resolution_waterfall(rows: list[dict[str, Any]], *, sleep_ms: in
             row["email_status"] = _normalize_text(row.get("email_status") or "pending")
         out.append(row)
     return out
-

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -9,22 +10,17 @@ from urllib.parse import urlencode
 
 import requests
 
-from outreach import scraper_engine
-
 
 SOCRATA_URL = "https://data.texas.gov/resource/7358-krk7.json"
 USER_AGENT = "OSHA_Leads/1.0 (+https://microflowops.com)"
 CACHE_MAX_AGE_DAYS = 3
 DEFAULT_TDLR_LICENSE_TYPES = [
-    "A/C and Refrigeration Contractor",
-    "Electrician",
+    "A/C Contractor",
     "Electrical Contractor",
     "Elevator Contractor",
-    "Boiler",
-    "Mold Assessor",
-    "Mold Remediator",
-    "Industrialized Housing and Buildings",
+    "Appliance Installation Contractor",
 ]
+CITY_STATE_ZIP_RE = re.compile(r"^(.+?)\s+([A-Z]{2})\s+\d")
 
 
 def _utc_now_iso() -> str:
@@ -100,14 +96,16 @@ def _parse_license_types_env() -> list[str]:
 
 
 def _build_where_clause(state: str, license_types: list[str]) -> str:
-    clauses = [f"upper(business_state) = '{str(state or '').strip().upper()}'"]
+    _ = state
+    clauses: list[str] = []
     if license_types:
         escaped = []
         for item in license_types:
             escaped_item = str(item or "").replace("'", "''")
             escaped.append(f"'{escaped_item}'")
-        clauses.append(f"license_type in ({','.join(escaped)})")
-    clauses.append("business_name IS NOT NULL")
+        clauses.append(f"license_type IN ({','.join(escaped)})")
+    else:
+        clauses.append("license_type IS NOT NULL")
     return " AND ".join(clauses)
 
 
@@ -118,12 +116,13 @@ def _build_query_url(state: str, license_types: list[str], limit: int, offset: i
                 "license_type",
                 "license_number",
                 "business_name",
+                "owner_name",
                 "business_address_line1",
-                "business_city",
-                "business_state",
-                "business_zip",
+                "business_city_state_zip",
                 "business_county",
-                "license_expiration_date",
+                "business_telephone",
+                "license_expiration_date_mmddccyy",
+                "license_subtype",
             ]
         ),
         "$where": _build_where_clause(state, license_types),
@@ -138,20 +137,36 @@ def _prospect_id_from_license(state: str, license_number: str) -> str:
     return f"state_lic_{hashlib.sha1(base).hexdigest()[:16]}"
 
 
+def _parse_city_state_zip(value: Any, fallback_state: str) -> tuple[str, str]:
+    text = _normalize_text(value)
+    if not text:
+        return "", str(fallback_state or "").strip().upper()
+    m = CITY_STATE_ZIP_RE.search(text)
+    if not m:
+        return text, str(fallback_state or "").strip().upper()
+    city = _normalize_text(m.group(1))
+    state = _normalize_text(m.group(2)).upper() or str(fallback_state or "").strip().upper()
+    return city, state
+
+
 def _map_tdlr_row(raw: dict[str, Any], state: str) -> dict[str, str]:
     license_number = _normalize_text(raw.get("license_number") or "")
     business_name = _normalize_text(raw.get("business_name") or "")
-    city = _normalize_text(raw.get("business_city") or "")
-    state_val = _normalize_text(raw.get("business_state") or state).upper()
+    owner_name = _normalize_text(raw.get("owner_name") or "")
+    city, state_val = _parse_city_state_zip(raw.get("business_city_state_zip") or "", fallback_state=state)
     license_type = _normalize_text(raw.get("license_type") or "")
-    license_exp = _normalize_text(raw.get("license_expiration_date") or "")
+    license_exp = _normalize_text(raw.get("license_expiration_date_mmddccyy") or "")
+    license_subtype = _normalize_text(raw.get("license_subtype") or "")
+    business_county = _normalize_text(raw.get("business_county") or "")
+    business_phone = _normalize_text(raw.get("business_telephone") or "")
+    business_address_line1 = _normalize_text(raw.get("business_address_line1") or "")
     row = {
         "prospect_id": _prospect_id_from_license(state_val, license_number),
         "firm": business_name,
         "company_name": business_name,
         "email": "",
         "contact_email": "",
-        "contact_name": "",
+        "contact_name": owner_name,
         "title": license_type or "Licensed Contractor",
         "contact_role": license_type or "Licensed Contractor",
         "city": city,
@@ -162,7 +177,11 @@ def _map_tdlr_row(raw: dict[str, Any], state: str) -> dict[str, str]:
         "source_detail": f"tdlr:{license_number}",
         "license_type": license_type,
         "license_number": license_number,
-        "license_expiration_date": license_exp,
+        "license_subtype": license_subtype,
+        "business_county": business_county,
+        "business_telephone": business_phone,
+        "business_address_line1": business_address_line1,
+        "license_expiration_date_mmddccyy": license_exp,
         "email_status": "pending",
     }
     return row
@@ -258,7 +277,6 @@ def fetch_state_lic_state_rows(
             if len(payload) < page_limit:
                 break
 
-        rows_all = scraper_engine.apply_email_resolution_waterfall(rows_all, sleep_ms=0)
         parse_mode = "SOCRATA" if rows_all or pages_fetched > 0 else "FAILED"
         payload_cache = {
             "source": "STATE_LIC",

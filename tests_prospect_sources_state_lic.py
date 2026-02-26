@@ -16,10 +16,12 @@ class TestProspectSourcesStateLic(unittest.TestCase):
         return json.loads((FIXTURES / "page1.json").read_text(encoding="utf-8"))
 
     def test_build_query_contains_filters(self):
-        url = state_lic._build_query_url("TX", ["Electrician", "Mold Assessor"], limit=1000, offset=0)
+        url = state_lic._build_query_url("TX", ["Electrical Contractor", "Elevator Contractor"], limit=1000, offset=0)
         self.assertTrue(("$where=" in url) or ("%24where=" in url))
-        self.assertIn("Electrician", url)
-        self.assertIn("Mold+Assessor", url)
+        self.assertIn("owner_name", url)
+        self.assertIn("business_city_state_zip", url)
+        self.assertIn("Electrical+Contractor", url)
+        self.assertIn("Elevator+Contractor", url)
 
     def test_fetch_maps_rows(self):
         payload = self._payload()
@@ -46,6 +48,11 @@ class TestProspectSourcesStateLic(unittest.TestCase):
         self.assertEqual(len(result["rows"]), 2)
         self.assertEqual(result["rows"][0]["source"], "STATE_LIC")
         self.assertTrue(str(result["rows"][0]["prospect_id"]).startswith("state_lic_"))
+        self.assertEqual(result["rows"][0]["firm"], "Acme Electrical LLC")
+        self.assertEqual(result["rows"][0]["contact_name"], "Jane Owner")
+        self.assertEqual(result["rows"][0]["title"], "Electrical Contractor")
+        self.assertEqual(result["rows"][0]["city"], "Houston")
+        self.assertEqual(result["rows"][0]["state"], "TX")
 
     def test_fetch_uses_cache(self):
         with tempfile.TemporaryDirectory() as d:

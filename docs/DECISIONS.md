@@ -262,6 +262,8 @@ Prospect autogrow is expanding to browser-backed scraping sources (for example B
 - Treat missing Crawl4AI package or Playwright browsers as warning-level conditions for Crawl4AI-backed sources (`WARN_CRAWL4AI_*`), not hard generator failures.
 - Add `run_prospect_generation.py --doctor` as an aggregate readiness command; keep `--apollo-doctor` for backward compatibility.
 - Keep `STATE_LIC` Phase 1 on Texas TDLR Socrata API (no browser dependency) so at least one new source remains available without Crawl4AI runtime setup.
+- BCSP is implemented as plain HTTP parsing (no Crawl4AI dependency); OSHA_NEWS remains the Crawl4AI-gated autogrow source.
+- Centralize zero-cost domain/email enrichment in the generator (default off) instead of source-specific waterfalls; keep Hunter.io as an env-gated stub/cap path until live integration is enabled.
 
 ### Rationale
 
@@ -271,6 +273,6 @@ Prospect autogrow is expanding to browser-backed scraping sources (for example B
 
 ### Consequences
 
-- Operators must perform a one-time `crawl4ai-setup` when enabling BCSP/OSHA_NEWS in production.
+- Operators must perform a one-time `crawl4ai-setup` when enabling OSHA_NEWS in production.
 - Generator output now includes additional readiness/availability tokens in `--print-config` and `--doctor` paths.
 

@@ -1,24 +1,26 @@
 [
   {
-    "license_type": "Electrician",
-    "license_number": "E-12345",
+    "license_type": "Electrical Contractor",
+    "license_number": "EC-12345",
     "business_name": "Acme Electrical LLC",
+    "owner_name": "Jane Owner",
     "business_address_line1": "123 Main St",
-    "business_city": "Houston",
-    "business_state": "TX",
-    "business_zip": "77002",
+    "business_city_state_zip": "Houston TX 77002",
     "business_county": "Harris",
-    "license_expiration_date": "2026-12-31T00:00:00.000"
+    "business_telephone": "(713) 555-1000",
+    "license_expiration_date_mmddccyy": "12312026",
+    "license_subtype": "Contractor"
   },
   {
-    "license_type": "Mold Assessor",
-    "license_number": "M-98765",
-    "business_name": "Bravo Mold Assessments",
+    "license_type": "Appliance Installation Contractor",
+    "license_number": "AI-98765",
+    "business_name": "Bravo Installations Inc",
+    "owner_name": "BRAVO INSTALLATIONS INC",
     "business_address_line1": "456 Oak Ave",
-    "business_city": "Austin",
-    "business_state": "TX",
-    "business_zip": "78701",
+    "business_city_state_zip": "Austin TX 78701",
     "business_county": "Travis",
-    "license_expiration_date": "2027-01-15T00:00:00.000"
+    "business_telephone": "(512) 555-2000",
+    "license_expiration_date_mmddccyy": "01152027",
+    "license_subtype": "Install"
   }
 ]

@@ -25,6 +25,7 @@ from outreach import crm_store
 from outreach import prospect_sources_apollo
 from outreach import prospect_sources_aiha
 from outreach import prospect_sources_bcsp
+from outreach import prospect_enrich_email
 from outreach import prospect_sources_ohs_bg
 from outreach import prospect_sources_osha_news
 from outreach import prospect_sources_state_lic
@@ -55,7 +56,7 @@ AUTOGROW_SOURCE_PREFIX = {
 }
 AUTOGROW_SOURCE_LABEL = {k: str(v or "").lower() for k, v in AUTOGROW_SOURCE_PREFIX.items()}
 AUTOGROW_ALLOWED_SOURCES = set(AUTOGROW_SOURCE_PREFIX.keys())
-CRAWL4AI_AUTOGROW_SOURCES = {"BCSP", "OSHA_NEWS"}
+CRAWL4AI_AUTOGROW_SOURCES = {"OSHA_NEWS"}
 AUTOGROW_REJECT_KEYS = (
     "invalid_email",
     "free_domain",
@@ -287,6 +288,20 @@ def _parse_apollo_config(autogrow_sources: list[str]) -> dict:
         "enrich_max_per_run": enrich_max_per_run,
         "person_titles": person_titles,
         "person_locations_mode": person_locations_mode,
+    }
+
+
+def _generation_hunter_usage_path(data_dir: Path) -> Path:
+    return data_dir / "prospect_generation" / "hunter_usage.json"
+
+
+def _parse_enrich_config(data_dir: Path) -> dict:
+    return {
+        "domain_enabled": _bool_env(os.getenv("PROSPECT_ENRICH_DOMAIN_ENABLED", "0")),
+        "hunter_enabled": _bool_env(os.getenv("PROSPECT_ENRICH_HUNTER_ENABLED", "0")),
+        "hunter_api_key": _normalize_text(os.getenv("HUNTER_API_KEY", "")),
+        "hunter_usage_path": _generation_hunter_usage_path(data_dir),
+        "hunter_cap": prospect_enrich_email.HUNTER_FREE_MONTHLY_CAP,
     }
 
 
@@ -612,6 +627,23 @@ def _default_apollo_result(cache_root_dir: Path, selected_state: str, *, sources
     }
 
 
+def _default_generator_enrich_metrics() -> dict[str, int]:
+    return {
+        "attempted": 0,
+        "domain_resolved": 0,
+        "email_guessed": 0,
+        "hunter_verified": 0,
+        "still_no_email": 0,
+        "hunter_skipped_cap": 0,
+    }
+
+
+def _merge_generator_enrich_metrics(dest: dict[str, int], src: dict | None) -> None:
+    source = dict(src or {})
+    for key in ("attempted", "domain_resolved", "email_guessed", "hunter_verified", "still_no_email", "hunter_skipped_cap"):
+        dest[key] = int(dest.get(key, 0)) + int(source.get(key, 0) or 0)
+
+
 def _probe_autogrow_runtime() -> tuple[dict[str, object], dict[str, dict[str, object]]]:
     crawl_probe = scraper_engine.probe_crawl4ai_runtime()
     availability: dict[str, dict[str, object]] = {}
@@ -794,6 +826,8 @@ def _print_tokens(
     rows_written: int,
     status: str,
     autogrow: dict,
+    enrich_cfg: dict,
+    enrich_metrics: dict,
     aiha_result: dict,
     aiha_rejected: Counter,
     ohs_bg_result: dict,
@@ -830,6 +864,12 @@ def _print_tokens(
     state_details = list(autogrow.get("state_details") or [])
     print(f"GENERATOR_AUTOGROW_TOTAL_STATES={int(autogrow.get('total_states') or len(state_details))}")
     print(f"GENERATOR_AUTOGROW_TOTAL_ACCEPTED={int(autogrow.get('total_accepted') or 0)}")
+    print(f"GENERATOR_ENRICH_ATTEMPTED={int(enrich_metrics.get('attempted') or 0)}")
+    print(f"GENERATOR_ENRICH_DOMAIN_RESOLVED={int(enrich_metrics.get('domain_resolved') or 0)}")
+    print(f"GENERATOR_ENRICH_EMAIL_GUESSED={int(enrich_metrics.get('email_guessed') or 0)}")
+    print(f"GENERATOR_ENRICH_HUNTER_VERIFIED={int(enrich_metrics.get('hunter_verified') or 0)}")
+    print(f"GENERATOR_ENRICH_STILL_NO_EMAIL={int(enrich_metrics.get('still_no_email') or 0)}")
+    print(f"GENERATOR_ENRICH_HUNTER_SKIPPED_CAP={int(enrich_metrics.get('hunter_skipped_cap') or 0)}")
     if print_availability:
         cp = dict(crawl_probe or {})
         print(f"crawl4ai_installed={'YES' if cp.get('crawl4ai_installed') else 'NO'}")
@@ -840,6 +880,8 @@ def _print_tokens(
             available = bool(av.get("available"))
             reason = _normalize_text(av.get("reason") or ("ok" if available else "unknown"))
             print(f"{source_key}_available={'YES' if available else 'NO'} reason={reason}")
+        print(f"enrich_domain_enabled={'YES' if enrich_cfg.get('domain_enabled') else 'NO'}")
+        print(f"enrich_hunter_enabled={'YES' if enrich_cfg.get('hunter_enabled') else 'NO'}")
         print("apollo_api_accessible=NO free_plan_web_ui_manual")
     for detail in state_details:
         state = _normalize_state(str(detail.get("state") or ""))
@@ -1120,6 +1162,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"{ERR_GENERATOR_FAILED} stage=apollo_config err={exc}", file=sys.stderr)
         return 2
+    enrich_cfg = _parse_enrich_config(data_dir)
 
     crm_db = crm_store.crm_db_path()
     conn = _connect_crm_if_exists(crm_db)
@@ -1230,6 +1273,7 @@ def main(argv: list[str] | None = None) -> int:
     apollo_enrich_remaining = int(apollo_cfg.get("enrich_max_per_run") or 0)
     diagnostics_path: Path | None = None
     autogrow_rows: list[dict[str, str]] = []
+    enrich_metrics = _default_generator_enrich_metrics()
 
     if args.print_config:
         print(f"{PASS_GENERATOR_PRINT_CONFIG} data_dir={data_dir.resolve()}")
@@ -1244,6 +1288,8 @@ def main(argv: list[str] | None = None) -> int:
             rows_written=0,
             status="PRINT_CONFIG",
             autogrow=autogrow_state,
+            enrich_cfg=enrich_cfg,
+            enrich_metrics=enrich_metrics,
             aiha_result=aiha_result,
             aiha_rejected=aiha_rejected,
             ohs_bg_result=ohs_bg_result,
@@ -1309,6 +1355,17 @@ def main(argv: list[str] | None = None) -> int:
                 apollo_enrich_limit=apollo_limit_for_state,
             )
             rows_candidate = list(result.get("rows") or [])
+            if rows_candidate:
+                enrich_out = prospect_enrich_email.enrich_autogrow_rows(
+                    rows=rows_candidate,
+                    domain_enabled=bool(enrich_cfg.get("domain_enabled")),
+                    hunter_enabled=(bool(enrich_cfg.get("hunter_enabled")) and not bool(args.dry_run)),
+                    hunter_api_key=str(enrich_cfg.get("hunter_api_key") or ""),
+                    sleep_ms=int(autogrow_cfg.get("sleep_ms") or 0),
+                    hunter_usage_path=Path(enrich_cfg.get("hunter_usage_path") or _generation_hunter_usage_path(data_dir)),
+                )
+                rows_candidate = list(enrich_out.get("rows") or rows_candidate)
+                _merge_generator_enrich_metrics(enrich_metrics, enrich_out.get("metrics"))
             filtered_rows, rejected = _filter_autogrow_candidates(
                 rows=rows_candidate,
                 target_state=state_detail,
@@ -1440,6 +1497,8 @@ def main(argv: list[str] | None = None) -> int:
             rows_written=len(rows),
             status="DRY_RUN",
             autogrow=autogrow_state,
+            enrich_cfg=enrich_cfg,
+            enrich_metrics=enrich_metrics,
             aiha_result=aiha_result,
             aiha_rejected=aiha_rejected,
             ohs_bg_result=ohs_bg_result,
@@ -1470,6 +1529,8 @@ def main(argv: list[str] | None = None) -> int:
         rows_written=len(rows),
         status="OK",
         autogrow=autogrow_state,
+        enrich_cfg=enrich_cfg,
+        enrich_metrics=enrich_metrics,
         aiha_result=aiha_result,
         aiha_rejected=aiha_rejected,
         ohs_bg_result=ohs_bg_result,
