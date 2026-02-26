@@ -416,7 +416,7 @@ try {
     foreach ($part in ($rawSources -split ',')) {
       $src = ($part -as [string]).Trim().ToUpperInvariant()
       if (-not $src) { continue }
-      if (($src -ne 'AIHA') -and ($src -ne 'OHS_BG') -and ($src -ne 'CSV_IMPORT')) {
+      if (($src -ne 'AIHA') -and ($src -ne 'OHS_BG')) {
         Fail-Token $ERR_SET_OUTREACH_ENV_ARGS ('invalid_ProspectAutoGrowSources value=' + $src)
       }
       if ($srcTokens -notcontains $src) {

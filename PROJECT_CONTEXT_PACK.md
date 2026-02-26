@@ -107,7 +107,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 ## Outreach CRM Auto-Run Data Flow
 
 1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).
-- Optional env-gated auto-growth sources: AIHA, OHS_BG, and CSV_IMPORT (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+- Optional env-gated auto-growth sources: AIHA and OHS_BG (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Optional one-release inbox migration dual-read:
      - canonical inbox: `${DATA_DIR}/prospect_generation/inbox/*.csv`
@@ -729,7 +729,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachSuppressionMaxAgeHours 240 `
   -ProspectAutoGrowEnabled 1 `
   -ProspectAutoGrowSafetyNetEnabled 1 `
-  -ProspectAutoGrowSources AIHA,OHS_BG,CSV_IMPORT `
+  -ProspectAutoGrowSources AIHA `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
@@ -788,11 +788,10 @@ Drop-folder behavior:
 Auto-growth (env-gated, optional):
 
 - Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_STATES`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
-- Source scope: `AIHA`, `OHS_BG`, and `CSV_IMPORT` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG,CSV_IMPORT`).
+- Source scope v1: `AIHA` and `OHS_BG` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG`).
 - Cache paths:
   - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
   - OHS_BG: `${DATA_DIR}\prospect_generation\cache\ohs_bg\state_<STATE>.json`
-- CSV import inbox (autogrow source only): `${DATA_DIR}\prospect_generation\inbox\csv_import\*.csv` (live runs archive to `...\processed\YYYY-MM-DD\`)
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
 - Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
@@ -809,7 +808,6 @@ Print resolved generation config:
 ```powershell
 .\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config
 .\\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config --for-date 2026-02-18
-.\\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-import-schema
 ```
 
 Generator emits machine-readable lines:
@@ -823,26 +821,16 @@ Generator emits machine-readable lines:
 - `GENERATOR_INBOX_ROWS_ACCEPTED`
 - `GENERATOR_INBOX_ROWS_MISSING_STATE`
 - `GENERATOR_INBOX_FILES_ARCHIVED` (live runs only)
-- `PASS_GENERATOR_IMPORT_SCHEMA`, `GENERATOR_CSV_IMPORT_REQUIRED_HEADERS`, `GENERATOR_CSV_IMPORT_ACCEPTED_ALIASES` (schema helper)
 - `GENERATOR_AUTOGROW_*`
 - `GENERATOR_AUTOGROW_STATES`
 - `GENERATOR_AUTOGROW_SAFETY_NET_FORCED`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
 - `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
-- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> csv_import_candidate=<n> csv_import_accepted=<n>`
-- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG|CSV_IMPORT> state=<STATE> ...`
+- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n>`
+- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG> state=<STATE> ...`
 - `GENERATOR_AIHA_*`
 - `GENERATOR_OHS_BG_*`
-- `GENERATOR_CSV_IMPORT_*`
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
-
-### Refill a Depleted State (TX/FL) with `CSV_IMPORT`
-
-1. Export a state-filtered CSV with work emails from your commercial contact provider.
-2. Validate headers: `.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-import-schema`
-3. Drop files into `${DATA_DIR}\prospect_generation\inbox\csv_import\`.
-4. Run generator -> discovery -> outreach plan and confirm `OUTREACH_STATE_SENDABLE_ESTIMATE state=TX|FL sendable>=10`.
-5. Use `OUTREACH_RAMP_READY` before increasing `OUTREACH_DAILY_LIMIT`.
 
 Optional empty-state planner fallback:
 - `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default) preserves weekday rotation-selected state.
