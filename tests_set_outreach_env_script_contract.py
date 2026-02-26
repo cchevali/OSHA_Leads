@@ -41,6 +41,11 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "ProspectAutoGrowBacklogTarget",
             "ProspectAutoGrowMaxFetchPagesPerRun",
             "ProspectAutoGrowHttpSleepMs",
+            "ApolloApiKey",
+            "ApolloEnrichEnabled",
+            "ApolloEnrichMaxPerRun",
+            "ApolloPersonTitles",
+            "ApolloPersonLocationsMode",
             "TrialSendsLimitDefault",
             "TrialExpiredBehaviorDefault",
             "TrialConversionUrl",
@@ -80,6 +85,12 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("PROSPECT_AUTOGROW_SOURCES", text)
         self.assertIn("OUTREACH_FALLBACK_ON_EMPTY_STATE", text)
         self.assertIn("OHS_BG", text)
+        self.assertIn("APOLLO", text)
+        self.assertIn("APOLLO_API_KEY", text)
+        self.assertIn("APOLLO_ENRICH_ENABLED", text)
+        self.assertIn("APOLLO_ENRICH_MAX_PER_RUN", text)
+        self.assertIn("APOLLO_PERSON_TITLES", text)
+        self.assertIn("APOLLO_PERSON_LOCATIONS_MODE", text)
         self.assertIn("PROSPECT_AUTOGROW_BACKLOG_TARGET", text)
         self.assertIn("STRIPE_PRICE_ID_CORE", text)
         self.assertIn("STRIPE_PRICE_ID_MULTI", text)
@@ -102,9 +113,14 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("ai_triage_enabled=", text)
         self.assertIn("ai_triage_openai_model=", text)
         self.assertIn("openai_api_key_present=", text)
+        self.assertIn("apollo_api_key_present=", text)
+        self.assertIn("apollo_enrich_enabled=", text)
+        self.assertIn("apollo_enrich_max_per_run=", text)
+        self.assertIn("apollo_person_locations_mode=", text)
         self.assertNotIn("Write-Output ('OPENAI_API_KEY='", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_ENABLED", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_SOURCES", text)
+        self.assertNotIn("CSV_IMPORT", text)
 
     def test_doctor_and_installer_flows_do_not_stage_env_sops(self):
         before = _cached_env_sops()

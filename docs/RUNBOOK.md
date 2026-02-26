@@ -271,10 +271,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachSuppressionMaxAgeHours 240 `
   -ProspectAutoGrowEnabled 1 `
   -ProspectAutoGrowSafetyNetEnabled 1 `
-  -ProspectAutoGrowSources AIHA `
+  -ProspectAutoGrowSources AIHA,OHS_BG,APOLLO `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
+  -ApolloApiKey <your_apollo_api_key> `
+  -ApolloEnrichEnabled 1 `
+  -ApolloEnrichMaxPerRun 50 `
+  -ApolloPersonLocationsMode state `
   -TrialSendsLimitDefault 14 `
   -TrialExpiredBehaviorDefault notify_once
 ```
@@ -315,28 +319,23 @@ No-arg generation output path:
 
 - `${DATA_DIR}\prospect_discovery\prospects_latest.csv`
 - If `DATA_DIR` is unset: `.\out\prospect_discovery\prospects_latest.csv`
-- Canonical optional inbox path: `${DATA_DIR}\prospect_generation\inbox\*.csv`
-- If `DATA_DIR` is unset: `.\out\prospect_generation\inbox\*.csv`
-- One-release compatibility path (deprecated): `${DATA_DIR}\prospect_discovery\inbox\*.csv`
-
-Drop-folder behavior:
-
-- Generator scans canonical inbox first, then deprecated inbox, each in deterministic filename order.
-- Inbox rows are merged first, then seeded pool rows; inbox wins on duplicate email.
-- On live runs, processed inbox files are moved to `<inbox_dir>\processed\YYYY-MM-DD\`.
-- On `--dry-run`, inbox files are never moved.
-- If deprecated inbox files are used, generator emits `WARN_INBOX_PATH_DEPRECATED`.
+- Generator-side BYO CSV inbox paths are removed. Discovery input is now seed pools + autogrow sources only.
 
 Auto-growth (env-gated, optional):
 
 - Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_STATES`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
-- Source scope v1: `AIHA` and `OHS_BG` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG`).
+- Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
+- Source scope: `AIHA`, `OHS_BG`, and `APOLLO` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG,APOLLO`).
 - Cache paths:
   - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
   - OHS_BG: `${DATA_DIR}\prospect_generation\cache\ohs_bg\state_<STATE>.json`
+  - APOLLO: `${DATA_DIR}\prospect_generation\cache\apollo\state_<STATE>.json`
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
 - Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
+- APOLLO v1 flow: People Search (`has_email=true` gating) + Bulk People Enrichment in batches of 10; no waterfall/webhook mode.
+- APOLLO consumes enrichment credits. Search can be low/no-credit; enrichment is credit-capped by `APOLLO_ENRICH_MAX_PER_RUN`.
+- Apollo free-tier credits are limited; validate refill volume against actual credit usage before increasing send limits.
 - `--for-date YYYY-MM-DD` controls `selected_state` plus per-state backlog/new-needed previews in `--print-config` and `--dry-run`.
 
 Dry-run generation (no writes):
@@ -357,22 +356,29 @@ Generator emits machine-readable lines:
 - `GENERATOR_OUTPUT_PATH`
 - `GENERATOR_ROWS_READ`
 - `GENERATOR_ROWS_WRITTEN`
-- `GENERATOR_INBOX_DIR`
-- `GENERATOR_INBOX_FILES_FOUND`
-- `GENERATOR_INBOX_ROWS_READ`
-- `GENERATOR_INBOX_ROWS_ACCEPTED`
-- `GENERATOR_INBOX_ROWS_MISSING_STATE`
-- `GENERATOR_INBOX_FILES_ARCHIVED` (live runs only)
 - `GENERATOR_AUTOGROW_*`
 - `GENERATOR_AUTOGROW_SAFETY_NET_FORCED`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
 - `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
-- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n>`
+- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
 - `GENERATOR_AUTOGROW_STATES`
-- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG> state=<STATE> ...`
+- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG|APOLLO> state=<STATE> ...`
 - `GENERATOR_AIHA_*`
 - `GENERATOR_OHS_BG_*`
+- `GENERATOR_APOLLO_*`
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
+
+APOLLO telemetry highlights:
+
+- `GENERATOR_APOLLO_SEARCH_PAGES_FETCHED`
+- `GENERATOR_APOLLO_SEARCH_ROWS_RETURNED`
+- `GENERATOR_APOLLO_SEARCH_ROWS_HAS_EMAIL_TRUE`
+- `GENERATOR_APOLLO_SEARCH_ROWS_DEDUPED_ID`
+- `GENERATOR_APOLLO_ENRICH_ATTEMPTED`
+- `GENERATOR_APOLLO_ENRICHED`
+- `GENERATOR_APOLLO_ENRICH_NO_MATCH`
+- `GENERATOR_APOLLO_ENRICH_SKIPPED_CREDIT_CAP`
+- `GENERATOR_APOLLO_CREDIT_CAP_HIT`
 
 Optional empty-state planner fallback:
 - `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default) preserves weekday rotation-selected state.

@@ -16,11 +16,10 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 ## Outreach CRM Auto-Run Data Flow
 
 1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).
-   - Optional env-gated auto-growth sources: AIHA and OHS_BG (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+   - Optional env-gated auto-growth sources: AIHA, OHS_BG, and APOLLO (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+   - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
-   - Optional one-release inbox migration dual-read:
-     - canonical inbox: `${DATA_DIR}/prospect_generation/inbox/*.csv`
-     - deprecated inbox: `${DATA_DIR}/prospect_discovery/inbox/*.csv`
+   - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts the generated CSV into `crm.sqlite`.
 3. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
 4. Daily run: `outreach/run_outreach_auto.py`

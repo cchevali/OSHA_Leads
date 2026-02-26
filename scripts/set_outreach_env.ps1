@@ -10,6 +10,11 @@ param(
   [Nullable[int]] $ProspectAutoGrowBacklogTarget = $null,
   [Nullable[int]] $ProspectAutoGrowMaxFetchPagesPerRun = $null,
   [Nullable[int]] $ProspectAutoGrowHttpSleepMs = $null,
+  [string] $ApolloApiKey = '',
+  [Nullable[int]] $ApolloEnrichEnabled = $null,
+  [Nullable[int]] $ApolloEnrichMaxPerRun = $null,
+  [string] $ApolloPersonTitles = '',
+  [string] $ApolloPersonLocationsMode = '',
   [Nullable[int]] $TrialSendsLimitDefault = $null,
   [string] $TrialExpiredBehaviorDefault = '',
   [string] $TrialConversionUrl = '',
@@ -104,6 +109,18 @@ function Normalize-OutreachStates([string]$Raw) {
     }
   }
   if ($tokens.Count -lt 1) { return $null }
+  return ($tokens -join ',')
+}
+
+function Normalize-CommaList([string]$Raw) {
+  $tokens = @()
+  foreach ($part in ($Raw -split ',')) {
+    $item = ($part -as [string]).Trim()
+    if (-not $item) { continue }
+    if ($tokens -notcontains $item) {
+      $tokens += $item
+    }
+  }
   return ($tokens -join ',')
 }
 
@@ -287,6 +304,11 @@ try {
     'ProspectAutoGrowBacklogTarget',
     'ProspectAutoGrowMaxFetchPagesPerRun',
     'ProspectAutoGrowHttpSleepMs',
+    'ApolloApiKey',
+    'ApolloEnrichEnabled',
+    'ApolloEnrichMaxPerRun',
+    'ApolloPersonTitles',
+    'ApolloPersonLocationsMode',
     'TrialSendsLimitDefault',
     'TrialExpiredBehaviorDefault',
     'TrialConversionUrl',
@@ -416,12 +438,36 @@ try {
     foreach ($part in ($rawSources -split ',')) {
       $src = ($part -as [string]).Trim().ToUpperInvariant()
       if (-not $src) { continue }
-      if (($src -ne 'AIHA') -and ($src -ne 'OHS_BG')) {
+      if (($src -ne 'AIHA') -and ($src -ne 'OHS_BG') -and ($src -ne 'APOLLO')) {
         Fail-Token $ERR_SET_OUTREACH_ENV_ARGS ('invalid_ProspectAutoGrowSources value=' + $src)
       }
       if ($srcTokens -notcontains $src) {
         $srcTokens += $src
       }
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ApolloApiKey')) {
+    if (-not (($ApolloApiKey -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ApolloApiKey'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ApolloEnrichEnabled')) {
+    if ($ApolloEnrichEnabled -notin @(0, 1)) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ApolloEnrichEnabled'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ApolloEnrichMaxPerRun') -and $ApolloEnrichMaxPerRun -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ApolloEnrichMaxPerRun'
+  }
+  if ($PSBoundParameters.ContainsKey('ApolloPersonTitles')) {
+    if (-not (Normalize-CommaList ($ApolloPersonTitles -as [string]))) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ApolloPersonTitles'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ApolloPersonLocationsMode')) {
+    $locMode = (($ApolloPersonLocationsMode -as [string]).Trim().ToLowerInvariant())
+    if ($locMode -ne 'state') {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ApolloPersonLocationsMode'
     }
   }
   if ($PSBoundParameters.ContainsKey('BounceImapHost')) {
@@ -477,9 +523,17 @@ try {
         $aiTriageModelValue = ([string]$printMap['AI_TRIAGE_OPENAI_MODEL']).Trim()
       }
       $openAiKeyPresent = if (Map-HasValue $printMap 'OPENAI_API_KEY') { 'YES' } else { 'NO' }
+      $apolloApiKeyPresent = if (Map-HasValue $printMap 'APOLLO_API_KEY') { 'YES' } else { 'NO' }
+      $apolloEnrichEnabledValue = if (Map-HasValue $printMap 'APOLLO_ENRICH_ENABLED') { ([string]$printMap['APOLLO_ENRICH_ENABLED']).Trim() } else { '0' }
+      $apolloEnrichMaxValue = if (Map-HasValue $printMap 'APOLLO_ENRICH_MAX_PER_RUN') { ([string]$printMap['APOLLO_ENRICH_MAX_PER_RUN']).Trim() } else { '50' }
+      $apolloLocationsModeValue = if (Map-HasValue $printMap 'APOLLO_PERSON_LOCATIONS_MODE') { ([string]$printMap['APOLLO_PERSON_LOCATIONS_MODE']).Trim() } else { 'state' }
       Write-Output ('ai_triage_enabled=' + $aiTriageEnabledValue)
       Write-Output ('ai_triage_openai_model=' + $aiTriageModelValue)
       Write-Output ('openai_api_key_present=' + $openAiKeyPresent)
+      Write-Output ('apollo_api_key_present=' + $apolloApiKeyPresent)
+      Write-Output ('apollo_enrich_enabled=' + $apolloEnrichEnabledValue)
+      Write-Output ('apollo_enrich_max_per_run=' + $apolloEnrichMaxValue)
+      Write-Output ('apollo_person_locations_mode=' + $apolloLocationsModeValue)
       Pass-Token $PASS_SET_OUTREACH_ENV_COMPLETE 'mode=print_config'
       exit 0
     }
@@ -599,6 +653,32 @@ try {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_HTTP_SLEEP_MS' -Value ([string]$ProspectAutoGrowHttpSleepMs) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_HTTP_SLEEP_MS')) {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_HTTP_SLEEP_MS' -Value '800' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ApolloApiKey')) {
+      Set-MapValue -Map $map -Key 'APOLLO_API_KEY' -Value (($ApolloApiKey -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ApolloEnrichEnabled')) {
+      Set-MapValue -Map $map -Key 'APOLLO_ENRICH_ENABLED' -Value ([string]$ApolloEnrichEnabled) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'APOLLO_ENRICH_ENABLED')) {
+      Set-MapValue -Map $map -Key 'APOLLO_ENRICH_ENABLED' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ApolloEnrichMaxPerRun')) {
+      Set-MapValue -Map $map -Key 'APOLLO_ENRICH_MAX_PER_RUN' -Value ([string]$ApolloEnrichMaxPerRun) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'APOLLO_ENRICH_MAX_PER_RUN')) {
+      Set-MapValue -Map $map -Key 'APOLLO_ENRICH_MAX_PER_RUN' -Value '50' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ApolloPersonTitles')) {
+      Set-MapValue -Map $map -Key 'APOLLO_PERSON_TITLES' -Value (Normalize-CommaList ($ApolloPersonTitles -as [string])) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ApolloPersonLocationsMode')) {
+      Set-MapValue -Map $map -Key 'APOLLO_PERSON_LOCATIONS_MODE' -Value (($ApolloPersonLocationsMode -as [string]).Trim().ToLowerInvariant()) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'APOLLO_PERSON_LOCATIONS_MODE')) {
+      Set-MapValue -Map $map -Key 'APOLLO_PERSON_LOCATIONS_MODE' -Value 'state' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('TrialSendsLimitDefault')) {
