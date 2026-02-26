@@ -32,6 +32,7 @@ ERR_GENERATOR_FAILED = "ERR_GENERATOR_FAILED"
 PASS_GENERATOR_PRINT_CONFIG = "PASS_GENERATOR_PRINT_CONFIG"
 WARN_AUTOGROWTH_SOURCE_FAILED = "WARN_AUTOGROWTH_SOURCE_FAILED"
 APOLLO_FORBIDDEN_HINT = "CHECK_MASTER_KEY_OR_ENDPOINT_SCOPES"
+APOLLO_DOCTOR_NOT_FOUND_HINT = "CHECK_METHOD_AND_BASE_URL"
 
 OUTPUT_SUBDIR = ("prospect_discovery",)
 OUTPUT_FILENAME = "prospects_latest.csv"
@@ -812,24 +813,40 @@ def main(argv: list[str] | None = None) -> int:
         try:
             apollo_cfg_for_doctor = _parse_apollo_config(["APOLLO"])
         except Exception as exc:
-            print(f"{ERR_GENERATOR_FAILED} stage=apollo_doctor_config err={exc}", file=sys.stderr)
-            return 2
+            print(f"APOLLO_DOCTOR_ERROR=1 stage=config err={exc}")
+            return 0
         try:
             doctor = prospect_sources_apollo.doctor_apollo_api(
                 api_key=str(apollo_cfg_for_doctor.get("api_key") or ""),
                 sleep_ms=0,
+                diagnostics_dir=diagnostics_dir,
             )
         except Exception as exc:
-            print(f"{ERR_GENERATOR_FAILED} stage=apollo_doctor err={exc}", file=sys.stderr)
-            return 2
+            print(f"APOLLO_DOCTOR_ERROR=1 stage=request err={exc}")
+            return 0
+        diag = doctor.get("diagnostics_path")
+        resolved_diag: Path | None = diag if isinstance(diag, Path) else (Path(str(diag)) if diag else None)
         if doctor.get("forbidden"):
             print(f"APOLLO_DOCTOR_FORBIDDEN=1 hint={APOLLO_FORBIDDEN_HINT}")
+            if resolved_diag is not None:
+                print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
+            return 0
+        if doctor.get("not_found"):
+            print(f"APOLLO_DOCTOR_NOT_FOUND=1 hint={APOLLO_DOCTOR_NOT_FOUND_HINT}")
+            if resolved_diag is not None:
+                print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
             return 0
         if doctor.get("ok"):
             print("APOLLO_DOCTOR_OK=1")
             return 0
-        print(f"{ERR_GENERATOR_FAILED} stage=apollo_doctor err={doctor.get('error') or 'unknown'}", file=sys.stderr)
-        return 2
+        print(
+            "APOLLO_DOCTOR_HTTP_ERROR=1 "
+            f"status={int(doctor.get('status') or 0)} "
+            f"content_type={doctor.get('content_type') or 'unknown'}"
+        )
+        if resolved_diag is not None:
+            print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
+        return 0
 
     states = _parse_states(os.getenv("OUTREACH_STATES", "TX"))
     if not states:
