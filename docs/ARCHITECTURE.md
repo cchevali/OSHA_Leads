@@ -16,7 +16,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 ## Outreach CRM Auto-Run Data Flow
 
 1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).
-   - Optional env-gated auto-growth sources: AIHA and OHS_BG (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+   - Optional env-gated auto-growth sources: AIHA, OHS_BG, and CSV_IMPORT (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+   - `CSV_IMPORT` reads drop-in files from `${DATA_DIR}/prospect_generation/inbox/csv_import/*.csv`, applies the same suppression/CRM/dedup rejection semantics, and archives processed files on successful live runs.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Optional one-release inbox migration dual-read:
      - canonical inbox: `${DATA_DIR}/prospect_generation/inbox/*.csv`

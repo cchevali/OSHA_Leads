@@ -80,6 +80,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("PROSPECT_AUTOGROW_SOURCES", text)
         self.assertIn("OUTREACH_FALLBACK_ON_EMPTY_STATE", text)
         self.assertIn("OHS_BG", text)
+        self.assertIn("CSV_IMPORT", text)
         self.assertIn("PROSPECT_AUTOGROW_BACKLOG_TARGET", text)
         self.assertIn("STRIPE_PRICE_ID_CORE", text)
         self.assertIn("STRIPE_PRICE_ID_MULTI", text)

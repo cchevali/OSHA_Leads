@@ -6,7 +6,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date, datetime
 from pathlib import Path
 
@@ -30,6 +30,7 @@ import seed_recipients_pools as pools
 
 ERR_GENERATOR_FAILED = "ERR_GENERATOR_FAILED"
 PASS_GENERATOR_PRINT_CONFIG = "PASS_GENERATOR_PRINT_CONFIG"
+PASS_GENERATOR_IMPORT_SCHEMA = "PASS_GENERATOR_IMPORT_SCHEMA"
 WARN_GENERATOR_INBOX_ARCHIVE = "WARN_GENERATOR_INBOX_ARCHIVE"
 WARN_INBOX_PATH_DEPRECATED = "WARN_INBOX_PATH_DEPRECATED"
 WARN_AUTOGROWTH_SOURCE_FAILED = "WARN_AUTOGROWTH_SOURCE_FAILED"
@@ -40,20 +41,67 @@ OUTPUT_FILENAME = "prospects_latest.csv"
 INBOX_NEW_SUBDIR = ("prospect_generation", "inbox")
 INBOX_OLD_SUBDIR = ("prospect_discovery", "inbox")
 INBOX_PROCESSED_SUBDIR = "processed"
+CSV_IMPORT_INBOX_SUBDIR = ("prospect_generation", "inbox", "csv_import")
 
 GENERATION_CACHE_ROOT_SUBDIR = ("prospect_generation", "cache")
 GENERATION_DIAGNOSTICS_SUBDIR = ("prospect_generation", "diagnostics")
 
-AUTOGROW_ALLOWED_SOURCES = {"AIHA", "OHS_BG"}
+AUTOGROW_ALLOWED_SOURCES = {"AIHA", "OHS_BG", "CSV_IMPORT"}
+AUTOGROW_SOURCE_DETAIL_PREFIX = {
+    "AIHA": "aiha",
+    "OHS_BG": "ohs_bg",
+    "CSV_IMPORT": "csv_import",
+}
 AUTOGROW_REJECT_KEYS = (
     "invalid_email",
     "free_domain",
     "suppressed",
     "already_in_crm",
+    "missing_state",
     "state_mismatch",
     "duplicate_in_batch",
 )
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
+
+CSV_IMPORT_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    "email": ("email", "contact_email", "work_email"),
+    "state": ("state", "state_pref", "state_code"),
+    "company_name": ("firm", "company_name", "company", "account_name"),
+    "contact_role": ("title", "contact_role", "role"),
+    "contact_name": ("contact_name", "name", "full_name"),
+    "city": ("city",),
+    "domain": ("domain",),
+    "website": ("website", "company_website"),
+    "prospect_id": ("prospect_id",),
+    "source": ("source",),
+    "segment": ("segment",),
+}
+CSV_IMPORT_REQUIRED_FIELDS = ("email", "state")
+CSV_IMPORT_OPTIONAL_FIELDS = (
+    "company_name",
+    "contact_role",
+    "contact_name",
+    "city",
+    "domain",
+    "website",
+    "prospect_id",
+    "source",
+    "segment",
+)
+
+
+class CsvImportSchemaError(Exception):
+    def __init__(self, path: Path, missing_fields: list[str]):
+        self.path = path
+        self.missing_fields = list(missing_fields)
+        super().__init__(f"missing_required_columns file={path} missing={','.join(self.missing_fields)}")
+
+
+class CsvImportReadError(Exception):
+    def __init__(self, path: Path, detail: str):
+        self.path = path
+        self.detail = detail
+        super().__init__(f"read_failed file={path} detail={detail}")
 
 
 def _valid_email(value: str) -> bool:
@@ -101,6 +149,10 @@ def _legacy_inbox_dir(data_dir: Path) -> Path:
     return data_dir.joinpath(*INBOX_OLD_SUBDIR)
 
 
+def _csv_import_inbox_dir(data_dir: Path) -> Path:
+    return data_dir.joinpath(*CSV_IMPORT_INBOX_SUBDIR)
+
+
 def _generation_cache_dir(data_dir: Path) -> Path:
     # Backward-compatible alias used by existing print-config/tests: AIHA cache dir.
     return data_dir.joinpath(*GENERATION_CACHE_ROOT_SUBDIR) / "aiha"
@@ -121,6 +173,55 @@ def _autogrow_source_cache_dir(cache_root_dir: Path, source_token: str) -> Path:
 
 def _generation_diagnostics_dir(data_dir: Path) -> Path:
     return data_dir.joinpath(*GENERATION_DIAGNOSTICS_SUBDIR)
+
+
+def _csv_import_header_aliases_summary() -> str:
+    parts: list[str] = []
+    for field in ("email", "state", *CSV_IMPORT_OPTIONAL_FIELDS):
+        aliases = CSV_IMPORT_HEADER_ALIASES.get(field) or ()
+        if not aliases:
+            continue
+        parts.append(f"{field}:{'/'.join(aliases)}")
+    return "; ".join(parts)
+
+
+def _print_import_schema(data_dir: Path) -> None:
+    inbox_dir = _csv_import_inbox_dir(data_dir)
+    print(f"{PASS_GENERATOR_IMPORT_SCHEMA} status=OK")
+    print(f"GENERATOR_CSV_IMPORT_INBOX_DIR={inbox_dir.resolve()}")
+    print(f"GENERATOR_CSV_IMPORT_REQUIRED_HEADERS={','.join(CSV_IMPORT_REQUIRED_FIELDS)}")
+    print(f"GENERATOR_CSV_IMPORT_ACCEPTED_ALIASES={_csv_import_header_aliases_summary()}")
+    print(f"GENERATOR_CSV_IMPORT_OPTIONAL_HEADERS={','.join(CSV_IMPORT_OPTIONAL_FIELDS)}")
+    header_row = [
+        "work_email",
+        "state_pref",
+        "company_name",
+        "contact_role",
+        "contact_name",
+        "city",
+        "domain",
+        "company_website",
+        "source",
+        "segment",
+    ]
+    example_row = [
+        "owner@exampletxfirm.com",
+        "TX",
+        "Example TX Firm",
+        "Managing Partner",
+        "Jane Doe",
+        "Houston",
+        "exampletxfirm.com",
+        "https://exampletxfirm.com",
+        "apollo_export_tx_lawyers",
+        "labor_employment_attorney",
+    ]
+    print(f"GENERATOR_CSV_IMPORT_SAMPLE_HEADER={','.join(header_row)}")
+    print(f"GENERATOR_CSV_IMPORT_SAMPLE_ROW={','.join(example_row)}")
+    print(
+        "GENERATOR_CSV_IMPORT_NOTES="
+        "segment accepted_as_metadata_not_persisted;state_pref accepted_as_state_alias"
+    )
 
 
 def _discovery_fields() -> list[str]:
@@ -405,6 +506,141 @@ def _archive_inbox_files(items: list[dict], run_date: date) -> int:
     return archived
 
 
+def _archive_csv_import_files(paths: list[Path], csv_import_inbox_dir: Path, run_date: date) -> int:
+    if not paths:
+        return 0
+    archived = 0
+    day_dir = csv_import_inbox_dir / INBOX_PROCESSED_SUBDIR / run_date.isoformat()
+    day_dir.mkdir(parents=True, exist_ok=True)
+    for path in paths:
+        dest = day_dir / Path(path).name
+        try:
+            shutil.move(str(path), str(dest))
+            archived += 1
+        except Exception as exc:
+            print(f"{WARN_GENERATOR_INBOX_ARCHIVE} path={Path(path).resolve()} err={exc}")
+    return archived
+
+
+def _csv_import_files(csv_import_inbox_dir: Path) -> list[Path]:
+    if not csv_import_inbox_dir.exists():
+        return []
+    return sorted([p for p in csv_import_inbox_dir.glob("*.csv") if p.is_file()], key=lambda p: p.name.lower())
+
+
+def _csv_import_header_lookup(fieldnames: list[str] | None) -> tuple[dict[str, str], list[str]]:
+    alias_to_actual: dict[str, str] = {}
+    for field in list(fieldnames or []):
+        actual = str(field or "").lstrip("\ufeff").strip()
+        if not actual:
+            continue
+        key = actual.lower()
+        if key and key not in alias_to_actual:
+            alias_to_actual[key] = actual
+    missing: list[str] = []
+    for canonical in CSV_IMPORT_REQUIRED_FIELDS:
+        aliases = CSV_IMPORT_HEADER_ALIASES.get(canonical) or ()
+        if not any(alias in alias_to_actual for alias in aliases):
+            missing.append(canonical)
+    return alias_to_actual, missing
+
+
+def _csv_import_pick(row: dict[str, str], alias_to_actual: dict[str, str], canonical: str) -> str:
+    for alias in CSV_IMPORT_HEADER_ALIASES.get(canonical) or ():
+        actual = alias_to_actual.get(alias)
+        if not actual:
+            continue
+        return str((row or {}).get(actual) or "")
+    return ""
+
+
+def _empty_csv_import_catalog(csv_import_inbox_dir: Path) -> dict[str, object]:
+    return {
+        "inbox_dir": csv_import_inbox_dir,
+        "files": [],
+        "files_found": 0,
+        "files_processed": 0,
+        "rows_read": 0,
+        "rows_candidate": 0,
+        "prefilter_rejected_invalid_email": 0,
+        "prefilter_rejected_missing_state": 0,
+        "rows_by_state": {},
+    }
+
+
+def _load_csv_import_catalog(csv_import_inbox_dir: Path) -> dict[str, object]:
+    files = _csv_import_files(csv_import_inbox_dir)
+    rows_by_state: dict[str, list[dict[str, str]]] = defaultdict(list)
+    rows_read = 0
+    rows_candidate = 0
+    rejected_invalid_email = 0
+    rejected_missing_state = 0
+    files_processed = 0
+
+    for path in files:
+        try:
+            with open(path, "r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                alias_to_actual, missing = _csv_import_header_lookup(list(reader.fieldnames or []))
+                if missing:
+                    raise CsvImportSchemaError(path=path, missing_fields=missing)
+                for raw_row in reader:
+                    row = _clean_csv_row(raw_row)
+                    rows_read += 1
+                    email = _normalize_email(_csv_import_pick(row, alias_to_actual, "email"))
+                    if not _valid_email(email):
+                        rejected_invalid_email += 1
+                        continue
+                    state = _normalize_state(_csv_import_pick(row, alias_to_actual, "state"))
+                    if not state:
+                        rejected_missing_state += 1
+                        continue
+
+                    source = _normalize_text(_csv_import_pick(row, alias_to_actual, "source")) or f"csv_import:{path.stem}"
+                    domain = _normalize_text(_csv_import_pick(row, alias_to_actual, "domain")).lower() or _email_domain(email)
+                    rows_by_state[state].append(
+                        {
+                            "prospect_id": _normalize_text(_csv_import_pick(row, alias_to_actual, "prospect_id")),
+                            "company_name": _normalize_text(_csv_import_pick(row, alias_to_actual, "company_name")),
+                            "contact_email": email,
+                            "email": email,
+                            "contact_role": _normalize_text(_csv_import_pick(row, alias_to_actual, "contact_role")),
+                            "contact_name": _normalize_text(_csv_import_pick(row, alias_to_actual, "contact_name")),
+                            "city": _normalize_text(_csv_import_pick(row, alias_to_actual, "city")),
+                            "state": state,
+                            "domain": domain,
+                            "website": _normalize_text(_csv_import_pick(row, alias_to_actual, "website")),
+                            "source": source,
+                        }
+                    )
+                    rows_candidate += 1
+            files_processed += 1
+        except CsvImportSchemaError:
+            raise
+        except Exception as exc:
+            raise CsvImportReadError(path=path, detail=str(exc)) from exc
+
+    for state_rows in rows_by_state.values():
+        state_rows.sort(
+            key=lambda r: (
+                _normalize_email(r.get("contact_email") or r.get("email") or ""),
+                _normalize_text(r.get("company_name") or r.get("firm") or ""),
+            )
+        )
+
+    return {
+        "inbox_dir": csv_import_inbox_dir,
+        "files": files,
+        "files_found": len(files),
+        "files_processed": files_processed,
+        "rows_read": rows_read,
+        "rows_candidate": rows_candidate,
+        "prefilter_rejected_invalid_email": rejected_invalid_email,
+        "prefilter_rejected_missing_state": rejected_missing_state,
+        "rows_by_state": dict(rows_by_state),
+    }
+
+
 def _connect_crm_if_exists(crm_db: Path) -> sqlite3.Connection | None:
     if not crm_db.exists():
         return None
@@ -580,6 +816,9 @@ def _filter_autogrow_candidates(
             continue
 
         state = _normalize_state(row.get("state") or "")
+        if not state:
+            counters["missing_state"] += 1
+            continue
         if state != target:
             counters["state_mismatch"] += 1
             continue
@@ -614,6 +853,7 @@ def _print_tokens(
     rows_written: int,
     status: str,
     generation_inbox_dir: Path,
+    csv_import_inbox_dir: Path,
     inbox_files_found: int,
     inbox_rows_read: int,
     inbox_rows_accepted: int,
@@ -623,6 +863,8 @@ def _print_tokens(
     aiha_rejected: Counter,
     ohs_bg_result: dict,
     ohs_bg_rejected: Counter,
+    csv_import_result: dict,
+    csv_import_rejected: Counter,
     diagnostics_path: Path | None,
     inbox_files_archived: int | None = None,
 ) -> None:
@@ -636,6 +878,7 @@ def _print_tokens(
     print(f"GENERATOR_INBOX_ROWS_MISSING_STATE={inbox_rows_missing_state}")
     if inbox_files_archived is not None:
         print(f"GENERATOR_INBOX_FILES_ARCHIVED={inbox_files_archived}")
+    print(f"GENERATOR_CSV_IMPORT_INBOX_DIR={csv_import_inbox_dir.resolve()}")
 
     print(f"GENERATOR_AUTOGROW_ENABLED={1 if autogrow['enabled'] else 0}")
     print(f"GENERATOR_AUTOGROW_SOURCES={','.join(autogrow['sources'])}")
@@ -667,9 +910,11 @@ def _print_tokens(
             f"aiha_candidate={int(detail.get('aiha_candidate') or 0)} "
             f"aiha_accepted={int(detail.get('aiha_accepted') or 0)} "
             f"ohs_bg_candidate={int(detail.get('ohs_bg_candidate') or 0)} "
-            f"ohs_bg_accepted={int(detail.get('ohs_bg_accepted') or 0)}"
+            f"ohs_bg_accepted={int(detail.get('ohs_bg_accepted') or 0)} "
+            f"csv_import_candidate={int(detail.get('csv_import_candidate') or 0)} "
+            f"csv_import_accepted={int(detail.get('csv_import_accepted') or 0)}"
         )
-        for source_label, prefix in (("AIHA", "aiha"), ("OHS_BG", "ohs_bg")):
+        for source_label, prefix in (("AIHA", "aiha"), ("OHS_BG", "ohs_bg"), ("CSV_IMPORT", "csv_import")):
             print(
                 "GENERATOR_AUTOGROW_SOURCE_STATE "
                 f"source={source_label} "
@@ -680,6 +925,7 @@ def _print_tokens(
                 f"rejected_free_domain={int(detail.get(f'{prefix}_rejected_free_domain') or 0)} "
                 f"rejected_suppressed={int(detail.get(f'{prefix}_rejected_suppressed') or 0)} "
                 f"rejected_already_in_crm={int(detail.get(f'{prefix}_rejected_already_in_crm') or 0)} "
+                f"rejected_missing_state={int(detail.get(f'{prefix}_rejected_missing_state') or 0)} "
                 f"rejected_state_mismatch={int(detail.get(f'{prefix}_rejected_state_mismatch') or 0)} "
                 f"rejected_duplicate_in_batch={int(detail.get(f'{prefix}_rejected_duplicate_in_batch') or 0)}"
             )
@@ -724,6 +970,7 @@ def _print_tokens(
     print(f"GENERATOR_AIHA_REJECTED_FREE_DOMAIN={int(aiha_rejected.get('free_domain', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_SUPPRESSED={int(aiha_rejected.get('suppressed', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_ALREADY_IN_CRM={int(aiha_rejected.get('already_in_crm', 0))}")
+    print(f"GENERATOR_AIHA_REJECTED_MISSING_STATE={int(aiha_rejected.get('missing_state', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_STATE_MISMATCH={int(aiha_rejected.get('state_mismatch', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_DUPLICATE_IN_BATCH={int(aiha_rejected.get('duplicate_in_batch', 0))}")
 
@@ -739,8 +986,22 @@ def _print_tokens(
     print(f"GENERATOR_OHS_BG_REJECTED_FREE_DOMAIN={int(ohs_bg_rejected.get('free_domain', 0))}")
     print(f"GENERATOR_OHS_BG_REJECTED_SUPPRESSED={int(ohs_bg_rejected.get('suppressed', 0))}")
     print(f"GENERATOR_OHS_BG_REJECTED_ALREADY_IN_CRM={int(ohs_bg_rejected.get('already_in_crm', 0))}")
+    print(f"GENERATOR_OHS_BG_REJECTED_MISSING_STATE={int(ohs_bg_rejected.get('missing_state', 0))}")
     print(f"GENERATOR_OHS_BG_REJECTED_STATE_MISMATCH={int(ohs_bg_rejected.get('state_mismatch', 0))}")
     print(f"GENERATOR_OHS_BG_REJECTED_DUPLICATE_IN_BATCH={int(ohs_bg_rejected.get('duplicate_in_batch', 0))}")
+
+    print(f"GENERATOR_CSV_IMPORT_FILES_FOUND={int(csv_import_result.get('files_found') or 0)}")
+    print(f"GENERATOR_CSV_IMPORT_FILES_PROCESSED={int(csv_import_result.get('files_processed') or 0)}")
+    print(f"GENERATOR_CSV_IMPORT_ROWS_READ={int(csv_import_result.get('rows_read') or 0)}")
+    print(f"GENERATOR_CSV_IMPORT_ROWS_CANDIDATE={int(csv_import_result.get('rows_candidate') or 0)}")
+    print(f"GENERATOR_CSV_IMPORT_ROWS_ACCEPTED={int(csv_import_result.get('rows_accepted') or 0)}")
+    print(f"GENERATOR_CSV_IMPORT_REJECTED_INVALID_EMAIL={int(csv_import_rejected.get('invalid_email', 0))}")
+    print(f"GENERATOR_CSV_IMPORT_REJECTED_FREE_DOMAIN={int(csv_import_rejected.get('free_domain', 0))}")
+    print(f"GENERATOR_CSV_IMPORT_REJECTED_SUPPRESSED={int(csv_import_rejected.get('suppressed', 0))}")
+    print(f"GENERATOR_CSV_IMPORT_REJECTED_ALREADY_IN_CRM={int(csv_import_rejected.get('already_in_crm', 0))}")
+    print(f"GENERATOR_CSV_IMPORT_REJECTED_MISSING_STATE={int(csv_import_rejected.get('missing_state', 0))}")
+    print(f"GENERATOR_CSV_IMPORT_REJECTED_STATE_MISMATCH={int(csv_import_rejected.get('state_mismatch', 0))}")
+    print(f"GENERATOR_CSV_IMPORT_REJECTED_DUPLICATE_IN_BATCH={int(csv_import_rejected.get('duplicate_in_batch', 0))}")
 
     if diagnostics_path is not None:
         print(f"GENERATOR_DIAGNOSTICS_PATH={diagnostics_path.resolve()}")
@@ -760,6 +1021,16 @@ def _default_autogrow_source_result(cache_path: Path, enabled: bool, sources_emp
     }
 
 
+def _default_csv_import_source_result() -> dict:
+    return {
+        "files_found": 0,
+        "files_processed": 0,
+        "rows_read": 0,
+        "rows_candidate": 0,
+        "rows_accepted": 0,
+    }
+
+
 def _fetch_autogrow_source_rows(
     source_token: str,
     state: str,
@@ -769,6 +1040,7 @@ def _fetch_autogrow_source_rows(
     cache_root_dir: Path,
     diagnostics_dir: Path,
     allow_cache_write: bool,
+    csv_import_catalog: dict[str, object] | None = None,
 ) -> dict:
     token = _normalize_state(source_token)
     cache_dir = _autogrow_source_cache_dir(cache_root_dir, token)
@@ -792,28 +1064,50 @@ def _fetch_autogrow_source_rows(
             diagnostics_dir=diagnostics_dir,
             allow_cache_write=allow_cache_write,
         )
+    if token == "CSV_IMPORT":
+        catalog = dict(csv_import_catalog or {})
+        rows_by_state = catalog.get("rows_by_state") or {}
+        if not isinstance(rows_by_state, dict):
+            rows_by_state = {}
+        state_rows = list(rows_by_state.get(_normalize_state(state), []) or [])
+        return {
+            "rows": state_rows,
+            "files_found": int(catalog.get("files_found") or 0),
+            "files_processed": int(catalog.get("files_processed") or 0),
+            "rows_read": int(catalog.get("rows_read") or 0),
+            "rows_prefilter_candidate": int(catalog.get("rows_candidate") or 0),
+            "prefilter_rejected_invalid_email": int(catalog.get("prefilter_rejected_invalid_email") or 0),
+            "prefilter_rejected_missing_state": int(catalog.get("prefilter_rejected_missing_state") or 0),
+            "diagnostics_path": None,
+        }
     raise ValueError(f"unsupported_source={token}")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate deterministic discovery CSV feed from seed pools + optional autogrow.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved output path and exit.")
+    ap.add_argument("--print-import-schema", action="store_true", help="Print CSV_IMPORT header schema and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Compute rows only; do not write output files.")
     ap.add_argument("--for-date", default="", help="Override run date (YYYY-MM-DD) for selected_state/backlog preview.")
     args = ap.parse_args(argv)
+
+    data_dir = crm_store.data_dir()
+    output_path = _output_path(data_dir)
+    generation_inbox_dir, legacy_inbox_dir, inbox_items, deprecated_file_count = _collect_inbox_files(data_dir)
+    csv_import_inbox_dir = _csv_import_inbox_dir(data_dir)
+    cache_dir = _generation_cache_dir(data_dir)
+    cache_root_dir = _generation_cache_root_dir(data_dir)
+    diagnostics_dir = _generation_diagnostics_dir(data_dir)
+
+    if args.print_import_schema:
+        _print_import_schema(data_dir)
+        return 0
 
     try:
         run_date = _parse_for_date(args.for_date)
     except Exception:
         print(f"{ERR_GENERATOR_FAILED} stage=for_date err=invalid_for_date", file=sys.stderr)
         return 2
-
-    data_dir = crm_store.data_dir()
-    output_path = _output_path(data_dir)
-    generation_inbox_dir, legacy_inbox_dir, inbox_items, deprecated_file_count = _collect_inbox_files(data_dir)
-    cache_dir = _generation_cache_dir(data_dir)
-    cache_root_dir = _generation_cache_root_dir(data_dir)
-    diagnostics_dir = _generation_diagnostics_dir(data_dir)
 
     states = _parse_states(os.getenv("OUTREACH_STATES", "TX"))
     if not states:
@@ -870,10 +1164,13 @@ def main(argv: list[str] | None = None) -> int:
                 "aiha_accepted": 0,
                 "ohs_bg_candidate": 0,
                 "ohs_bg_accepted": 0,
+                "csv_import_candidate": 0,
+                "csv_import_accepted": 0,
             }
             for reject_key in AUTOGROW_REJECT_KEYS:
                 detail[f"aiha_rejected_{reject_key}"] = 0
                 detail[f"ohs_bg_rejected_{reject_key}"] = 0
+                detail[f"csv_import_rejected_{reject_key}"] = 0
             autogrow_state_details.append(detail)
             if state_norm == _normalize_state(selected_state):
                 selected_backlog_current = int(backlog_current_item)
@@ -913,6 +1210,9 @@ def main(argv: list[str] | None = None) -> int:
         sources_empty=sources_empty,
     )
     ohs_bg_rejected: Counter = Counter()
+    csv_import_catalog: dict[str, object] = _empty_csv_import_catalog(csv_import_inbox_dir)
+    csv_import_result = _default_csv_import_source_result()
+    csv_import_rejected: Counter = Counter()
     diagnostics_path: Path | None = None
     autogrow_rows: list[dict[str, str]] = []
 
@@ -931,6 +1231,7 @@ def main(argv: list[str] | None = None) -> int:
             rows_written=0,
             status="PRINT_CONFIG",
             generation_inbox_dir=generation_inbox_dir,
+            csv_import_inbox_dir=csv_import_inbox_dir,
             inbox_files_found=len(inbox_items),
             inbox_rows_read=0,
             inbox_rows_accepted=0,
@@ -940,6 +1241,8 @@ def main(argv: list[str] | None = None) -> int:
             aiha_rejected=aiha_rejected,
             ohs_bg_result=ohs_bg_result,
             ohs_bg_rejected=ohs_bg_rejected,
+            csv_import_result=csv_import_result,
+            csv_import_rejected=csv_import_rejected,
             diagnostics_path=None,
             inbox_files_archived=None,
         )
@@ -962,6 +1265,36 @@ def main(argv: list[str] | None = None) -> int:
             f"{WARN_INBOX_PATH_DEPRECATED} old={legacy_inbox_dir.resolve()} "
             f"new={generation_inbox_dir.resolve()} files={deprecated_file_count}"
         )
+
+    if "CSV_IMPORT" in list(autogrow_cfg["sources"]):
+        try:
+            csv_import_catalog = _load_csv_import_catalog(csv_import_inbox_dir=csv_import_inbox_dir)
+        except CsvImportSchemaError as exc:
+            print(
+                f"{ERR_GENERATOR_FAILED} stage=csv_import_schema err=missing_required_columns "
+                f"file={exc.path.resolve()} missing={','.join(exc.missing_fields)}",
+                file=sys.stderr,
+            )
+            return 2
+        except CsvImportReadError as exc:
+            print(
+                f"{ERR_GENERATOR_FAILED} stage=csv_import_read err=read_failed "
+                f"file={exc.path.resolve()} detail={exc.detail}",
+                file=sys.stderr,
+            )
+            return 2
+        except Exception as exc:
+            print(f"{ERR_GENERATOR_FAILED} stage=csv_import_read err={exc}", file=sys.stderr)
+            return 2
+        csv_import_result.update(
+            {
+                "files_found": int(csv_import_catalog.get("files_found") or 0),
+                "files_processed": int(csv_import_catalog.get("files_processed") or 0),
+                "rows_read": int(csv_import_catalog.get("rows_read") or 0),
+            }
+        )
+        csv_import_rejected["invalid_email"] += int(csv_import_catalog.get("prefilter_rejected_invalid_email") or 0)
+        csv_import_rejected["missing_state"] += int(csv_import_catalog.get("prefilter_rejected_missing_state") or 0)
 
     autogrow_seen_emails: set[str] = set()
     selected_state_norm = _normalize_state(selected_state)
@@ -999,6 +1332,7 @@ def main(argv: list[str] | None = None) -> int:
                 cache_root_dir=cache_root_dir,
                 diagnostics_dir=diagnostics_dir,
                 allow_cache_write=not bool(args.dry_run),
+                csv_import_catalog=csv_import_catalog,
             )
             rows_candidate = list(result.get("rows") or [])
 
@@ -1012,13 +1346,19 @@ def main(argv: list[str] | None = None) -> int:
             accepted_rows = filtered_rows[:remaining_needed]
             remaining_needed = max(0, remaining_needed - len(accepted_rows))
 
-            if source_token == "AIHA":
-                detail["aiha_candidate"] = len(rows_candidate)
-                detail["aiha_accepted"] = len(accepted_rows)
-            elif source_token == "OHS_BG":
-                detail["ohs_bg_candidate"] = len(rows_candidate)
-                detail["ohs_bg_accepted"] = len(accepted_rows)
-            source_prefix = "aiha" if source_token == "AIHA" else ("ohs_bg" if source_token == "OHS_BG" else "")
+            source_prefix = AUTOGROW_SOURCE_DETAIL_PREFIX.get(source_token, "")
+            if source_prefix:
+                detail[f"{source_prefix}_candidate"] = len(rows_candidate)
+                detail[f"{source_prefix}_accepted"] = len(accepted_rows)
+            if source_token == "CSV_IMPORT":
+                csv_import_result["files_found"] = int(result.get("files_found") or csv_import_result.get("files_found") or 0)
+                csv_import_result["files_processed"] = int(
+                    result.get("files_processed") or csv_import_result.get("files_processed") or 0
+                )
+                csv_import_result["rows_read"] = int(result.get("rows_read") or csv_import_result.get("rows_read") or 0)
+                csv_import_result["rows_candidate"] = int(csv_import_result.get("rows_candidate") or 0) + len(rows_candidate)
+                csv_import_result["rows_accepted"] = int(csv_import_result.get("rows_accepted") or 0) + len(accepted_rows)
+                csv_import_rejected.update(rejected)
             if source_prefix:
                 for reject_key in AUTOGROW_REJECT_KEYS:
                     detail[f"{source_prefix}_rejected_{reject_key}"] = int(rejected.get(reject_key, 0))
@@ -1055,12 +1395,14 @@ def main(argv: list[str] | None = None) -> int:
                     ohs_bg_rejected = rejected
 
             if result.get("error"):
-                source_label = "aiha" if source_token == "AIHA" else "ohs_bg"
+                source_label = "aiha" if source_token == "AIHA" else ("ohs_bg" if source_token == "OHS_BG" else "csv_import")
                 print(f"{WARN_AUTOGROWTH_SOURCE_FAILED} source={source_label} state={state_detail} err={result.get('error')}")
 
     autogrow_state["total_accepted"] = int(
         sum(
-            int(d.get("aiha_accepted") or 0) + int(d.get("ohs_bg_accepted") or 0)
+            int(d.get("aiha_accepted") or 0)
+            + int(d.get("ohs_bg_accepted") or 0)
+            + int(d.get("csv_import_accepted") or 0)
             for d in autogrow_state_details
         )
     )
@@ -1069,7 +1411,7 @@ def main(argv: list[str] | None = None) -> int:
             int(d.get("aiha_candidate") or 0) + int(d.get("ohs_bg_candidate") or 0)
             for d in autogrow_state_details
         )
-    )
+    ) + int(csv_import_catalog.get("rows_read") or 0)
 
     if args.dry_run:
         seed_rows = _state_rows_to_combined_input(state_rows)
@@ -1080,6 +1422,7 @@ def main(argv: list[str] | None = None) -> int:
             rows_written=len(rows),
             status="DRY_RUN",
             generation_inbox_dir=generation_inbox_dir,
+            csv_import_inbox_dir=csv_import_inbox_dir,
             inbox_files_found=len(inbox_items),
             inbox_rows_read=inbox_rows_read,
             inbox_rows_accepted=inbox_rows_accepted,
@@ -1089,6 +1432,8 @@ def main(argv: list[str] | None = None) -> int:
             aiha_rejected=aiha_rejected,
             ohs_bg_result=ohs_bg_result,
             ohs_bg_rejected=ohs_bg_rejected,
+            csv_import_result=csv_import_result,
+            csv_import_rejected=csv_import_rejected,
             diagnostics_path=diagnostics_path,
         )
         return 0
@@ -1099,6 +1444,11 @@ def main(argv: list[str] | None = None) -> int:
         rows = _to_discovery_rows(inbox_rows + generated_rows + autogrow_rows)
         _write_output_atomic(path=output_path, rows=rows)
         archived_count = _archive_inbox_files(items=inbox_items, run_date=run_date)
+        _archive_csv_import_files(
+            paths=list(csv_import_catalog.get("files") or []),
+            csv_import_inbox_dir=csv_import_inbox_dir,
+            run_date=run_date,
+        )
     except Exception as exc:
         print(f"{ERR_GENERATOR_FAILED} stage=write_output err={exc}", file=sys.stderr)
         return 2
@@ -1109,6 +1459,7 @@ def main(argv: list[str] | None = None) -> int:
         rows_written=len(rows),
         status="OK",
         generation_inbox_dir=generation_inbox_dir,
+        csv_import_inbox_dir=csv_import_inbox_dir,
         inbox_files_found=len(inbox_items),
         inbox_rows_read=inbox_rows_read,
         inbox_rows_accepted=inbox_rows_accepted,
@@ -1119,6 +1470,8 @@ def main(argv: list[str] | None = None) -> int:
         aiha_rejected=aiha_rejected,
         ohs_bg_result=ohs_bg_result,
         ohs_bg_rejected=ohs_bg_rejected,
+        csv_import_result=csv_import_result,
+        csv_import_rejected=csv_import_rejected,
         diagnostics_path=diagnostics_path,
     )
     return 0

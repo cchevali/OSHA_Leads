@@ -70,6 +70,23 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL", out)
             self.assertFalse(out_path.exists(), msg="--print-config must not write output")
 
+    def test_print_import_schema_side_effect_free(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
+            csv_import_inbox = data_dir / "prospect_generation" / "inbox" / "csv_import"
+
+            p = self._run(["--print-import-schema"], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("PASS_GENERATOR_IMPORT_SCHEMA status=OK", out)
+            self.assertIn(f"GENERATOR_CSV_IMPORT_INBOX_DIR={csv_import_inbox.resolve()}", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_REQUIRED_HEADERS=email,state", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_ACCEPTED_ALIASES=", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_SAMPLE_HEADER=", out)
+            self.assertFalse(out_path.exists(), msg="--print-import-schema must not write output")
+            self.assertFalse((csv_import_inbox / "processed").exists(), msg="--print-import-schema must not archive files")
+
     def test_dry_run_no_writes(self):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "data"
@@ -806,6 +823,290 @@ class TestProspectGeneration(unittest.TestCase):
                 rows = list(csv.DictReader(f))
             emails = {(row.get("email") or "").strip().lower() for row in rows}
             self.assertIn("bravo@examplefl.com", emails)
+
+    def test_autogrow_csv_import_accepts_rows_emits_tokens_and_dry_run_does_not_archive(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            csv_import_dir = data_dir / "prospect_generation" / "inbox" / "csv_import"
+            csv_import_dir.mkdir(parents=True, exist_ok=True)
+            csv_path = csv_import_dir / "TX_contacts.csv"
+            csv_path.write_text(
+                "work_email,state_pref,company_name,contact_role,contact_name,city,company_website\n"
+                "owner@exampletxfirm.com,TX,Example TX Firm,Managing Partner,Jane Doe,Houston,https://exampletxfirm.com\n",
+                encoding="utf-8",
+            )
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "CA",
+                "PROSPECT_AUTOGROW_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "CSV_IMPORT",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "1",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with redirect_stdout(buf):
+                    rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SOURCES=CSV_IMPORT", out)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=TX", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_FILES_FOUND=1", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_FILES_PROCESSED=1", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_ROWS_READ=1", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_ROWS_CANDIDATE=1", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_ROWS_ACCEPTED=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=CSV_IMPORT state=TX rows_candidate=1 rows_accepted=1", out)
+            self.assertTrue(csv_path.exists(), msg="dry-run must not archive CSV_IMPORT files")
+            self.assertFalse((csv_import_dir / "processed").exists(), msg="dry-run must not create CSV_IMPORT archive dir")
+
+    def test_autogrow_csv_import_rejects_are_deterministic(self):
+        from outreach import crm_store
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\nsuppr@exampletx.com\n", encoding="utf-8")
+
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO prospects(
+                      prospect_id, firm, contact_name, email, title, city, state, website, source,
+                      score, status, created_at, last_contacted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "crm_tx_dup",
+                        "Existing TX",
+                        "",
+                        "crmdup@exampletx.com",
+                        "Owner",
+                        "Austin",
+                        "TX",
+                        "",
+                        "seed",
+                        0,
+                        "new",
+                        now,
+                        None,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            csv_import_dir = data_dir / "prospect_generation" / "inbox" / "csv_import"
+            csv_import_dir.mkdir(parents=True, exist_ok=True)
+            csv_import_dir.joinpath("TX_mixed.csv").write_text(
+                "\n".join(
+                    [
+                        "email,state,company_name",
+                        "bad-email,TX,Bad Email",
+                        "free@gmail.com,TX,Free Domain",
+                        "suppr@exampletx.com,TX,Suppressed",
+                        "crmdup@exampletx.com,TX,CRM Dup",
+                        "nostate@example.com,,Missing State",
+                        "wrong@exampleca.com,CA,Wrong State",
+                        "dup@exampletx.com,TX,Dup First",
+                        "dup@exampletx.com,TX,Dup Second",
+                        "good2@exampletx.com,TX,Good Two",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "CSV_IMPORT",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "5",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "1",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with redirect_stdout(buf):
+                    rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_CSV_IMPORT_ROWS_READ=9", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_ROWS_CANDIDATE=6", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_ROWS_ACCEPTED=2", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_REJECTED_INVALID_EMAIL=1", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_REJECTED_FREE_DOMAIN=1", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_REJECTED_SUPPRESSED=1", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_REJECTED_ALREADY_IN_CRM=1", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_REJECTED_MISSING_STATE=1", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_REJECTED_STATE_MISMATCH=0", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_REJECTED_DUPLICATE_IN_BATCH=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=CSV_IMPORT state=TX rows_candidate=6 rows_accepted=2", out)
+            self.assertIn("rejected_free_domain=1", out)
+            self.assertIn("rejected_missing_state=0", out)
+
+    def test_autogrow_csv_import_missing_required_header_fails_with_clear_token(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            csv_import_dir = data_dir / "prospect_generation" / "inbox" / "csv_import"
+            csv_import_dir.mkdir(parents=True, exist_ok=True)
+            csv_import_dir.joinpath("bad_headers.csv").write_text(
+                "company_name,city\nMissing Email And State,Houston\n",
+                encoding="utf-8",
+            )
+
+            p = self._run(
+                ["--dry-run", "--for-date", "2026-02-24"],
+                {
+                    "DATA_DIR": str(data_dir),
+                    "OUTREACH_STATES": "TX",
+                    "PROSPECT_AUTOGROW_STATES": "TX",
+                    "PROSPECT_AUTOGROW_ENABLED": "1",
+                    "PROSPECT_AUTOGROW_SOURCES": "CSV_IMPORT",
+                    "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                    "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "1",
+                    "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+                },
+            )
+            self.assertNotEqual(p.returncode, 0, msg=p.stdout + "\n" + p.stderr)
+            combined = (p.stdout or "") + "\n" + (p.stderr or "")
+            self.assertIn("ERR_GENERATOR_FAILED stage=csv_import_schema err=missing_required_columns", combined)
+            self.assertIn("missing=email,state", combined)
+
+    def test_autogrow_csv_import_live_run_archives_on_success(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            csv_import_dir = data_dir / "prospect_generation" / "inbox" / "csv_import"
+            csv_import_dir.mkdir(parents=True, exist_ok=True)
+            csv_path = csv_import_dir / "FL_contacts.csv"
+            csv_path.write_text(
+                "email,state,company_name,title\nowner@exampleflfirm.com,FL,Example FL Firm,Owner\n",
+                encoding="utf-8",
+            )
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "FL",
+                "PROSPECT_AUTOGROW_STATES": "FL",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "CSV_IMPORT",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "1",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with redirect_stdout(buf):
+                    rc = generator.main(["--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0, msg=buf.getvalue())
+            self.assertFalse(csv_path.exists(), msg="live run should archive CSV_IMPORT files")
+            archived = csv_import_dir / "processed" / "2026-02-24" / "FL_contacts.csv"
+            self.assertTrue(archived.exists(), msg=f"missing archived CSV_IMPORT file: {archived}")
+
+    def test_autogrow_multi_source_csv_import_refills_after_aiha_ohs_rejections(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            csv_import_dir = data_dir / "prospect_generation" / "inbox" / "csv_import"
+            csv_import_dir.mkdir(parents=True, exist_ok=True)
+            csv_import_dir.joinpath("FL_csv_refill.csv").write_text(
+                "work_email,state_pref,company_name,contact_role\ncsvrefill@examplefl.com,FL,CSV Refill,Principal\n",
+                encoding="utf-8",
+            )
+
+            aiha_cache = data_dir / "prospect_generation" / "cache" / "aiha" / "state_FL.json"
+            ohs_cache = data_dir / "prospect_generation" / "cache" / "ohs_bg" / "state_FL.json"
+            aiha_result = {
+                "rows": [
+                    {"email": "bad-email", "state": "FL", "firm": "Bad", "source": "aiha_consultants_listing:1"},
+                    {"email": "wrong@exampletx.com", "state": "TX", "firm": "Wrong", "source": "aiha_consultants_listing:2"},
+                ],
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": aiha_cache,
+                "pages_fetched": 1,
+                "parse_mode": "TEXT_CONTAINER",
+                "diagnostics_path": None,
+            }
+            ohs_result = {
+                "rows": [
+                    {"email": "bad-email-2", "state": "FL", "firm": "Bad2", "source": "ohs_buyers_guide:1"},
+                    {"email": "wrong2@exampletx.com", "state": "TX", "firm": "Wrong2", "source": "ohs_buyers_guide:2"},
+                ],
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": ohs_cache,
+                "pages_fetched": 1,
+                "parse_mode": "TEXT",
+                "diagnostics_path": None,
+            }
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "CA",
+                "PROSPECT_AUTOGROW_STATES": "FL",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA,OHS_BG,CSV_IMPORT",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "2",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
+                    return_value=aiha_result,
+                ) as mocked_aiha:
+                    with mock.patch(
+                        "outreach.run_prospect_generation.prospect_sources_ohs_bg.fetch_ohs_bg_state_rows",
+                        return_value=ohs_result,
+                    ) as mocked_ohs:
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0, msg=buf.getvalue())
+            mocked_aiha.assert_called_once()
+            mocked_ohs.assert_called_once()
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SOURCES=AIHA,OHS_BG,CSV_IMPORT", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=FL rows_candidate=2 rows_accepted=0", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=OHS_BG state=FL rows_candidate=2 rows_accepted=0", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=CSV_IMPORT state=FL rows_candidate=1 rows_accepted=1", out)
+            self.assertIn("GENERATOR_CSV_IMPORT_ROWS_ACCEPTED=1", out)
+
+            out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
+            with open(out_path, "r", newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            emails = {(row.get("email") or "").strip().lower() for row in rows}
+            self.assertIn("csvrefill@examplefl.com", emails)
 
     def test_invalid_autogrow_source_fails_fast(self):
         p = self._run(
