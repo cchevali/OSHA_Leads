@@ -247,3 +247,32 @@ OSHA establishment detail pages expose structured inspection metadata (for examp
 - Operators must populate OSHA detail cache (or allow programmatic fill) before expecting enriched triage decisions.
 - AI triage enablement requires secrets workflow updates and key presence validation, but rules-only overlay remains fully functional.
 
+## ADR-0009: Prospect Autogrow Crawl4AI Runtime Is Lazy And Warning-Level
+
+Date: 2026-02-26
+Status: Accepted
+
+### Context
+
+Prospect autogrow is expanding to browser-backed scraping sources (for example BCSP and OSHA_NEWS) using Crawl4AI + Playwright, but existing generator/discovery/outreach flows must not fail on machines that have not completed the one-time browser install step.
+
+### Decision
+
+- Add `outreach/scraper_engine.py` as a shared autogrow scraping wrapper with lazy Crawl4AI imports (no eager import in generator startup paths).
+- Treat missing Crawl4AI package or Playwright browsers as warning-level conditions for Crawl4AI-backed sources (`WARN_CRAWL4AI_*`), not hard generator failures.
+- Add `run_prospect_generation.py --doctor` as an aggregate readiness command; keep `--apollo-doctor` for backward compatibility.
+- Keep `STATE_LIC` Phase 1 on Texas TDLR Socrata API (no browser dependency) so at least one new source remains available without Crawl4AI runtime setup.
+- BCSP is implemented as plain HTTP parsing (no Crawl4AI dependency); OSHA_NEWS remains the Crawl4AI-gated autogrow source.
+- Centralize zero-cost domain/email enrichment in the generator (default off) instead of source-specific waterfalls; keep Hunter.io as an env-gated stub/cap path until live integration is enabled.
+
+### Rationale
+
+- Preserves non-breaking daily operations on systems that only use legacy sources or API-based sources.
+- Makes readiness issues explicit and machine-readable without blocking dry-run/print-config workflows.
+- Reduces rollout risk while enabling incremental source expansion.
+
+### Consequences
+
+- Operators must perform a one-time `crawl4ai-setup` when enabling OSHA_NEWS in production.
+- Generator output now includes additional readiness/availability tokens in `--print-config` and `--doctor` paths.
+

@@ -1109,6 +1109,290 @@ class TestProspectGeneration(unittest.TestCase):
                 self.assertIn("contact_name", reader.fieldnames or [])
                 self.assertIn("website", reader.fieldnames or [])
 
+    def test_print_config_includes_crawl4ai_and_new_source_availability(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "BCSP,OSHA_NEWS,STATE_LIC",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_crawl4ai_runtime", return_value={"crawl4ai_installed": False, "playwright_browsers_installed": False, "error_reason": "missing"}):
+                    with mock.patch(
+                        "outreach.run_prospect_generation.scraper_engine.probe_source_availability",
+                        side_effect=[
+                            {"source": "BCSP", "available": True, "reason": "http_html"},
+                            {"source": "OSHA_NEWS", "available": False, "reason": "crawl4ai_not_installed"},
+                            {"source": "STATE_LIC", "available": True, "reason": "http_api"},
+                        ],
+                    ):
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--print-config", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("crawl4ai_installed=NO", out)
+            self.assertIn("playwright_browsers_installed=NO", out)
+            self.assertIn("BCSP_available=YES reason=http_html", out)
+            self.assertIn("OSHA_NEWS_available=NO reason=crawl4ai_not_installed", out)
+            self.assertIn("STATE_LIC_available=YES reason=http_api", out)
+            self.assertIn("enrich_domain_enabled=NO", out)
+            self.assertIn("enrich_hunter_enabled=NO", out)
+            self.assertIn("apollo_api_accessible=NO free_plan_web_ui_manual", out)
+
+    def test_state_lic_enrichment_domain_resolution_and_email_guess_in_dry_run(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            state_lic_cache = data_dir / "prospect_generation" / "cache" / "state_lic" / "state_TX.json"
+            state_lic_result = {
+                "rows": [
+                    {
+                        "firm": "BASSETT ELECTRIC LLC",
+                        "contact_name": "JOHN BASSETT",
+                        "email": "",
+                        "contact_email": "",
+                        "state": "TX",
+                        "city": "Houston",
+                        "title": "Electrical Contractor",
+                        "source": "STATE_LIC",
+                        "website": "",
+                    }
+                ],
+                "cache_path": state_lic_cache,
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "SOCRATA",
+                "diagnostics_path": None,
+            }
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "STATE_LIC",
+                "PROSPECT_ENRICH_DOMAIN_ENABLED": "1",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows",
+                    return_value=state_lic_result,
+                ):
+                    with mock.patch(
+                        "outreach.run_prospect_generation.prospect_enrich_email._default_head_fetcher",
+                        return_value={"status": 200, "url": "https://bassettelectric.com", "headers": {}},
+                    ):
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_ENRICH_DOMAIN_RESOLVED=1", out)
+            self.assertIn("GENERATOR_ENRICH_EMAIL_GUESSED=1", out)
+            self.assertIn("GENERATOR_STATE_LIC_ROWS_ACCEPTED=1", out)
+
+    def test_state_lic_enrichment_default_off_no_behavior_change(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            state_lic_cache = data_dir / "prospect_generation" / "cache" / "state_lic" / "state_TX.json"
+            state_lic_result = {
+                "rows": [
+                    {
+                        "firm": "BASSETT ELECTRIC LLC",
+                        "contact_name": "JOHN BASSETT",
+                        "email": "",
+                        "contact_email": "",
+                        "state": "TX",
+                        "city": "Houston",
+                        "title": "Electrical Contractor",
+                        "source": "STATE_LIC",
+                        "website": "",
+                    }
+                ],
+                "cache_path": state_lic_cache,
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "SOCRATA",
+                "diagnostics_path": None,
+            }
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "STATE_LIC",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows",
+                    return_value=state_lic_result,
+                ):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_ENRICH_ATTEMPTED=0", out)
+            self.assertIn("GENERATOR_ENRICH_DOMAIN_RESOLVED=0", out)
+            self.assertIn("GENERATOR_ENRICH_EMAIL_GUESSED=0", out)
+            self.assertIn("GENERATOR_STATE_LIC_ROWS_ACCEPTED=0", out)
+
+    def test_bcsp_source_emits_tokens(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            bcsp_cache = data_dir / "prospect_generation" / "cache" / "bcsp" / "state_TX.json"
+            bcsp_result = {
+                "rows": [
+                    {"email": "bcsp1@exampletx.com", "state": "TX", "company_name": "BCSP Co", "source": "BCSP", "title": "BCSP Credential Holder"}
+                ],
+                "cache_path": bcsp_cache,
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "BCSP_CARDS",
+                "diagnostics_path": None,
+            }
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "BCSP",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.fetch_bcsp_state_rows", return_value=bcsp_result):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=BCSP state=TX rows_candidate=1 rows_accepted=1", out)
+            self.assertIn("GENERATOR_BCSP_ROWS_CANDIDATE=1", out)
+            self.assertIn("GENERATOR_BCSP_ROWS_ACCEPTED=1", out)
+
+    def test_crawl4ai_missing_warns_and_state_lic_still_runs(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "BCSP,STATE_LIC",
+            }
+            bcsp_fail = {
+                "rows": [],
+                "cache_path": data_dir / "prospect_generation" / "cache" / "bcsp" / "state_TX.json",
+                "cache_used": False,
+                "cache_age_days": None,
+                "pages_fetched": 0,
+                "parse_mode": "FAILED",
+                "diagnostics_path": None,
+                "error": "bcsp_parse_failed",
+            }
+            state_lic_ok = {
+                "rows": [
+                    {"email": "txlicense@example.com", "state": "TX", "company_name": "TX License Co", "source": "STATE_LIC", "title": "Electrician"}
+                ],
+                "cache_path": data_dir / "prospect_generation" / "cache" / "state_lic" / "state_TX.json",
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "SOCRATA",
+                "diagnostics_path": None,
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.fetch_bcsp_state_rows", return_value=bcsp_fail):
+                    with mock.patch("outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows", return_value=state_lic_ok):
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("WARN_AUTOGROWTH_SOURCE_FAILED source=bcsp state=TX err=bcsp_parse_failed", out)
+            self.assertIn("GENERATOR_STATE_LIC_ROWS_ACCEPTED=1", out)
+
+    def test_apollo_forbidden_emits_free_tier_warning_token(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "APOLLO",
+                "APOLLO_API_KEY": "test-key",
+            }
+            apollo_result = {
+                "rows": [],
+                "cache_path": data_dir / "prospect_generation" / "cache" / "apollo" / "state_TX.json",
+                "cache_used": False,
+                "cache_age_days": 0,
+                "parse_mode": "FAILED",
+                "pages_fetched": 1,
+                "search_pages_fetched": 1,
+                "search_rows_returned": 0,
+                "search_rows_has_email_true": 0,
+                "search_rows_deduped_id": 0,
+                "enrich_attempted": 0,
+                "enriched": 0,
+                "enrich_no_match": 0,
+                "enrich_skipped_credit_cap": 0,
+                "credit_cap_hit": False,
+                "forbidden": True,
+                "error_status": 403,
+                "error": "apollo_search_request_failed err=http_status status=403 retryable=0",
+                "diagnostics_path": None,
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows", return_value=apollo_result):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            self.assertIn("WARN_APOLLO_FREE_TIER_API_BLOCKED state=TX", buf.getvalue())
+
+    def test_generator_doctor_aggregate_warning_level(self):
+        from outreach import run_prospect_generation as generator
+
+        env = {
+            "OUTREACH_STATES": "TX",
+            "PROSPECT_AUTOGROW_SOURCES": "BCSP,STATE_LIC",
+        }
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_crawl4ai_runtime", return_value={"crawl4ai_installed": False, "playwright_browsers_installed": False, "error_reason": "missing"}):
+                with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_source_availability", side_effect=[{"available": True, "reason": "http_html"}, {"available": True, "reason": "http_api"}]):
+                    with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.doctor_probe_bcsp", return_value={"ok": True, "status": 200, "url": "https://directory.bcsp.org/"}):
+                        with mock.patch("outreach.run_prospect_generation.prospect_sources_state_lic.doctor_probe_state_lic", return_value={"ok": True, "status": 200, "url": "https://data.texas.gov/resource/7358-krk7.json?$limit=1"}):
+                            with redirect_stdout(buf):
+                                rc = generator.main(["--doctor"])
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("WARN_DOCTOR_CRAWL4AI", out)
+        self.assertIn("PASS_DOCTOR_STATE_LIC", out)
+        self.assertIn("GENERATOR_DOCTOR_COMPLETE", out)
+
 
 if __name__ == "__main__":
     unittest.main()
