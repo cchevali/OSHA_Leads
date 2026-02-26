@@ -15,6 +15,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Codex-owned engineering backlog
 
+- [ ] Add follow-on autogrow sources on top of `outreach/scraper_engine.py` foundation: `AGC`, `BLUEBOOK`, `THOMASNET`, `BBB` (source modules + fixtures + generator tests).
 - [ ] Wire landing page conversion CTA references to paid path after Stripe link is set.
   Reference points: `web/config/site.json`, `web/components/CTAButtons.tsx`, `web/app/pricing/page.tsx`, `web/app/contact/page.tsx`.
 - [ ] Define trial -> paid email-only sequence using existing lifecycle states (`replied`, `trial_started`, `converted`) and conversion artifacts in `run_trial_daily.py`.

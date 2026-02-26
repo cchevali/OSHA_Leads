@@ -438,7 +438,18 @@ try {
     foreach ($part in ($rawSources -split ',')) {
       $src = ($part -as [string]).Trim().ToUpperInvariant()
       if (-not $src) { continue }
-      if (($src -ne 'AIHA') -and ($src -ne 'OHS_BG') -and ($src -ne 'APOLLO')) {
+      if (
+        ($src -ne 'AIHA') -and
+        ($src -ne 'OHS_BG') -and
+        ($src -ne 'APOLLO') -and
+        ($src -ne 'BCSP') -and
+        ($src -ne 'OSHA_NEWS') -and
+        ($src -ne 'STATE_LIC') -and
+        ($src -ne 'AGC') -and
+        ($src -ne 'BLUEBOOK') -and
+        ($src -ne 'THOMASNET') -and
+        ($src -ne 'BBB')
+      ) {
         Fail-Token $ERR_SET_OUTREACH_ENV_ARGS ('invalid_ProspectAutoGrowSources value=' + $src)
       }
       if ($srcTokens -notcontains $src) {

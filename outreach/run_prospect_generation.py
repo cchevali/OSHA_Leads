@@ -24,13 +24,18 @@ if str(REPO_ROOT) not in sys.path:
 from outreach import crm_store
 from outreach import prospect_sources_apollo
 from outreach import prospect_sources_aiha
+from outreach import prospect_sources_bcsp
 from outreach import prospect_sources_ohs_bg
+from outreach import prospect_sources_osha_news
+from outreach import prospect_sources_state_lic
+from outreach import scraper_engine
 import seed_recipients_pools as pools
 
 
 ERR_GENERATOR_FAILED = "ERR_GENERATOR_FAILED"
 PASS_GENERATOR_PRINT_CONFIG = "PASS_GENERATOR_PRINT_CONFIG"
 WARN_AUTOGROWTH_SOURCE_FAILED = "WARN_AUTOGROWTH_SOURCE_FAILED"
+WARN_APOLLO_FREE_TIER_API_BLOCKED = "WARN_APOLLO_FREE_TIER_API_BLOCKED"
 APOLLO_FORBIDDEN_HINT = "CHECK_MASTER_KEY_OR_ENDPOINT_SCOPES"
 APOLLO_DOCTOR_NOT_FOUND_HINT = "CHECK_METHOD_AND_BASE_URL"
 
@@ -40,7 +45,17 @@ OUTPUT_FILENAME = "prospects_latest.csv"
 GENERATION_CACHE_ROOT_SUBDIR = ("prospect_generation", "cache")
 GENERATION_DIAGNOSTICS_SUBDIR = ("prospect_generation", "diagnostics")
 
-AUTOGROW_ALLOWED_SOURCES = {"AIHA", "OHS_BG", "APOLLO"}
+AUTOGROW_SOURCE_PREFIX = {
+    "AIHA": "aiha",
+    "OHS_BG": "ohs_bg",
+    "APOLLO": "apollo",
+    "BCSP": "bcsp",
+    "OSHA_NEWS": "osha_news",
+    "STATE_LIC": "state_lic",
+}
+AUTOGROW_SOURCE_LABEL = {k: str(v or "").lower() for k, v in AUTOGROW_SOURCE_PREFIX.items()}
+AUTOGROW_ALLOWED_SOURCES = set(AUTOGROW_SOURCE_PREFIX.keys())
+CRAWL4AI_AUTOGROW_SOURCES = {"BCSP", "OSHA_NEWS"}
 AUTOGROW_REJECT_KEYS = (
     "invalid_email",
     "free_domain",
@@ -67,6 +82,7 @@ APOLLO_DEFAULT_PERSON_TITLES = [
     "principal consultant",
     "owner",
 ]
+TDLR_STATE_LIC_SOURCE_KEY = "STATE_LIC"
 
 
 def _valid_email(value: str) -> bool:
@@ -126,6 +142,24 @@ def _autogrow_source_cache_dir(cache_root_dir: Path, source_token: str) -> Path:
 
 def _generation_diagnostics_dir(data_dir: Path) -> Path:
     return data_dir.joinpath(*GENERATION_DIAGNOSTICS_SUBDIR)
+
+
+def _source_cache_path_for_state(cache_root_dir: Path, source_token: str, state: str) -> Path:
+    token = _normalize_state(source_token)
+    cache_dir = _autogrow_source_cache_dir(cache_root_dir, token)
+    if token == "AIHA":
+        return prospect_sources_aiha._cache_path(cache_dir, state)
+    if token == "OHS_BG":
+        return prospect_sources_ohs_bg._cache_path(cache_dir, state)
+    if token == "APOLLO":
+        return prospect_sources_apollo._cache_path(cache_dir, state)
+    if token == "BCSP":
+        return prospect_sources_bcsp._cache_path(cache_dir, state)
+    if token == "OSHA_NEWS":
+        return prospect_sources_osha_news._cache_path(cache_dir, state)
+    if token == "STATE_LIC":
+        return prospect_sources_state_lic._cache_path(cache_dir, state)
+    return cache_dir / f"state_{_normalize_state(state)}.json"
 
 
 def _discovery_fields() -> list[str]:
@@ -219,6 +253,7 @@ def _parse_autogrow_config() -> dict:
     backlog_target = _parse_int_env(os.getenv("PROSPECT_AUTOGROW_BACKLOG_TARGET", ""), default=60, minimum=1)
     max_fetch_pages = _parse_int_env(os.getenv("PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN", ""), default=6, minimum=1)
     sleep_ms = _parse_int_env(os.getenv("PROSPECT_AUTOGROW_HTTP_SLEEP_MS", ""), default=800, minimum=0)
+    llm_enabled = _bool_env(os.getenv("PROSPECT_AUTOGROW_LLM_ENABLED", "0"))
 
     return {
         "enabled": enabled,
@@ -227,6 +262,7 @@ def _parse_autogrow_config() -> dict:
         "backlog_target": backlog_target,
         "max_fetch_pages": max_fetch_pages,
         "sleep_ms": sleep_ms,
+        "llm_enabled": llm_enabled,
     }
 
 
@@ -557,6 +593,201 @@ def _filter_autogrow_candidates(
     return accepted, counters
 
 
+def _default_apollo_result(cache_root_dir: Path, selected_state: str, *, sources_empty: bool) -> dict[str, object]:
+    return {
+        "cache_path": _source_cache_path_for_state(cache_root_dir, "APOLLO", selected_state),
+        "cache_used": False,
+        "cache_age_days": None,
+        "parse_mode": ("SKIP_NO_SOURCES" if sources_empty else "FAILED"),
+        "search_pages_fetched": 0,
+        "search_rows_returned": 0,
+        "search_rows_has_email_true": 0,
+        "search_rows_deduped_id": 0,
+        "enrich_attempted": 0,
+        "enriched": 0,
+        "enrich_no_match": 0,
+        "enrich_skipped_credit_cap": 0,
+        "credit_cap_hit": False,
+        "forbidden": False,
+    }
+
+
+def _probe_autogrow_runtime() -> tuple[dict[str, object], dict[str, dict[str, object]]]:
+    crawl_probe = scraper_engine.probe_crawl4ai_runtime()
+    availability: dict[str, dict[str, object]] = {}
+    for key in ("BCSP", "OSHA_NEWS", "STATE_LIC"):
+        availability[key] = dict(scraper_engine.probe_source_availability(key))
+    return dict(crawl_probe), availability
+
+
+def _run_apollo_doctor_only(diagnostics_dir: Path) -> int:
+    try:
+        apollo_cfg_for_doctor = _parse_apollo_config(["APOLLO"])
+    except Exception as exc:
+        print(f"APOLLO_DOCTOR_ERROR=1 stage=config err={exc}")
+        return 0
+    try:
+        doctor = prospect_sources_apollo.doctor_apollo_api(
+            api_key=str(apollo_cfg_for_doctor.get("api_key") or ""),
+            sleep_ms=0,
+            diagnostics_dir=diagnostics_dir,
+        )
+    except Exception as exc:
+        print(f"APOLLO_DOCTOR_ERROR=1 stage=request err={exc}")
+        return 0
+    diag = doctor.get("diagnostics_path")
+    resolved_diag: Path | None = diag if isinstance(diag, Path) else (Path(str(diag)) if diag else None)
+    if doctor.get("forbidden"):
+        print(f"APOLLO_DOCTOR_FORBIDDEN=1 hint={APOLLO_FORBIDDEN_HINT}")
+        if resolved_diag is not None:
+            print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
+        return 0
+    if doctor.get("not_found"):
+        print(f"APOLLO_DOCTOR_NOT_FOUND=1 hint={APOLLO_DOCTOR_NOT_FOUND_HINT}")
+        if resolved_diag is not None:
+            print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
+        return 0
+    if doctor.get("ok"):
+        print("APOLLO_DOCTOR_OK=1")
+        return 0
+    print(
+        "APOLLO_DOCTOR_HTTP_ERROR=1 "
+        f"status={int(doctor.get('status') or 0)} "
+        f"content_type={doctor.get('content_type') or 'unknown'}"
+    )
+    if resolved_diag is not None:
+        print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
+    return 0
+
+
+def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str]) -> int:
+    sources_checked = 0
+    pass_count = 0
+    warn_count = 0
+    err_count = 0
+
+    crawl_probe = scraper_engine.probe_crawl4ai_runtime()
+    sources_checked += 1
+    if bool(crawl_probe.get("crawl4ai_installed")) and bool(crawl_probe.get("playwright_browsers_installed")):
+        print("PASS_DOCTOR_CRAWL4AI crawl4ai_installed=YES playwright_browsers_installed=YES")
+        pass_count += 1
+    else:
+        print(
+            "WARN_DOCTOR_CRAWL4AI "
+            f"crawl4ai_installed={'YES' if crawl_probe.get('crawl4ai_installed') else 'NO'} "
+            f"playwright_browsers_installed={'YES' if crawl_probe.get('playwright_browsers_installed') else 'NO'} "
+            f"reason={crawl_probe.get('error_reason') or 'unknown'}"
+        )
+        warn_count += 1
+
+    enabled = []
+    for token in list(autogrow_sources or []):
+        key = _normalize_state(token)
+        if key and key not in enabled:
+            enabled.append(key)
+
+    for token in enabled:
+        if token == "BCSP":
+            sources_checked += 1
+            avail = scraper_engine.probe_source_availability("BCSP")
+            if not avail.get("available"):
+                print(f"WARN_DOCTOR_BCSP available=NO reason={avail.get('reason') or 'unknown'}")
+                warn_count += 1
+                continue
+            probe = prospect_sources_bcsp.doctor_probe_bcsp()
+            if probe.get("ok"):
+                print(f"PASS_DOCTOR_BCSP status={int(probe.get('status') or 0)} url={probe.get('url') or ''}")
+                pass_count += 1
+            else:
+                print(
+                    f"WARN_DOCTOR_BCSP status={int(probe.get('status') or 0)} "
+                    f"url={probe.get('url') or ''} err={probe.get('error') or 'unreachable'}"
+                )
+                warn_count += 1
+        elif token == "OSHA_NEWS":
+            sources_checked += 1
+            avail = scraper_engine.probe_source_availability("OSHA_NEWS")
+            if not avail.get("available"):
+                print(f"WARN_DOCTOR_OSHA_NEWS available=NO reason={avail.get('reason') or 'unknown'}")
+                warn_count += 1
+                continue
+            probe = prospect_sources_osha_news.doctor_probe_osha_news()
+            if probe.get("ok"):
+                print(f"PASS_DOCTOR_OSHA_NEWS status={int(probe.get('status') or 0)} url={probe.get('url') or ''}")
+                pass_count += 1
+            else:
+                print(
+                    f"WARN_DOCTOR_OSHA_NEWS status={int(probe.get('status') or 0)} "
+                    f"url={probe.get('url') or ''} err={probe.get('error') or 'unreachable'}"
+                )
+                warn_count += 1
+        elif token == "STATE_LIC":
+            sources_checked += 1
+            probe = prospect_sources_state_lic.doctor_probe_state_lic()
+            if probe.get("ok"):
+                print(f"PASS_DOCTOR_STATE_LIC status={int(probe.get('status') or 0)} url={probe.get('url') or ''}")
+                pass_count += 1
+            else:
+                print(
+                    f"WARN_DOCTOR_STATE_LIC status={int(probe.get('status') or 0)} "
+                    f"url={probe.get('url') or ''} err={probe.get('error') or 'unreachable'}"
+                )
+                warn_count += 1
+        elif token == "APOLLO":
+            sources_checked += 1
+            try:
+                apollo_cfg = _parse_apollo_config(["APOLLO"])
+                doctor = prospect_sources_apollo.doctor_apollo_api(
+                    api_key=str(apollo_cfg.get("api_key") or ""),
+                    sleep_ms=0,
+                    diagnostics_dir=diagnostics_dir,
+                )
+            except Exception as exc:
+                print(f"WARN_DOCTOR_APOLLO err={exc}")
+                warn_count += 1
+                continue
+            if doctor.get("forbidden"):
+                print(f"{WARN_APOLLO_FREE_TIER_API_BLOCKED} stage=doctor status=403")
+                warn_count += 1
+            elif doctor.get("ok"):
+                print("PASS_DOCTOR_APOLLO ok=1")
+                pass_count += 1
+            else:
+                print(
+                    f"WARN_DOCTOR_APOLLO status={int(doctor.get('status') or 0)} "
+                    f"err={doctor.get('error') or 'http_error'}"
+                )
+                warn_count += 1
+
+    print(
+        "GENERATOR_DOCTOR_COMPLETE "
+        f"sources_checked={sources_checked} pass={pass_count} warn={warn_count} err={err_count}"
+    )
+    return 0 if err_count == 0 else 2
+
+
+def _print_source_result_tokens(source_key: str, result: dict, rejected: Counter | None = None) -> None:
+    token = _normalize_state(source_key)
+    if not token:
+        return
+    prefix = f"GENERATOR_{token}"
+    cache_path = result.get("cache_path")
+    cache_path_obj = Path(str(cache_path)) if cache_path else None
+    if cache_path_obj is not None:
+        print(f"{prefix}_CACHE_PATH={cache_path_obj.resolve()}")
+    print(f"{prefix}_CACHE_USED={'YES' if result.get('cache_used') else 'NO'}")
+    cache_age = result.get("cache_age_days")
+    print(f"{prefix}_CACHE_AGE_DAYS={cache_age if cache_age is not None else -1}")
+    print(f"{prefix}_PAGES_FETCHED={int(result.get('pages_fetched') or 0)}")
+    print(f"{prefix}_PAGE_PARSE_MODE={result.get('parse_mode') or 'FAILED'}")
+    print(f"{prefix}_ROWS_CANDIDATE={int(result.get('rows_candidate') or 0)}")
+    print(f"{prefix}_ROWS_ACCEPTED={int(result.get('rows_accepted') or 0)}")
+    if rejected is None:
+        return
+    for reject_key in AUTOGROW_REJECT_KEYS:
+        print(f"{prefix}_REJECTED_{reject_key.upper()}={int(rejected.get(reject_key, 0))}")
+
+
 def _print_tokens(
     path: Path,
     rows_read: int,
@@ -571,6 +802,11 @@ def _print_tokens(
     apollo_result: dict,
     apollo_rejected: Counter,
     diagnostics_path: Path | None,
+    crawl_probe: dict | None = None,
+    source_availability: dict | None = None,
+    extra_source_results: dict | None = None,
+    extra_source_rejected: dict | None = None,
+    print_availability: bool = False,
 ) -> None:
     print(f"GENERATOR_OUTPUT_PATH={path.resolve()}")
     print(f"GENERATOR_ROWS_READ={rows_read}")
@@ -594,6 +830,17 @@ def _print_tokens(
     state_details = list(autogrow.get("state_details") or [])
     print(f"GENERATOR_AUTOGROW_TOTAL_STATES={int(autogrow.get('total_states') or len(state_details))}")
     print(f"GENERATOR_AUTOGROW_TOTAL_ACCEPTED={int(autogrow.get('total_accepted') or 0)}")
+    if print_availability:
+        cp = dict(crawl_probe or {})
+        print(f"crawl4ai_installed={'YES' if cp.get('crawl4ai_installed') else 'NO'}")
+        print(f"playwright_browsers_installed={'YES' if cp.get('playwright_browsers_installed') else 'NO'}")
+        av_map = dict(source_availability or {})
+        for source_key in ("BCSP", "OSHA_NEWS", "STATE_LIC"):
+            av = dict(av_map.get(source_key) or {})
+            available = bool(av.get("available"))
+            reason = _normalize_text(av.get("reason") or ("ok" if available else "unknown"))
+            print(f"{source_key}_available={'YES' if available else 'NO'} reason={reason}")
+        print("apollo_api_accessible=NO free_plan_web_ui_manual")
     for detail in state_details:
         state = _normalize_state(str(detail.get("state") or ""))
         if not state:
@@ -610,7 +857,7 @@ def _print_tokens(
             f"apollo_candidate={int(detail.get('apollo_candidate') or 0)} "
             f"apollo_accepted={int(detail.get('apollo_accepted') or 0)}"
         )
-        for source_label, prefix in (("AIHA", "aiha"), ("OHS_BG", "ohs_bg"), ("APOLLO", "apollo")):
+        for source_label, prefix in AUTOGROW_SOURCE_PREFIX.items():
             print(
                 "GENERATOR_AUTOGROW_SOURCE_STATE "
                 f"source={source_label} "
@@ -717,6 +964,14 @@ def _print_tokens(
     print(f"GENERATOR_APOLLO_REJECTED_MISSING_STATE={int(apollo_rejected.get('missing_state', 0))}")
     print(f"GENERATOR_APOLLO_REJECTED_STATE_MISMATCH={int(apollo_rejected.get('state_mismatch', 0))}")
     print(f"GENERATOR_APOLLO_REJECTED_DUPLICATE_IN_BATCH={int(apollo_rejected.get('duplicate_in_batch', 0))}")
+    for source_key in ("BCSP", "OSHA_NEWS", "STATE_LIC"):
+        src_results = dict(extra_source_results or {})
+        src_rejected = dict(extra_source_rejected or {})
+        _print_source_result_tokens(
+            source_key,
+            dict(src_results.get(source_key) or {}),
+            src_rejected.get(source_key) if isinstance(src_rejected.get(source_key), Counter) else Counter(src_rejected.get(source_key) or {}),
+        )
 
     if diagnostics_path is not None:
         print(f"GENERATOR_DIAGNOSTICS_PATH={diagnostics_path.resolve()}")
@@ -786,12 +1041,43 @@ def _fetch_autogrow_source_rows(
             person_locations_mode=str(cfg.get("person_locations_mode") or "state"),
             allow_cache_write=allow_cache_write,
         )
+    if token == "BCSP":
+        return prospect_sources_bcsp.fetch_bcsp_state_rows(
+            state=state,
+            run_date=run_date,
+            max_pages=max_fetch_pages,
+            sleep_ms=sleep_ms,
+            cache_dir=cache_dir,
+            diagnostics_dir=diagnostics_dir,
+            allow_cache_write=allow_cache_write,
+        )
+    if token == "OSHA_NEWS":
+        return prospect_sources_osha_news.fetch_osha_news_state_rows(
+            state=state,
+            run_date=run_date,
+            max_pages=max_fetch_pages,
+            sleep_ms=sleep_ms,
+            cache_dir=cache_dir,
+            diagnostics_dir=diagnostics_dir,
+            allow_cache_write=allow_cache_write,
+        )
+    if token == TDLR_STATE_LIC_SOURCE_KEY:
+        return prospect_sources_state_lic.fetch_state_lic_state_rows(
+            state=state,
+            run_date=run_date,
+            max_pages=max_fetch_pages,
+            sleep_ms=sleep_ms,
+            cache_dir=cache_dir,
+            diagnostics_dir=diagnostics_dir,
+            allow_cache_write=allow_cache_write,
+        )
     raise ValueError(f"unsupported_source={token}")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate deterministic discovery CSV feed from seed pools + optional autogrow.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved output path and exit.")
+    ap.add_argument("--doctor", action="store_true", help="Run source/runtime readiness checks and exit.")
     ap.add_argument("--apollo-doctor", action="store_true", help="Check Apollo master-key endpoint access and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Compute rows only; do not write output files.")
     ap.add_argument("--for-date", default="", help="Override run date (YYYY-MM-DD) for selected_state/backlog preview.")
@@ -810,43 +1096,7 @@ def main(argv: list[str] | None = None) -> int:
     diagnostics_dir = _generation_diagnostics_dir(data_dir)
 
     if args.apollo_doctor:
-        try:
-            apollo_cfg_for_doctor = _parse_apollo_config(["APOLLO"])
-        except Exception as exc:
-            print(f"APOLLO_DOCTOR_ERROR=1 stage=config err={exc}")
-            return 0
-        try:
-            doctor = prospect_sources_apollo.doctor_apollo_api(
-                api_key=str(apollo_cfg_for_doctor.get("api_key") or ""),
-                sleep_ms=0,
-                diagnostics_dir=diagnostics_dir,
-            )
-        except Exception as exc:
-            print(f"APOLLO_DOCTOR_ERROR=1 stage=request err={exc}")
-            return 0
-        diag = doctor.get("diagnostics_path")
-        resolved_diag: Path | None = diag if isinstance(diag, Path) else (Path(str(diag)) if diag else None)
-        if doctor.get("forbidden"):
-            print(f"APOLLO_DOCTOR_FORBIDDEN=1 hint={APOLLO_FORBIDDEN_HINT}")
-            if resolved_diag is not None:
-                print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
-            return 0
-        if doctor.get("not_found"):
-            print(f"APOLLO_DOCTOR_NOT_FOUND=1 hint={APOLLO_DOCTOR_NOT_FOUND_HINT}")
-            if resolved_diag is not None:
-                print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
-            return 0
-        if doctor.get("ok"):
-            print("APOLLO_DOCTOR_OK=1")
-            return 0
-        print(
-            "APOLLO_DOCTOR_HTTP_ERROR=1 "
-            f"status={int(doctor.get('status') or 0)} "
-            f"content_type={doctor.get('content_type') or 'unknown'}"
-        )
-        if resolved_diag is not None:
-            print(f"APOLLO_DOCTOR_DIAGNOSTICS_PATH={resolved_diag.resolve()}")
-        return 0
+        return _run_apollo_doctor_only(diagnostics_dir=diagnostics_dir)
 
     states = _parse_states(os.getenv("OUTREACH_STATES", "TX"))
     if not states:
@@ -860,6 +1110,11 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"{ERR_GENERATOR_FAILED} stage=autogrow_config err={exc}", file=sys.stderr)
         return 2
+    if args.doctor:
+        return _run_generator_doctor(
+            diagnostics_dir=diagnostics_dir,
+            autogrow_sources=list(autogrow_cfg.get("sources") or []),
+        )
     try:
         apollo_cfg = _parse_apollo_config(list(autogrow_cfg.get("sources") or []))
     except Exception as exc:
@@ -896,17 +1151,12 @@ def main(argv: list[str] | None = None) -> int:
                 "new_needed": int(new_needed_item),
                 "effective_autogrow": bool(effective_autogrow),
                 "safety_net_forced": bool(safety_forced),
-                "aiha_candidate": 0,
-                "aiha_accepted": 0,
-                "ohs_bg_candidate": 0,
-                "ohs_bg_accepted": 0,
-                "apollo_candidate": 0,
-                "apollo_accepted": 0,
             }
-            for reject_key in AUTOGROW_REJECT_KEYS:
-                detail[f"aiha_rejected_{reject_key}"] = 0
-                detail[f"ohs_bg_rejected_{reject_key}"] = 0
-                detail[f"apollo_rejected_{reject_key}"] = 0
+            for prefix in AUTOGROW_SOURCE_PREFIX.values():
+                detail[f"{prefix}_candidate"] = 0
+                detail[f"{prefix}_accepted"] = 0
+                for reject_key in AUTOGROW_REJECT_KEYS:
+                    detail[f"{prefix}_rejected_{reject_key}"] = 0
             autogrow_state_details.append(detail)
             if state_norm == _normalize_state(selected_state):
                 selected_backlog_current = int(backlog_current_item)
@@ -934,35 +1184,49 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     sources_empty = bool(autogrow_cfg["enabled"]) and len(list(autogrow_cfg["sources"])) == 0
+    crawl_probe, source_availability = _probe_autogrow_runtime()
     aiha_result = _default_autogrow_source_result(
-        cache_path=prospect_sources_aiha._cache_path(_autogrow_source_cache_dir(cache_root_dir, "AIHA"), selected_state),
+        cache_path=_source_cache_path_for_state(cache_root_dir, "AIHA", selected_state),
         enabled=bool(autogrow_cfg["enabled"]),
         sources_empty=sources_empty,
     )
     aiha_rejected: Counter = Counter()
     ohs_bg_result = _default_autogrow_source_result(
-        cache_path=prospect_sources_ohs_bg._cache_path(_autogrow_source_cache_dir(cache_root_dir, "OHS_BG"), selected_state),
+        cache_path=_source_cache_path_for_state(cache_root_dir, "OHS_BG", selected_state),
         enabled=bool(autogrow_cfg["enabled"]),
         sources_empty=sources_empty,
     )
     ohs_bg_rejected: Counter = Counter()
-    apollo_result: dict[str, object] = {
-        "cache_path": prospect_sources_apollo._cache_path(_autogrow_source_cache_dir(cache_root_dir, "APOLLO"), selected_state),
-        "cache_used": False,
-        "cache_age_days": None,
-        "parse_mode": ("SKIP_NO_SOURCES" if sources_empty else "FAILED"),
-        "search_pages_fetched": 0,
-        "search_rows_returned": 0,
-        "search_rows_has_email_true": 0,
-        "search_rows_deduped_id": 0,
-        "enrich_attempted": 0,
-        "enriched": 0,
-        "enrich_no_match": 0,
-        "enrich_skipped_credit_cap": 0,
-        "credit_cap_hit": False,
-        "forbidden": False,
-    }
+    apollo_result: dict[str, object] = _default_apollo_result(cache_root_dir, selected_state, sources_empty=sources_empty)
     apollo_rejected: Counter = Counter()
+    bcsp_result = _default_autogrow_source_result(
+        cache_path=_source_cache_path_for_state(cache_root_dir, "BCSP", selected_state),
+        enabled=bool(autogrow_cfg["enabled"]),
+        sources_empty=sources_empty,
+    )
+    bcsp_rejected: Counter = Counter()
+    osha_news_result = _default_autogrow_source_result(
+        cache_path=_source_cache_path_for_state(cache_root_dir, "OSHA_NEWS", selected_state),
+        enabled=bool(autogrow_cfg["enabled"]),
+        sources_empty=sources_empty,
+    )
+    osha_news_rejected: Counter = Counter()
+    state_lic_result = _default_autogrow_source_result(
+        cache_path=_source_cache_path_for_state(cache_root_dir, "STATE_LIC", selected_state),
+        enabled=bool(autogrow_cfg["enabled"]),
+        sources_empty=sources_empty,
+    )
+    state_lic_rejected: Counter = Counter()
+    extra_source_results: dict[str, dict] = {
+        "BCSP": bcsp_result,
+        "OSHA_NEWS": osha_news_result,
+        "STATE_LIC": state_lic_result,
+    }
+    extra_source_rejected: dict[str, Counter] = {
+        "BCSP": bcsp_rejected,
+        "OSHA_NEWS": osha_news_rejected,
+        "STATE_LIC": state_lic_rejected,
+    }
     apollo_enrich_remaining = int(apollo_cfg.get("enrich_max_per_run") or 0)
     diagnostics_path: Path | None = None
     autogrow_rows: list[dict[str, str]] = []
@@ -988,6 +1252,11 @@ def main(argv: list[str] | None = None) -> int:
             apollo_result=apollo_result,
             apollo_rejected=apollo_rejected,
             diagnostics_path=None,
+            crawl_probe=crawl_probe,
+            source_availability=source_availability,
+            extra_source_results=extra_source_results,
+            extra_source_rejected=extra_source_rejected,
+            print_availability=True,
         )
         return 0
 
@@ -999,7 +1268,7 @@ def main(argv: list[str] | None = None) -> int:
 
     autogrow_seen_emails: set[str] = set()
     selected_state_norm = _normalize_state(selected_state)
-    source_prefix_map = {"AIHA": "aiha", "OHS_BG": "ohs_bg", "APOLLO": "apollo"}
+    source_prefix_map = dict(AUTOGROW_SOURCE_PREFIX)
     for detail in autogrow_state_details:
         state_detail = _normalize_state(str(detail.get("state") or ""))
         if not state_detail or not bool(detail.get("effective_autogrow")):
@@ -1086,6 +1355,8 @@ def main(argv: list[str] | None = None) -> int:
                 apollo_result["forbidden"] = bool(apollo_result.get("forbidden")) or bool(result.get("forbidden"))
                 apollo_rejected.update(rejected)
                 apollo_enrich_remaining = max(0, apollo_enrich_remaining - int(result.get("enrich_attempted") or 0))
+                if bool(result.get("forbidden")) or int(result.get("error_status") or 0) == 403:
+                    print(f"{WARN_APOLLO_FREE_TIER_API_BLOCKED} state={state_detail}")
 
             autogrow_rows.extend(accepted_rows)
             for row in accepted_rows:
@@ -1121,20 +1392,41 @@ def main(argv: list[str] | None = None) -> int:
                             "parse_mode": result.get("parse_mode") or apollo_result.get("parse_mode"),
                         }
                     )
+                elif source_token == "BCSP":
+                    bcsp_result.update(result)
+                    bcsp_result["rows_candidate"] = len(rows_candidate)
+                    bcsp_result["rows_accepted"] = len(accepted_rows)
+                    bcsp_rejected = rejected
+                    extra_source_rejected["BCSP"] = bcsp_rejected
+                elif source_token == "OSHA_NEWS":
+                    osha_news_result.update(result)
+                    osha_news_result["rows_candidate"] = len(rows_candidate)
+                    osha_news_result["rows_accepted"] = len(accepted_rows)
+                    osha_news_rejected = rejected
+                    extra_source_rejected["OSHA_NEWS"] = osha_news_rejected
+                elif source_token == "STATE_LIC":
+                    state_lic_result.update(result)
+                    state_lic_result["rows_candidate"] = len(rows_candidate)
+                    state_lic_result["rows_accepted"] = len(accepted_rows)
+                    state_lic_rejected = rejected
+                    extra_source_rejected["STATE_LIC"] = state_lic_rejected
 
+            warn_token = _normalize_text(result.get("warn_token") or "")
+            if warn_token:
+                print(f"{warn_token} source={AUTOGROW_SOURCE_LABEL.get(source_token, source_token.lower())} state={state_detail}")
             if result.get("error"):
-                source_label = "aiha" if source_token == "AIHA" else ("ohs_bg" if source_token == "OHS_BG" else "apollo")
+                source_label = AUTOGROW_SOURCE_LABEL.get(source_token, source_token.lower())
                 print(f"{WARN_AUTOGROWTH_SOURCE_FAILED} source={source_label} state={state_detail} err={result.get('error')}")
 
     autogrow_state["total_accepted"] = int(
         sum(
-            int(d.get("aiha_accepted") or 0) + int(d.get("ohs_bg_accepted") or 0) + int(d.get("apollo_accepted") or 0)
+            sum(int(d.get(f"{prefix}_accepted") or 0) for prefix in AUTOGROW_SOURCE_PREFIX.values())
             for d in autogrow_state_details
         )
     )
     rows_read_total = rows_read_seed + int(
         sum(
-            int(d.get("aiha_candidate") or 0) + int(d.get("ohs_bg_candidate") or 0) + int(d.get("apollo_candidate") or 0)
+            sum(int(d.get(f"{prefix}_candidate") or 0) for prefix in AUTOGROW_SOURCE_PREFIX.values())
             for d in autogrow_state_details
         )
     )
@@ -1156,6 +1448,10 @@ def main(argv: list[str] | None = None) -> int:
             apollo_result=apollo_result,
             apollo_rejected=apollo_rejected,
             diagnostics_path=diagnostics_path,
+            crawl_probe=crawl_probe,
+            source_availability=source_availability,
+            extra_source_results=extra_source_results,
+            extra_source_rejected=extra_source_rejected,
         )
         return 0
 
@@ -1182,6 +1478,10 @@ def main(argv: list[str] | None = None) -> int:
         apollo_result=apollo_result,
         apollo_rejected=apollo_rejected,
         diagnostics_path=diagnostics_path,
+        crawl_probe=crawl_probe,
+        source_availability=source_availability,
+        extra_source_results=extra_source_results,
+        extra_source_rejected=extra_source_rejected,
     )
     return 0
 
