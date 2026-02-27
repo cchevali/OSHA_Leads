@@ -305,8 +305,13 @@ def _print_not_found_hints_for_bare_input(raw_input: str, data_dir: Path, env: d
     candidate_text = "|".join(str(p) for p in candidate_paths) if candidate_paths else "NONE"
     suggested = (data_dir / "imports" / filename).resolve()
     print(f"DISCOVERY_DATA_DIR_RESOLVED={data_dir.resolve()}", file=sys.stderr)
+    print(f"DISCOVERY_EXPECTED_INPUT_PATH={suggested}", file=sys.stderr)
     print(f"DISCOVERY_CANDIDATE_IMPORT_PATHS={candidate_text}", file=sys.stderr)
     print(f"DISCOVERY_SUGGESTED_INPUT={suggested}", file=sys.stderr)
+    print(
+        f"DISCOVERY_REMEDIATION_COMMAND=.\\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input {suggested}",
+        file=sys.stderr,
+    )
     print(f"REMEDIATION: use --input {suggested}", file=sys.stderr)
 
 

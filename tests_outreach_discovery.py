@@ -287,7 +287,12 @@ class TestOutreachDiscovery(unittest.TestCase):
             self.assertIn(f"DISCOVERY_DATA_DIR_RESOLVED={data_dir.resolve()}", err)
             self.assertIn("DISCOVERY_CANDIDATE_IMPORT_PATHS=", err)
             suggested = (data_dir / "imports" / "prospects_apollo.csv").resolve()
+            self.assertIn(f"DISCOVERY_EXPECTED_INPUT_PATH={suggested}", err)
             self.assertIn(f"DISCOVERY_SUGGESTED_INPUT={suggested}", err)
+            self.assertIn(
+                f"DISCOVERY_REMEDIATION_COMMAND=.\\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input {suggested}",
+                err,
+            )
             self.assertIn(f"REMEDIATION: use --input {suggested}", err)
 
     def test_live_run_seeds_crm_and_emits_legacy_plus_discovery_block(self):
