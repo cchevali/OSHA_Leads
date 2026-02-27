@@ -59,11 +59,15 @@ class TestProspectGeneration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "data"
             out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
+            inbox_path = data_dir / "prospect_generation" / "inbox"
             p = self._run(["--print-config", "--for-date", "2026-02-18"], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX,CA,FL"})
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             out = p.stdout or ""
             self.assertIn("PASS_GENERATOR_PRINT_CONFIG", out)
             self.assertIn(f"output_path={out_path.resolve()}", out)
+            self.assertIn(f"inbox_path={inbox_path.resolve()}", out)
+            self.assertIn("inbox_files_pending=0", out)
+            self.assertIn("inbox_files_pending_list=none", out)
             self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
             self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL", out)
             self.assertIn("GENERATOR_APOLLO_ENABLED=0", out)
@@ -83,7 +87,86 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_STATE_BACKLOG_BELOW_TARGET state=TX backlog_current=0 target=60 gap=60", out)
             self.assertIn("GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=1 states=TX:60", out)
             self.assertIn("GENERATOR_COMPLETE status=DRY_RUN", out)
+            self.assertIn("GENERATOR_INBOX_FILES_FOUND=0", out)
+            self.assertIn("GENERATOR_INBOX_ROWS_READ=0", out)
+            self.assertIn("GENERATOR_INBOX_ROWS_SKIPPED_NO_EMAIL=0", out)
+            self.assertIn("GENERATOR_INBOX_ROWS_SKIPPED_DUPE=0", out)
+            self.assertIn("GENERATOR_INBOX_ROWS_ACCEPTED=0", out)
+            self.assertIn("GENERATOR_INBOX_FILES_PROCESSED=none", out)
             self.assertFalse(out_path.exists(), msg="--dry-run must not write output")
+
+    def test_print_config_reports_pending_inbox_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            inbox_path = data_dir / "prospect_generation" / "inbox"
+            inbox_path.mkdir(parents=True, exist_ok=True)
+            (inbox_path / "apollo_a.csv").write_text("Email\none@example.com\n", encoding="utf-8")
+            (inbox_path / "apollo_b.csv").write_text("Email\ntwo@example.com\n", encoding="utf-8")
+
+            p = self._run(["--print-config"], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn(f"inbox_path={inbox_path.resolve()}", out)
+            self.assertIn("inbox_files_pending=2", out)
+            self.assertIn("inbox_files_pending_list=apollo_a.csv,apollo_b.csv", out)
+
+    def test_inbox_dry_run_ingests_and_does_not_move(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            inbox_path = data_dir / "prospect_generation" / "inbox"
+            inbox_path.mkdir(parents=True, exist_ok=True)
+            csv_path = inbox_path / "apollo_export.csv"
+            csv_path.write_text(
+                "First Name,Last Name,Email,Company,Title,City,State\n"
+                "Ava,One,ava.one@example-inbox-test.com,Acme,EHS Director,Austin,TX\n"
+                "Ava,Two,AVA.ONE@example-inbox-test.com,Acme,EHS Director,Austin,TX\n"
+                "No,Email,,Acme,EHS Director,Austin,TX\n",
+                encoding="utf-8",
+            )
+
+            p = self._run(["--dry-run"], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("GENERATOR_INBOX_FILES_FOUND=1", out)
+            self.assertIn("GENERATOR_INBOX_ROWS_READ=3", out)
+            self.assertIn("GENERATOR_INBOX_ROWS_SKIPPED_NO_EMAIL=1", out)
+            self.assertIn("GENERATOR_INBOX_ROWS_SKIPPED_DUPE=1", out)
+            self.assertIn("GENERATOR_INBOX_ROWS_ACCEPTED=1", out)
+            self.assertIn("GENERATOR_INBOX_FILES_PROCESSED=none", out)
+            self.assertTrue(csv_path.exists(), msg="--dry-run must not move inbox files")
+
+    def test_inbox_live_moves_file_and_merges_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            inbox_path = data_dir / "prospect_generation" / "inbox"
+            inbox_path.mkdir(parents=True, exist_ok=True)
+            csv_name = "apollo_live.csv"
+            csv_path = inbox_path / csv_name
+            csv_path.write_text(
+                "First Name,Last Name,Email,Company,Title,City,State,Website\n"
+                "Lia,Live,lia.live@example-inbox-test.com,Live Co,Safety Manager,Houston,TX,https://liveco.example\n",
+                encoding="utf-8",
+            )
+
+            p = self._run([], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("GENERATOR_INBOX_FILES_FOUND=1", out)
+            self.assertIn("GENERATOR_INBOX_ROWS_ACCEPTED=1", out)
+            self.assertIn(f"GENERATOR_INBOX_FILES_PROCESSED={csv_name}", out)
+
+            self.assertFalse(csv_path.exists(), msg="live run must move processed inbox files")
+            processed_matches = list((inbox_path / "processed").glob(f"*_{csv_name}"))
+            self.assertEqual(len(processed_matches), 1)
+            self.assertRegex(processed_matches[0].name, r"^\d{8}_\d{6}_.+\.csv$")
+
+            output_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
+            self.assertTrue(output_path.exists())
+            emails = []
+            with open(output_path, "r", newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    emails.append((row.get("email") or "").strip().lower())
+            self.assertIn("lia.live@example-inbox-test.com", emails)
 
     def test_for_date_controls_selected_state(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1390,6 +1473,7 @@ class TestProspectGeneration(unittest.TestCase):
         self.assertEqual(rc, 0)
         out = buf.getvalue()
         self.assertIn("WARN_DOCTOR_CRAWL4AI", out)
+        self.assertIn("PASS_DOCTOR_INBOX_PATH", out)
         self.assertIn("PASS_DOCTOR_STATE_LIC", out)
         self.assertIn("GENERATOR_DOCTOR_COMPLETE", out)
 

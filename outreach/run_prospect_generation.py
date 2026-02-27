@@ -26,6 +26,7 @@ from outreach import prospect_sources_apollo
 from outreach import prospect_sources_aiha
 from outreach import prospect_sources_bcsp
 from outreach import prospect_enrich_email
+from outreach import inbox_csv_ingest
 from outreach import prospect_sources_ohs_bg
 from outreach import prospect_sources_osha_news
 from outreach import prospect_sources_state_lic
@@ -42,6 +43,7 @@ APOLLO_DOCTOR_NOT_FOUND_HINT = "CHECK_METHOD_AND_BASE_URL"
 
 OUTPUT_SUBDIR = ("prospect_discovery",)
 OUTPUT_FILENAME = "prospects_latest.csv"
+INBOX_SUBDIR = ("prospect_generation", "inbox")
 
 GENERATION_CACHE_ROOT_SUBDIR = ("prospect_generation", "cache")
 GENERATION_DIAGNOSTICS_SUBDIR = ("prospect_generation", "diagnostics")
@@ -121,6 +123,10 @@ def _email_domain(email: str) -> str:
 
 def _output_path(data_dir: Path) -> Path:
     return data_dir.joinpath(*OUTPUT_SUBDIR) / OUTPUT_FILENAME
+
+
+def _inbox_path(data_dir: Path) -> Path:
+    return data_dir.joinpath(*INBOX_SUBDIR)
 
 
 def _generation_cache_dir(data_dir: Path) -> Path:
@@ -644,6 +650,30 @@ def _merge_generator_enrich_metrics(dest: dict[str, int], src: dict | None) -> N
         dest[key] = int(dest.get(key, 0)) + int(source.get(key, 0) or 0)
 
 
+def _dedupe_inbox_rows_against_run_rows(
+    inbox_rows: list[dict[str, str]],
+    run_rows: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], int]:
+    seen: set[str] = set()
+    for row in run_rows:
+        email = _normalize_email(row.get("email") or row.get("contact_email") or "")
+        if _valid_email(email):
+            seen.add(email)
+
+    accepted: list[dict[str, str]] = []
+    skipped_dupe = 0
+    for row in inbox_rows:
+        email = _normalize_email(row.get("contact_email") or row.get("email") or "")
+        if not _valid_email(email):
+            continue
+        if email in seen:
+            skipped_dupe += 1
+            continue
+        seen.add(email)
+        accepted.append(row)
+    return accepted, skipped_dupe
+
+
 def _probe_autogrow_runtime() -> tuple[dict[str, object], dict[str, dict[str, object]]]:
     crawl_probe = scraper_engine.probe_crawl4ai_runtime()
     availability: dict[str, dict[str, object]] = {}
@@ -692,7 +722,7 @@ def _run_apollo_doctor_only(diagnostics_dir: Path) -> int:
     return 0
 
 
-def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str]) -> int:
+def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str], inbox_path: Path) -> int:
     sources_checked = 0
     pass_count = 0
     warn_count = 0
@@ -710,6 +740,14 @@ def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str]) ->
             f"playwright_browsers_installed={'YES' if crawl_probe.get('playwright_browsers_installed') else 'NO'} "
             f"reason={crawl_probe.get('error_reason') or 'unknown'}"
         )
+        warn_count += 1
+
+    sources_checked += 1
+    if inbox_csv_ingest.inbox_path_readable_or_creatable(inbox_path):
+        print(f"PASS_DOCTOR_INBOX_PATH path={inbox_path.resolve()} mode=readable_or_creatable")
+        pass_count += 1
+    else:
+        print(f"WARN_DOCTOR_INBOX_PATH path={inbox_path.resolve()} mode=unavailable")
         warn_count += 1
 
     enabled = []
@@ -841,6 +879,7 @@ def _print_tokens(
     extra_source_results: dict | None = None,
     extra_source_rejected: dict | None = None,
     print_availability: bool = False,
+    inbox_metrics: dict | None = None,
 ) -> None:
     print(f"GENERATOR_OUTPUT_PATH={path.resolve()}")
     print(f"GENERATOR_ROWS_READ={rows_read}")
@@ -1020,6 +1059,16 @@ def _print_tokens(
 
     print(f"GENERATOR_COMPLETE status={status}")
 
+    inbox = dict(inbox_metrics or {})
+    files_processed = list(inbox.get("files_processed") or [])
+    files_processed_text = ",".join([str(v) for v in files_processed if str(v or "").strip()]) if files_processed else "none"
+    print(f"GENERATOR_INBOX_FILES_FOUND={int(inbox.get('files_found') or 0)}")
+    print(f"GENERATOR_INBOX_ROWS_READ={int(inbox.get('rows_read') or 0)}")
+    print(f"GENERATOR_INBOX_ROWS_SKIPPED_NO_EMAIL={int(inbox.get('rows_skipped_no_email') or 0)}")
+    print(f"GENERATOR_INBOX_ROWS_SKIPPED_DUPE={int(inbox.get('rows_skipped_dupe') or 0)}")
+    print(f"GENERATOR_INBOX_ROWS_ACCEPTED={int(inbox.get('rows_accepted') or 0)}")
+    print(f"GENERATOR_INBOX_FILES_PROCESSED={files_processed_text}")
+
 
 def _default_autogrow_source_result(cache_path: Path, enabled: bool, sources_empty: bool) -> dict:
     return {
@@ -1133,9 +1182,12 @@ def main(argv: list[str] | None = None) -> int:
 
     data_dir = crm_store.data_dir()
     output_path = _output_path(data_dir)
+    inbox_path = _inbox_path(data_dir)
     cache_dir = _generation_cache_dir(data_dir)
     cache_root_dir = _generation_cache_root_dir(data_dir)
     diagnostics_dir = _generation_diagnostics_dir(data_dir)
+    inbox_pending_files = inbox_csv_ingest.list_pending_csv_files(inbox_path)
+    inbox_pending_names = [p.name for p in inbox_pending_files]
 
     if args.apollo_doctor:
         return _run_apollo_doctor_only(diagnostics_dir=diagnostics_dir)
@@ -1156,6 +1208,7 @@ def main(argv: list[str] | None = None) -> int:
         return _run_generator_doctor(
             diagnostics_dir=diagnostics_dir,
             autogrow_sources=list(autogrow_cfg.get("sources") or []),
+            inbox_path=inbox_path,
         )
     try:
         apollo_cfg = _parse_apollo_config(list(autogrow_cfg.get("sources") or []))
@@ -1273,11 +1326,26 @@ def main(argv: list[str] | None = None) -> int:
     apollo_enrich_remaining = int(apollo_cfg.get("enrich_max_per_run") or 0)
     diagnostics_path: Path | None = None
     autogrow_rows: list[dict[str, str]] = []
+    inbox_rows_for_merge: list[dict[str, str]] = []
+    inbox_metrics = {
+        "files_found": len(inbox_pending_files),
+        "rows_read": 0,
+        "rows_skipped_no_email": 0,
+        "rows_skipped_dupe": 0,
+        "rows_accepted": 0,
+        "files_processed": [],
+    }
     enrich_metrics = _default_generator_enrich_metrics()
 
     if args.print_config:
         print(f"{PASS_GENERATOR_PRINT_CONFIG} data_dir={data_dir.resolve()}")
         print(f"{PASS_GENERATOR_PRINT_CONFIG} output_path={output_path.resolve()}")
+        print(f"{PASS_GENERATOR_PRINT_CONFIG} inbox_path={inbox_path.resolve()}")
+        print(f"{PASS_GENERATOR_PRINT_CONFIG} inbox_files_pending={len(inbox_pending_files)}")
+        print(
+            f"{PASS_GENERATOR_PRINT_CONFIG} inbox_files_pending_list="
+            f"{','.join(inbox_pending_names) if inbox_pending_names else 'none'}"
+        )
         print(f"{PASS_GENERATOR_PRINT_CONFIG} cache_dir={cache_dir.resolve()}")
         print(f"{PASS_GENERATOR_PRINT_CONFIG} diagnostics_dir={diagnostics_dir.resolve()}")
         print(f"{PASS_GENERATOR_PRINT_CONFIG} selected_state={selected_state}")
@@ -1303,8 +1371,21 @@ def main(argv: list[str] | None = None) -> int:
             extra_source_results=extra_source_results,
             extra_source_rejected=extra_source_rejected,
             print_availability=True,
+            inbox_metrics=inbox_metrics,
         )
         return 0
+
+    try:
+        inbox_ingest = inbox_csv_ingest.ingest_inbox_csv_files(inbox_path=inbox_path, files=inbox_pending_files)
+        inbox_rows_for_merge = inbox_csv_ingest.canonical_rows_to_generator_rows(
+            list(inbox_ingest.get("rows_accepted") or [])
+        )
+        inbox_metrics["rows_read"] = int(inbox_ingest.get("rows_read") or 0)
+        inbox_metrics["rows_skipped_no_email"] = int(inbox_ingest.get("rows_skipped_no_email") or 0)
+        inbox_metrics["rows_skipped_dupe"] = int(inbox_ingest.get("rows_skipped_dupe") or 0)
+    except Exception as exc:
+        print(f"{ERR_GENERATOR_FAILED} stage=inbox_ingest err={exc}", file=sys.stderr)
+        return 2
 
     try:
         state_rows, rows_read_seed = _build_clean_state_rows()
@@ -1487,10 +1568,17 @@ def main(argv: list[str] | None = None) -> int:
             for d in autogrow_state_details
         )
     )
+    run_rows_for_dedupe = _state_rows_to_combined_input(state_rows) + autogrow_rows
+    inbox_rows_for_merge, inbox_skipped_against_run = _dedupe_inbox_rows_against_run_rows(
+        inbox_rows=inbox_rows_for_merge,
+        run_rows=run_rows_for_dedupe,
+    )
+    inbox_metrics["rows_skipped_dupe"] = int(inbox_metrics.get("rows_skipped_dupe") or 0) + int(inbox_skipped_against_run)
+    inbox_metrics["rows_accepted"] = len(inbox_rows_for_merge)
 
     if args.dry_run:
         seed_rows = _state_rows_to_combined_input(state_rows)
-        rows = _to_discovery_rows(seed_rows + autogrow_rows)
+        rows = _to_discovery_rows(seed_rows + autogrow_rows + inbox_rows_for_merge)
         _print_tokens(
             path=output_path,
             rows_read=rows_read_total,
@@ -1511,16 +1599,27 @@ def main(argv: list[str] | None = None) -> int:
             source_availability=source_availability,
             extra_source_results=extra_source_results,
             extra_source_rejected=extra_source_rejected,
+            inbox_metrics=inbox_metrics,
         )
         return 0
 
     try:
         _write_legacy_pool_files(state_rows)
         generated_rows = _read_legacy_pool_files()
-        rows = _to_discovery_rows(generated_rows + autogrow_rows)
+        rows = _to_discovery_rows(generated_rows + autogrow_rows + inbox_rows_for_merge)
         _write_output_atomic(path=output_path, rows=rows)
     except Exception as exc:
         print(f"{ERR_GENERATOR_FAILED} stage=write_output err={exc}", file=sys.stderr)
+        return 2
+
+    try:
+        inbox_metrics["files_processed"] = inbox_csv_ingest.move_processed_files(
+            inbox_path=inbox_path,
+            files=inbox_pending_files,
+            dry_run=False,
+        )
+    except Exception as exc:
+        print(f"{ERR_GENERATOR_FAILED} stage=inbox_move err={exc}", file=sys.stderr)
         return 2
 
     _print_tokens(
@@ -1543,6 +1642,7 @@ def main(argv: list[str] | None = None) -> int:
         source_availability=source_availability,
         extra_source_results=extra_source_results,
         extra_source_rejected=extra_source_rejected,
+        inbox_metrics=inbox_metrics,
     )
     return 0
 

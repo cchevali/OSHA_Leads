@@ -23,7 +23,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - STATE_LIC Phase 1 uses the Texas TDLR public Socrata dataset (`7358-krk7`) and provides licensed-business metadata including address/phone/county fields.
    - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering to populate existing `website`/`email` fields via domain resolution + pattern guesses.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
-   - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
+   - Optional manual CSV inbox input: `${DATA_DIR}/prospect_generation/inbox/*.csv` (fallback `./out/prospect_generation/inbox/*.csv`) is ingested at generator startup and then moved to `inbox/processed/` after successful live output write.
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts the generated CSV into `crm.sqlite`.
 3. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
 4. Daily run: `outreach/run_outreach_auto.py`
