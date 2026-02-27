@@ -437,6 +437,66 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertEqual(len(man_rows), 1)
             self.assertEqual(man_rows[0]["status"], "exported")
 
+    def test_export_writes_expected_artifacts(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            _write_suppression(tmp / "suppression.csv", [])
+            tpl = tmp / "tpl.txt"
+            _write_template(tpl)
+
+            in_csv = tmp / "in.csv"
+            out_csv = tmp / "outbox.csv"
+            _write_csv(
+                in_csv,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "first_name": "A",
+                        "last_name": "One",
+                        "firm": "Co",
+                        "title": "Ops",
+                        "email": "a@example.com",
+                        "state": "TX",
+                        "city": "Austin",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    }
+                ],
+            )
+
+            env = {"UNSUB_ENDPOINT_BASE": "https://unsub.example.internal/unsubscribe", "UNSUB_SECRET": "test_secret"}
+            p = self._run_export(tmp, input_csv=in_csv, out_csv=out_csv, template=tpl, env_overrides=env)
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+
+            stdout = p.stdout or ""
+            outbox_line = next((ln.strip() for ln in stdout.splitlines() if ln.strip().startswith("outbox=")), "")
+            manifest_line = next((ln.strip() for ln in stdout.splitlines() if ln.strip().startswith("manifest=")), "")
+            ledger_line = next((ln.strip() for ln in stdout.splitlines() if ln.strip().startswith("ledger=")), "")
+            run_log_line = next((ln.strip() for ln in stdout.splitlines() if ln.strip().startswith("run_log=")), "")
+            self.assertTrue(outbox_line, msg=stdout)
+            self.assertTrue(manifest_line, msg=stdout)
+            self.assertTrue(ledger_line, msg=stdout)
+            self.assertTrue(run_log_line, msg=stdout)
+
+            outbox_path = Path(outbox_line.split("=", 1)[1].strip())
+            manifest_path = Path(manifest_line.split("=", 1)[1].strip())
+            ledger_path = Path(ledger_line.split("=", 1)[1].strip())
+            run_log_path = Path(run_log_line.split("=", 1)[1].strip())
+            if not outbox_path.is_absolute():
+                outbox_path = (tmp / outbox_path).resolve()
+            if not manifest_path.is_absolute():
+                manifest_path = (tmp / manifest_path).resolve()
+            if not ledger_path.is_absolute():
+                ledger_path = (tmp / ledger_path).resolve()
+            if not run_log_path.is_absolute():
+                run_log_path = (tmp / run_log_path).resolve()
+
+            self.assertTrue(outbox_path.exists(), msg=f"missing outbox: {outbox_path}")
+            self.assertTrue(manifest_path.exists(), msg=f"missing manifest: {manifest_path}")
+            self.assertTrue(ledger_path.exists(), msg=f"missing ledger: {ledger_path}")
+            self.assertTrue(run_log_path.exists(), msg=f"missing run log: {run_log_path}")
+
     def test_missing_suppression_file_exits_nonzero_and_no_outputs(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
