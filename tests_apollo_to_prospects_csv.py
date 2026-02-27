@@ -25,7 +25,7 @@ CORE_FIELDS = [
 
 def _write_apollo_csv(path: Path, rows: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
+    base_fieldnames = [
         "First name",
         "Last name",
         "Title",
@@ -37,6 +37,12 @@ def _write_apollo_csv(path: Path, rows: list[dict[str, str]]) -> None:
         "City",
         "State",
     ]
+    extra_fieldnames: list[str] = []
+    for row in rows:
+        for key in row.keys():
+            if key not in base_fieldnames and key not in extra_fieldnames:
+                extra_fieldnames.append(key)
+    fieldnames = base_fieldnames + extra_fieldnames
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -184,6 +190,8 @@ class TestApolloToProspectsCsv(unittest.TestCase):
             self.assertEqual(int(payload.get("dropped_no_email") or 0), 1)
             self.assertEqual(int(payload.get("dropped_invalid_email") or 0), 1)
             self.assertEqual(int(payload.get("deduped") or 0), 1)
+            self.assertEqual(int(payload.get("missing_state_after_normalization") or 0), 0)
+            self.assertEqual(int(payload.get("state_extracted_from_location") or 0), 0)
             self.assertEqual(str(payload.get("input_path") or ""), str(input_csv.resolve()))
             self.assertEqual(str(payload.get("output_path") or ""), str(output_path.resolve()))
             self.assertEqual(str(payload.get("diagnostics_path") or ""), str(diagnostics_path.resolve()))
@@ -219,6 +227,77 @@ class TestApolloToProspectsCsv(unittest.TestCase):
             self.assertIn("PASS_APOLLO_CONVERT_DRY_RUN", p.stdout or "")
             self.assertFalse(output_path.exists())
             self.assertFalse(diagnostics_path.exists())
+
+    def test_state_normalization_handles_full_name_and_location_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            input_csv = tmp / "apollo_export.csv"
+            _write_apollo_csv(
+                input_csv,
+                [
+                    {
+                        "First name": "Full",
+                        "Last name": "Name",
+                        "Title": "Owner",
+                        "Company name": "Texas Co",
+                        "Email": "full@example.com",
+                        "Email status": "verified",
+                        "Email confidence": "0.90",
+                        "Website": "full.example.com",
+                        "City": "Dallas",
+                        "State": "Texas",
+                    },
+                    {
+                        "First name": "Loc",
+                        "Last name": "Only",
+                        "Title": "Owner",
+                        "Company name": "Location Co",
+                        "Email": "loc@example.com",
+                        "Email status": "verified",
+                        "Email confidence": "0.80",
+                        "Website": "loc.example.com",
+                        "City": "Austin",
+                        "State": "",
+                        "Location": "Austin, TX",
+                    },
+                    {
+                        "First name": "None",
+                        "Last name": "State",
+                        "Title": "Owner",
+                        "Company name": "No State Co",
+                        "Email": "nostate@example.com",
+                        "Email status": "verified",
+                        "Email confidence": "0.70",
+                        "Website": "nostate.example.com",
+                        "City": "Unknown",
+                        "State": "",
+                        "Location": "Unknown",
+                    },
+                ],
+            )
+            output_path = data_dir / "imports" / "prospects_apollo.csv"
+            diagnostics_path = data_dir / "imports" / "prospects_apollo_diagnostics.json"
+
+            p = self._run(["--input", str(input_csv)], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            self.assertTrue(output_path.exists())
+            self.assertTrue(diagnostics_path.exists())
+
+            with open(output_path, "r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                fieldnames = list(reader.fieldnames or [])
+
+            self.assertIn("apollo_location", fieldnames)
+            by_email = {(r.get("email") or ""): r for r in rows}
+            self.assertEqual((by_email.get("full@example.com") or {}).get("state"), "TX")
+            self.assertEqual((by_email.get("loc@example.com") or {}).get("state"), "TX")
+            self.assertEqual((by_email.get("nostate@example.com") or {}).get("state"), "")
+
+            payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+            self.assertEqual(int(payload.get("state_extracted_from_location") or 0), 1)
+            self.assertEqual(int(payload.get("missing_state_after_normalization") or 0), 1)
 
 
 if __name__ == "__main__":

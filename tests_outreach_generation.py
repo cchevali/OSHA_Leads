@@ -95,6 +95,91 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", p.stdout or "")
 
+    def test_states_flag_supports_csv_and_all_scope(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            csv_scope = self._run(
+                ["--print-config", "--for-date", "2026-02-19", "--states", "CA,FL"],
+                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"},
+            )
+            self.assertEqual(csv_scope.returncode, 0, msg=csv_scope.stderr + "\n" + csv_scope.stdout)
+            out_csv = csv_scope.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=CA,FL", out_csv)
+            self.assertIn("GENERATOR_STATE_SCOPE=CA,FL", out_csv)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out_csv)
+
+            all_scope = self._run(
+                ["--print-config", "--for-date", "2026-02-18", "--states", "all"],
+                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"},
+            )
+            self.assertEqual(all_scope.returncode, 0, msg=all_scope.stderr + "\n" + all_scope.stdout)
+            out_all = all_scope.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out_all)
+            self.assertIn("GENERATOR_STATE_SCOPE=TX,CA,FL", out_all)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out_all)
+
+    def test_input_cohort_reports_exclusion_breakdown_tokens(self):
+        from outreach import crm_store
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\nsuppressed@exampletx.com\n", encoding="utf-8")
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                rows = [
+                    ("eligible_tx", "eligible@exampletx.com", "TX", "new", None),
+                    ("missing_state", "nostate@example.com", "", "new", None),
+                    ("state_mismatch", "ca@exampleca.com", "CA", "new", None),
+                    ("missing_email", "", "TX", "new", None),
+                    ("free_domain", "freedomain@gmail.com", "TX", "new", None),
+                    ("suppressed", "suppressed@exampletx.com", "TX", "new", None),
+                    ("ineligible_status", "ineligible@exampletx.com", "TX", "converted", None),
+                    ("other_invalid", "bad-email", "TX", "new", None),
+                ]
+                for prospect_id, email, state, status, last_contacted_at in rows:
+                    conn.execute(
+                        """
+                        INSERT INTO prospects(
+                          prospect_id, firm, contact_name, email, title, city, state, website, source,
+                          score, status, created_at, last_contacted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            prospect_id,
+                            "Firm",
+                            "",
+                            email,
+                            "Owner",
+                            "City",
+                            state,
+                            "",
+                            "seed",
+                            0,
+                            status,
+                            now,
+                            last_contacted_at,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            p = self._run(["--print-config"], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("GENERATOR_FILTERED_MISSING_STATE=1", out)
+            self.assertIn("GENERATOR_FILTERED_STATE_MISMATCH=1", out)
+            self.assertIn("GENERATOR_FILTERED_MISSING_EMAIL=1", out)
+            self.assertIn("GENERATOR_FILTERED_SUPPRESSED=1", out)
+            self.assertIn("GENERATOR_FILTERED_FREE_DOMAIN=1", out)
+            self.assertIn("GENERATOR_FILTERED_ALREADY_SENT_OR_INELIGIBLE=1", out)
+            self.assertIn("GENERATOR_FILTERED_OTHER=1", out)
+            self.assertIn("GENERATOR_INPUT_COHORT crm_total=8 eligible=1 excluded=7", out)
+
     def test_autogrow_enabled_backlog_targeted_and_deterministic_slice(self):
         from outreach import crm_store
         from outreach import run_prospect_generation as generator

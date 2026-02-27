@@ -51,6 +51,59 @@ MAPPED_HEADERS = {
     "state",
     "source",
 }
+US_STATE_NAME_TO_ABBR = {
+    "alabama": "AL",
+    "alaska": "AK",
+    "arizona": "AZ",
+    "arkansas": "AR",
+    "california": "CA",
+    "colorado": "CO",
+    "connecticut": "CT",
+    "delaware": "DE",
+    "district of columbia": "DC",
+    "florida": "FL",
+    "georgia": "GA",
+    "hawaii": "HI",
+    "idaho": "ID",
+    "illinois": "IL",
+    "indiana": "IN",
+    "iowa": "IA",
+    "kansas": "KS",
+    "kentucky": "KY",
+    "louisiana": "LA",
+    "maine": "ME",
+    "maryland": "MD",
+    "massachusetts": "MA",
+    "michigan": "MI",
+    "minnesota": "MN",
+    "mississippi": "MS",
+    "missouri": "MO",
+    "montana": "MT",
+    "nebraska": "NE",
+    "nevada": "NV",
+    "new hampshire": "NH",
+    "new jersey": "NJ",
+    "new mexico": "NM",
+    "new york": "NY",
+    "north carolina": "NC",
+    "north dakota": "ND",
+    "ohio": "OH",
+    "oklahoma": "OK",
+    "oregon": "OR",
+    "pennsylvania": "PA",
+    "rhode island": "RI",
+    "south carolina": "SC",
+    "south dakota": "SD",
+    "tennessee": "TN",
+    "texas": "TX",
+    "utah": "UT",
+    "vermont": "VT",
+    "virginia": "VA",
+    "washington": "WA",
+    "west virginia": "WV",
+    "wisconsin": "WI",
+    "wyoming": "WY",
+}
 
 
 def _normalize_text(value: str) -> str:
@@ -58,7 +111,34 @@ def _normalize_text(value: str) -> str:
 
 
 def _normalize_state(value: str) -> str:
-    return _normalize_text(value).upper()
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    letters = re.sub(r"[^A-Za-z]", "", text)
+    if len(letters) == 2:
+        return letters.upper()
+    normalized_name = " ".join(text.lower().replace(".", " ").split())
+    return US_STATE_NAME_TO_ABBR.get(normalized_name, "")
+
+
+def _extract_state_from_location(location: str) -> str:
+    text = _normalize_text(location)
+    if not text:
+        return ""
+    match = re.search(r",\s*([A-Za-z]{2})(?:\s|,|$)", text)
+    if not match:
+        return ""
+    return _normalize_state(match.group(1))
+
+
+def _normalized_state_with_fallback(state: str, location: str) -> tuple[str, bool]:
+    normalized = _normalize_state(state)
+    if normalized:
+        return normalized, False
+    extracted = _extract_state_from_location(location)
+    if extracted:
+        return extracted, True
+    return "", False
 
 
 def _normalize_email(value: str) -> str:
@@ -182,6 +262,8 @@ def _transform_rows(
     dropped_no_email = 0
     dropped_invalid_email = 0
     deduped = 0
+    missing_state_after_normalization = 0
+    state_extracted_from_location = 0
 
     extra_headers = sorted([f"apollo_{h}" for h in normalized_headers if h and h not in MAPPED_HEADERS])
 
@@ -200,7 +282,14 @@ def _transform_rows(
             continue
         seen_emails.add(email)
 
-        state = _normalize_state(row.get("state") or "")
+        state, extracted_from_location = _normalized_state_with_fallback(
+            row.get("state") or "",
+            row.get("location") or "",
+        )
+        if extracted_from_location:
+            state_extracted_from_location += 1
+        if not state:
+            missing_state_after_normalization += 1
         website = _normalize_text(row.get("website") or "")
         domain = _website_domain(website) or _email_domain(email)
         out_row: dict[str, str] = {
@@ -227,6 +316,8 @@ def _transform_rows(
         "dropped_no_email": int(dropped_no_email),
         "dropped_invalid_email": int(dropped_invalid_email),
         "deduped": int(deduped),
+        "missing_state_after_normalization": int(missing_state_after_normalization),
+        "state_extracted_from_location": int(state_extracted_from_location),
     }
     return transformed, diagnostics, extra_headers
 
@@ -312,7 +403,10 @@ def main(argv: list[str] | None = None) -> int:
             "APOLLO_CONVERT_METRICS "
             f"input_rows={int(metrics['input_rows'])} output_rows={int(metrics['output_rows'])} "
             f"dropped_no_email={int(metrics['dropped_no_email'])} "
-            f"dropped_invalid_email={int(metrics['dropped_invalid_email'])} deduped={int(metrics['deduped'])}"
+            f"dropped_invalid_email={int(metrics['dropped_invalid_email'])} "
+            f"deduped={int(metrics['deduped'])} "
+            f"missing_state_after_normalization={int(metrics['missing_state_after_normalization'])} "
+            f"state_extracted_from_location={int(metrics['state_extracted_from_location'])}"
         )
         return 0
 
@@ -331,7 +425,10 @@ def main(argv: list[str] | None = None) -> int:
         "APOLLO_CONVERT_METRICS "
         f"input_rows={int(metrics['input_rows'])} output_rows={int(metrics['output_rows'])} "
         f"dropped_no_email={int(metrics['dropped_no_email'])} "
-        f"dropped_invalid_email={int(metrics['dropped_invalid_email'])} deduped={int(metrics['deduped'])}"
+        f"dropped_invalid_email={int(metrics['dropped_invalid_email'])} "
+        f"deduped={int(metrics['deduped'])} "
+        f"missing_state_after_normalization={int(metrics['missing_state_after_normalization'])} "
+        f"state_extracted_from_location={int(metrics['state_extracted_from_location'])}"
     )
     return 0
 
