@@ -443,6 +443,7 @@ When `DATA_DIR` is unset, discovery resolves these fallback paths under repo `.\
 - Optional overrides: `--output <path>` and `--diagnostics-out <path>`.
 - Run discovery with this import file (repo-root default when `DATA_DIR` is unset): `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input .\out\imports\prospects_apollo.csv`.
 - If `DATA_DIR` is set, pass that resolved path instead (for example `C:\osha_data\imports\prospects_apollo.csv`) or set `PROSPECT_DISCOVERY_INPUT` to the import artifact.
+- If `DATA_DIR` is set or defaults to `C:\osha_data`, discovery must be pointed at that location.
 - Discovery no-arg still honors input overrides first: `PROSPECT_DISCOVERY_INPUT`, then `DISCOVERY_INPUT_CSV`.
 
 Set preferred discovery input via the canonical no-editor env helper:

@@ -277,6 +277,19 @@ class TestOutreachDiscovery(unittest.TestCase):
             self._assert_discovery_block(out, "DRY_RUN")
             self.assertFalse((data_dir / "crm.sqlite").exists(), msg="dry-run should not create crm.sqlite")
 
+    def test_missing_bare_filename_prints_data_dir_and_suggested_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            p = self._run(["--input", "prospects_apollo.csv"], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(p.returncode, 2, msg=p.stderr + "\n" + p.stdout)
+            err = p.stderr or ""
+            self.assertIn("ERR_DISCOVERY_INPUT_NOT_FOUND", err)
+            self.assertIn(f"DISCOVERY_DATA_DIR_RESOLVED={data_dir.resolve()}", err)
+            self.assertIn("DISCOVERY_CANDIDATE_IMPORT_PATHS=", err)
+            suggested = (data_dir / "imports" / "prospects_apollo.csv").resolve()
+            self.assertIn(f"DISCOVERY_SUGGESTED_INPUT={suggested}", err)
+            self.assertIn(f"REMEDIATION: use --input {suggested}", err)
+
     def test_live_run_seeds_crm_and_emits_legacy_plus_discovery_block(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
