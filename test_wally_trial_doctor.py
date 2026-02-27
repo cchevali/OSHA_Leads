@@ -390,6 +390,10 @@ class TestWallyTrialDoctor(unittest.TestCase):
     def test_enable_schedule_uses_weekly_weekday_trigger(self) -> None:
         captured: dict[str, object] = {}
         orig_run = run_wally_trial.subprocess.run
+        old_user = os.environ.get("TASK_SCHED_USER")
+        old_password = os.environ.get("TASK_SCHED_PASSWORD")
+        os.environ["TASK_SCHED_USER"] = r"DESKTOP-Q8QM4N9\lever"
+        os.environ["TASK_SCHED_PASSWORD"] = "test-password"
 
         def _fake_run(cmd, check=True):  # type: ignore[no-untyped-def]
             captured["cmd"] = list(cmd)
@@ -403,13 +407,44 @@ class TestWallyTrialDoctor(unittest.TestCase):
             run_wally_trial.enable_schedule("OSHA Wally Trial Daily", Path(r"C:\dev\OSHA_Leads\run_wally_trial_daily.bat"))
         finally:
             run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]
+            if old_user is None:
+                os.environ.pop("TASK_SCHED_USER", None)
+            else:
+                os.environ["TASK_SCHED_USER"] = old_user
+            if old_password is None:
+                os.environ.pop("TASK_SCHED_PASSWORD", None)
+            else:
+                os.environ["TASK_SCHED_PASSWORD"] = old_password
 
         cmd = [str(x) for x in (captured.get("cmd") or [])]
         self.assertIn("/SC", cmd)
         self.assertIn("WEEKLY", cmd)
         self.assertIn("/D", cmd)
         self.assertIn("MON,TUE,WED,THU,FRI", cmd)
+        self.assertIn("/RU", cmd)
+        self.assertIn(r"DESKTOP-Q8QM4N9\lever", cmd)
+        self.assertIn("/RP", cmd)
+        self.assertIn("test-password", cmd)
         self.assertTrue(bool(captured.get("check")))
+
+    def test_enable_schedule_requires_task_sched_password(self) -> None:
+        old_user = os.environ.get("TASK_SCHED_USER")
+        old_password = os.environ.get("TASK_SCHED_PASSWORD")
+        os.environ["TASK_SCHED_USER"] = r"DESKTOP-Q8QM4N9\lever"
+        os.environ.pop("TASK_SCHED_PASSWORD", None)
+        try:
+            with self.assertRaises(SystemExit) as ctx:
+                run_wally_trial.enable_schedule("OSHA Wally Trial Daily", Path(r"C:\dev\OSHA_Leads\run_wally_trial_daily.bat"))
+            self.assertEqual(ctx.exception.code, 1)
+        finally:
+            if old_user is None:
+                os.environ.pop("TASK_SCHED_USER", None)
+            else:
+                os.environ["TASK_SCHED_USER"] = old_user
+            if old_password is None:
+                os.environ.pop("TASK_SCHED_PASSWORD", None)
+            else:
+                os.environ["TASK_SCHED_PASSWORD"] = old_password
 
     def test_run_live_send_does_not_append_event_on_failure(self) -> None:
         calls = {"append": 0}

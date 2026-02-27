@@ -38,6 +38,8 @@ param(
   [string] $BounceImapFolder = '',
   [Nullable[int]] $BounceImapSinceHours = $null,
   [Nullable[int]] $BounceImapMaxMessages = $null,
+  [string] $TaskSchedUser = '',
+  [string] $TaskSchedPassword = '',
   [switch] $PrintConfig
 )
 
@@ -335,7 +337,9 @@ try {
     'BounceImapPass',
     'BounceImapFolder',
     'BounceImapSinceHours',
-    'BounceImapMaxMessages'
+    'BounceImapMaxMessages',
+    'TaskSchedUser',
+    'TaskSchedPassword'
   )
   $hasMutatingArgs = $false
   foreach ($name in $mutatingArgs) {
@@ -391,6 +395,16 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('BounceImapMaxMessages') -and $BounceImapMaxMessages -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapMaxMessages'
+  }
+  if ($PSBoundParameters.ContainsKey('TaskSchedUser')) {
+    if (-not (($TaskSchedUser -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TaskSchedUser'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('TaskSchedPassword')) {
+    if (-not (($TaskSchedPassword -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TaskSchedPassword'
+    }
   }
 
   if ($PSBoundParameters.ContainsKey('OutreachStates')) {
@@ -575,6 +589,10 @@ try {
       Write-Output ('apollo_person_locations_mode=' + $apolloLocationsModeValue)
       Write-Output ('prospect_enrich_domain_enabled=' + $prospectEnrichDomainEnabledValue)
       Write-Output ('prospect_enrich_hunter_enabled=' + $prospectEnrichHunterEnabledValue)
+      $taskSchedUserValue = if (Map-HasValue $printMap 'TASK_SCHED_USER') { ([string]$printMap['TASK_SCHED_USER']).Trim() } else { '' }
+      $taskSchedPasswordPresent = if (Map-HasValue $printMap 'TASK_SCHED_PASSWORD') { 'YES' } else { 'NO' }
+      Write-Output ('task_sched_user=' + $taskSchedUserValue)
+      Write-Output ('task_sched_password_present=' + $taskSchedPasswordPresent)
       Pass-Token $PASS_SET_OUTREACH_ENV_COMPLETE 'mode=print_config'
       exit 0
     }
@@ -821,6 +839,14 @@ try {
         Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectDiscoveryInput'
       }
       Set-MapValue -Map $map -Key 'PROSPECT_DISCOVERY_INPUT' -Value $discoveryInput -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('TaskSchedUser')) {
+      Set-MapValue -Map $map -Key 'TASK_SCHED_USER' -Value (($TaskSchedUser -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('TaskSchedPassword')) {
+      Set-MapValue -Map $map -Key 'TASK_SCHED_PASSWORD' -Value (($TaskSchedPassword -as [string]).Trim()) -TouchedList $touched
     }
 
     $rendered = Render-DotenvMap $map

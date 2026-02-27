@@ -11,6 +11,49 @@ function Fail([string]$Token, [string]$Message) {
   exit 1
 }
 
+function Resolve-DefaultSchedulerUser {
+  try {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($identity -and ([string]$identity.Name).Trim()) {
+      return ([string]$identity.Name).Trim()
+    }
+  }
+  catch {
+  }
+
+  $username = ([string]$env:USERNAME).Trim()
+  if (-not $username) {
+    return ''
+  }
+  $domain = ([string]$env:USERDOMAIN).Trim()
+  if ($domain) {
+    return ($domain + '\' + $username)
+  }
+  return $username
+}
+
+function Resolve-SchedulerCredentials([bool]$RequirePassword) {
+  $schedulerUser = ([string]$env:TASK_SCHED_USER).Trim()
+  if (-not $schedulerUser) {
+    $schedulerUser = Resolve-DefaultSchedulerUser
+  }
+  if (-not $schedulerUser) {
+    Fail 'ERR_INSTALL_SCHEDULED_TASKS_CONFIG' 'missing TASK_SCHED_USER'
+  }
+
+  $schedulerPassword = [string]$env:TASK_SCHED_PASSWORD
+  $passwordPresent = -not [string]::IsNullOrWhiteSpace($schedulerPassword)
+  if ($RequirePassword -and -not $passwordPresent) {
+    Fail 'ERR_INSTALL_SCHEDULED_TASKS_CONFIG' 'missing TASK_SCHED_PASSWORD'
+  }
+
+  return @{
+    User = $schedulerUser
+    Password = $schedulerPassword
+    PasswordPresent = $passwordPresent
+  }
+}
+
 function New-TaskDefinition(
   [string]$Name,
   [string]$ScheduleType,
@@ -114,11 +157,18 @@ function Add-ResolvedSchedule([array]$Tasks, [datetime]$NowLocal) {
   return $resolved
 }
 
-function Emit-TaskConfig([array]$Tasks, [string]$Mode) {
+function Emit-TaskConfig([array]$Tasks, [string]$Mode, [hashtable]$SchedulerCredentials) {
   Write-Output ('INSTALL_SCHEDULED_TASKS_MODE=' + $Mode)
   Write-Output ('INSTALL_SCHEDULED_TASKS_TASK_COUNT=' + $Tasks.Count)
   Write-Output 'INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=1'
   Write-Output 'INSTALL_SCHEDULED_TASKS_WEEKDAY_SCHEDULE=MON,TUE,WED,THU,FRI'
+  Write-Output ('INSTALL_SCHEDULED_TASKS_TASK_SCHED_USER=' + ([string]$SchedulerCredentials.User))
+  if ([bool]$SchedulerCredentials.PasswordPresent) {
+    Write-Output 'INSTALL_SCHEDULED_TASKS_TASK_SCHED_PASSWORD_PRESENT=YES'
+  }
+  else {
+    Write-Output 'INSTALL_SCHEDULED_TASKS_TASK_SCHED_PASSWORD_PRESENT=NO'
+  }
   for ($i = 0; $i -lt $Tasks.Count; $i++) {
     $idx = $i + 1
     $task = $Tasks[$i]
@@ -140,15 +190,16 @@ function Emit-TaskConfig([array]$Tasks, [string]$Mode) {
   }
 }
 
-function Build-SchtasksPreviewLine([hashtable]$Task) {
+function Build-SchtasksPreviewLine([hashtable]$Task, [string]$SchedulerUser) {
   $taskNameForQuery = '\' + $Task.Name
+  $commonSuffix = ' /RU "' + $SchedulerUser + '" /RP ***REDACTED***'
   if ($Task.ScheduleType -eq 'minute') {
-    return 'schtasks /Create /F /SC MINUTE /MO ' + $Task.MinuteInterval + ' /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskNameForQuery + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
+    return 'schtasks /Create /F /SC MINUTE /MO ' + $Task.MinuteInterval + ' /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskNameForQuery + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel + $commonSuffix
   }
   if ($Task.ScheduleType -eq 'weekly') {
-    return 'schtasks /Create /F /SC WEEKLY /D ' + $Task.Weekdays + ' /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskNameForQuery + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
+    return 'schtasks /Create /F /SC WEEKLY /D ' + $Task.Weekdays + ' /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskNameForQuery + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel + $commonSuffix
   }
-  return 'schtasks /Create /F /SC DAILY /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskNameForQuery + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
+  return 'schtasks /Create /F /SC DAILY /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskNameForQuery + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel + $commonSuffix
 }
 
 function Invoke-SchtasksCommand([string[]]$SchtasksArgs) {
@@ -215,7 +266,7 @@ function Delete-TaskIfExists([string]$TaskName) {
   }
 }
 
-function Invoke-TaskCreate([hashtable]$Task) {
+function Invoke-TaskCreate([hashtable]$Task, [string]$SchedulerUser, [string]$SchedulerPassword) {
   $taskNameForQuery = '\' + $Task.Name
   $taskArgs = @(
     '/Create',
@@ -243,7 +294,11 @@ function Invoke-TaskCreate([hashtable]$Task) {
     '/TR',
     $Task.TaskRun,
     '/RL',
-    $Task.RunLevel
+    $Task.RunLevel,
+    '/RU',
+    $SchedulerUser,
+    '/RP',
+    $SchedulerPassword
   )
 
   $createResult = Invoke-SchtasksCommand -SchtasksArgs $taskArgs
@@ -421,6 +476,7 @@ function Invoke-Verify([array]$Tasks) {
     $lastResultHex = Convert-LastResultToHex -Raw $lastResultRaw
     $taskToRun = Get-TaskQueryField -Fields $fields -Key 'Task To Run'
     $taskState = Get-TaskQueryField -Fields $fields -Key 'Scheduled Task State'
+    $logonMode = Get-TaskQueryField -Fields $fields -Key 'Logon Mode'
     $scheduleType = Get-TaskQueryField -Fields $fields -Key 'Schedule Type'
     $startTimeRaw = Get-TaskQueryField -Fields $fields -Key 'Start Time'
 
@@ -430,6 +486,7 @@ function Invoke-Verify([array]$Tasks) {
     Write-Output ('LAST_RUN_TIME=' + $lastRun)
     Write-Output ('LAST_RUN_RESULT=' + $lastResultRaw)
     Write-Output ('LAST_RUN_RESULT_HEX=' + $lastResultHex)
+    Write-Output ('LOGON_MODE=' + $logonMode)
 
     if (-not $nextRun -or $nextRun -eq 'N/A') {
       $failures += ('task=' + $task.Name + ' next_run_time_unavailable')
@@ -451,6 +508,12 @@ function Invoke-Verify([array]$Tasks) {
     }
     if ($taskState -match 'Disabled') {
       $failures += ('task=' + $task.Name + ' disabled=true')
+    }
+    if (-not $logonMode -or $logonMode -eq 'N/A') {
+      $failures += ('task=' + $task.Name + ' logon_mode_unavailable')
+    }
+    elseif ($logonMode -match '(?i)interactive only') {
+      $failures += ('task=' + $task.Name + ' logon_mode_interactive_only')
     }
     if (($taskToRun -as [string]).Trim() -ne (($task.TaskRun -as [string]).Trim())) {
       $failures += ('task=' + $task.Name + ' action_mismatch expected=' + $task.TaskRun + ' actual=' + $taskToRun)
@@ -498,18 +561,19 @@ foreach ($path in $requiredPaths) {
 
 $rawTasks = Get-TaskDefinitions -RepoRoot $repoRoot
 $resolvedTasks = Add-ResolvedSchedule -Tasks $rawTasks -NowLocal (Get-Date)
+$schedulerCredentials = Resolve-SchedulerCredentials -RequirePassword:($modeArg -eq '--apply')
 
 if ($modeArg -eq '--print-config') {
-  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'print-config'
+  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'print-config' -SchedulerCredentials $schedulerCredentials
   Write-Output 'PASS_INSTALL_SCHEDULED_TASKS_PRINT_CONFIG'
   exit 0
 }
 
 if ($modeArg -eq '--dry-run') {
-  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'dry-run'
+  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'dry-run' -SchedulerCredentials $schedulerCredentials
   for ($i = 0; $i -lt $resolvedTasks.Count; $i++) {
     $idx = $i + 1
-    Write-Output ('DRY_RUN_COMMAND_' + $idx + '=' + (Build-SchtasksPreviewLine -Task $resolvedTasks[$i]))
+    Write-Output ('DRY_RUN_COMMAND_' + $idx + '=' + (Build-SchtasksPreviewLine -Task $resolvedTasks[$i] -SchedulerUser ([string]$schedulerCredentials.User)))
   }
   Write-Output 'PASS_INSTALL_SCHEDULED_TASKS_DRY_RUN'
   exit 0
@@ -520,7 +584,7 @@ if ($modeArg -eq '--verify' -or $modeArg -eq '--status') {
   exit 0
 }
 
-Emit-TaskConfig -Tasks $resolvedTasks -Mode 'apply'
+Emit-TaskConfig -Tasks $resolvedTasks -Mode 'apply' -SchedulerCredentials $schedulerCredentials
 $applyAccessDeniedCount = 0
 for ($i = 0; $i -lt $resolvedTasks.Count; $i++) {
   $task = $resolvedTasks[$i]
@@ -530,7 +594,7 @@ for ($i = 0; $i -lt $resolvedTasks.Count; $i++) {
     Delete-TaskIfExists -TaskName $task.Name
   }
 
-  $createState = Invoke-TaskCreate -Task $task
+  $createState = Invoke-TaskCreate -Task $task -SchedulerUser ([string]$schedulerCredentials.User) -SchedulerPassword ([string]$schedulerCredentials.Password)
   if (([string]$createState.Detail).Trim() -eq 'runlevel_fallback_limited') {
     Write-Output ('WARN_INSTALL_SCHEDULED_TASKS_RUNLEVEL_FALLBACK task=' + $task.Name + ' run_level=LIMITED')
   }

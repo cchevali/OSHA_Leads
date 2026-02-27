@@ -5,8 +5,9 @@ import unittest
 import urllib.error
 import urllib.request
 import io
+import time
 from contextlib import redirect_stdout
-from http.server import HTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from datetime import datetime, timedelta
 import sqlite3
@@ -15,10 +16,47 @@ import unsubscribe_server
 import unsubscribe_utils
 
 
+def _is_transient_transport_error(exc: Exception) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionResetError, ConnectionAbortedError)):
+        return True
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, (TimeoutError, ConnectionResetError, ConnectionAbortedError)):
+        return True
+
+    text = f"{reason!s} {exc!s}".lower()
+    transient_tokens = (
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection aborted",
+        "forcibly closed",
+        "winerror 10053",
+        "winerror 10054",
+    )
+    return any(token in text for token in transient_tokens)
+
+
+def _urlopen_with_retry(req: urllib.request.Request, timeout: float = 3.0):
+    attempts = 2
+    for attempt in range(attempts):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError:
+            raise
+        except Exception as exc:
+            if (attempt + 1) >= attempts or (not _is_transient_transport_error(exc)):
+                raise
+            time.sleep(0.05)
+
+
 def _http(url: str, method: str = "GET") -> tuple[int, str]:
     req = urllib.request.Request(url, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with _urlopen_with_retry(req, timeout=3) as resp:
             data = resp.read().decode("utf-8", errors="replace")
             return int(resp.status), data
     except urllib.error.HTTPError as e:
@@ -33,7 +71,7 @@ def _http(url: str, method: str = "GET") -> tuple[int, str]:
 def _http_full(url: str, method: str = "GET") -> tuple[int, str, dict]:
     req = urllib.request.Request(url, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with _urlopen_with_retry(req, timeout=3) as resp:
             data = resp.read().decode("utf-8", errors="replace")
             headers = dict(resp.headers.items())
             return int(resp.status), data, headers
@@ -50,7 +88,7 @@ def _http_full(url: str, method: str = "GET") -> tuple[int, str, dict]:
 def _http_full_headers(url: str, method: str = "GET", headers: dict | None = None) -> tuple[int, str, dict]:
     req = urllib.request.Request(url, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with _urlopen_with_retry(req, timeout=3) as resp:
             data = resp.read().decode("utf-8", errors="replace")
             resp_headers = dict(resp.headers.items())
             return int(resp.status), data, resp_headers
@@ -192,7 +230,7 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         unsubscribe_utils.UNSUBSCRIBE_EVENTS_PATH = out / "unsubscribe_events.csv"
         unsubscribe_utils.PREFS_PATH = out / "prefs.csv"
 
-        self._server = HTTPServer(("127.0.0.1", 0), unsubscribe_server.UnsubHandler)
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), unsubscribe_server.UnsubHandler)
         self._port = int(self._server.server_port)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
@@ -201,6 +239,11 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
         try:
             self._server.shutdown()
             self._server.server_close()
+        except Exception:
+            pass
+
+        try:
+            self._thread.join(timeout=2)
         except Exception:
             pass
 
@@ -221,6 +264,59 @@ class TestUnsubPrefsEndpoints(unittest.TestCase):
 
     def _base(self) -> str:
         return f"http://127.0.0.1:{self._port}"
+
+    def test_http_helper_retries_once_on_transient_timeout(self) -> None:
+        class _FakeResponse:
+            def __init__(self):
+                self.status = 200
+                self.headers = {"X-Test": "ok"}
+
+            def read(self) -> bytes:
+                return b"ok"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        calls = {"n": 0}
+
+        def _fake_urlopen(_req, timeout=3):  # type: ignore[no-untyped-def]
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise TimeoutError("timed out")
+            return _FakeResponse()
+
+        from unittest.mock import patch
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            status, body, headers = _http_full("http://example.invalid")
+
+        self.assertEqual(200, status)
+        self.assertEqual("ok", body)
+        self.assertEqual("ok", headers.get("X-Test"))
+        self.assertEqual(2, calls["n"])
+
+    def test_http_helper_does_not_retry_http_error(self) -> None:
+        calls = {"n": 0}
+
+        def _fake_urlopen(_req, timeout=3):  # type: ignore[no-untyped-def]
+            calls["n"] += 1
+            raise urllib.error.HTTPError(
+                url="http://example.invalid",
+                code=401,
+                msg="unauthorized",
+                hdrs={},
+                fp=io.BytesIO(b'{"error":"unauthorized"}'),
+            )
+
+        from unittest.mock import patch
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            status, body, _headers = _http_full("http://example.invalid")
+
+        self.assertEqual(401, status)
+        self.assertIn("unauthorized", body.lower())
+        self.assertEqual(1, calls["n"])
 
     def test_routes_exist(self) -> None:
         for path in ["/prefs", "/prefs/enable_lows", "/prefs/disable_lows"]:

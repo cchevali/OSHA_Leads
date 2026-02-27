@@ -1056,6 +1056,7 @@ def write_batch_runner(batch_path: Path, project_root: Path, customer_config: st
 
 def enable_schedule(task_name: str, batch_path: Path) -> None:
     batch_text = _sanitize_task_path(batch_path)
+    scheduler_user, scheduler_password = _resolve_scheduler_credentials()
     cmd = [
         "schtasks",
         "/Create",
@@ -1070,6 +1071,10 @@ def enable_schedule(task_name: str, batch_path: Path) -> None:
         task_name,
         "/TR",
         build_task_action(batch_text),
+        "/RU",
+        scheduler_user,
+        "/RP",
+        scheduler_password,
     ]
     subprocess.run(cmd, check=True)
 
@@ -1149,12 +1154,40 @@ def query_task_to_run(task_name: str) -> str | None:
     return extract_exec_action(result.stdout)
 
 
-def verify_schedule_action(task_name: str, expected_action: str) -> None:
+def _parse_schtasks_list_fields(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        if not key:
+            continue
+        fields[key] = value.strip()
+    return fields
+
+
+def query_task_logon_mode(task_name: str) -> str | None:
+    cmd = ["schtasks", "/Query", "/TN", task_name, "/V", "/FO", "LIST"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    fields = _parse_schtasks_list_fields(result.stdout)
+    return (fields.get("Logon Mode") or "").strip() or None
+
+
+def verify_schedule_action(task_name: str, expected_action: str, expected_logon_mode: str = "Password") -> None:
     actual = query_task_to_run(task_name)
-    verify_schedule_action_from_actual(expected_action, actual)
+    actual_logon_mode = query_task_logon_mode(task_name)
+    verify_schedule_action_from_actual(expected_action, actual, expected_logon_mode, actual_logon_mode)
 
 
-def verify_schedule_action_from_actual(expected_action: str, actual: str | None) -> None:
+def verify_schedule_action_from_actual(
+    expected_action: str,
+    actual: str | None,
+    expected_logon_mode: str = "Password",
+    actual_logon_mode: str | None = None,
+) -> None:
     hint = "run --enable-schedule"
     if not actual:
         print(f"SCHEDULE_CHECK_FAILED expected={expected_action} actual=MISSING_TASK_TO_RUN hint={hint}")
@@ -1162,7 +1195,35 @@ def verify_schedule_action_from_actual(expected_action: str, actual: str | None)
     if actual != expected_action:
         print(f"SCHEDULE_CHECK_FAILED expected={expected_action} actual={actual} hint={hint}")
         raise SystemExit(1)
-    print(f"SCHEDULE_OK /TR={actual}")
+    if not actual_logon_mode:
+        print(f"SCHEDULE_CHECK_FAILED expected_logon_mode={expected_logon_mode} actual_logon_mode=MISSING_LOGON_MODE hint={hint}")
+        raise SystemExit(1)
+    if "interactive only" in actual_logon_mode.lower():
+        print(f"SCHEDULE_CHECK_FAILED expected_logon_mode={expected_logon_mode} actual_logon_mode={actual_logon_mode} hint={hint}")
+        raise SystemExit(1)
+    if expected_logon_mode and expected_logon_mode.lower() not in actual_logon_mode.lower():
+        print(f"SCHEDULE_CHECK_FAILED expected_logon_mode={expected_logon_mode} actual_logon_mode={actual_logon_mode} hint={hint}")
+        raise SystemExit(1)
+    print(f"SCHEDULE_OK /TR={actual} /LOGON_MODE={actual_logon_mode}")
+
+
+def _resolve_scheduler_credentials() -> tuple[str, str]:
+    scheduler_user = (os.getenv("TASK_SCHED_USER") or "").strip()
+    if not scheduler_user:
+        username = (os.getenv("USERNAME") or "").strip()
+        userdomain = (os.getenv("USERDOMAIN") or "").strip()
+        if username and userdomain:
+            scheduler_user = f"{userdomain}\\{username}"
+        else:
+            scheduler_user = username
+    if not scheduler_user:
+        print("CONFIG_ERROR missing variables: TASK_SCHED_USER")
+        raise SystemExit(1)
+    scheduler_password = (os.getenv("TASK_SCHED_PASSWORD") or "").strip()
+    if not scheduler_password:
+        print("CONFIG_ERROR missing variables: TASK_SCHED_PASSWORD")
+        raise SystemExit(1)
+    return scheduler_user, scheduler_password
 
 
 def run_project_context_soft_check(repo_root: Path) -> None:
@@ -1293,7 +1354,7 @@ def main() -> None:
         help="When used with --test-send-daily, render only (no send).",
     )
     parser.add_argument("--enable-schedule", action="store_true", help="Create 08:00 local weekday scheduled task")
-    parser.add_argument("--check-schedule", action="store_true", help="Verify scheduled task action only")
+    parser.add_argument("--check-schedule", action="store_true", help="Verify scheduled task action and logon mode")
     parser.add_argument("--task-name", default="OSHA Wally Trial Daily")
     parser.add_argument("--preflight-only", action="store_true", help="Check config/env and exit")
     parser.add_argument(

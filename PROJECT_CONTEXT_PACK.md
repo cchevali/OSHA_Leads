@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=a024b540ad37c005057e27ae426608cfc5d9be56
-PACK_BUILD_UTC=2026-02-26T03:23:45Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=cb866cbd8d076445e2d27f951055bb8b2931d69cf9ae13b11025e84e27cb4a67 docs/DECISIONS.md=714ae49bcc8dd5690ef56cc6282afb1fddd4e09884945f7d28be9608ab6f0890 docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=63c347ea2f930fcb9a44155394358e0e64c52dcbee4a252318d1e969e669b9ce docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=c18f04dd7a282d9926b954413fc32f26bf1cf6bc5234803e1b518f57586d068d
+PACK_GIT_SHA=bd1c769426da51feff18afcdfb2f421c0089e718
+PACK_BUILD_UTC=2026-02-27T04:57:26Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=dbaf437ed3810086ecc883e8802f17b9146313bec7a7ed7e64c79544aad509bc docs/DECISIONS.md=0cde644966e1f2ce980c3c97f1bbfb6c64e7b5aeffdfc3cbb575d9084a5d0e1b docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=4582df94e63fbb1086f472333426ce7aacff68b188abeae702f9349fd1889942 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=1e6fafdad8c6331bdab785969c6290046cf240fa09a8739d887b98641d10718d
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -109,8 +109,10 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).
    - Optional env-gated auto-growth sources: AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
    - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
-   - BCSP and OSHA_NEWS use a lazy-loaded Crawl4AI wrapper (`outreach/scraper_engine.py`) with warning-level degradation when Crawl4AI/Playwright browsers are unavailable.
-   - STATE_LIC Phase 1 uses the Texas TDLR public Socrata dataset (`7358-krk7`) instead of browser scraping.
+   - BCSP uses plain HTTP parsing (`search_results.php`) and is maintained as a future enrichment input (contact/location only; not directly sendable without employer/domain resolution).
+   - OSHA_NEWS uses a lazy-loaded Crawl4AI wrapper (`outreach/scraper_engine.py`) with warning-level degradation when Crawl4AI/Playwright browsers are unavailable.
+   - STATE_LIC Phase 1 uses the Texas TDLR public Socrata dataset (`7358-krk7`) and provides licensed-business metadata including address/phone/county fields.
+   - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering to populate existing `website`/`email` fields via domain resolution + pattern guesses.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts the generated CSV into `crm.sqlite`.
@@ -427,6 +429,8 @@ Prospect autogrow is expanding to browser-backed scraping sources (for example B
 - Treat missing Crawl4AI package or Playwright browsers as warning-level conditions for Crawl4AI-backed sources (`WARN_CRAWL4AI_*`), not hard generator failures.
 - Add `run_prospect_generation.py --doctor` as an aggregate readiness command; keep `--apollo-doctor` for backward compatibility.
 - Keep `STATE_LIC` Phase 1 on Texas TDLR Socrata API (no browser dependency) so at least one new source remains available without Crawl4AI runtime setup.
+- BCSP is implemented as plain HTTP parsing (no Crawl4AI dependency); OSHA_NEWS remains the Crawl4AI-gated autogrow source.
+- Centralize zero-cost domain/email enrichment in the generator (default off) instead of source-specific waterfalls; keep Hunter.io as an env-gated stub/cap path until live integration is enabled.
 
 ### Rationale
 
@@ -436,7 +440,7 @@ Prospect autogrow is expanding to browser-backed scraping sources (for example B
 
 ### Consequences
 
-- Operators must perform a one-time `crawl4ai-setup` when enabling BCSP/OSHA_NEWS in production.
+- Operators must perform a one-time `crawl4ai-setup` when enabling OSHA_NEWS in production.
 - Generator output now includes additional readiness/availability tokens in `--print-config` and `--doctor` paths.
 ```
 
@@ -919,6 +923,21 @@ No-arg discovery input resolution order:
 
 When `DATA_DIR` is unset, discovery resolves these fallback paths under repo `.\out\...`.
 
+### Apollo export workflow
+
+- Export Apollo contacts CSV from Apollo.
+- Save the export locally (for example `apollo_export.csv`; filename is operator convenience only).
+- From repo root, run:
+  `.\run_with_secrets.ps1 -- py -3 tools\apollo_to_prospects_csv.py --input C:\path\to\apollo_export.csv`
+- Converter default target (overwrite enabled, atomic replace): `${DATA_DIR}\imports\prospects_apollo.csv` (or `.\out\imports\prospects_apollo.csv` when `DATA_DIR` is unset).
+- If you explicitly set `--output` to `prospects_latest.csv`, you are overwriting the canonical generator artifact.
+- Optional overrides: `--output <path>` and `--diagnostics-out <path>`.
+- Run discovery using the converter’s printed `output_path` value (recommended): `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input <output_path_from_converter>`.
+- If you are following `DATA_DIR` convention, use: `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input "$env:DATA_DIR\imports\prospects_apollo.csv"`.
+- Mismatch note: running discovery from repo root with a bare filename can target the wrong location (`C:\dev\OSHA_Leads\...`) instead of the converter output path.
+- If `DATA_DIR` is set or defaults to `C:\osha_data`, discovery must be pointed at that location.
+- Discovery no-arg still honors input overrides first: `PROSPECT_DISCOVERY_INPUT`, then `DISCOVERY_INPUT_CSV`.
+
 Set preferred discovery input via the canonical no-editor env helper:
 
 ```powershell
@@ -1151,6 +1170,9 @@ Metric scope:
 # Dry-run candidate preview
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
 
+# Rendered copy preview (no sends/no outbox artifacts)
+.\run_with_secrets.ps1 -- py -3 outreach\generate_mailmerge.py --render-preview --state TX --limit 1
+
 # Verify dry-run artifacts exist and no-send marker was printed
 Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run.csv
 Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run_manifest.csv
@@ -1167,6 +1189,16 @@ Test-Path -LiteralPath .\out\outreach_export_ledger.jsonl
   --out outreach\outbox_TX_DEBUG.csv `
   --allow-mailto-fallback
 ```
+
+### State Of World (2026-02-27)
+
+- PR #18 deployed outreach copy framing updates plus deterministic `--render-preview`; scope was copy/template/test/doc only.
+- PR #19 added test-only hardening: export-writes-artifacts regression coverage + preview no-write guard.
+- Canonical copy QA command: `py -3 -m outreach.generate_mailmerge --render-preview --state CA --limit 1`
+- Canonical dry-run QA command: `$env:DATA_DIR='out'; py -3 -m outreach.run_outreach_auto --dry-run`
+- Invariant: outreach dry-run remains candidate-only (outbox/manifest/diagnostics), not rendered-body output.
+- Invariant: render-preview is side-effect free (no outbox/manifest/ledger/run-log writes).
+- Invariant: compliance markers are regression-tested (single footer opt-out links; no pre-footer duplicate unsubscribe links).
 
 ### Doctor Failure Tokens (Troubleshooting)
 
@@ -1278,6 +1310,33 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_
 ```
 
 Rerun `.\scripts\install_scheduled_tasks.ps1 --apply` to update existing tasks to weekday-only schedules.
+
+### Logged-Off Execution Enforcement (All `OSHA*` Tasks)
+
+Set scheduler credentials in secrets-managed env (password is never printed by `--print-config`):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -TaskSchedUser "DESKTOP-Q8QM4N9\lever" -TaskSchedPassword "<TASK_SCHED_PASSWORD>"
+```
+
+Apply installers via secrets wrapper so `TASK_SCHED_USER` / `TASK_SCHED_PASSWORD` are loaded:
+
+```powershell
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --apply
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enforce_osha_task_logon_mode.ps1 --apply
+```
+
+Verification commands:
+
+```powershell
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --verify
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py --check-schedule
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enforce_osha_task_logon_mode.ps1 --verify
+```
+
+Intentional exception:
+- `OSHA_WIP_Autosave_Logon` uses an `ONLOGON` trigger by design and cannot run while logged off.
 
 ### Recent Signals Troubleshooting
 
