@@ -276,6 +276,65 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(eligible + excluded, crm_total)
             self.assertEqual(self._extract_token_int(out, "GENERATOR_ROWS_READ"), eligible)
 
+    def test_states_all_disables_state_mismatch_filtering(self):
+        from outreach import crm_store
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                rows = [
+                    ("tx_1", "tx1@example.com", "TX"),
+                    ("ca_1", "ca1@example.com", "CA"),
+                    ("fl_1", "fl1@example.com", "FL"),
+                    ("ny_1", "ny1@example.com", "NY"),
+                    ("missing_state", "nostate@example.com", ""),
+                ]
+                for prospect_id, email, state in rows:
+                    conn.execute(
+                        """
+                        INSERT INTO prospects(
+                          prospect_id, firm, contact_name, email, title, city, state, website, source,
+                          score, status, created_at, last_contacted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            prospect_id,
+                            "Firm",
+                            "",
+                            email,
+                            "Owner",
+                            "City",
+                            state,
+                            "",
+                            "seed",
+                            0,
+                            "new",
+                            now,
+                            None,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            p = self._run(["--print-config", "--states", "all"], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=all", out)
+            self.assertIn("GENERATOR_STATE_SCOPE=all", out)
+            self.assertIn("GENERATOR_FILTERED_STATE_MISMATCH=0", out)
+            crm_total, eligible, excluded = self._parse_input_cohort_counts(out)
+            self.assertEqual(crm_total, 5)
+            self.assertEqual(eligible, 4)
+            self.assertEqual(excluded, 1)
+            self.assertEqual(eligible + excluded, crm_total)
+            self.assertEqual(self._extract_token_int(out, "GENERATOR_ROWS_READ"), eligible)
+
     def test_autogrow_enabled_backlog_targeted_and_deterministic_slice(self):
         from outreach import crm_store
         from outreach import run_prospect_generation as generator
