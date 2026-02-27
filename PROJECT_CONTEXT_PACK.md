@@ -2,8 +2,8 @@
 
 PACK_GIT_SHA=bd1c769426da51feff18afcdfb2f421c0089e718
 PACK_BUILD_UTC=2026-02-27T04:57:26Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=dbaf437ed3810086ecc883e8802f17b9146313bec7a7ed7e64c79544aad509bc docs/DECISIONS.md=0cde644966e1f2ce980c3c97f1bbfb6c64e7b5aeffdfc3cbb575d9084a5d0e1b docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=e3a5aaf95339ea0dec6cac2844be972b6402466a1245e4f8b40732d13ffba31c docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=951d644a1c8be1340283fc271de7181294ca7d1dd367adb48927ca65a43d1546
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=dbaf437ed3810086ecc883e8802f17b9146313bec7a7ed7e64c79544aad509bc docs/DECISIONS.md=0cde644966e1f2ce980c3c97f1bbfb6c64e7b5aeffdfc3cbb575d9084a5d0e1b docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=4582df94e63fbb1086f472333426ce7aacff68b188abeae702f9349fd1889942 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=1e6fafdad8c6331bdab785969c6290046cf240fa09a8739d887b98641d10718d
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1310,6 +1310,33 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_
 ```
 
 Rerun `.\scripts\install_scheduled_tasks.ps1 --apply` to update existing tasks to weekday-only schedules.
+
+### Logged-Off Execution Enforcement (All `OSHA*` Tasks)
+
+Set scheduler credentials in secrets-managed env (password is never printed by `--print-config`):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -TaskSchedUser "DESKTOP-Q8QM4N9\lever" -TaskSchedPassword "<TASK_SCHED_PASSWORD>"
+```
+
+Apply installers via secrets wrapper so `TASK_SCHED_USER` / `TASK_SCHED_PASSWORD` are loaded:
+
+```powershell
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --apply
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enforce_osha_task_logon_mode.ps1 --apply
+```
+
+Verification commands:
+
+```powershell
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --verify
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py --check-schedule
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enforce_osha_task_logon_mode.ps1 --verify
+```
+
+Intentional exception:
+- `OSHA_WIP_Autosave_Logon` uses an `ONLOGON` trigger by design and cannot run while logged off.
 
 ### Recent Signals Troubleshooting
 
