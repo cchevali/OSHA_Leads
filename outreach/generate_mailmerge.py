@@ -268,6 +268,88 @@ def _state_metro_examples(state: str) -> str:
     return STATE_METRO_EXAMPLES.get(s, "your target metros")
 
 
+def _segment_descriptor(segment: str, role_or_title: str) -> str:
+    text = " ".join([str(segment or "").strip().lower(), str(role_or_title or "").strip().lower()]).strip()
+    if not text:
+        return ""
+    if any(token in text for token in ["attorney", "law", "lawyer", "counsel", "defense", "partner"]):
+        return "defense team"
+    if any(token in text for token in ["safety consultant", "consulting"]):
+        return "safety consulting team"
+    if any(token in text for token in ["ehs", "hse", "safety"]):
+        return "safety team"
+    if "compliance" in text:
+        return "compliance team"
+    return ""
+
+
+def _build_copy_tokens(
+    *,
+    state_full_name: str,
+    state_metro_examples: str,
+    firm_name: str,
+    segment: str,
+    role_or_title: str,
+    recent_leads: list[dict] | None = None,
+) -> dict[str, str]:
+    signal_count = len(list(recent_leads or []))
+    segment_desc = _segment_descriptor(segment=segment, role_or_title=role_or_title)
+    if signal_count > 0:
+        opening_text = (
+            f"Hi - these {signal_count} {state_full_name} inspections opened in the last 14 days. "
+            "Most won't have citations for weeks, which means the outreach window is open now."
+        )
+    else:
+        opening_text = (
+            f"Hi - no new {state_full_name} inspections were captured in the last 14 days, so the most recent "
+            "signals are below while the outreach window is still open."
+        )
+
+    firm_name_raw = str(firm_name or "").strip()
+    if firm_name_raw:
+        relevance_text = (
+            f"{firm_name_raw} is exactly the kind of team this feed is built for. "
+            f"This is the signal your {state_full_name} team would see every morning on a trial."
+        )
+    else:
+        relevance_text = (
+            f"You're getting this because your firm appears to serve {state_full_name}. "
+            "If that's wrong, ignore this or unsubscribe below."
+        )
+
+    cta_text = (
+        f"Want to see this for {state_metro_examples} or your specific metros? Reply with the cities and I'll set up "
+        "a 14-day trial feed - no commitment, no login required."
+    )
+    trust_text = "Every item links to the public OSHA record so your team can verify in 30 seconds."
+    company_intro_text = (
+        "I'm Chase at MicroFlowOps. We monitor public OSHA inspection activity daily and send a short \"new opens\" "
+        "brief by region to safety consultants, OSHA defense, and compliance service providers."
+    )
+    return {
+        "SIGNAL_COUNT": str(max(0, signal_count)),
+        "SEGMENT_DESCRIPTOR": segment_desc,
+        "OPENING_LINE_TEXT": opening_text,
+        "OPENING_LINE_HTML": _html_escape(opening_text),
+        "RELEVANCE_LINE_TEXT": relevance_text,
+        "RELEVANCE_LINE_HTML": _html_escape(relevance_text),
+        "CTA_LINE_TEXT": cta_text,
+        "CTA_LINE_HTML": _html_escape(cta_text),
+        "TRUST_LINE_TEXT": trust_text,
+        "TRUST_LINE_HTML": _html_escape(trust_text),
+        "COMPANY_INTRO_TEXT": company_intro_text,
+        "COMPANY_INTRO_HTML": _html_escape(company_intro_text),
+    }
+
+
+def _row_text_value(row: dict, keys: list[str]) -> str:
+    for key in keys:
+        value = str((row or {}).get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _date_str(value: object) -> str:
     text = str(value or "").strip()
     if not text:
@@ -550,8 +632,25 @@ def _subject_source_rows(db_path: str | None, state: str, recent_leads: list[dic
     return _sample_rows()
 
 
-def build_outreach_subject(state_or_label: str, recent_leads: list[dict] | None = None, db_path: str | None = None) -> str:
+def build_outreach_subject(
+    state_or_label: str,
+    recent_leads: list[dict] | None = None,
+    db_path: str | None = None,
+    segment_descriptor: str = "",
+    state_full_name: str | None = None,
+    signal_count: int | None = None,
+) -> str:
     label = (_norm_state(state_or_label) or str(state_or_label or "").strip() or "OSHA").strip()
+    normalized_segment = str(segment_descriptor or "").strip()
+    try:
+        subject_signal_count = int(signal_count) if signal_count is not None else len(list(recent_leads or []))
+    except Exception:
+        subject_signal_count = len(list(recent_leads or []))
+    if normalized_segment and subject_signal_count > 0:
+        resolved_state_full = str(state_full_name or "").strip() or _state_full_name(label)
+        return (
+            f"{subject_signal_count} new {resolved_state_full} inspections your {normalized_segment} may not have seen yet"
+        )
     source_rows = _subject_source_rows(db_path=db_path, state=label, recent_leads=recent_leads)
     opened_label = _subject_opened_or_observed_date(source_rows[0]) if source_rows else "recently"
     return f"New OSHA inspection in {label} — opened {opened_label}"
@@ -901,12 +1000,180 @@ def _write_manifest_csv(path: str, rows: list[dict]) -> None:
             w.writerow(r)
 
 
+def _preview_text(text: str, max_lines: int = 14) -> str:
+    lines = [ln.rstrip() for ln in str(text or "").splitlines()]
+    clipped = lines[: max(1, int(max_lines))]
+    return "\\n".join(clipped)
+
+
+def _render_preview(args: argparse.Namespace) -> int:
+    state_filter = _norm_state(args.state)
+    limit = max(1, int(args.limit or 1))
+    template_text = _read_template_text(Path(args.template))
+    html_template_text = ""
+    try:
+        html_template_text = _read_template_text(Path(args.html_template))
+    except Exception:
+        html_template_text = ""
+
+    recent_leads, last_refresh_et = _best_effort_recent_leads_and_refresh(
+        db_path=str(args.db),
+        state=state_filter,
+        limit=5,
+    )
+    recent_leads = list(recent_leads[:5])
+    signal_tokens = _build_signal_template_tokens(
+        db_path=str(args.db),
+        state=state_filter,
+        recent_leads=recent_leads,
+        lookback_days=14,
+    )
+
+    rows: list[dict] = []
+    if args.input:
+        try:
+            input_rows = _load_csv_rows(args.input)
+        except Exception:
+            input_rows = []
+        for row in input_rows:
+            if _norm_state(str(row.get("state") or "")) != state_filter:
+                continue
+            rows.append(dict(row))
+            if len(rows) >= limit:
+                break
+
+    if not rows:
+        rows = [
+            {
+                "prospect_id": "preview",
+                "first_name": "there",
+                "firm": "",
+                "title": "",
+                "email": "preview@example.com",
+                "state": state_filter,
+            }
+        ]
+
+    unsub_url = "https://unsubscribe.example.internal/unsubscribe?token=preview"
+    prefs_url = "https://unsubscribe.example.internal/prefs?token=preview"
+    prefs_link = prefs_url
+    sample_feed_url = (os.getenv("MICROFLOWOPS_SAMPLE_FEED_URL") or DEFAULT_SAMPLE_FEED_URL).strip() or DEFAULT_SAMPLE_FEED_URL
+    mailing_address = _resolve_outreach_mailing_address()
+    microflowops_url = (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
+
+    for idx, row in enumerate(rows, start=1):
+        first_name = _row_text_value(row, ["first_name", "contact_name"]) or "there"
+        firm_name_raw = _row_text_value(row, ["firm"])
+        segment = _row_text_value(row, ["segment", "buyer_segment"])
+        role_or_title = _row_text_value(row, ["role_or_title", "role", "contact_role", "title"])
+        copy_tokens = _build_copy_tokens(
+            state_full_name=signal_tokens["STATE_FULL_NAME"],
+            state_metro_examples=signal_tokens["STATE_METRO_EXAMPLES"],
+            firm_name=firm_name_raw,
+            segment=segment,
+            role_or_title=role_or_title,
+            recent_leads=recent_leads,
+        )
+        subject = build_outreach_subject(
+            state_filter,
+            recent_leads=recent_leads,
+            db_path=str(args.db),
+            segment_descriptor=copy_tokens.get("SEGMENT_DESCRIPTOR", ""),
+            state_full_name=signal_tokens["STATE_FULL_NAME"],
+            signal_count=int(copy_tokens.get("SIGNAL_COUNT") or "0"),
+        )
+        text_body = _render_template(
+            template_text,
+            {
+                "FIRST_NAME": first_name,
+                "FIRM": firm_name_raw or "your firm",
+                "STATE": state_filter,
+                "STATE_FULL_NAME": signal_tokens["STATE_FULL_NAME"],
+                "STATE_METRO_EXAMPLES": signal_tokens["STATE_METRO_EXAMPLES"],
+                "TERRITORY_CODE": "PREVIEW",
+                "RECENT_SIGNALS_LINES": signal_tokens["RECENT_SIGNALS_LINES"],
+                "SIGNALS_WINDOW_NOTE_TEXT": signal_tokens["SIGNALS_WINDOW_NOTE_TEXT"],
+                "SIGNALS_FALLBACK_TEXT": signal_tokens["SIGNALS_FALLBACK_TEXT"],
+                "LAST_REFRESH_ET": last_refresh_et,
+                "SAMPLE_FEED_URL": sample_feed_url,
+                "UNSUBSCRIBE_URL": unsub_url,
+                "PREFS_URL": prefs_link,
+                "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
+                "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
+                "OPENING_LINE_TEXT": copy_tokens["OPENING_LINE_TEXT"],
+                "RELEVANCE_LINE_TEXT": copy_tokens["RELEVANCE_LINE_TEXT"],
+                "CTA_LINE_TEXT": copy_tokens["CTA_LINE_TEXT"],
+                "TRUST_LINE_TEXT": copy_tokens["TRUST_LINE_TEXT"],
+                "COMPANY_INTRO_TEXT": copy_tokens["COMPANY_INTRO_TEXT"],
+            },
+        ).strip() + "\n"
+
+        if html_template_text.strip():
+            html_body = _render_template(
+                html_template_text,
+                {
+                    "{{FIRST_NAME}}": _html_escape(first_name),
+                    "{{FIRM}}": _html_escape(firm_name_raw or "your firm"),
+                    "{{STATE}}": _html_escape(state_filter),
+                    "{{STATE_FULL_NAME}}": _html_escape(signal_tokens["STATE_FULL_NAME"]),
+                    "{{STATE_METRO_EXAMPLES}}": _html_escape(signal_tokens["STATE_METRO_EXAMPLES"]),
+                    "{{RECENT_SIGNALS_HTML}}": signal_tokens["RECENT_SIGNALS_HTML"],
+                    "{{SIGNALS_WINDOW_NOTE_HTML}}": signal_tokens["SIGNALS_WINDOW_NOTE_HTML"],
+                    "{{SIGNALS_FALLBACK_HTML}}": signal_tokens["SIGNALS_FALLBACK_HTML"],
+                    "{{LAST_REFRESH_ET}}": _html_escape(last_refresh_et),
+                    "{{SAMPLE_FEED_URL}}": _html_escape(sample_feed_url),
+                    "{{UNSUBSCRIBE_URL}}": _html_escape(unsub_url),
+                    "{{PREFS_URL}}": _html_escape(prefs_link),
+                    "{{MAILING_ADDRESS}}": _html_escape(mailing_address),
+                    "{{MICROFLOWOPS_URL}}": _html_escape(microflowops_url),
+                    "{{OPENING_LINE_HTML}}": copy_tokens["OPENING_LINE_HTML"],
+                    "{{RELEVANCE_LINE_HTML}}": copy_tokens["RELEVANCE_LINE_HTML"],
+                    "{{CTA_LINE_HTML}}": copy_tokens["CTA_LINE_HTML"],
+                    "{{TRUST_LINE_HTML}}": copy_tokens["TRUST_LINE_HTML"],
+                    "{{COMPANY_INTRO_HTML}}": copy_tokens["COMPANY_INTRO_HTML"],
+                },
+            ).strip()
+        else:
+            html_body = (
+                "<div style=\"font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;\">"
+                "<pre style=\"white-space: pre-wrap; font-size: 13px; line-height: 1.4;\">"
+                + _html_escape(text_body)
+                + "</pre></div>"
+            )
+
+        unsub_anchor_count = html_body.count(">Unsubscribe</a>")
+        prefs_anchor_count = html_body.count(">Manage preferences</a>")
+        unsub_url_count = html_body.count("unsubscribe.example.internal/unsubscribe?token=preview")
+        address_idx = html_body.find(mailing_address)
+        pre_footer = html_body[:address_idx] if address_idx > 0 else html_body
+        pre_footer_unsub_count = pre_footer.count("unsubscribe.example.internal/unsubscribe?token=preview")
+        footer_unsub_present = unsub_anchor_count > 0
+        footer_prefs_present = prefs_anchor_count > 0
+        unsubscribe_count_exactly_one = unsub_url_count == 1
+        no_duplicate_unsub_pre_footer = pre_footer_unsub_count == 0
+
+        print(f"PREVIEW_ROW={idx}")
+        print(f"SUBJECT: {subject}")
+        print(f"BODY_TEXT_PREVIEW: {_preview_text(text_body, max_lines=60)}")
+        print(f"BODY_HTML_PREVIEW: {_preview_text(html_body, max_lines=80)}")
+        print(
+            "COMPLIANCE_CHECKS "
+            f"footer_unsubscribe_present={str(footer_unsub_present).lower()} "
+            f"footer_manage_preferences_present={str(footer_prefs_present).lower()} "
+            f"unsubscribe_link_count_exactly_one={str(unsubscribe_count_exactly_one).lower()} "
+            f"unsubscribe_link_count={unsub_url_count} "
+            f"pre_footer_unsubscribe_link_count={pre_footer_unsub_count} "
+            f"no_duplicate_unsubscribe_pre_footer={str(no_duplicate_unsub_pre_footer).lower()}"
+        )
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Generate a mail-merge outbox CSV with dedupe + suppression enforcement.")
-    ap.add_argument("--input", required=True, help="Input prospects CSV (see outreach/prospects_schema.md).")
-    ap.add_argument("--batch", required=True, help="Batch id (e.g., TX_W2). Used in output and logs.")
-    ap.add_argument("--state", required=True, help="2-letter state filter (e.g., TX).")
-    ap.add_argument("--out", required=True, help="Output outbox CSV path.")
+    ap.add_argument("--input", help="Input prospects CSV (see outreach/prospects_schema.md).")
+    ap.add_argument("--batch", help="Batch id (e.g., TX_W2). Used in output and logs.")
+    ap.add_argument("--state", help="2-letter state filter (e.g., TX).")
+    ap.add_argument("--out", help="Output outbox CSV path.")
     ap.add_argument(
         "--db",
         default=str(Path("data") / "osha.sqlite"),
@@ -932,7 +1199,27 @@ def main() -> int:
         action="store_true",
         help="Allow re-exporting prospect_ids already present in the outreach export ledger.",
     )
+    ap.add_argument(
+        "--render-preview",
+        action="store_true",
+        help="Render deterministic preview output to stdout using template + signal context without writing artifacts.",
+    )
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=1,
+        help="Preview row limit when --render-preview is set.",
+    )
     args = ap.parse_args()
+
+    if args.render_preview:
+        if not str(args.state or "").strip():
+            ap.error("--state is required with --render-preview")
+        return _render_preview(args)
+
+    missing_required = [name for name, value in [("--input", args.input), ("--batch", args.batch), ("--state", args.state), ("--out", args.out)] if not str(value or "").strip()]
+    if missing_required:
+        ap.error(f"missing required arguments for export mode: {', '.join(missing_required)}")
 
     rows = _load_csv_rows(args.input)
     _validate_required_columns(rows, args.input)
@@ -1103,14 +1390,28 @@ def main() -> int:
             raise
 
         first_name = (r.get("first_name") or "").strip()
-        firm = (r.get("firm") or "").strip() or "your firm"
+        firm_name_raw = _row_text_value(r, ["firm"])
+        firm = firm_name_raw or "your firm"
+        segment = _row_text_value(r, ["segment", "buyer_segment"])
+        role_or_title = _row_text_value(r, ["role_or_title", "role", "contact_role", "title"])
         prefs_link = prefs_url or unsub_url or ""
         sample_feed_url = (os.getenv("MICROFLOWOPS_SAMPLE_FEED_URL") or DEFAULT_SAMPLE_FEED_URL).strip() or DEFAULT_SAMPLE_FEED_URL
+        copy_tokens = _build_copy_tokens(
+            state_full_name=signal_tokens["STATE_FULL_NAME"],
+            state_metro_examples=signal_tokens["STATE_METRO_EXAMPLES"],
+            firm_name=firm_name_raw,
+            segment=segment,
+            role_or_title=role_or_title,
+            recent_leads=recent_leads,
+        )
 
         subject = build_outreach_subject(
             state_filter,
             recent_leads=recent_leads,
             db_path=str(args.db),
+            segment_descriptor=copy_tokens.get("SEGMENT_DESCRIPTOR", ""),
+            state_full_name=signal_tokens["STATE_FULL_NAME"],
+            signal_count=int(copy_tokens.get("SIGNAL_COUNT") or "0"),
         )
         text_body = _render_template(
             template_text,
@@ -1128,6 +1429,13 @@ def main() -> int:
                 "SAMPLE_FEED_URL": sample_feed_url,
                 "UNSUBSCRIBE_URL": unsub_url or "",
                 "PREFS_URL": prefs_url or prefs_link,
+                "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
+                "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
+                "OPENING_LINE_TEXT": copy_tokens["OPENING_LINE_TEXT"],
+                "RELEVANCE_LINE_TEXT": copy_tokens["RELEVANCE_LINE_TEXT"],
+                "CTA_LINE_TEXT": copy_tokens["CTA_LINE_TEXT"],
+                "TRUST_LINE_TEXT": copy_tokens["TRUST_LINE_TEXT"],
+                "COMPANY_INTRO_TEXT": copy_tokens["COMPANY_INTRO_TEXT"],
             },
         ).strip() + "\n"
 
@@ -1153,6 +1461,11 @@ def main() -> int:
                     "{{PREFS_URL}}": _html_escape(prefs_url or prefs_link),
                     "{{MAILING_ADDRESS}}": _html_escape(mailing_address),
                     "{{MICROFLOWOPS_URL}}": _html_escape(microflowops_url),
+                    "{{OPENING_LINE_HTML}}": copy_tokens["OPENING_LINE_HTML"],
+                    "{{RELEVANCE_LINE_HTML}}": copy_tokens["RELEVANCE_LINE_HTML"],
+                    "{{CTA_LINE_HTML}}": copy_tokens["CTA_LINE_HTML"],
+                    "{{TRUST_LINE_HTML}}": copy_tokens["TRUST_LINE_HTML"],
+                    "{{COMPANY_INTRO_HTML}}": copy_tokens["COMPANY_INTRO_HTML"],
                 },
             ).strip()
         else:

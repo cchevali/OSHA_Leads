@@ -112,6 +112,45 @@ class TestOutreachMailmerge(unittest.TestCase):
 
         return subprocess.run(args, cwd=str(tmp), env=env, capture_output=True, text=True)
 
+    def _run_preview(
+        self,
+        tmp: Path,
+        *,
+        state: str = "TX",
+        input_csv: Path | None = None,
+        db_path: Path | None = None,
+        env_overrides: dict[str, str] | None = None,
+        limit: int = 1,
+    ) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(REPO_ROOT)
+        env["DATA_DIR"] = str(tmp)
+        if env_overrides:
+            for k, v in env_overrides.items():
+                if v is None:
+                    env.pop(k, None)
+                else:
+                    env[k] = v
+
+        args = [
+            sys.executable,
+            str(SCRIPT),
+            "--render-preview",
+            "--state",
+            state,
+            "--limit",
+            str(limit),
+            "--template",
+            str(REPO_ROOT / "outreach" / "outreach_plain.txt"),
+            "--html-template",
+            str(REPO_ROOT / "outreach" / "outreach_card.html"),
+            "--db",
+            str(db_path or (tmp / "no_db.sqlite")),
+        ]
+        if input_csv is not None:
+            args.extend(["--input", str(input_csv)])
+        return subprocess.run(args, cwd=str(tmp), env=env, capture_output=True, text=True)
+
     def test_dedupe_case_insensitive_and_manifest_reason(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -291,6 +330,30 @@ class TestOutreachMailmerge(unittest.TestCase):
         self.assertEqual(k1, k2)
         self.assertLessEqual(len(k1), 80)
         self.assertRegex(k1, r"^[A-Za-z0-9_.-]{1,80}$")
+
+    def test_build_outreach_subject_uses_segment_descriptor_with_positive_signal_count(self):
+        from outreach import generate_mailmerge as gm
+
+        subject = gm.build_outreach_subject(
+            "CA",
+            recent_leads=[{"date_opened": "2026-02-19"}],
+            segment_descriptor="defense team",
+            state_full_name="California",
+            signal_count=1,
+        )
+        self.assertEqual(subject, "1 new California inspections your defense team may not have seen yet")
+
+    def test_build_outreach_subject_falls_back_when_segment_descriptor_missing(self):
+        from outreach import generate_mailmerge as gm
+
+        subject = gm.build_outreach_subject(
+            "CA",
+            recent_leads=[{"date_opened": "2026-02-19"}],
+            segment_descriptor="",
+            state_full_name="California",
+            signal_count=1,
+        )
+        self.assertEqual(subject, "New OSHA inspection in CA — opened Feb 19")
 
     def test_missing_one_click_config_exits_nonzero_with_token(self):
         with tempfile.TemporaryDirectory() as d:
@@ -652,7 +715,7 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertIn("https://microflowops.com/sample", body)
             self.assertLess(
                 body.find("See a live sample feed (real public data)"),
-                body.find("reply with the cities you care about"),
+                body.find("Want to see this for"),
             )
             self.assertIn("outside the 14-day window", html_body)
             self.assertIn("Legacy FL Co", html_body)
@@ -900,6 +963,115 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertGreaterEqual(len(data), 2)
             self.assertTrue(any(int(r.get("final_included", 0)) == 0 for r in data))
             self.assertIn("outreach_triage_details=", out.getvalue())
+
+    def test_render_preview_outputs_updated_copy_and_no_artifacts(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "db.sqlite"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                """
+                CREATE TABLE inspections (
+                    activity_nr TEXT,
+                    date_opened TEXT,
+                    inspection_type TEXT,
+                    establishment_name TEXT,
+                    site_city TEXT,
+                    site_state TEXT,
+                    lead_score INTEGER,
+                    first_seen_at TEXT,
+                    last_seen_at TEXT,
+                    source_url TEXT,
+                    parse_invalid INTEGER
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO inspections (
+                    activity_nr, date_opened, inspection_type, establishment_name,
+                    site_city, site_state, lead_score, first_seen_at, last_seen_at, source_url, parse_invalid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    "3001",
+                    "2099-02-19",
+                    "Complaint",
+                    "Preview Safety Co",
+                    "Los Angeles",
+                    "CA",
+                    8,
+                    "2099-02-19T12:00:00Z",
+                    "2099-02-19T12:00:00Z",
+                    "https://www.osha.gov/ords/imis/establishment.inspection_detail?id=3001",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            preview_input = tmp / "preview.csv"
+            _write_csv(
+                preview_input,
+                [
+                    {
+                        "prospect_id": "p_preview",
+                        "first_name": "Casey",
+                        "last_name": "Preview",
+                        "firm": "Jackson Lewis",
+                        "title": "Managing Partner",
+                        "email": "preview@example.com",
+                        "state": "CA",
+                        "city": "Los Angeles",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    }
+                ],
+            )
+            snapshot_before = sorted(
+                str(path.relative_to(tmp)) for path in tmp.rglob("*") if path.is_file()
+            )
+
+            p = self._run_preview(
+                tmp,
+                state="CA",
+                input_csv=preview_input,
+                db_path=db_path,
+                limit=1,
+            )
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            stdout = p.stdout or ""
+            self.assertRegex(
+                stdout,
+                r"SUBJECT: (?:\d+ new California inspections your defense team may not have seen yet|New OSHA inspection in CA — opened .+)",
+            )
+            self.assertIn("BODY_TEXT_PREVIEW:", stdout)
+            self.assertIn("BODY_HTML_PREVIEW:", stdout)
+            self.assertIn("COMPLIANCE_CHECKS ", stdout)
+            self.assertIn("outreach window is", stdout)
+            self.assertIn("Jackson Lewis is exactly the kind of team this feed is built for.", stdout)
+            self.assertIn("14-day trial feed - no commitment, no login required", stdout)
+            self.assertIn("Every item links to the public OSHA record", stdout)
+            self.assertIn("unsubscribe_link_count_exactly_one=true", stdout)
+            self.assertIn("no_duplicate_unsubscribe_pre_footer=true", stdout)
+
+            p_missing = self._run_preview(
+                tmp,
+                state="CA",
+                input_csv=None,
+                db_path=db_path,
+                limit=1,
+            )
+            self.assertEqual(p_missing.returncode, 0, msg=p_missing.stderr + "\n" + p_missing.stdout)
+            self.assertIn("appears to serve California", p_missing.stdout or "")
+
+            snapshot_after = sorted(
+                str(path.relative_to(tmp)) for path in tmp.rglob("*") if path.is_file()
+            )
+            self.assertEqual(snapshot_after, snapshot_before)
+            self.assertFalse((tmp / "outreach_export_ledger.jsonl").exists())
+            self.assertFalse((tmp / "outbox.csv").exists())
+            self.assertFalse((tmp / "outreach" / "outreach_runs").exists())
 
 
 if __name__ == "__main__":

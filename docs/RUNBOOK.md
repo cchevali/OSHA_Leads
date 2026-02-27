@@ -664,6 +664,9 @@ Metric scope:
 # Dry-run candidate preview
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
 
+# Rendered copy preview (no sends/no outbox artifacts)
+.\run_with_secrets.ps1 -- py -3 outreach\generate_mailmerge.py --render-preview --state TX --limit 1
+
 # Verify dry-run artifacts exist and no-send marker was printed
 Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run.csv
 Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run_manifest.csv
