@@ -186,6 +186,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
             orig_preview = run_wally_trial.run_preview_send
             orig_live = run_wally_trial.run_live_send
             orig_query = run_wally_trial.query_task_to_run
+            orig_query_logon = run_wally_trial.query_task_logon_mode
 
             run_wally_trial.run_preview_send = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[assignment]
                 AssertionError("run_preview_send should not be called in --doctor mode")
@@ -203,6 +204,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 return expected
 
             run_wally_trial.query_task_to_run = _fake_query  # type: ignore[assignment]
+            run_wally_trial.query_task_logon_mode = lambda _task_name: "Interactive/Background"  # type: ignore[assignment]
 
             try:
                 buf = io.StringIO()
@@ -225,6 +227,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 run_wally_trial.run_preview_send = orig_preview  # type: ignore[assignment]
                 run_wally_trial.run_live_send = orig_live  # type: ignore[assignment]
                 run_wally_trial.query_task_to_run = orig_query  # type: ignore[assignment]
+                run_wally_trial.query_task_logon_mode = orig_query_logon  # type: ignore[assignment]
                 sys.argv = argv0
 
     def test_doctor_invokes_project_context_soft_check(self) -> None:
