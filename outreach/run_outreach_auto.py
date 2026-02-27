@@ -1374,7 +1374,10 @@ def _render_outreach_payload(
     recent_leads: list[dict] | None = None,
 ) -> tuple[str, str, str, str]:
     first_name = (str(row["contact_name"] or "").split(" ")[:1] or [""])[0].strip() or "there"
-    firm = str(row["firm"] or "").strip() or "your firm"
+    firm_name_raw = str(row["firm"] or "").strip()
+    firm = firm_name_raw or "your firm"
+    segment = _extract_segment(row)
+    role_or_title = _extract_role_or_title(row)
     prospect_id = str(row["prospect_id"] or "").strip()
     email = _norm_email(str(row["email"] or ""))
 
@@ -1403,7 +1406,21 @@ def _render_outreach_payload(
     signals_fallback_text = token_map.get("SIGNALS_FALLBACK_TEXT", "")
     signals_fallback_html = token_map.get("SIGNALS_FALLBACK_HTML", "")
     sample_feed_url = (os.getenv("MICROFLOWOPS_SAMPLE_FEED_URL") or gm.DEFAULT_SAMPLE_FEED_URL).strip() or gm.DEFAULT_SAMPLE_FEED_URL
-    subject = gm.build_outreach_subject(state, recent_leads=recent_leads)
+    copy_tokens = gm._build_copy_tokens(
+        state_full_name=state_full_name,
+        state_metro_examples=state_metro_examples,
+        firm_name=firm_name_raw,
+        segment=segment,
+        role_or_title=role_or_title,
+        recent_leads=recent_leads,
+    )
+    subject = gm.build_outreach_subject(
+        state,
+        recent_leads=recent_leads,
+        segment_descriptor=copy_tokens.get("SEGMENT_DESCRIPTOR", ""),
+        state_full_name=state_full_name,
+        signal_count=int(copy_tokens.get("SIGNAL_COUNT") or "0"),
+    )
 
     text_body = (
         gm._render_template(
@@ -1422,6 +1439,13 @@ def _render_outreach_payload(
                 "SAMPLE_FEED_URL": sample_feed_url,
                 "UNSUBSCRIBE_URL": unsub_url,
                 "PREFS_URL": prefs_link,
+                "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
+                "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
+                "OPENING_LINE_TEXT": copy_tokens["OPENING_LINE_TEXT"],
+                "RELEVANCE_LINE_TEXT": copy_tokens["RELEVANCE_LINE_TEXT"],
+                "CTA_LINE_TEXT": copy_tokens["CTA_LINE_TEXT"],
+                "TRUST_LINE_TEXT": copy_tokens["TRUST_LINE_TEXT"],
+                "COMPANY_INTRO_TEXT": copy_tokens["COMPANY_INTRO_TEXT"],
             },
         ).strip()
         + "\n"
@@ -1447,6 +1471,11 @@ def _render_outreach_payload(
                 "{{MICROFLOWOPS_URL}}": gm._html_escape(
                     (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
                 ),
+                "{{OPENING_LINE_HTML}}": copy_tokens["OPENING_LINE_HTML"],
+                "{{RELEVANCE_LINE_HTML}}": copy_tokens["RELEVANCE_LINE_HTML"],
+                "{{CTA_LINE_HTML}}": copy_tokens["CTA_LINE_HTML"],
+                "{{TRUST_LINE_HTML}}": copy_tokens["TRUST_LINE_HTML"],
+                "{{COMPANY_INTRO_HTML}}": copy_tokens["COMPANY_INTRO_HTML"],
             },
         ).strip()
     else:

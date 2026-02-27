@@ -1,8 +1,6 @@
-Hi FIRST_NAME,
+OPENING_LINE_TEXT
 
-I'm Chase at MicroFlowOps. We monitor public OSHA inspection activity daily and send a short "new opens" brief by region to safety consultants, OSHA defense, and compliance service providers.
-
-You're getting this because your firm appears to serve STATE_FULL_NAME. If that's wrong, ignore this or unsubscribe below.
+RELEVANCE_LINE_TEXT
 
 Recent OSHA inspections opened in STATE:
 SIGNALS_WINDOW_NOTE_TEXT
@@ -13,7 +11,11 @@ Last refresh: LAST_REFRESH_ET
 
 See a live sample feed (real public data) -> SAMPLE_FEED_URL
 
-If you want daily coverage for your metros, reply with the cities you care about (e.g., STATE_METRO_EXAMPLES) and I'll set up a trial.
+CTA_LINE_TEXT
+
+TRUST_LINE_TEXT
+
+COMPANY_INTRO_TEXT
 
 Notes:
 - Accident, Complaint, and Referral describe OSHA activity signals (not citations).
