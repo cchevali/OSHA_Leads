@@ -432,6 +432,21 @@ No-arg discovery input resolution order:
 
 When `DATA_DIR` is unset, discovery resolves these fallback paths under repo `.\out\...`.
 
+### Apollo export workflow
+
+- Export Apollo contacts CSV from Apollo.
+- Save the export locally (for example `apollo_export.csv`; filename is operator convenience only).
+- From repo root, run:
+  `.\run_with_secrets.ps1 -- py -3 tools\apollo_to_prospects_csv.py --input C:\path\to\apollo_export.csv`
+- Converter default target (overwrite enabled, atomic replace): `${DATA_DIR}\imports\prospects_apollo.csv` (or `.\out\imports\prospects_apollo.csv` when `DATA_DIR` is unset).
+- If you explicitly set `--output` to `prospects_latest.csv`, you are overwriting the canonical generator artifact.
+- Optional overrides: `--output <path>` and `--diagnostics-out <path>`.
+- Run discovery using the converter’s printed `output_path` value (recommended): `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input <output_path_from_converter>`.
+- If you are following `DATA_DIR` convention, use: `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input "$env:DATA_DIR\imports\prospects_apollo.csv"`.
+- Mismatch note: running discovery from repo root with a bare filename can target the wrong location (`C:\dev\OSHA_Leads\...`) instead of the converter output path.
+- If `DATA_DIR` is set or defaults to `C:\osha_data`, discovery must be pointed at that location.
+- Discovery no-arg still honors input overrides first: `PROSPECT_DISCOVERY_INPUT`, then `DISCOVERY_INPUT_CSV`.
+
 Set preferred discovery input via the canonical no-editor env helper:
 
 ```powershell

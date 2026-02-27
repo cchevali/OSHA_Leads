@@ -84,6 +84,16 @@ APOLLO_DEFAULT_PERSON_TITLES = [
     "owner",
 ]
 TDLR_STATE_LIC_SOURCE_KEY = "STATE_LIC"
+GENERATOR_FILTER_KEYS = (
+    "missing_state",
+    "state_mismatch",
+    "missing_email",
+    "suppressed",
+    "free_domain",
+    "already_sent_or_ineligible",
+    "other",
+)
+DEFAULT_STATE_SCOPE_ALL = ("TX", "CA", "FL")
 
 
 def _valid_email(value: str) -> bool:
@@ -217,6 +227,18 @@ def _parse_states(raw: str) -> list[str]:
     return states
 
 
+def _resolve_state_scope(override_raw: str, env_states: list[str]) -> list[str]:
+    text = _normalize_text(override_raw)
+    if not text:
+        return list(env_states)
+    if text.lower() == "all":
+        return list(DEFAULT_STATE_SCOPE_ALL)
+    parsed = _parse_states(text)
+    if not parsed:
+        raise ValueError("invalid_states_scope")
+    return parsed
+
+
 def _parse_csv_items(raw: str) -> list[str]:
     items: list[str] = []
     for token in str(raw or "").split(","):
@@ -305,7 +327,7 @@ def _parse_enrich_config(data_dir: Path) -> dict:
     }
 
 
-def _build_clean_state_rows() -> tuple[dict[str, list[dict[str, str]]], int]:
+def _build_clean_state_rows(state_scope: list[str]) -> tuple[dict[str, list[dict[str, str]]], int]:
     state_rows: dict[str, list[dict[str, str]]] = {}
     rows_read = 0
     pools_by_state = {
@@ -313,8 +335,12 @@ def _build_clean_state_rows() -> tuple[dict[str, list[dict[str, str]]], int]:
         "CA": pools.CA_POOL,
         "FL": pools.FL_POOL,
     }
+    scope = {_normalize_state(s) for s in list(state_scope or []) if _normalize_state(s)}
 
     for state, seed_rows in pools_by_state.items():
+        if scope and state not in scope:
+            state_rows[state] = []
+            continue
         deduped = pools.dedupe_rows(seed_rows)
         cleaned, _stats = pools.apply_hygiene(deduped)
         state_rows[state] = cleaned
@@ -342,9 +368,12 @@ def _read_legacy_pool_files() -> list[dict[str, str]]:
     return out
 
 
-def _state_rows_to_combined_input(state_rows: dict[str, list[dict[str, str]]]) -> list[dict[str, str]]:
+def _state_rows_to_combined_input(state_rows: dict[str, list[dict[str, str]]], state_scope: list[str]) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
-    for state in ["TX", "CA", "FL"]:
+    ordered = [_normalize_state(s) for s in list(state_scope or []) if _normalize_state(s)]
+    if not ordered:
+        ordered = ["TX", "CA", "FL"]
+    for state in ordered:
         out.extend(state_rows.get(state, []))
     return out
 
@@ -539,6 +568,83 @@ def _count_crm_pool_total(conn: sqlite3.Connection | None, state: str) -> int:
         return max(0, int(row[0] or 0))
     except Exception:
         return 0
+
+
+def _default_input_cohort() -> dict[str, object]:
+    return {
+        "crm_total": 0,
+        "eligible": 0,
+        "excluded": 0,
+        "filtered": {key: 0 for key in GENERATOR_FILTER_KEYS},
+    }
+
+
+def _compute_input_cohort(conn: sqlite3.Connection | None, states_scope: list[str], suppressed_emails: set[str]) -> dict[str, object]:
+    if conn is None or not _table_exists(conn, "prospects"):
+        return _default_input_cohort()
+
+    columns = _table_columns(conn, "prospects")
+    if "prospect_id" not in columns or "email" not in columns or "state" not in columns:
+        return _default_input_cohort()
+
+    status_col = "status" if "status" in columns else "''"
+    last_contacted_col = "last_contacted_at" if "last_contacted_at" in columns else "''"
+    sent_ids = _fetch_prior_sent_ids(conn)
+    scope = {_normalize_state(s) for s in list(states_scope or []) if _normalize_state(s)}
+    filtered: Counter = Counter()
+    eligible = 0
+    crm_total = 0
+
+    rows = conn.execute(
+        f"""
+        SELECT prospect_id, email, state, {status_col} AS status, {last_contacted_col} AS last_contacted_at
+        FROM prospects
+        """
+    ).fetchall()
+    for row in rows:
+        crm_total += 1
+        state = _normalize_state(str(row["state"] or ""))
+        if not state:
+            filtered["missing_state"] += 1
+            continue
+        if scope and state not in scope:
+            filtered["state_mismatch"] += 1
+            continue
+
+        email = _normalize_email(str(row["email"] or ""))
+        if not email:
+            filtered["missing_email"] += 1
+            continue
+        if not _valid_email(email):
+            filtered["other"] += 1
+            continue
+        if _email_domain(email) in pools.FREE_EMAIL_DOMAINS:
+            filtered["free_domain"] += 1
+            continue
+        if email in suppressed_emails:
+            filtered["suppressed"] += 1
+            continue
+
+        status = _normalize_text(str(row["status"] or "")).lower()
+        prospect_id = _normalize_text(str(row["prospect_id"] or ""))
+        if status in EXCLUDED_STATUSES:
+            filtered["already_sent_or_ineligible"] += 1
+            continue
+        if prospect_id and prospect_id in sent_ids:
+            filtered["already_sent_or_ineligible"] += 1
+            continue
+        if _normalize_text(str(row["last_contacted_at"] or "")):
+            filtered["already_sent_or_ineligible"] += 1
+            continue
+        eligible += 1
+
+    excluded = int(sum(int(filtered.get(key, 0)) for key in GENERATOR_FILTER_KEYS))
+    return {
+        "crm_total": int(crm_total),
+        "eligible": int(eligible),
+        "excluded": int(excluded),
+        "filtered": {key: int(filtered.get(key, 0)) for key in GENERATOR_FILTER_KEYS},
+    }
 
 
 def _filter_autogrow_candidates(
@@ -846,6 +952,8 @@ def _print_tokens(
     print(f"GENERATOR_ROWS_READ={rows_read}")
     print(f"GENERATOR_ROWS_WRITTEN={rows_written}")
 
+    state_scope = [str(s or "").strip().upper() for s in list(autogrow.get("state_scope") or []) if str(s or "").strip()]
+    print(f"GENERATOR_STATE_SCOPE={','.join(state_scope) if state_scope else 'none'}")
     print(f"GENERATOR_AUTOGROW_ENABLED={1 if autogrow['enabled'] else 0}")
     print(f"GENERATOR_AUTOGROW_SOURCES={','.join(autogrow['sources'])}")
     autogrow_states = [str(s or "").strip().upper() for s in list(autogrow.get("states") or []) if str(s or "").strip()]
@@ -864,6 +972,28 @@ def _print_tokens(
     state_details = list(autogrow.get("state_details") or [])
     print(f"GENERATOR_AUTOGROW_TOTAL_STATES={int(autogrow.get('total_states') or len(state_details))}")
     print(f"GENERATOR_AUTOGROW_TOTAL_ACCEPTED={int(autogrow.get('total_accepted') or 0)}")
+    input_cohort = dict(autogrow.get("input_cohort") or {})
+    input_filtered = dict(input_cohort.get("filtered") or {})
+    print(f"GENERATOR_FILTERED_MISSING_STATE={int(input_filtered.get('missing_state') or 0)}")
+    print(f"GENERATOR_FILTERED_STATE_MISMATCH={int(input_filtered.get('state_mismatch') or 0)}")
+    print(f"GENERATOR_FILTERED_MISSING_EMAIL={int(input_filtered.get('missing_email') or 0)}")
+    print(f"GENERATOR_FILTERED_SUPPRESSED={int(input_filtered.get('suppressed') or 0)}")
+    print(f"GENERATOR_FILTERED_FREE_DOMAIN={int(input_filtered.get('free_domain') or 0)}")
+    print(
+        "GENERATOR_FILTERED_ALREADY_SENT_OR_INELIGIBLE="
+        f"{int(input_filtered.get('already_sent_or_ineligible') or 0)}"
+    )
+    print(f"GENERATOR_FILTERED_OTHER={int(input_filtered.get('other') or 0)}")
+    excluded_breakdown = ",".join(
+        [f"{key}:{int(input_filtered.get(key) or 0)}" for key in GENERATOR_FILTER_KEYS]
+    )
+    print(
+        "GENERATOR_INPUT_COHORT "
+        f"crm_total={int(input_cohort.get('crm_total') or 0)} "
+        f"eligible={int(input_cohort.get('eligible') or 0)} "
+        f"excluded={int(input_cohort.get('excluded') or 0)} "
+        f"excluded_breakdown={excluded_breakdown or 'none'}"
+    )
     print(f"GENERATOR_ENRICH_ATTEMPTED={int(enrich_metrics.get('attempted') or 0)}")
     print(f"GENERATOR_ENRICH_DOMAIN_RESOLVED={int(enrich_metrics.get('domain_resolved') or 0)}")
     print(f"GENERATOR_ENRICH_EMAIL_GUESSED={int(enrich_metrics.get('email_guessed') or 0)}")
@@ -1123,6 +1253,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--apollo-doctor", action="store_true", help="Check Apollo master-key endpoint access and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Compute rows only; do not write output files.")
     ap.add_argument("--for-date", default="", help="Override run date (YYYY-MM-DD) for selected_state/backlog preview.")
+    ap.add_argument("--states", default="", help="Override state scope: 'all' or comma-separated states (example: TX,CA,FL).")
     args = ap.parse_args(argv)
 
     try:
@@ -1140,12 +1271,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.apollo_doctor:
         return _run_apollo_doctor_only(diagnostics_dir=diagnostics_dir)
 
-    states = _parse_states(os.getenv("OUTREACH_STATES", "TX"))
-    if not states:
+    env_states = _parse_states(os.getenv("OUTREACH_STATES", "TX"))
+    if not env_states:
         print(f"{ERR_GENERATOR_FAILED} stage=states err=OUTREACH_STATES empty", file=sys.stderr)
         return 2
+    try:
+        states = _resolve_state_scope(str(args.states or ""), env_states)
+    except Exception as exc:
+        print(f"{ERR_GENERATOR_FAILED} stage=states err={exc}", file=sys.stderr)
+        return 2
+    if not states:
+        print(f"{ERR_GENERATOR_FAILED} stage=states err=state_scope empty", file=sys.stderr)
+        return 2
     selected_state = _choose_state(states, run_date)
-    autogrow_states = _parse_states(os.getenv("PROSPECT_AUTOGROW_STATES", "")) or list(states)
+    autogrow_states_env = _parse_states(os.getenv("PROSPECT_AUTOGROW_STATES", ""))
+    autogrow_states = list(states) if _normalize_text(str(args.states or "")) else (autogrow_states_env or list(states))
 
     try:
         autogrow_cfg = _parse_autogrow_config()
@@ -1170,8 +1310,10 @@ def main(argv: list[str] | None = None) -> int:
     selected_backlog_current = 0
     selected_new_needed = 0
     safety_net_forced_states: list[str] = []
+    cohort_summary: dict[str, object] = _default_input_cohort()
     try:
         suppressed_emails = _load_suppression_set(data_dir=data_dir, conn=conn)
+        cohort_summary = _compute_input_cohort(conn=conn, states_scope=states, suppressed_emails=suppressed_emails)
         existing_crm_emails = _existing_crm_emails(conn)
         for state_item in autogrow_states:
             backlog_current_item = compute_uncontacted_backlog(conn=conn, state=state_item, suppressed_emails=suppressed_emails)
@@ -1210,6 +1352,7 @@ def main(argv: list[str] | None = None) -> int:
 
     autogrow_state = {
         "enabled": bool(autogrow_cfg["enabled"]),
+        "state_scope": list(states),
         "states": list(autogrow_states),
         "sources": list(autogrow_cfg["sources"]),
         "sources_empty": len(list(autogrow_cfg["sources"])) == 0,
@@ -1224,6 +1367,7 @@ def main(argv: list[str] | None = None) -> int:
         "state_details": autogrow_state_details,
         "total_states": len(autogrow_state_details),
         "total_accepted": 0,
+        "input_cohort": dict(cohort_summary),
     }
 
     sources_empty = bool(autogrow_cfg["enabled"]) and len(list(autogrow_cfg["sources"])) == 0
@@ -1280,6 +1424,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{PASS_GENERATOR_PRINT_CONFIG} output_path={output_path.resolve()}")
         print(f"{PASS_GENERATOR_PRINT_CONFIG} cache_dir={cache_dir.resolve()}")
         print(f"{PASS_GENERATOR_PRINT_CONFIG} diagnostics_dir={diagnostics_dir.resolve()}")
+        print(f"{PASS_GENERATOR_PRINT_CONFIG} state_scope={','.join(states)}")
         print(f"{PASS_GENERATOR_PRINT_CONFIG} selected_state={selected_state}")
         print(f"{PASS_GENERATOR_PRINT_CONFIG} run_date={run_date.isoformat()}")
         _print_tokens(
@@ -1307,7 +1452,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        state_rows, rows_read_seed = _build_clean_state_rows()
+        state_rows, rows_read_seed = _build_clean_state_rows(states)
     except Exception as exc:
         print(f"{ERR_GENERATOR_FAILED} stage=build_rows err={exc}", file=sys.stderr)
         return 2
@@ -1489,7 +1634,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.dry_run:
-        seed_rows = _state_rows_to_combined_input(state_rows)
+        seed_rows = _state_rows_to_combined_input(state_rows, states)
         rows = _to_discovery_rows(seed_rows + autogrow_rows)
         _print_tokens(
             path=output_path,
