@@ -1,6 +1,7 @@
 import csv
 import io
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -50,6 +51,28 @@ class TestProspectGeneration(unittest.TestCase):
             text=True,
         )
 
+    def _extract_token_int(self, output: str, token: str) -> int:
+        match = re.search(rf"{re.escape(token)}=(\d+)", output or "")
+        if not match:
+            self.fail(f"missing_token={token}")
+        return int(match.group(1))
+
+    def _parse_input_cohort_counts(self, output: str) -> tuple[int, int, int]:
+        for line in (output or "").splitlines():
+            if not line.startswith("GENERATOR_INPUT_COHORT "):
+                continue
+            parts = {}
+            for item in line.split():
+                if "=" not in item:
+                    continue
+                key, _, value = item.partition("=")
+                parts[key] = value
+            try:
+                return int(parts.get("crm_total", "0")), int(parts.get("eligible", "0")), int(parts.get("excluded", "0"))
+            except Exception as exc:  # pragma: no cover
+                self.fail(f"bad_cohort_line={line} err={exc}")
+        self.fail("missing_token=GENERATOR_INPUT_COHORT")
+
     def test_module_importable_and_main_callable(self):
         from outreach import run_prospect_generation as generator
 
@@ -98,6 +121,15 @@ class TestProspectGeneration(unittest.TestCase):
     def test_states_flag_supports_csv_and_all_scope(self):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "data"
+            explicit_scope = self._run(
+                ["--print-config", "--for-date", "2026-02-18", "--states", "TX,CA,FL"],
+                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"},
+            )
+            self.assertEqual(explicit_scope.returncode, 0, msg=explicit_scope.stderr + "\n" + explicit_scope.stdout)
+            out_explicit = explicit_scope.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out_explicit)
+            self.assertIn("GENERATOR_STATE_SCOPE=TX,CA,FL", out_explicit)
+
             csv_scope = self._run(
                 ["--print-config", "--for-date", "2026-02-19", "--states", "CA,FL"],
                 {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"},
@@ -114,8 +146,8 @@ class TestProspectGeneration(unittest.TestCase):
             )
             self.assertEqual(all_scope.returncode, 0, msg=all_scope.stderr + "\n" + all_scope.stdout)
             out_all = all_scope.stdout or ""
-            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out_all)
-            self.assertIn("GENERATOR_STATE_SCOPE=TX,CA,FL", out_all)
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=all", out_all)
+            self.assertIn("GENERATOR_STATE_SCOPE=all", out_all)
             self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out_all)
 
     def test_input_cohort_reports_exclusion_breakdown_tokens(self):
@@ -179,6 +211,129 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_FILTERED_ALREADY_SENT_OR_INELIGIBLE=1", out)
             self.assertIn("GENERATOR_FILTERED_OTHER=1", out)
             self.assertIn("GENERATOR_INPUT_COHORT crm_total=8 eligible=1 excluded=7", out)
+            crm_total, eligible, excluded = self._parse_input_cohort_counts(out)
+            self.assertEqual(eligible + excluded, crm_total)
+            self.assertEqual(self._extract_token_int(out, "GENERATOR_ROWS_READ"), eligible)
+
+    def test_states_cli_scope_applies_to_cohort_and_rows_read_consistently(self):
+        from outreach import crm_store
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                states = ("TX", "CA", "FL")
+                for idx in range(98):
+                    state = states[idx % len(states)]
+                    conn.execute(
+                        """
+                        INSERT INTO prospects(
+                          prospect_id, firm, contact_name, email, title, city, state, website, source,
+                          score, status, created_at, last_contacted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"eligible_{idx}",
+                            f"Firm {idx}",
+                            "",
+                            f"eligible{idx}@example.com",
+                            "Owner",
+                            "City",
+                            state,
+                            "",
+                            "seed",
+                            0,
+                            "new",
+                            now,
+                            None,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            p = self._run(
+                ["--print-config", "--states", "TX,CA,FL"],
+                {
+                    "DATA_DIR": str(data_dir),
+                    "OUTREACH_STATES": "TX",
+                    "PROSPECT_AUTOGROW_STATES": "TX",
+                },
+            )
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out)
+            self.assertIn("GENERATOR_STATE_SCOPE=TX,CA,FL", out)
+            self.assertIn("GENERATOR_FILTERED_STATE_MISMATCH=0", out)
+            crm_total, eligible, excluded = self._parse_input_cohort_counts(out)
+            self.assertEqual(crm_total, 98)
+            self.assertEqual(eligible, 98)
+            self.assertEqual(excluded, 0)
+            self.assertEqual(eligible + excluded, crm_total)
+            self.assertEqual(self._extract_token_int(out, "GENERATOR_ROWS_READ"), eligible)
+
+    def test_states_all_disables_state_mismatch_filtering(self):
+        from outreach import crm_store
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                rows = [
+                    ("tx_1", "tx1@example.com", "TX"),
+                    ("ca_1", "ca1@example.com", "CA"),
+                    ("fl_1", "fl1@example.com", "FL"),
+                    ("ny_1", "ny1@example.com", "NY"),
+                    ("missing_state", "nostate@example.com", ""),
+                ]
+                for prospect_id, email, state in rows:
+                    conn.execute(
+                        """
+                        INSERT INTO prospects(
+                          prospect_id, firm, contact_name, email, title, city, state, website, source,
+                          score, status, created_at, last_contacted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            prospect_id,
+                            "Firm",
+                            "",
+                            email,
+                            "Owner",
+                            "City",
+                            state,
+                            "",
+                            "seed",
+                            0,
+                            "new",
+                            now,
+                            None,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            p = self._run(["--print-config", "--states", "all"], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=all", out)
+            self.assertIn("GENERATOR_STATE_SCOPE=all", out)
+            self.assertIn("GENERATOR_FILTERED_STATE_MISMATCH=0", out)
+            crm_total, eligible, excluded = self._parse_input_cohort_counts(out)
+            self.assertEqual(crm_total, 5)
+            self.assertEqual(eligible, 4)
+            self.assertEqual(excluded, 1)
+            self.assertEqual(eligible + excluded, crm_total)
+            self.assertEqual(self._extract_token_int(out, "GENERATOR_ROWS_READ"), eligible)
 
     def test_autogrow_enabled_backlog_targeted_and_deterministic_slice(self):
         from outreach import crm_store
@@ -589,7 +744,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual([c.kwargs.get("state") for c in mocked_aiha.call_args_list], ["TX", "FL"])
             out = buf.getvalue()
-            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
             self.assertIn("GENERATOR_AUTOGROW_STATES=TX,FL", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=TX rows_candidate=1 rows_accepted=1", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=FL rows_candidate=1 rows_accepted=1", out)
@@ -697,7 +852,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(mocked_ohs.call_args.kwargs["state"], "FL")
 
             out = buf.getvalue()
-            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
             self.assertIn("GENERATOR_AUTOGROW_STATES=FL", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=FL rows_candidate=3 rows_accepted=0", out)
             self.assertIn("rejected_invalid_email=1", out)
@@ -1079,7 +1234,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(calls, ["TX", "FL"])
             out = buf.getvalue()
-            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
             self.assertIn("GENERATOR_AUTOGROW_STATES=TX,FL", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=TX rows_candidate=1 rows_accepted=1", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=FL rows_candidate=1 rows_accepted=1", out)
