@@ -438,9 +438,10 @@ When `DATA_DIR` is unset, discovery resolves these fallback paths under repo `.\
 - Save the export locally (for example `apollo_export.csv`; filename is operator convenience only).
 - From repo root, run:
   `.\run_with_secrets.ps1 -- py -3 tools\apollo_to_prospects_csv.py --input C:\path\to\apollo_export.csv`
-- Converter default target (overwrite enabled, atomic replace): `${DATA_DIR}\prospect_discovery\prospects_latest.csv` (or `.\out\prospect_discovery\prospects_latest.csv` when `DATA_DIR` is unset).
+- Converter default target (overwrite enabled, atomic replace): `${DATA_DIR}\imports\prospects_apollo.csv` (or `.\out\imports\prospects_apollo.csv` when `DATA_DIR` is unset).
+- If you explicitly set `--output` to `prospects_latest.csv`, you are overwriting the canonical generator artifact.
 - Optional overrides: `--output <path>` and `--diagnostics-out <path>`.
-- Run discovery as usual: `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`.
+- Run discovery with this import file: `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input ${DATA_DIR}\imports\prospects_apollo.csv`.
 - Discovery no-arg still honors input overrides first: `PROSPECT_DISCOVERY_INPUT`, then `DISCOVERY_INPUT_CSV`.
 
 Set preferred discovery input via the canonical no-editor env helper:

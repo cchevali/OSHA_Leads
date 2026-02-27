@@ -73,11 +73,11 @@ class TestApolloToProspectsCsv(unittest.TestCase):
             self.assertIn("PASS_APOLLO_CONVERT_PRINT_CONFIG", out)
             self.assertIn(f"data_dir={data_dir.resolve()}", out)
             self.assertIn(
-                f"output_path={(data_dir / 'prospect_discovery' / 'prospects_latest.csv').resolve()}",
+                f"output_path={(data_dir / 'imports' / 'prospects_apollo.csv').resolve()}",
                 out,
             )
             self.assertIn(
-                f"diagnostics_path={(data_dir / 'prospect_discovery' / 'prospects_latest_apollo_diagnostics.json').resolve()}",
+                f"diagnostics_path={(data_dir / 'imports' / 'prospects_apollo_diagnostics.json').resolve()}",
                 out,
             )
 
@@ -151,8 +151,8 @@ class TestApolloToProspectsCsv(unittest.TestCase):
                     },
                 ],
             )
-            output_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
-            diagnostics_path = data_dir / "prospect_discovery" / "prospects_latest_apollo_diagnostics.json"
+            output_path = data_dir / "imports" / "prospects_apollo.csv"
+            diagnostics_path = data_dir / "imports" / "prospects_apollo_diagnostics.json"
 
             p = self._run(["--input", str(input_csv)], {"DATA_DIR": str(data_dir)})
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
@@ -211,8 +211,8 @@ class TestApolloToProspectsCsv(unittest.TestCase):
                     }
                 ],
             )
-            output_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
-            diagnostics_path = data_dir / "prospect_discovery" / "prospects_latest_apollo_diagnostics.json"
+            output_path = data_dir / "imports" / "prospects_apollo.csv"
+            diagnostics_path = data_dir / "imports" / "prospects_apollo_diagnostics.json"
 
             p = self._run(["--input", str(input_csv), "--dry-run"], {"DATA_DIR": str(data_dir)})
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)

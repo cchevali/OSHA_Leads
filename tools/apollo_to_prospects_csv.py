@@ -125,7 +125,7 @@ def _resolve_output_path(explicit: str) -> Path:
         p = Path(raw)
         return p if p.is_absolute() else (REPO_ROOT / p)
     data_dir = crm_store.data_dir()
-    return data_dir / "prospect_discovery" / "prospects_latest.csv"
+    return data_dir / "imports" / "prospects_apollo.csv"
 
 
 def _resolve_diagnostics_path(explicit: str, output_path: Path) -> Path:
@@ -133,7 +133,7 @@ def _resolve_diagnostics_path(explicit: str, output_path: Path) -> Path:
     if raw:
         p = Path(raw)
         return p if p.is_absolute() else (REPO_ROOT / p)
-    return output_path.parent / "prospects_latest_apollo_diagnostics.json"
+    return output_path.parent / "prospects_apollo_diagnostics.json"
 
 
 def _resolve_input_path(raw: str) -> Path | None:
