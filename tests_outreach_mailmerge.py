@@ -1028,6 +1028,9 @@ class TestOutreachMailmerge(unittest.TestCase):
                     }
                 ],
             )
+            snapshot_before = sorted(
+                str(path.relative_to(tmp)) for path in tmp.rglob("*") if path.is_file()
+            )
 
             p = self._run_preview(
                 tmp,
@@ -1046,10 +1049,26 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertIn("BODY_HTML_PREVIEW:", stdout)
             self.assertIn("COMPLIANCE_CHECKS ", stdout)
             self.assertIn("outreach window is", stdout)
+            self.assertIn("Jackson Lewis is exactly the kind of team this feed is built for.", stdout)
             self.assertIn("14-day trial feed - no commitment, no login required", stdout)
             self.assertIn("Every item links to the public OSHA record", stdout)
             self.assertIn("unsubscribe_link_count_exactly_one=true", stdout)
             self.assertIn("no_duplicate_unsubscribe_pre_footer=true", stdout)
+
+            p_missing = self._run_preview(
+                tmp,
+                state="CA",
+                input_csv=None,
+                db_path=db_path,
+                limit=1,
+            )
+            self.assertEqual(p_missing.returncode, 0, msg=p_missing.stderr + "\n" + p_missing.stdout)
+            self.assertIn("appears to serve California", p_missing.stdout or "")
+
+            snapshot_after = sorted(
+                str(path.relative_to(tmp)) for path in tmp.rglob("*") if path.is_file()
+            )
+            self.assertEqual(snapshot_after, snapshot_before)
             self.assertFalse((tmp / "outreach_export_ledger.jsonl").exists())
             self.assertFalse((tmp / "outbox.csv").exists())
             self.assertFalse((tmp / "outreach" / "outreach_runs").exists())

@@ -240,6 +240,11 @@ class TestOutreachRunAuto(unittest.TestCase):
             manifest_off = Path(self._stdout_value(p_off.stdout, "PASS_AUTO_DRY_RUN manifest_path"))
             self.assertNotIn("ai_triage_action", _csv_fieldnames(outbox_off))
             self.assertNotIn("ai_triage_action", _csv_fieldnames(manifest_off))
+            outbox_off_fields = set(_csv_fieldnames(outbox_off))
+            self.assertTrue(
+                {"subject", "body", "text_body", "html_body"}.isdisjoint(outbox_off_fields),
+                msg=f"dry-run outbox unexpectedly contains rendered body fields: {outbox_off_fields}",
+            )
 
             batch = "2026-02-25_TX"
             artifact_path = (data_dir / "outreach" / batch / f"signals_triage_{batch}_dry_run.json").resolve()
@@ -1318,6 +1323,14 @@ class TestOutreachRunAuto(unittest.TestCase):
                                 text_body,
                             )
                             self.assertIn("I'm Chase at MicroFlowOps.", text_body)
+                            self.assertEqual(html_body.count(">Unsubscribe</a>"), 1)
+                            self.assertEqual(html_body.count(">Manage preferences</a>"), 1)
+                            self.assertEqual(html_body.count("unsubscribe.example/u"), 1)
+                            addr_idx = html_body.find("11539 Links Dr, Reston, VA 20190")
+                            self.assertGreater(addr_idx, 0)
+                            pre_footer = html_body[:addr_idx]
+                            self.assertNotIn("unsubscribe.example/u", pre_footer)
+                            self.assertNotIn("unsubscribe.example/prefs", pre_footer)
                             rendered = "\n".join([subject, text_body, html_body]).lower()
                             for pattern in banned_patterns:
                                 self.assertIsNone(
@@ -1387,6 +1400,158 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("ignore this or unsubscribe below", text_body)
         finally:
             conn.close()
+
+    def test_mailmerge_and_run_auto_render_copy_parity(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            _write_suppression(data_dir / "suppression.csv", emails=[])
+
+            input_csv = tmp / "in.csv"
+            out_csv = tmp / "outbox.csv"
+            with open(input_csv, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "prospect_id",
+                        "first_name",
+                        "last_name",
+                        "firm",
+                        "title",
+                        "email",
+                        "state",
+                        "city",
+                        "territory_code",
+                        "source",
+                        "notes",
+                    ],
+                )
+                w.writeheader()
+                w.writerow(
+                    {
+                        "prospect_id": "p1",
+                        "first_name": "Casey",
+                        "last_name": "Parity",
+                        "firm": "Jackson Lewis",
+                        "title": "Managing Partner",
+                        "email": "casey@example.com",
+                        "state": "CA",
+                        "city": "Los Angeles",
+                        "territory_code": "X",
+                        "source": "test",
+                        "notes": "",
+                    }
+                )
+
+            recent_leads = [
+                {
+                    "activity_nr": "111",
+                    "date_opened": "2026-02-18",
+                    "first_seen_at": "2026-02-18T12:00:00Z",
+                    "site_state": "CA",
+                    "site_city": "Los Angeles",
+                    "inspection_type": "Complaint",
+                    "establishment_name": "Example Co",
+                }
+            ]
+            argv = [
+                "generate_mailmerge.py",
+                "--input",
+                str(input_csv),
+                "--batch",
+                "TEST_CA",
+                "--state",
+                "CA",
+                "--out",
+                str(out_csv),
+                "--template",
+                str(REPO_ROOT / "outreach" / "outreach_plain.txt"),
+                "--html-template",
+                str(REPO_ROOT / "outreach" / "outreach_card.html"),
+                "--db",
+                str(tmp / "db.sqlite"),
+            ]
+            gm_out = io.StringIO()
+            gm_err = io.StringIO()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "DATA_DIR": str(data_dir),
+                    "UNSUB_ENDPOINT_BASE": "https://unsub.example.internal/unsubscribe",
+                    "UNSUB_SECRET": "test_secret",
+                },
+                clear=False,
+            ), mock.patch.object(
+                roa.gm, "_best_effort_recent_leads_and_refresh", return_value=(list(recent_leads), "2026-02-18 08:00 ET")
+            ), mock.patch.object(
+                roa.gm, "_load_local_suppression_set", return_value=set()
+            ), mock.patch.object(
+                roa.gm, "_is_suppressed", return_value=False
+            ), mock.patch.object(sys, "argv", argv):
+                with redirect_stdout(gm_out), redirect_stderr(gm_err):
+                    gm_rc = roa.gm.main()
+            self.assertEqual(gm_rc, 0, msg=gm_err.getvalue() + "\n" + gm_out.getvalue())
+
+            with open(out_csv, "r", newline="", encoding="utf-8") as f:
+                out_rows = list(csv.DictReader(f))
+            self.assertEqual(len(out_rows), 1)
+            mailmerge_subject = str(out_rows[0].get("subject") or "").strip()
+            mailmerge_body = str(out_rows[0].get("body") or "")
+
+            conn = sqlite3.connect(":memory:")
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute(
+                    """
+                    CREATE TABLE prospect_preview (
+                        prospect_id TEXT,
+                        contact_name TEXT,
+                        firm TEXT,
+                        email TEXT,
+                        title TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO prospect_preview(prospect_id, contact_name, firm, email, title) VALUES(?, ?, ?, ?, ?)",
+                    ("p1", "Casey Parity", "Jackson Lewis", "casey@example.com", "Managing Partner"),
+                )
+                row = conn.execute("SELECT * FROM prospect_preview").fetchone()
+                self.assertIsNotNone(row)
+                signal_tokens = {
+                    "STATE_FULL_NAME": "California",
+                    "STATE_METRO_EXAMPLES": "Los Angeles, Inland Empire",
+                    "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
+                    "SIGNALS_WINDOW_NOTE_HTML": "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+                    "SIGNALS_FALLBACK_TEXT": "",
+                    "SIGNALS_FALLBACK_HTML": "",
+                }
+                with mock.patch.object(
+                    roa.gm,
+                    "_build_urls",
+                    return_value=("https://unsubscribe.example/u", "https://unsubscribe.example/prefs"),
+                ):
+                    run_auto_subject, run_auto_text, _run_auto_html, _ = roa._render_outreach_payload(
+                        row=row,
+                        state="CA",
+                        batch="2026-02-18_CA",
+                        template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt"),
+                        html_template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html"),
+                        recent_signals_lines="- Example Co (Los Angeles, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
+                        recent_signals_html="<div>Example Co &middot; Observed 2026-02-18</div>",
+                        last_refresh_et="2026-02-18 08:00 ET",
+                        signal_tokens=signal_tokens,
+                        recent_leads=list(recent_leads),
+                    )
+            finally:
+                conn.close()
+
+            self.assertEqual(run_auto_subject, mailmerge_subject)
+            mailmerge_opening = next((ln.strip() for ln in mailmerge_body.splitlines() if ln.strip()), "")
+            run_auto_opening = next((ln.strip() for ln in run_auto_text.splitlines() if ln.strip()), "")
+            self.assertEqual(run_auto_opening, mailmerge_opening)
+            self.assertIn("outreach window is open now", run_auto_opening.lower())
 
     def test_domain_dedupe_and_role_inbox_penalty_ordering_is_deterministic(self):
         with tempfile.TemporaryDirectory() as d:
