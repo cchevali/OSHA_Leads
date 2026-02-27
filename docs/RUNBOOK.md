@@ -432,6 +432,17 @@ No-arg discovery input resolution order:
 
 When `DATA_DIR` is unset, discovery resolves these fallback paths under repo `.\out\...`.
 
+### Apollo export workflow
+
+- Export Apollo contacts CSV from Apollo.
+- Save the export locally (for example `apollo_export.csv`; filename is operator convenience only).
+- From repo root, run:
+  `.\run_with_secrets.ps1 -- py -3 tools\apollo_to_prospects_csv.py --input C:\path\to\apollo_export.csv`
+- Converter default target (overwrite enabled, atomic replace): `${DATA_DIR}\prospect_discovery\prospects_latest.csv` (or `.\out\prospect_discovery\prospects_latest.csv` when `DATA_DIR` is unset).
+- Optional overrides: `--output <path>` and `--diagnostics-out <path>`.
+- Run discovery as usual: `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`.
+- Discovery no-arg still honors input overrides first: `PROSPECT_DISCOVERY_INPUT`, then `DISCOVERY_INPUT_CSV`.
+
 Set preferred discovery input via the canonical no-editor env helper:
 
 ```powershell
@@ -683,6 +694,16 @@ Test-Path -LiteralPath .\out\outreach_export_ledger.jsonl
   --out outreach\outbox_TX_DEBUG.csv `
   --allow-mailto-fallback
 ```
+
+### State Of World (2026-02-27)
+
+- PR #18 deployed outreach copy framing updates plus deterministic `--render-preview`; scope was copy/template/test/doc only.
+- PR #19 added test-only hardening: export-writes-artifacts regression coverage + preview no-write guard.
+- Canonical copy QA command: `py -3 -m outreach.generate_mailmerge --render-preview --state CA --limit 1`
+- Canonical dry-run QA command: `$env:DATA_DIR='out'; py -3 -m outreach.run_outreach_auto --dry-run`
+- Invariant: outreach dry-run remains candidate-only (outbox/manifest/diagnostics), not rendered-body output.
+- Invariant: render-preview is side-effect free (no outbox/manifest/ledger/run-log writes).
+- Invariant: compliance markers are regression-tested (single footer opt-out links; no pre-footer duplicate unsubscribe links).
 
 ### Doctor Failure Tokens (Troubleshooting)
 
