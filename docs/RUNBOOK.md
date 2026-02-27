@@ -684,6 +684,16 @@ Test-Path -LiteralPath .\out\outreach_export_ledger.jsonl
   --allow-mailto-fallback
 ```
 
+### State Of World (2026-02-27)
+
+- PR #18 deployed outreach copy framing updates plus deterministic `--render-preview`; scope was copy/template/test/doc only.
+- PR #19 added test-only hardening: export-writes-artifacts regression coverage + preview no-write guard.
+- Canonical copy QA command: `py -3 -m outreach.generate_mailmerge --render-preview --state CA --limit 1`
+- Canonical dry-run QA command: `$env:DATA_DIR='out'; py -3 -m outreach.run_outreach_auto --dry-run`
+- Invariant: outreach dry-run remains candidate-only (outbox/manifest/diagnostics), not rendered-body output.
+- Invariant: render-preview is side-effect free (no outbox/manifest/ledger/run-log writes).
+- Invariant: compliance markers are regression-tested (single footer opt-out links; no pre-footer duplicate unsubscribe links).
+
 ### Doctor Failure Tokens (Troubleshooting)
 
 - `ERR_DOCTOR_SECRETS_DECRYPT`: run `.\run_with_secrets.ps1 --diagnostics --check-decrypt`; fix `sops/age` install or key setup.
