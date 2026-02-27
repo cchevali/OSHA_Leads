@@ -361,6 +361,59 @@ Re-process a previously moved file:
 
 - Move it from `${DATA_DIR}\prospect_generation\inbox\processed\` back to `${DATA_DIR}\prospect_generation\inbox\`.
 
+### Apollo Export Automation
+
+Use `tools/apollo_export.py` to automate Apollo saved-search CSV exports into the generator inbox.
+By default, the tool launches system Chrome (`--chrome-channel chrome`), which is required for Google SSO login flows.
+If needed, override to Playwright's bundled browser with `--chrome-channel chromium`.
+
+One-time profile setup (manual Apollo login in visible browser):
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\apollo_export.py --profile-setup
+```
+
+Print resolved config:
+
+```powershell
+py -3 tools\apollo_export.py --print-config
+```
+
+Daily export dry-run (navigation + screenshot only, no CSV download):
+
+```powershell
+py -3 tools\apollo_export.py --dry-run --search-url "https://app.apollo.io/#/people?...saved_search..."
+```
+
+Daily live export:
+
+```powershell
+py -3 tools\apollo_export.py --search-url "https://app.apollo.io/#/people?...saved_search..."
+```
+
+How to get a saved search URL from Apollo:
+
+- Open Apollo People search.
+- Apply your filters and save the search in Apollo UI.
+- Copy the browser URL for that saved search view and pass it to `--search-url`.
+
+Troubleshooting:
+
+- `ERR_APOLLO_EXPORT_SESSION_EXPIRED`: rerun `--profile-setup`, log back in, then rerun export.
+- `ERR_APOLLO_EXPORT_PLAYWRIGHT_MISSING`: install runtime:
+  - `pip install playwright`
+  - `py -3 -m playwright install chromium`
+- `ERR_APOLLO_EXPORT_SELECTOR_MISSING`: Apollo UI changed; update `SELECTORS` in `tools/apollo_export.py`.
+- If generator runs via `.\run_with_secrets.ps1`, compare:
+  - `py -3 tools\apollo_export.py --print-config`
+  - `.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config`
+  Ensure both resolve the same inbox path.
+
+Recommended cadence:
+
+- Run once daily. Avoid high-frequency repeated runs.
+
 Auto-growth (env-gated, optional):
 
 - Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_STATES`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
