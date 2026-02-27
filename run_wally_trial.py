@@ -1182,6 +1182,13 @@ def verify_schedule_action(task_name: str, expected_action: str, expected_logon_
     verify_schedule_action_from_actual(expected_action, actual, expected_logon_mode, actual_logon_mode)
 
 
+def is_non_interactive_logon_mode(mode: str | None) -> bool:
+    normalized = (mode or "").strip().lower()
+    if not normalized:
+        return False
+    return "interactive only" not in normalized
+
+
 def verify_schedule_action_from_actual(
     expected_action: str,
     actual: str | None,
@@ -1198,10 +1205,7 @@ def verify_schedule_action_from_actual(
     if not actual_logon_mode:
         print(f"SCHEDULE_CHECK_FAILED expected_logon_mode={expected_logon_mode} actual_logon_mode=MISSING_LOGON_MODE hint={hint}")
         raise SystemExit(1)
-    if "interactive only" in actual_logon_mode.lower():
-        print(f"SCHEDULE_CHECK_FAILED expected_logon_mode={expected_logon_mode} actual_logon_mode={actual_logon_mode} hint={hint}")
-        raise SystemExit(1)
-    if expected_logon_mode and expected_logon_mode.lower() not in actual_logon_mode.lower():
+    if not is_non_interactive_logon_mode(actual_logon_mode):
         print(f"SCHEDULE_CHECK_FAILED expected_logon_mode={expected_logon_mode} actual_logon_mode={actual_logon_mode} hint={hint}")
         raise SystemExit(1)
     print(f"SCHEDULE_OK /TR={actual} /LOGON_MODE={actual_logon_mode}")
