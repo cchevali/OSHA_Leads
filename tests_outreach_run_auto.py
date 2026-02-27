@@ -1303,8 +1303,21 @@ class TestOutreachRunAuto(unittest.TestCase):
                                     }
                                 ],
                             )
-                            self.assertEqual(subject, f"New OSHA inspection in {expected_state} — opened Feb 18")
+                            expected_subject = (
+                                "1 new California inspections your safety team may not have seen yet"
+                                if expected_state == "CA"
+                                else "1 new Florida inspections your defense team may not have seen yet"
+                            )
+                            self.assertEqual(subject, expected_subject)
                             self.assertIn(f"Recent OSHA inspections opened in {expected_state}:", text_body)
+                            self.assertIn("outreach window is open now", text_body)
+                            self.assertIn("is exactly the kind of team this feed is built for", text_body)
+                            self.assertIn("14-day trial feed - no commitment, no login required", text_body)
+                            self.assertIn(
+                                "Every item links to the public OSHA record so your team can verify in 30 seconds.",
+                                text_body,
+                            )
+                            self.assertIn("I'm Chase at MicroFlowOps.", text_body)
                             rendered = "\n".join([subject, text_body, html_body]).lower()
                             for pattern in banned_patterns:
                                 self.assertIsNone(
@@ -1315,6 +1328,65 @@ class TestOutreachRunAuto(unittest.TestCase):
                         conn.close()
                     gc.collect()
                     time.sleep(0.05)
+
+    def test_render_payload_falls_back_to_appears_to_serve_when_firm_missing(self):
+        template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt")
+        html_template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html")
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                """
+                CREATE TABLE prospect_preview (
+                    prospect_id TEXT,
+                    contact_name TEXT,
+                    firm TEXT,
+                    email TEXT,
+                    title TEXT
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO prospect_preview(prospect_id, contact_name, firm, email, title) VALUES(?, ?, ?, ?, ?)",
+                ("p1", "Alex Example", "", "alex@example.com", "Operations Lead"),
+            )
+            row = conn.execute("SELECT * FROM prospect_preview").fetchone()
+            self.assertIsNotNone(row)
+            with mock.patch.object(
+                roa.gm,
+                "_build_urls",
+                return_value=("https://unsubscribe.example/u", "https://unsubscribe.example/prefs"),
+            ):
+                subject, text_body, _html_body, _unsub = roa._render_outreach_payload(
+                    row=row,
+                    state="CA",
+                    batch="2026-02-17_CA",
+                    template_text=template_text,
+                    html_template_text=html_template_text,
+                    recent_signals_lines="- Example Co (San Jose, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
+                    recent_signals_html="<div>Example Co &middot; Observed 2026-02-18</div>",
+                    last_refresh_et="2026-02-18 08:00 ET",
+                    signal_tokens={
+                        "STATE_FULL_NAME": "California",
+                        "STATE_METRO_EXAMPLES": "Los Angeles, Inland Empire",
+                        "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
+                        "SIGNALS_WINDOW_NOTE_HTML": "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+                        "SIGNALS_FALLBACK_TEXT": "",
+                        "SIGNALS_FALLBACK_HTML": "",
+                    },
+                    recent_leads=[
+                        {
+                            "date_opened": "2026-02-18",
+                            "first_seen_at": "2026-02-18T12:00:00Z",
+                            "site_state": "CA",
+                        }
+                    ],
+                )
+            self.assertEqual(subject, "New OSHA inspection in CA — opened Feb 18")
+            self.assertIn("your firm appears to serve California", text_body)
+            self.assertIn("ignore this or unsubscribe below", text_body)
+        finally:
+            conn.close()
 
     def test_domain_dedupe_and_role_inbox_penalty_ordering_is_deterministic(self):
         with tempfile.TemporaryDirectory() as d:

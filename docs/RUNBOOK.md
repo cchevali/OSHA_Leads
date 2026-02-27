@@ -319,100 +319,7 @@ No-arg generation output path:
 
 - `${DATA_DIR}\prospect_discovery\prospects_latest.csv`
 - If `DATA_DIR` is unset: `.\out\prospect_discovery\prospects_latest.csv`
-- Manual inbox path (optional): `${DATA_DIR}\prospect_generation\inbox\*.csv`
-- If `DATA_DIR` is unset: `.\out\prospect_generation\inbox\*.csv`
-
-### Manual Prospect Inbox (Apollo / CSV Drop)
-
-Drop CSV files directly into the generator inbox:
-
-- `${DATA_DIR}\prospect_generation\inbox\`
-- Fallback when `DATA_DIR` is unset: `.\out\prospect_generation\inbox\`
-
-What happens on the next generator run:
-
-- Every `*.csv` file in that folder is scanned at generator startup.
-- Apollo export headers are normalized to canonical prospect fields (case-insensitive and whitespace-tolerant).
-- Rows with missing/invalid email are skipped; duplicates are removed in-batch and against other rows generated in that run.
-- Accepted rows merge into the same `prospects_latest.csv` output used by discovery.
-- Live runs move processed inbox files to `inbox\processed\` with `YYYYMMDD_HHMMSS_<originalname>.csv`.
-- `--dry-run` never moves inbox files.
-
-Verify inbox status and results:
-
-```powershell
-.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config
-.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --dry-run
-```
-
-Look for:
-
-- `inbox_path=...`
-- `inbox_files_pending=<n>`
-- `inbox_files_pending_list=<csv|none>`
-- `GENERATOR_INBOX_FILES_FOUND`
-- `GENERATOR_INBOX_ROWS_READ`
-- `GENERATOR_INBOX_ROWS_SKIPPED_NO_EMAIL`
-- `GENERATOR_INBOX_ROWS_SKIPPED_DUPE`
-- `GENERATOR_INBOX_ROWS_ACCEPTED`
-- `GENERATOR_INBOX_FILES_PROCESSED`
-
-Re-process a previously moved file:
-
-- Move it from `${DATA_DIR}\prospect_generation\inbox\processed\` back to `${DATA_DIR}\prospect_generation\inbox\`.
-
-### Apollo Export Automation
-
-Use `tools/apollo_export.py` to automate Apollo saved-search CSV exports into the generator inbox.
-By default, the tool launches system Chrome (`--chrome-channel chrome`), which is required for Google SSO login flows.
-If needed, override to Playwright's bundled browser with `--chrome-channel chromium`.
-
-One-time profile setup (manual Apollo login in visible browser):
-
-```powershell
-cd C:\dev\OSHA_Leads
-py -3 tools\apollo_export.py --profile-setup
-```
-
-Print resolved config:
-
-```powershell
-py -3 tools\apollo_export.py --print-config
-```
-
-Daily export dry-run (navigation + screenshot only, no CSV download):
-
-```powershell
-py -3 tools\apollo_export.py --dry-run --search-url "https://app.apollo.io/#/people?...saved_search..."
-```
-
-Daily live export:
-
-```powershell
-py -3 tools\apollo_export.py --search-url "https://app.apollo.io/#/people?...saved_search..."
-```
-
-How to get a saved search URL from Apollo:
-
-- Open Apollo People search.
-- Apply your filters and save the search in Apollo UI.
-- Copy the browser URL for that saved search view and pass it to `--search-url`.
-
-Troubleshooting:
-
-- `ERR_APOLLO_EXPORT_SESSION_EXPIRED`: rerun `--profile-setup`, log back in, then rerun export.
-- `ERR_APOLLO_EXPORT_PLAYWRIGHT_MISSING`: install runtime:
-  - `pip install playwright`
-  - `py -3 -m playwright install chromium`
-- `ERR_APOLLO_EXPORT_SELECTOR_MISSING`: Apollo UI changed; update `SELECTORS` in `tools/apollo_export.py`.
-- If generator runs via `.\run_with_secrets.ps1`, compare:
-  - `py -3 tools\apollo_export.py --print-config`
-  - `.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config`
-  Ensure both resolve the same inbox path.
-
-Recommended cadence:
-
-- Run once daily. Avoid high-frequency repeated runs.
+- Generator-side BYO CSV inbox paths are removed. Discovery input is now seed pools + autogrow sources only.
 
 Auto-growth (env-gated, optional):
 
@@ -479,12 +386,6 @@ Generator emits machine-readable lines:
 - `crawl4ai_installed`, `playwright_browsers_installed`, `<SOURCE>_available` (via `--print-config`)
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
-- `GENERATOR_INBOX_FILES_FOUND`
-- `GENERATOR_INBOX_ROWS_READ`
-- `GENERATOR_INBOX_ROWS_SKIPPED_NO_EMAIL`
-- `GENERATOR_INBOX_ROWS_SKIPPED_DUPE`
-- `GENERATOR_INBOX_ROWS_ACCEPTED`
-- `GENERATOR_INBOX_FILES_PROCESSED`
 
 APOLLO telemetry highlights:
 
@@ -762,6 +663,9 @@ Metric scope:
 
 # Dry-run candidate preview
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
+
+# Rendered copy preview (no sends/no outbox artifacts)
+.\run_with_secrets.ps1 -- py -3 outreach\generate_mailmerge.py --render-preview --state TX --limit 1
 
 # Verify dry-run artifacts exist and no-send marker was printed
 Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run.csv
