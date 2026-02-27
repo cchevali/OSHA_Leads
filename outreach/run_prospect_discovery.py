@@ -241,12 +241,13 @@ def _parse_seed_counts(text: str) -> tuple[int, int, int]:
     return inserted, updated, skipped
 
 
-def _validate_input_path(input_path: Path | None) -> Path | None:
+def _validate_input_path(input_path: Path | None, raw_input: str, data_dir: Path, env: dict[str, str]) -> Path | None:
     if input_path is None:
         _print_missing_input()
         return None
     if not input_path.exists():
         print(f"{ERR_DISCOVERY_INPUT_NOT_FOUND} path={input_path.resolve()}", file=sys.stderr)
+        _print_not_found_hints_for_bare_input(raw_input=raw_input, data_dir=data_dir, env=env)
         return None
     try:
         _count_rows(input_path)
@@ -264,6 +265,16 @@ def _resolve_mode(has_input: bool, dry_run: bool) -> str:
     return "scheduled_no_arg"
 
 
+def _is_bare_filename_input(raw_input: str) -> bool:
+    text = str(raw_input or "").strip()
+    if not text:
+        return False
+    p = Path(text)
+    if p.is_absolute():
+        return False
+    return len(p.parts) == 1
+
+
 def _resolve_scheduled_candidate_paths(
     env: dict[str, str],
     data_dir: Path,
@@ -279,6 +290,29 @@ def _resolve_scheduled_candidate_paths(
 
     candidates.extend(_scheduled_fallback_paths(data_dir))
     return candidates
+
+
+def _print_not_found_hints_for_bare_input(raw_input: str, data_dir: Path, env: dict[str, str]) -> None:
+    if not _is_bare_filename_input(raw_input):
+        return
+    filename = str(raw_input or "").strip()
+    if not filename:
+        return
+    if (Path.cwd() / filename).exists():
+        return
+
+    candidate_paths = [p.resolve() for _, p in _resolve_scheduled_candidate_paths(env=env, data_dir=data_dir)]
+    candidate_text = "|".join(str(p) for p in candidate_paths) if candidate_paths else "NONE"
+    suggested = (data_dir / "imports" / filename).resolve()
+    print(f"DISCOVERY_DATA_DIR_RESOLVED={data_dir.resolve()}", file=sys.stderr)
+    print(f"DISCOVERY_EXPECTED_INPUT_PATH={suggested}", file=sys.stderr)
+    print(f"DISCOVERY_CANDIDATE_IMPORT_PATHS={candidate_text}", file=sys.stderr)
+    print(f"DISCOVERY_SUGGESTED_INPUT={suggested}", file=sys.stderr)
+    print(
+        f"DISCOVERY_REMEDIATION_COMMAND=.\\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input {suggested}",
+        file=sys.stderr,
+    )
+    print(f"REMEDIATION: use --input {suggested}", file=sys.stderr)
 
 
 def resolve_discovery_input_source(mode: str, env: dict[str, str], data_dir: Path) -> tuple[str, Path | None]:
@@ -402,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    valid_path = _validate_input_path(input_path)
+    valid_path = _validate_input_path(input_path, raw_input=str(args.input or ""), data_dir=data_dir, env=env)
     if valid_path is None:
         return 2
 
