@@ -820,6 +820,33 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_
 
 Rerun `.\scripts\install_scheduled_tasks.ps1 --apply` to update existing tasks to weekday-only schedules.
 
+### Logged-Off Execution Enforcement (All `OSHA*` Tasks)
+
+Set scheduler credentials in secrets-managed env (password is never printed by `--print-config`):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -TaskSchedUser "DESKTOP-Q8QM4N9\lever" -TaskSchedPassword "<TASK_SCHED_PASSWORD>"
+```
+
+Apply installers via secrets wrapper so `TASK_SCHED_USER` / `TASK_SCHED_PASSWORD` are loaded:
+
+```powershell
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --apply
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enforce_osha_task_logon_mode.ps1 --apply
+```
+
+Verification commands:
+
+```powershell
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --verify
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py --check-schedule
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enforce_osha_task_logon_mode.ps1 --verify
+```
+
+Intentional exception:
+- `OSHA_WIP_Autosave_Logon` uses an `ONLOGON` trigger by design and cannot run while logged off.
+
 ### Recent Signals Troubleshooting
 
 If cold outreach renders `(no recent signals found)`, outreach is working but `data\osha.sqlite` has no records in the state/last-14-day window used by `outreach\generate_mailmerge.py`.

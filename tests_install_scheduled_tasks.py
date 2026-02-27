@@ -1,4 +1,5 @@
 import re
+import os
 import subprocess
 import unittest
 from pathlib import Path
@@ -28,7 +29,10 @@ EXPECTED_INBOUND_TR = (
 )
 
 
-def _run(*args: str) -> subprocess.CompletedProcess:
+def _run(*args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [
             "powershell",
@@ -40,6 +44,7 @@ def _run(*args: str) -> subprocess.CompletedProcess:
             *args,
         ],
         cwd=str(REPO_ROOT),
+        env=env,
         capture_output=True,
         text=True,
     )
@@ -149,15 +154,25 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self._assert_future_boundary(inbound[0].get("START_BOUNDARY_LOCAL", ""), out)
 
     def test_dry_run_outputs_commands_and_no_apply_token(self):
-        proc = _run("--dry-run")
+        proc = _run(
+            "--dry-run",
+            extra_env={
+                "TASK_SCHED_USER": r"DESKTOP-Q8QM4N9\lever",
+                "TASK_SCHED_PASSWORD": "dont-print-me",
+            },
+        )
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         self.assertEqual(proc.returncode, 0, msg=out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_MODE=dry-run", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_TASK_SCHED_USER=DESKTOP-Q8QM4N9\\lever", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_TASK_SCHED_PASSWORD_PRESENT=YES", out)
         self.assertIn("DRY_RUN_COMMAND_1=", out)
         self.assertIn("DRY_RUN_COMMAND_2=", out)
         self.assertIn("DRY_RUN_COMMAND_3=", out)
         self.assertIn("DRY_RUN_COMMAND_4=", out)
         self.assertIn("DRY_RUN_COMMAND_5=", out)
+        self.assertIn("/RU \"DESKTOP-Q8QM4N9\\lever\" /RP ***REDACTED***", out)
+        self.assertNotIn("dont-print-me", out)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_DRY_RUN", out)
         self.assertNotIn("PASS_INSTALL_SCHEDULED_TASKS_APPLY", out)
         self.assertIn("/SC MINUTE /MO 15", out)
@@ -205,6 +220,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("start_time_mismatch", text)
         self.assertIn("function Convert-StartTimeTo24Hour([string]$Raw)", text)
         self.assertIn("Scheduled Task State", text)
+        self.assertIn("Logon Mode", text)
+        self.assertIn("logon_mode_interactive_only", text)
         self.assertIn("action_mismatch", text)
         self.assertIn("WARN_SCHEDTASK_ACTION_MISMATCH", text)
         self.assertIn("ERR_INSTALL_SCHEDULED_TASKS_APPLY_ACTION_STUCK", text)
@@ -217,6 +234,12 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("--verify", text)
         self.assertIn("--status", text)
         self.assertIn("$modeArg -eq '--verify' -or $modeArg -eq '--status'", text)
+
+    def test_apply_requires_task_scheduler_password(self):
+        proc = _run("--apply", extra_env={"TASK_SCHED_PASSWORD": ""})
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        self.assertNotEqual(proc.returncode, 0, msg=out)
+        self.assertIn("ERR_INSTALL_SCHEDULED_TASKS_CONFIG missing TASK_SCHED_PASSWORD", out)
 
     def test_invalid_args_emit_err_token(self):
         proc = _run("--dry-run", "--apply")

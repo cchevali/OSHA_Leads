@@ -17,9 +17,9 @@ class TestScheduleCheck(unittest.TestCase):
 
         buf = io.StringIO()
         with redirect_stdout(buf):
-            verify_schedule_action_from_actual(expected, actual)
+            verify_schedule_action_from_actual(expected, actual, "Password", "Password")
 
-        self.assertEqual(buf.getvalue().strip(), f"SCHEDULE_OK /TR={expected}")
+        self.assertEqual(buf.getvalue().strip(), f"SCHEDULE_OK /TR={expected} /LOGON_MODE=Password")
 
     def test_schedule_mismatch_from_xml(self):
         xml_text = (FIXTURES_DIR / "task_action_bad.xml").read_text(encoding="utf-8")
@@ -29,12 +29,28 @@ class TestScheduleCheck(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             with self.assertRaises(SystemExit) as ctx:
-                verify_schedule_action_from_actual(expected, actual)
+                verify_schedule_action_from_actual(expected, actual, "Password", "Password")
 
         self.assertEqual(ctx.exception.code, 1)
         lines = buf.getvalue().strip().splitlines()
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0], f"SCHEDULE_CHECK_FAILED expected={expected} actual={actual} hint=run --enable-schedule")
+
+    def test_schedule_fails_when_logon_mode_interactive_only(self):
+        xml_text = (FIXTURES_DIR / "task_action_ok.xml").read_text(encoding="utf-8")
+        actual = extract_exec_action(xml_text)
+        expected = build_task_action(r"C:\dev\OSHA_Leads\run_wally_trial_daily.bat")
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as ctx:
+                verify_schedule_action_from_actual(expected, actual, "Password", "Interactive only")
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(
+            buf.getvalue().strip(),
+            "SCHEDULE_CHECK_FAILED expected_logon_mode=Password actual_logon_mode=Interactive only hint=run --enable-schedule",
+        )
 
 
 if __name__ == "__main__":

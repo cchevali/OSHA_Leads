@@ -55,6 +55,8 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "StripePriceIdMulti",
             "StripePriceIdPilot",
             "WebStripeWebhookSecret",
+            "TaskSchedUser",
+            "TaskSchedPassword",
             "PrintConfig",
         ]
         required_tokens = [
@@ -117,7 +119,12 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("apollo_enrich_enabled=", text)
         self.assertIn("apollo_enrich_max_per_run=", text)
         self.assertIn("apollo_person_locations_mode=", text)
+        self.assertIn("task_sched_user=", text)
+        self.assertIn("task_sched_password_present=", text)
+        self.assertIn("TASK_SCHED_USER", text)
+        self.assertIn("TASK_SCHED_PASSWORD", text)
         self.assertNotIn("Write-Output ('OPENAI_API_KEY='", text)
+        self.assertNotIn("Write-Output ('TASK_SCHED_PASSWORD='", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_ENABLED", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_SOURCES", text)
         self.assertNotIn("CSV_IMPORT", text)

@@ -1,4 +1,6 @@
 import unittest
+import subprocess
+import os
 from pathlib import Path
 
 
@@ -43,12 +45,62 @@ class TestAutosaveWipScriptContract(unittest.TestCase):
             "WIP_AUTOSAVE_EFFECTIVE=",
             "WIP_AUTOSAVE_MODE=WORKTREE",
             "WIP_AUTOSAVE_NEXT_ACTION=",
+            "WIP_AUTOSAVE_ONLOGON_EXCEPTION=OSHA_WIP_Autosave_Logon reason=ONLOGON_trigger_requires_interactive",
             "WIP_AUTOSAVE_RUN_FROM_REPO_ROOT=powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\autosave_wip.ps1",
             "WIP_AUTOSAVE_INSTALL_FROM_REPO_ROOT_APPLY=powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\install_wip_autosave_task.ps1 --apply",
         ]
         for token in required_tokens:
             self.assertIn(token, text)
         self.assertIn("MinuteInterval 15", text)
+        self.assertIn("TASK_SCHED_PASSWORD", text)
+        self.assertIn("/RU", text)
+        self.assertIn("/RP", text)
+
+    def test_installer_dry_run_redacts_scheduler_password(self):
+        env = os.environ.copy()
+        env["TASK_SCHED_USER"] = r"DESKTOP-Q8QM4N9\lever"
+        env["TASK_SCHED_PASSWORD"] = "dont-print-me"
+        proc = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(INSTALLER_SCRIPT_PATH),
+                "--dry-run",
+            ],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        self.assertEqual(proc.returncode, 0, msg=out)
+        self.assertIn('/RU "DESKTOP-Q8QM4N9\\lever" /RP ***REDACTED***', out)
+        self.assertNotIn("dont-print-me", out)
+
+    def test_installer_apply_requires_task_sched_password(self):
+        env = os.environ.copy()
+        env["TASK_SCHED_PASSWORD"] = ""
+        proc = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(INSTALLER_SCRIPT_PATH),
+                "--apply",
+            ],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        self.assertNotEqual(proc.returncode, 0, msg=out)
+        self.assertIn("ERR_INSTALL_WIP_AUTOSAVE_TASK_CONFIG missing TASK_SCHED_PASSWORD", out)
 
     def test_docs_reference_correct_scripts_paths(self):
         agents = AGENTS_PATH.read_text(encoding="utf-8")

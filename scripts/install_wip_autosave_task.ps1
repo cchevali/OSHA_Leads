@@ -11,6 +11,49 @@ function Fail([string]$Token, [string]$Message) {
   exit 1
 }
 
+function Resolve-DefaultSchedulerUser {
+  try {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($identity -and ([string]$identity.Name).Trim()) {
+      return ([string]$identity.Name).Trim()
+    }
+  }
+  catch {
+  }
+
+  $username = ([string]$env:USERNAME).Trim()
+  if (-not $username) {
+    return ''
+  }
+  $domain = ([string]$env:USERDOMAIN).Trim()
+  if ($domain) {
+    return ($domain + '\' + $username)
+  }
+  return $username
+}
+
+function Resolve-SchedulerCredentials([bool]$RequirePassword) {
+  $schedulerUser = ([string]$env:TASK_SCHED_USER).Trim()
+  if (-not $schedulerUser) {
+    $schedulerUser = Resolve-DefaultSchedulerUser
+  }
+  if (-not $schedulerUser) {
+    Fail 'ERR_INSTALL_WIP_AUTOSAVE_TASK_CONFIG' 'missing TASK_SCHED_USER'
+  }
+
+  $schedulerPassword = [string]$env:TASK_SCHED_PASSWORD
+  $passwordPresent = -not [string]::IsNullOrWhiteSpace($schedulerPassword)
+  if ($RequirePassword -and -not $passwordPresent) {
+    Fail 'ERR_INSTALL_WIP_AUTOSAVE_TASK_CONFIG' 'missing TASK_SCHED_PASSWORD'
+  }
+
+  return @{
+    User = $schedulerUser
+    Password = $schedulerPassword
+    PasswordPresent = $passwordPresent
+  }
+}
+
 function Test-IsElevated {
   try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -27,7 +70,8 @@ function New-TaskDefinition(
   [string]$ScheduleType,
   [string]$TaskRun,
   [string]$RunLevel = 'HIGHEST',
-  [int]$MinuteInterval = 0
+  [int]$MinuteInterval = 0,
+  [bool]$RequiresPasswordPrincipal = $false
 ) {
   return @{
     Name = $Name
@@ -35,6 +79,7 @@ function New-TaskDefinition(
     MinuteInterval = $MinuteInterval
     TaskRun = $TaskRun
     RunLevel = $RunLevel
+    RequiresPasswordPrincipal = $RequiresPasswordPrincipal
   }
 }
 
@@ -56,7 +101,7 @@ function Get-TaskDefinitions([string]$RepoRoot) {
   $taskRun = 'cmd.exe /c cd /d ' + $RepoRoot + ' && powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $autosaveScript
   return @(
     (New-TaskDefinition -Name 'OSHA_WIP_Autosave_Logon' -ScheduleType 'logon' -TaskRun $taskRun -RunLevel 'HIGHEST'),
-    (New-TaskDefinition -Name 'OSHA_WIP_Autosave_Hourly' -ScheduleType 'minute' -MinuteInterval 15 -TaskRun $taskRun -RunLevel 'LIMITED')
+    (New-TaskDefinition -Name 'OSHA_WIP_Autosave_Hourly' -ScheduleType 'minute' -MinuteInterval 15 -TaskRun $taskRun -RunLevel 'LIMITED' -RequiresPasswordPrincipal $true)
   )
 }
 
@@ -69,7 +114,7 @@ function Get-ReminderTaskDefinition([string]$RepoRoot, [datetime]$NowLocal) {
   $installerScript = Join-Path $RepoRoot 'scripts\install_wip_autosave_task.ps1'
   $logPath = Join-Path $RepoRoot 'out\wip_autosave_logon_reminder.log'
   $taskRun = 'cmd.exe /c cd /d ' + $RepoRoot + ' && powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $installerScript + ' --status >> ' + $logPath + ' 2>&1'
-  $task = New-TaskDefinition -Name 'OSHA_WIP_Autosave_Logon_Reminder' -ScheduleType 'daily' -TaskRun $taskRun -RunLevel 'LIMITED'
+  $task = New-TaskDefinition -Name 'OSHA_WIP_Autosave_Logon_Reminder' -ScheduleType 'daily' -TaskRun $taskRun -RunLevel 'LIMITED' -RequiresPasswordPrincipal $true
   $resolved = @(Add-ResolvedSchedule -Tasks @($task) -NowLocal $NowLocal)
   return $resolved[0]
 }
@@ -101,7 +146,7 @@ function Add-ResolvedSchedule([array]$Tasks, [datetime]$NowLocal) {
   return $resolved
 }
 
-function Emit-TaskConfig([array]$Tasks, [string]$Mode, [bool]$IsElevated) {
+function Emit-TaskConfig([array]$Tasks, [string]$Mode, [bool]$IsElevated, [hashtable]$SchedulerCredentials) {
   Write-Output ('INSTALL_WIP_AUTOSAVE_TASK_MODE=' + $Mode)
   if ($IsElevated) {
     Write-Output 'INSTALL_WIP_AUTOSAVE_TASK_ELEVATED=YES'
@@ -111,6 +156,14 @@ function Emit-TaskConfig([array]$Tasks, [string]$Mode, [bool]$IsElevated) {
   }
   Write-Output 'WIP_AUTOSAVE_RUN_FROM_REPO_ROOT=powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\autosave_wip.ps1'
   Write-Output 'WIP_AUTOSAVE_INSTALL_FROM_REPO_ROOT_APPLY=powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --apply'
+  Write-Output 'WIP_AUTOSAVE_ONLOGON_EXCEPTION=OSHA_WIP_Autosave_Logon reason=ONLOGON_trigger_requires_interactive'
+  Write-Output ('INSTALL_WIP_AUTOSAVE_TASK_SCHED_USER=' + ([string]$SchedulerCredentials.User))
+  if ([bool]$SchedulerCredentials.PasswordPresent) {
+    Write-Output 'INSTALL_WIP_AUTOSAVE_TASK_SCHED_PASSWORD_PRESENT=YES'
+  }
+  else {
+    Write-Output 'INSTALL_WIP_AUTOSAVE_TASK_SCHED_PASSWORD_PRESENT=NO'
+  }
   Write-Output ('INSTALL_WIP_AUTOSAVE_TASK_COUNT=' + $Tasks.Count)
   for ($i = 0; $i -lt $Tasks.Count; $i++) {
     $idx = $i + 1
@@ -133,15 +186,19 @@ function Emit-TaskConfig([array]$Tasks, [string]$Mode, [bool]$IsElevated) {
   }
 }
 
-function Build-SchtasksPreviewLine([hashtable]$Task) {
+function Build-SchtasksPreviewLine([hashtable]$Task, [string]$SchedulerUser) {
   $taskName = '\' + $Task.Name
   if ($Task.ScheduleType -eq 'logon') {
     return 'schtasks /Create /F /SC ONLOGON /TN "' + $taskName + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
   }
-  if ($Task.ScheduleType -eq 'daily') {
-    return 'schtasks /Create /F /SC DAILY /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskName + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
+  $principalPart = ''
+  if ([bool]$Task.RequiresPasswordPrincipal) {
+    $principalPart = ' /RU "' + $SchedulerUser + '" /RP ***REDACTED***'
   }
-  return 'schtasks /Create /F /SC MINUTE /MO ' + $Task.MinuteInterval + ' /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskName + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel
+  if ($Task.ScheduleType -eq 'daily') {
+    return 'schtasks /Create /F /SC DAILY /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskName + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel + $principalPart
+  }
+  return 'schtasks /Create /F /SC MINUTE /MO ' + $Task.MinuteInterval + ' /SD ' + $Task.StartDate + ' /ST ' + $Task.StartTimeResolved + ' /TN "' + $taskName + '" /TR "' + $Task.TaskRun + '" /RL ' + $Task.RunLevel + $principalPart
 }
 
 function Invoke-SchtasksCommand([string[]]$SchtasksArgs) {
@@ -236,7 +293,7 @@ function Parse-RepeatMinutes([hashtable]$Fields) {
   return $minutes
 }
 
-function Invoke-TaskCreate([hashtable]$Task) {
+function Invoke-TaskCreate([hashtable]$Task, [hashtable]$SchedulerCredentials) {
   $taskName = '\' + $Task.Name
   $taskArgs = @('/Create', '/F', '/SC')
 
@@ -254,6 +311,9 @@ function Invoke-TaskCreate([hashtable]$Task) {
   }
 
   $taskArgs += @('/TN', $taskName, '/TR', $Task.TaskRun, '/RL', $Task.RunLevel)
+  if ([bool]$Task.RequiresPasswordPrincipal) {
+    $taskArgs += @('/RU', ([string]$SchedulerCredentials.User), '/RP', ([string]$SchedulerCredentials.Password))
+  }
 
   $create = Invoke-SchtasksCommand -SchtasksArgs $taskArgs
   if ([int]$create.ExitCode -eq 0) {
@@ -354,6 +414,7 @@ function Emit-Status([array]$Tasks, [bool]$IsElevated) {
   }
 
   Write-Output 'WIP_AUTOSAVE_MODE=WORKTREE'
+  Write-Output 'WIP_AUTOSAVE_ONLOGON_EXCEPTION=OSHA_WIP_Autosave_Logon reason=ONLOGON_trigger_requires_interactive'
   Write-Output ('WIP_AUTOSAVE_NEXT_ACTION=' + $nextAction)
   if ($nextAction -eq 'run_elevated_cmd') {
     Write-Output ('WIP_AUTOSAVE_LOGON_INSTALL_ELEVATED_CMD=' + (Build-LogonElevatedCommand -Task $logonTask))
@@ -387,18 +448,19 @@ if (-not (Test-Path -LiteralPath $autosaveScriptPath)) {
 $rawTasks = Get-TaskDefinitions -RepoRoot $repoRoot
 $resolvedTasks = Add-ResolvedSchedule -Tasks $rawTasks -NowLocal (Get-Date)
 $isElevated = Test-IsElevated
+$schedulerCredentials = Resolve-SchedulerCredentials -RequirePassword:($modeArg -eq '--apply')
 
 if ($modeArg -eq '--print-config') {
-  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'print-config' -IsElevated $isElevated
+  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'print-config' -IsElevated $isElevated -SchedulerCredentials $schedulerCredentials
   Write-Output 'PASS_INSTALL_WIP_AUTOSAVE_TASK_PRINT_CONFIG'
   exit 0
 }
 
 if ($modeArg -eq '--dry-run') {
-  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'dry-run' -IsElevated $isElevated
+  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'dry-run' -IsElevated $isElevated -SchedulerCredentials $schedulerCredentials
   for ($i = 0; $i -lt $resolvedTasks.Count; $i++) {
     $idx = $i + 1
-    Write-Output ('DRY_RUN_COMMAND_' + $idx + '=' + (Build-SchtasksPreviewLine -Task $resolvedTasks[$i]))
+    Write-Output ('DRY_RUN_COMMAND_' + $idx + '=' + (Build-SchtasksPreviewLine -Task $resolvedTasks[$i] -SchedulerUser ([string]$schedulerCredentials.User)))
   }
   Write-Output 'PASS_INSTALL_WIP_AUTOSAVE_TASK_DRY_RUN'
   exit 0
@@ -415,9 +477,9 @@ if ($null -eq $hourlyTask -or $null -eq $logonTask) {
   Fail 'ERR_INSTALL_WIP_AUTOSAVE_TASK_CONFIG' 'required_task_missing'
 }
 
-Emit-TaskConfig -Tasks $resolvedTasks -Mode 'apply' -IsElevated $isElevated
+Emit-TaskConfig -Tasks $resolvedTasks -Mode 'apply' -IsElevated $isElevated -SchedulerCredentials $schedulerCredentials
 
-$hourlyCreate = Invoke-TaskCreate -Task $hourlyTask
+$hourlyCreate = Invoke-TaskCreate -Task $hourlyTask -SchedulerCredentials $schedulerCredentials
 if ([bool]$hourlyCreate.AccessDenied) {
   Fail 'ERR_INSTALL_WIP_AUTOSAVE_TASK_APPLY' ('task=' + $hourlyTask.Name + ' access_denied=1 detail=' + (([string]$hourlyCreate.Detail).Trim()))
 }
@@ -427,7 +489,7 @@ $logonApplyTask = Copy-Hashtable -Source $logonTask
 if (-not $isElevated) {
   $logonApplyTask['RunLevel'] = 'LIMITED'
 }
-$logonCreate = Invoke-TaskCreate -Task $logonApplyTask
+$logonCreate = Invoke-TaskCreate -Task $logonApplyTask -SchedulerCredentials $schedulerCredentials
 if ([bool]$logonCreate.AccessDenied) {
   if ($isElevated) {
     Fail 'ERR_INSTALL_WIP_AUTOSAVE_TASK_APPLY' ('task=' + $logonTask.Name + ' access_denied=1 detail=' + (([string]$logonCreate.Detail).Trim()))
@@ -441,7 +503,7 @@ if ([bool]$logonCreate.AccessDenied) {
   New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
   $reminderTask = Get-ReminderTaskDefinition -RepoRoot $repoRoot -NowLocal (Get-Date)
-  $reminderCreate = Invoke-TaskCreate -Task $reminderTask
+  $reminderCreate = Invoke-TaskCreate -Task $reminderTask -SchedulerCredentials $schedulerCredentials
   if ([bool]$reminderCreate.AccessDenied) {
     Fail 'ERR_INSTALL_WIP_AUTOSAVE_TASK_APPLY' ('task=' + $reminderTask.Name + ' access_denied=1 detail=' + (([string]$reminderCreate.Detail).Trim()))
   }
