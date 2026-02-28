@@ -1452,8 +1452,10 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("BCSP_available=YES reason=http_html", out)
             self.assertIn("OSHA_NEWS_available=NO reason=crawl4ai_not_installed", out)
             self.assertIn("STATE_LIC_available=YES reason=http_api", out)
+            self.assertIn("website_enrich_available=YES", out)
             self.assertIn("enrich_domain_enabled=NO", out)
             self.assertIn("enrich_hunter_enabled=NO", out)
+            self.assertIn("prospect_enrich_allow_role_inbox=0", out)
             self.assertIn("apollo_api_accessible=NO free_plan_web_ui_manual", out)
 
     def test_state_lic_enrichment_domain_resolution_and_email_guess_in_dry_run(self):
@@ -1502,12 +1504,17 @@ class TestProspectGeneration(unittest.TestCase):
                         "outreach.run_prospect_generation.prospect_enrich_email._default_head_fetcher",
                         return_value={"status": 200, "url": "https://bassettelectric.com", "headers": {}},
                     ):
-                        with redirect_stdout(buf):
-                            rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+                        with mock.patch(
+                            "outreach.run_prospect_generation.prospect_enrich_email._default_website_fetcher",
+                            return_value={"status": 404, "url": "https://bassettelectric.com", "html": "", "error": ""},
+                        ):
+                            with redirect_stdout(buf):
+                                rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
             self.assertEqual(rc, 0)
             out = buf.getvalue()
             self.assertIn("GENERATOR_ENRICH_DOMAIN_RESOLVED=1", out)
             self.assertIn("GENERATOR_ENRICH_EMAIL_GUESSED=1", out)
+            self.assertIn("GENERATOR_WEBSITE_ENRICH_ATTEMPTED=1", out)
             self.assertIn("GENERATOR_STATE_LIC_ROWS_ACCEPTED=1", out)
 
     def test_state_lic_enrichment_default_off_no_behavior_change(self):
@@ -1559,6 +1566,63 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_ENRICH_DOMAIN_RESOLVED=0", out)
             self.assertIn("GENERATOR_ENRICH_EMAIL_GUESSED=0", out)
             self.assertIn("GENERATOR_STATE_LIC_ROWS_ACCEPTED=0", out)
+
+    def test_aiha_dry_run_emits_non_zero_website_enrich_attempted_when_enabled(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            aiha_cache = data_dir / "prospect_generation" / "cache" / "aiha" / "state_TX.json"
+            aiha_result = {
+                "rows": [
+                    {
+                        "firm": "Example Safety LLC",
+                        "contact_name": "",
+                        "email": "",
+                        "contact_email": "",
+                        "state": "TX",
+                        "city": "Austin",
+                        "title": "EHS Consultant",
+                        "source": "aiha_consultants_listing:1",
+                        "website": "https://example.com",
+                    }
+                ],
+                "cache_path": aiha_cache,
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "TEXT_CONTAINER",
+                "diagnostics_path": None,
+            }
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA",
+                "PROSPECT_ENRICH_DOMAIN_ENABLED": "1",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
+                    return_value=aiha_result,
+                ):
+                    with mock.patch(
+                        "outreach.run_prospect_generation.prospect_enrich_email._default_website_fetcher",
+                        return_value={
+                            "status": 200,
+                            "url": "https://example.com",
+                            "html": "<html><body>contact@example.com</body></html>",
+                            "error": "",
+                        },
+                    ):
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_WEBSITE_ENRICH_ATTEMPTED=1", out)
 
     def test_bcsp_source_emits_tokens(self):
         from outreach import run_prospect_generation as generator

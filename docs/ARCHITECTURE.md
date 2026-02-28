@@ -21,7 +21,9 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - BCSP uses plain HTTP parsing (`search_results.php`) and is maintained as a future enrichment input (contact/location only; not directly sendable without employer/domain resolution).
    - OSHA_NEWS uses a lazy-loaded Crawl4AI wrapper (`outreach/scraper_engine.py`) with warning-level degradation when Crawl4AI/Playwright browsers are unavailable.
    - STATE_LIC Phase 1 uses the Texas TDLR public Socrata dataset (`7358-krk7`) and provides licensed-business metadata including address/phone/county fields.
-   - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering to populate existing `website`/`email` fields via domain resolution + pattern guesses.
+   - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering: domain resolution -> deterministic website crawl (`/`, `/contact`, `/contact-us`, `/about`, `/about-us`, `/team`) -> candidate ranking (`website_mailto`/`website_visible` over guesses) -> final `email` selection with audit fields (`email_source`, `email_kind`, `email_candidates_json`).
+   - AIHA rows feed enrichment with parsed `website` when present; if absent, enrichment resolves domain from AIHA `firm` (`company_name`) before crawl/pattern fallback.
+   - Website enrichment writes per-domain cache under `${DATA_DIR}/prospect_generation/cache/website_email/` (14-day TTL) and exception review CSV under `${DATA_DIR}/prospect_generation/diagnostics/website_enrich_needs_review_<YYYYMMDD>.csv`.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts the generated CSV into `crm.sqlite`.

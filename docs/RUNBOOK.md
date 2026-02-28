@@ -277,6 +277,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
+  -ProspectEnrichDomainEnabled 1 `
+  -ProspectEnrichAllowRoleInbox 0 `
   -ApolloApiKey <your_apollo_api_key> `
   -ApolloEnrichEnabled 1 `
   -ApolloEnrichMaxPerRun 50 `
@@ -290,6 +292,7 @@ This script:
 - Ensures `DATA_DIR`, `OSHA_SMOKE_TO`, `OUTREACH_STATES`, and `OUTREACH_DAILY_LIMIT` exist in `.env.sops`
 - Ensures `OUTREACH_SUPPRESSION_MAX_AGE_HOURS` is set to `240` when missing (or to your explicit parameter value)
 - Ensures `OUTREACH_FALLBACK_ON_EMPTY_STATE` default `0` and `OUTREACH_SKIP_ROLE_INBOXES` default `1`
+- Ensures prospect enrichment defaults include `PROSPECT_ENRICH_DOMAIN_ENABLED=0`, `PROSPECT_ENRICH_HUNTER_ENABLED=0`, and `PROSPECT_ENRICH_ALLOW_ROLE_INBOX=0`
 - Ensures trial defaults `TRIAL_SENDS_LIMIT_DEFAULT`, `TRIAL_EXPIRED_BEHAVIOR_DEFAULT`, and optional `TRIAL_CONVERSION_URL` are managed in the same no-editor flow
 - Re-encrypts `.env.sops` on save
 - Refuses to run when `.env.sops` is staged (`ERR_ENV_SOPS_STAGED`)
@@ -329,6 +332,7 @@ Auto-growth (env-gated, optional):
 - Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_STATES`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
 - Crawl4AI runtime keys (optional, default zero-cost): `PROSPECT_AUTOGROW_LLM_ENABLED` (default `0`), `PROSPECT_AUTOGROW_BCSP_CREDENTIALS`, `PROSPECT_AUTOGROW_BCSP_INDUSTRY`, `PROSPECT_AUTOGROW_STATE_LIC_TX_LICENSE_TYPES`.
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
+- Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_ALLOW_ROLE_INBOX` (default `0`), `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_MAX_PAGES_PER_SITE` (default `5`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (default `750`; when unset, falls back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`).
 - Source scope: `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG,BCSP,STATE_LIC`).
 - Cache paths:
   - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
@@ -337,6 +341,7 @@ Auto-growth (env-gated, optional):
   - BCSP: `${DATA_DIR}\prospect_generation\cache\bcsp\state_<STATE>.json`
   - OSHA_NEWS: `${DATA_DIR}\prospect_generation\cache\osha_news\state_<STATE>.json`
   - STATE_LIC: `${DATA_DIR}\prospect_generation\cache\state_lic\state_<STATE>.json`
+  - Website enrichment: `${DATA_DIR}\prospect_generation\cache\website_email\<domain>.json` (TTL 14 days)
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
 - Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
@@ -388,6 +393,7 @@ Generator emits machine-readable lines:
 - `GENERATOR_BCSP_*`, `GENERATOR_OSHA_NEWS_*`, `GENERATOR_STATE_LIC_*`
 - `crawl4ai_installed`, `playwright_browsers_installed`, `<SOURCE>_available` (via `--print-config`)
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
+- `GENERATOR_WEBSITE_ENRICH_*`, `GENERATOR_WEBSITE_ENRICH_NEEDS_REVIEW_PATH`
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
 
 APOLLO telemetry highlights:
@@ -1221,4 +1227,3 @@ Operator checks:
 - Confirm each run prints a `RUN_DIAGNOSTICS` line.
 - Confirm dry-run output indicates no live send.
 - On the second run, previously observed leads should not be counted as newly observed.
-

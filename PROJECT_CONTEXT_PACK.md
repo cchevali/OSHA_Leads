@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=bd1c769426da51feff18afcdfb2f421c0089e718
-PACK_BUILD_UTC=2026-02-27T04:57:26Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=dbaf437ed3810086ecc883e8802f17b9146313bec7a7ed7e64c79544aad509bc docs/DECISIONS.md=0cde644966e1f2ce980c3c97f1bbfb6c64e7b5aeffdfc3cbb575d9084a5d0e1b docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=4582df94e63fbb1086f472333426ce7aacff68b188abeae702f9349fd1889942 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=1e6fafdad8c6331bdab785969c6290046cf240fa09a8739d887b98641d10718d
+PACK_GIT_SHA=9502abca690240cde3b975219cd64d8b858b0867
+PACK_BUILD_UTC=2026-02-28T03:07:21Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=dbaf437ed3810086ecc883e8802f17b9146313bec7a7ed7e64c79544aad509bc docs/DECISIONS.md=0cde644966e1f2ce980c3c97f1bbfb6c64e7b5aeffdfc3cbb575d9084a5d0e1b docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=f804e872f2b6998c78610c8ed42de33282180c10d228f3d289cc994881d8ed1f docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=06bdee82c468aaddb533ad5d369a965cd9595989e4571f1d9057379e2bd92bbe
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -760,6 +760,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachStates TX,CA,FL `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
+  -OutreachFallbackOnEmptyState 0 `
+  -OutreachSkipRoleInboxes 1 `
   -ProspectAutoGrowEnabled 1 `
   -ProspectAutoGrowSafetyNetEnabled 1 `
   -ProspectAutoGrowSources AIHA,OHS_BG,APOLLO `
@@ -778,6 +780,7 @@ This script:
 
 - Ensures `DATA_DIR`, `OSHA_SMOKE_TO`, `OUTREACH_STATES`, and `OUTREACH_DAILY_LIMIT` exist in `.env.sops`
 - Ensures `OUTREACH_SUPPRESSION_MAX_AGE_HOURS` is set to `240` when missing (or to your explicit parameter value)
+- Ensures `OUTREACH_FALLBACK_ON_EMPTY_STATE` default `0` and `OUTREACH_SKIP_ROLE_INBOXES` default `1`
 - Ensures trial defaults `TRIAL_SENDS_LIMIT_DEFAULT`, `TRIAL_EXPIRED_BEHAVIOR_DEFAULT`, and optional `TRIAL_CONVERSION_URL` are managed in the same no-editor flow
 - Re-encrypts `.env.sops` on save
 - Refuses to run when `.env.sops` is staged (`ERR_ENV_SOPS_STAGED`)
@@ -865,9 +868,9 @@ Generator emits machine-readable lines:
 - `GENERATOR_ROWS_READ`
 - `GENERATOR_ROWS_WRITTEN`
 - `GENERATOR_AUTOGROW_*`
-- `GENERATOR_AUTOGROW_SAFETY_NET_FORCED`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
+- `GENERATOR_AUTOGROW_SAFETY_NET_FORCED=1 reason=SENDABLE_BELOW_FLOOR states=<STATE:sendable,...>`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
 - `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
-- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
+- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> backlog_sendable_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
 - `GENERATOR_AUTOGROW_STATES`
 - `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG|APOLLO|BCSP|OSHA_NEWS|STATE_LIC> state=<STATE> ...`
 - `GENERATOR_AIHA_*`
@@ -893,8 +896,12 @@ APOLLO telemetry highlights:
 Optional empty-state planner fallback:
 - `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default) preserves weekday rotation-selected state.
 - Set `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` to auto-switch plan/send to the configured state with the highest sendable estimate when the rotation-selected state is empty (or below floor).
+- `OUTREACH_SKIP_ROLE_INBOXES=1` (default) skips role inbox local-parts (`info`, `contact`, `admin`, `office`, `support`, `sales`, `hello`, `help`, `billing`, `accounts`, `careers`, `jobs`, `hr`).
 - Stable state-selection tokens: `OUTREACH_STATE_ROTATION_SELECTED=<STATE>` and `OUTREACH_STATE_EFFECTIVE_SEND=<STATE>`
 - Fallback token: `OUTREACH_FALLBACK_TRIGGERED=1 from=<STATE> to=<STATE> reason=<SENDABLE_BELOW_FLOOR>`
+- No-signal token: `OUTREACH_SKIP_NO_SIGNALS state=<STATE> window_days=<N>`
+- Empty-state no-send token: `OUTREACH_EMPTY_STATE_NO_SEND=1 state=<STATE>`
+- Pre-send duplicate token: `OUTREACH_DUPLICATE_GUARD_DROPPED=<n>`
 - Floor readiness token (manual ramp remains operator-controlled): `OUTREACH_RAMP_READY=<0|1> desired_daily_limit=<N> states_ready=<k> states_total=<m> ready_states=<csv|none>`
 
 Artifact separation (do not mix these):
@@ -1028,6 +1035,7 @@ When `OUTREACH_PLAN_WILL_SEND=0`, root-cause must be interpreted from `OUTREACH_
 - Optional zero-send-day guard: set `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` to allow auto-switching to the configured state with the highest sendable estimate; verify activation via `OUTREACH_FALLBACK_TRIGGERED=1 from=<STATE> to=<STATE> reason=<...>`.
 - Recommended default remains `0` unless you explicitly want to prevent zero-send days by allowing state fallback.
 - Track rotation vs effective send and floor readiness in stdout tokens: `OUTREACH_STATE_ROTATION_SELECTED`, `OUTREACH_STATE_EFFECTIVE_SEND`, and `OUTREACH_RAMP_READY`.
+- Signal/selection guard tokens: `OUTREACH_SKIP_NO_SIGNALS`, `OUTREACH_EMPTY_STATE_NO_SEND`, and `OUTREACH_DUPLICATE_GUARD_DROPPED`.
 
 Dry-run (no sends, writes outbox + manifest artifacts):
 
@@ -1053,6 +1061,8 @@ Required outreach env keys (managed by `scripts\set_outreach_env.ps1`):
 - `OUTREACH_DAILY_LIMIT=10`
 - `OSHA_SMOKE_TO=cchevali+oshasmoke@gmail.com`
 - `OUTREACH_SUPPRESSION_MAX_AGE_HOURS=240`
+- `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default)
+- `OUTREACH_SKIP_ROLE_INBOXES=1` (default)
 - `DATA_DIR=out` (or your runtime path)
 
 `run_outreach_auto.py` deterministically picks today's rotation state from `OUTREACH_STATES` by weekday index, may optionally fallback to a different effective send state, and always uses the effective send-state batch id `<YYYY-MM-DD>_<STATE>`.

@@ -261,7 +261,20 @@ def _source_cache_path_for_state(cache_root_dir: Path, source_token: str, state:
 
 
 def _discovery_fields() -> list[str]:
-    return ["prospect_id", "firm", "email", "title", "city", "state", "source", "contact_name", "website"]
+    return [
+        "prospect_id",
+        "firm",
+        "email",
+        "email_source",
+        "email_kind",
+        "email_candidates_json",
+        "title",
+        "city",
+        "state",
+        "source",
+        "contact_name",
+        "website",
+    ]
 
 
 def _prospect_id(state: str, domain: str, email: str) -> str:
@@ -290,6 +303,16 @@ def _parse_int_env(raw: str, default: int, minimum: int) -> int:
     text = str(raw or "").strip()
     if not text:
         return default
+    value = int(text)
+    if value < minimum:
+        raise ValueError(f"value_below_minimum raw={text} minimum={minimum}")
+    return value
+
+
+def _parse_optional_int_env(raw: str, minimum: int) -> int | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
     value = int(text)
     if value < minimum:
         raise ValueError(f"value_below_minimum raw={text} minimum={minimum}")
@@ -417,12 +440,22 @@ def _generation_hunter_usage_path(data_dir: Path) -> Path:
     return data_dir / "prospect_generation" / "hunter_usage.json"
 
 
+def _generation_website_email_cache_dir(data_dir: Path) -> Path:
+    return data_dir / "prospect_generation" / "cache" / "website_email"
+
+
 def _parse_enrich_config(data_dir: Path) -> dict:
+    sleep_override_ms = _parse_optional_int_env(os.getenv("PROSPECT_ENRICH_HTTP_SLEEP_MS", ""), minimum=0)
     return {
         "domain_enabled": _bool_env(os.getenv("PROSPECT_ENRICH_DOMAIN_ENABLED", "0")),
         "hunter_enabled": _bool_env(os.getenv("PROSPECT_ENRICH_HUNTER_ENABLED", "0")),
+        "allow_role_inbox": _bool_env(os.getenv("PROSPECT_ENRICH_ALLOW_ROLE_INBOX", "0")),
+        "max_sites_per_run": _parse_int_env(os.getenv("PROSPECT_ENRICH_MAX_SITES_PER_RUN", ""), default=25, minimum=1),
+        "max_pages_per_site": _parse_int_env(os.getenv("PROSPECT_ENRICH_MAX_PAGES_PER_SITE", ""), default=5, minimum=1),
+        "sleep_ms": sleep_override_ms,
         "hunter_api_key": _normalize_text(os.getenv("HUNTER_API_KEY", "")),
         "hunter_usage_path": _generation_hunter_usage_path(data_dir),
+        "website_cache_dir": _generation_website_email_cache_dir(data_dir),
         "hunter_cap": prospect_enrich_email.HUNTER_FREE_MONTHLY_CAP,
     }
 
@@ -500,6 +533,9 @@ def _to_discovery_rows(input_rows: list[dict[str, str]]) -> list[dict[str, str]]
                 "prospect_id": prospect_id,
                 "firm": _normalize_text(row.get("firm") or row.get("company_name") or ""),
                 "email": email,
+                "email_source": _normalize_text(row.get("email_source") or ""),
+                "email_kind": _normalize_text(row.get("email_kind") or ""),
+                "email_candidates_json": _normalize_text(row.get("email_candidates_json") or ""),
                 "title": _normalize_text(row.get("title") or row.get("contact_role") or ""),
                 "city": _normalize_text(row.get("city") or ""),
                 "state": state,
@@ -529,6 +565,29 @@ def _write_output_atomic(path: Path, rows: list[dict[str, str]]) -> None:
         tmp_path = Path(tmp.name)
 
     os.replace(str(tmp_path), str(path))
+
+
+def _write_website_enrich_needs_review_csv(diagnostics_dir: Path, rows: list[dict[str, object]]) -> Path | None:
+    if not rows:
+        return None
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d")
+    path = diagnostics_dir / f"website_enrich_needs_review_{stamp}.csv"
+    fields = ["domain", "website", "reason", "http_status", "attempted_urls"]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "domain": _normalize_text(row.get("domain") or ""),
+                    "website": _normalize_text(row.get("website") or ""),
+                    "reason": _normalize_text(row.get("reason") or ""),
+                    "http_status": int(row.get("http_status") or 0),
+                    "attempted_urls": _normalize_text(row.get("attempted_urls") or ""),
+                }
+            )
+    return path
 
 
 def _connect_crm_if_exists(crm_db: Path) -> sqlite3.Connection | None:
@@ -816,6 +875,9 @@ def _filter_autogrow_candidates(
                 "prospect_id": _normalize_text(row.get("prospect_id") or ""),
                 "company_name": _normalize_text(row.get("firm") or row.get("company_name") or ""),
                 "contact_email": email,
+                "email_source": _normalize_text(row.get("email_source") or ""),
+                "email_kind": _normalize_text(row.get("email_kind") or ""),
+                "email_candidates_json": _normalize_text(row.get("email_candidates_json") or ""),
                 "contact_role": _normalize_text(row.get("title") or row.get("contact_role") or "EHS Consultant"),
                 "contact_name": _normalize_text(row.get("contact_name") or ""),
                 "city": _normalize_text(row.get("city") or ""),
@@ -857,12 +919,33 @@ def _default_generator_enrich_metrics() -> dict[str, int]:
         "hunter_verified": 0,
         "still_no_email": 0,
         "hunter_skipped_cap": 0,
+        "website_enrich_attempted": 0,
+        "website_enrich_enriched": 0,
+        "website_enrich_person_found": 0,
+        "website_enrich_role_inbox_found": 0,
+        "website_enrich_blocked_403": 0,
+        "website_enrich_no_email": 0,
+        "website_sites_crawled": 0,
     }
 
 
 def _merge_generator_enrich_metrics(dest: dict[str, int], src: dict | None) -> None:
     source = dict(src or {})
-    for key in ("attempted", "domain_resolved", "email_guessed", "hunter_verified", "still_no_email", "hunter_skipped_cap"):
+    for key in (
+        "attempted",
+        "domain_resolved",
+        "email_guessed",
+        "hunter_verified",
+        "still_no_email",
+        "hunter_skipped_cap",
+        "website_enrich_attempted",
+        "website_enrich_enriched",
+        "website_enrich_person_found",
+        "website_enrich_role_inbox_found",
+        "website_enrich_blocked_403",
+        "website_enrich_no_email",
+        "website_sites_crawled",
+    ):
         dest[key] = int(dest.get(key, 0)) + int(source.get(key, 0) or 0)
 
 
@@ -1058,6 +1141,7 @@ def _print_tokens(
     apollo_result: dict,
     apollo_rejected: Counter,
     diagnostics_path: Path | None,
+    website_enrich_needs_review_path: Path | None,
     crawl_probe: dict | None = None,
     source_availability: dict | None = None,
     extra_source_results: dict | None = None,
@@ -1126,6 +1210,19 @@ def _print_tokens(
     print(f"GENERATOR_ENRICH_HUNTER_VERIFIED={int(enrich_metrics.get('hunter_verified') or 0)}")
     print(f"GENERATOR_ENRICH_STILL_NO_EMAIL={int(enrich_metrics.get('still_no_email') or 0)}")
     print(f"GENERATOR_ENRICH_HUNTER_SKIPPED_CAP={int(enrich_metrics.get('hunter_skipped_cap') or 0)}")
+    print(f"GENERATOR_WEBSITE_ENRICH_ATTEMPTED={int(enrich_metrics.get('website_enrich_attempted') or 0)}")
+    print(f"GENERATOR_WEBSITE_ENRICH_ENRICHED={int(enrich_metrics.get('website_enrich_enriched') or 0)}")
+    print(f"GENERATOR_WEBSITE_ENRICH_PERSON_FOUND={int(enrich_metrics.get('website_enrich_person_found') or 0)}")
+    print(
+        "GENERATOR_WEBSITE_ENRICH_ROLE_INBOX_FOUND="
+        f"{int(enrich_metrics.get('website_enrich_role_inbox_found') or 0)}"
+    )
+    print(f"GENERATOR_WEBSITE_ENRICH_BLOCKED_403={int(enrich_metrics.get('website_enrich_blocked_403') or 0)}")
+    print(f"GENERATOR_WEBSITE_ENRICH_NO_EMAIL={int(enrich_metrics.get('website_enrich_no_email') or 0)}")
+    if website_enrich_needs_review_path is not None:
+        print(f"GENERATOR_WEBSITE_ENRICH_NEEDS_REVIEW_PATH={website_enrich_needs_review_path.resolve()}")
+    else:
+        print("GENERATOR_WEBSITE_ENRICH_NEEDS_REVIEW_PATH=NONE")
     if print_availability:
         cp = dict(crawl_probe or {})
         print(f"crawl4ai_installed={'YES' if cp.get('crawl4ai_installed') else 'NO'}")
@@ -1136,8 +1233,11 @@ def _print_tokens(
             available = bool(av.get("available"))
             reason = _normalize_text(av.get("reason") or ("ok" if available else "unknown"))
             print(f"{source_key}_available={'YES' if available else 'NO'} reason={reason}")
+        print("website_enrich_available=YES")
         print(f"enrich_domain_enabled={'YES' if enrich_cfg.get('domain_enabled') else 'NO'}")
         print(f"enrich_hunter_enabled={'YES' if enrich_cfg.get('hunter_enabled') else 'NO'}")
+        print(f"prospect_enrich_allow_role_inbox={1 if enrich_cfg.get('allow_role_inbox') else 0}")
+        print(f"PROSPECT_ENRICH_ALLOW_ROLE_INBOX={1 if enrich_cfg.get('allow_role_inbox') else 0}")
         print("apollo_api_accessible=NO free_plan_web_ui_manual")
     for detail in state_details:
         state = _normalize_state(str(detail.get("state") or ""))
@@ -1560,6 +1660,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     apollo_enrich_remaining = int(apollo_cfg.get("enrich_max_per_run") or 0)
     diagnostics_path: Path | None = None
+    website_enrich_needs_review_path: Path | None = None
+    website_needs_review_rows: list[dict[str, object]] = []
+    website_sites_remaining = int(enrich_cfg.get("max_sites_per_run") or 0)
     autogrow_rows: list[dict[str, str]] = []
     enrich_metrics = _default_generator_enrich_metrics()
 
@@ -1587,6 +1690,7 @@ def main(argv: list[str] | None = None) -> int:
             apollo_result=apollo_result,
             apollo_rejected=apollo_rejected,
             diagnostics_path=None,
+            website_enrich_needs_review_path=None,
             crawl_probe=crawl_probe,
             source_availability=source_availability,
             extra_source_results=extra_source_results,
@@ -1645,16 +1749,34 @@ def main(argv: list[str] | None = None) -> int:
             )
             rows_candidate = list(result.get("rows") or [])
             if rows_candidate:
+                enrich_sleep_ms = enrich_cfg.get("sleep_ms")
+                if enrich_sleep_ms is None:
+                    enrich_sleep_ms = int(autogrow_cfg.get("sleep_ms") or 0)
                 enrich_out = prospect_enrich_email.enrich_autogrow_rows(
                     rows=rows_candidate,
                     domain_enabled=bool(enrich_cfg.get("domain_enabled")),
                     hunter_enabled=(bool(enrich_cfg.get("hunter_enabled")) and not bool(args.dry_run)),
                     hunter_api_key=str(enrich_cfg.get("hunter_api_key") or ""),
-                    sleep_ms=int(autogrow_cfg.get("sleep_ms") or 0),
+                    allow_role_inbox=bool(enrich_cfg.get("allow_role_inbox")),
+                    max_sites_per_run=max(0, int(website_sites_remaining)),
+                    max_pages_per_site=int(enrich_cfg.get("max_pages_per_site") or 5),
+                    sleep_ms=int(enrich_sleep_ms or 0),
                     hunter_usage_path=Path(enrich_cfg.get("hunter_usage_path") or _generation_hunter_usage_path(data_dir)),
+                    website_cache_dir=Path(
+                        enrich_cfg.get("website_cache_dir") or _generation_website_email_cache_dir(data_dir)
+                    ),
+                    allow_cache_write=not bool(args.dry_run),
                 )
                 rows_candidate = list(enrich_out.get("rows") or rows_candidate)
                 _merge_generator_enrich_metrics(enrich_metrics, enrich_out.get("metrics"))
+                website_sites_remaining = max(
+                    0,
+                    int(website_sites_remaining)
+                    - int(dict(enrich_out.get("metrics") or {}).get("website_sites_crawled") or 0),
+                )
+                website_enrich_rows = list(enrich_out.get("needs_review") or [])
+                if website_enrich_rows:
+                    website_needs_review_rows.extend(website_enrich_rows)
             filtered_rows, rejected = _filter_autogrow_candidates(
                 rows=rows_candidate,
                 target_state=state_detail,
@@ -1764,6 +1886,32 @@ def main(argv: list[str] | None = None) -> int:
                 source_label = AUTOGROW_SOURCE_LABEL.get(source_token, source_token.lower())
                 print(f"{WARN_AUTOGROWTH_SOURCE_FAILED} source={source_label} state={state_detail} err={result.get('error')}")
 
+    if website_needs_review_rows and not bool(args.dry_run):
+        deduped_review_rows: list[dict[str, object]] = []
+        seen_review_keys: set[tuple[str, str, int, str]] = set()
+        for row in website_needs_review_rows:
+            domain = _normalize_text(row.get("domain") or "").lower()
+            reason = _normalize_text(row.get("reason") or "")
+            http_status = int(row.get("http_status") or 0)
+            attempted_urls = _normalize_text(row.get("attempted_urls") or "")
+            key = (domain, reason, http_status, attempted_urls)
+            if key in seen_review_keys:
+                continue
+            seen_review_keys.add(key)
+            deduped_review_rows.append(
+                {
+                    "domain": domain,
+                    "website": _normalize_text(row.get("website") or ""),
+                    "reason": reason,
+                    "http_status": http_status,
+                    "attempted_urls": attempted_urls,
+                }
+            )
+        website_enrich_needs_review_path = _write_website_enrich_needs_review_csv(
+            diagnostics_dir=diagnostics_dir,
+            rows=deduped_review_rows,
+        )
+
     autogrow_state["total_accepted"] = int(
         sum(
             sum(int(d.get(f"{prefix}_accepted") or 0) for prefix in AUTOGROW_SOURCE_PREFIX.values())
@@ -1791,6 +1939,7 @@ def main(argv: list[str] | None = None) -> int:
             apollo_result=apollo_result,
             apollo_rejected=apollo_rejected,
             diagnostics_path=diagnostics_path,
+            website_enrich_needs_review_path=website_enrich_needs_review_path,
             crawl_probe=crawl_probe,
             source_availability=source_availability,
             extra_source_results=extra_source_results,
@@ -1823,6 +1972,7 @@ def main(argv: list[str] | None = None) -> int:
         apollo_result=apollo_result,
         apollo_rejected=apollo_rejected,
         diagnostics_path=diagnostics_path,
+        website_enrich_needs_review_path=website_enrich_needs_review_path,
         crawl_probe=crawl_probe,
         source_availability=source_availability,
         extra_source_results=extra_source_results,

@@ -42,6 +42,9 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "ProspectAutoGrowBacklogTarget",
             "ProspectAutoGrowMaxFetchPagesPerRun",
             "ProspectAutoGrowHttpSleepMs",
+            "ProspectEnrichDomainEnabled",
+            "ProspectEnrichHunterEnabled",
+            "ProspectEnrichAllowRoleInbox",
             "ApolloApiKey",
             "ApolloEnrichEnabled",
             "ApolloEnrichMaxPerRun",
@@ -97,6 +100,8 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("APOLLO_PERSON_TITLES", text)
         self.assertIn("APOLLO_PERSON_LOCATIONS_MODE", text)
         self.assertIn("PROSPECT_AUTOGROW_BACKLOG_TARGET", text)
+        self.assertIn("PROSPECT_ENRICH_ALLOW_ROLE_INBOX", text)
+        self.assertIn("prospect_enrich_allow_role_inbox=", text)
         self.assertIn("STRIPE_PRICE_ID_CORE", text)
         self.assertIn("STRIPE_PRICE_ID_MULTI", text)
         self.assertIn("STRIPE_PRICE_ID_PILOT", text)
