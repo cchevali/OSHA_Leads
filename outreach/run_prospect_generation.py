@@ -922,6 +922,7 @@ def _default_generator_enrich_metrics() -> dict[str, int]:
         "website_enrich_role_inbox_found": 0,
         "website_enrich_blocked_403": 0,
         "website_enrich_no_email": 0,
+        "website_enrich_timeout": 0,
         "website_sites_crawled": 0,
     }
 
@@ -941,6 +942,7 @@ def _merge_generator_enrich_metrics(dest: dict[str, int], src: dict | None) -> N
         "website_enrich_role_inbox_found",
         "website_enrich_blocked_403",
         "website_enrich_no_email",
+        "website_enrich_timeout",
         "website_sites_crawled",
     ):
         dest[key] = int(dest.get(key, 0)) + int(source.get(key, 0) or 0)
@@ -1216,6 +1218,7 @@ def _print_tokens(
     )
     print(f"GENERATOR_WEBSITE_ENRICH_BLOCKED_403={int(enrich_metrics.get('website_enrich_blocked_403') or 0)}")
     print(f"GENERATOR_WEBSITE_ENRICH_NO_EMAIL={int(enrich_metrics.get('website_enrich_no_email') or 0)}")
+    print(f"GENERATOR_WEBSITE_ENRICH_TIMEOUT={int(enrich_metrics.get('website_enrich_timeout') or 0)}")
     if website_enrich_needs_review_path is not None:
         print(f"GENERATOR_WEBSITE_ENRICH_NEEDS_REVIEW_PATH={website_enrich_needs_review_path.resolve()}")
     else:

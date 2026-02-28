@@ -1,6 +1,7 @@
 import json
 import re
 import time
+import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,8 @@ USER_AGENT = "OSHA_Leads/1.0 (+https://microflowops.com)"
 HUNTER_FREE_MONTHLY_CAP = 25
 RESOLVE_OK_STATUSES = {200, 301, 302}
 WEBSITE_EMAIL_CACHE_TTL_DAYS = 14
+WEBSITE_HTTP_TIMEOUT_SECONDS = 10
+WEBSITE_CRAWL4AI_TIMEOUT_SECONDS = 15
 WEBSITE_PATHS = ["/", "/contact", "/contact-us", "/about", "/about-us", "/team"]
 ROLE_INBOX_LOCALS = {
     "info",
@@ -102,6 +105,13 @@ def _domain_from_url(value: str) -> str:
     if host.startswith("www."):
         host = host[4:]
     return host
+
+
+def _normalized_domain_key(domain: str, website: str = "") -> str:
+    direct = _domain_from_url(domain)
+    if direct:
+        return direct
+    return _domain_from_url(website)
 
 
 def _email_matches_domain(email: str, domain: str) -> bool:
@@ -197,7 +207,7 @@ def _email_candidates(owner_name: str, firm: str, domain: str) -> list[str]:
 
 def _default_head_fetcher(url: str) -> dict[str, Any]:
     try:
-        resp = requests.head(url, timeout=10, allow_redirects=False, headers={"User-Agent": USER_AGENT})
+        resp = requests.head(url, timeout=(5, 10), allow_redirects=False, headers={"User-Agent": USER_AGENT})
         return {
             "status": int(resp.status_code or 0),
             "url": str(resp.url or url),
@@ -210,7 +220,7 @@ def _default_head_fetcher(url: str) -> dict[str, Any]:
 def _default_website_fetcher(url: str) -> dict[str, Any]:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=WEBSITE_HTTP_TIMEOUT_SECONDS) as resp:
             content = resp.read()
             charset = "utf-8"
             content_type = str(getattr(resp, "headers", {}).get("Content-Type", "") or "")
@@ -227,11 +237,38 @@ def _default_website_fetcher(url: str) -> dict[str, Any]:
         return {"status": int(exc.code or 0), "url": url, "html": body, "error": f"HTTPError:{exc.code}"}
     except urllib.error.URLError as exc:
         reason = str(getattr(exc, "reason", exc) or exc)
+        lowered_reason = reason.lower()
+        if "timeout" in lowered_reason or "timed out" in lowered_reason:
+            return {"status": 0, "url": url, "html": "", "error": f"TimeoutError:{reason}"}
         return {"status": 0, "url": url, "html": "", "error": f"URLError:{reason}"}
     except TimeoutError as exc:
         return {"status": 0, "url": url, "html": "", "error": f"TimeoutError:{exc}"}
     except Exception as exc:
         return {"status": 0, "url": url, "html": "", "error": f"{type(exc).__name__}:{exc}"}
+
+
+def _crawl4ai_fetch_with_timeout(url: str, timeout_seconds: int) -> dict[str, Any]:
+    result_holder: dict[str, Any] = {}
+    completed = threading.Event()
+
+    def _worker() -> None:
+        try:
+            result_holder["result"] = scraper_engine.crawl_page(url, mode="browser", headless=True, sleep_ms=0)
+        except Exception as exc:
+            result_holder["error"] = f"{type(exc).__name__}:{exc}"
+        finally:
+            completed.set()
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+    if not completed.wait(timeout=max(1, int(timeout_seconds or 1))):
+        return {"ok": False, "url": url, "status": 0, "html": "", "error": "TimeoutError:crawl4ai_timeout"}
+    if "error" in result_holder:
+        return {"ok": False, "url": url, "status": 0, "html": "", "error": str(result_holder.get("error") or "")}
+    fetched = result_holder.get("result")
+    if isinstance(fetched, dict):
+        return dict(fetched)
+    return {"ok": False, "url": url, "status": 0, "html": "", "error": "invalid_crawl4ai_response"}
 
 
 def _cache_is_fresh(payload: dict[str, Any], now_utc: datetime | None = None) -> bool:
@@ -374,7 +411,7 @@ def _crawl_domain_candidates(
     max_pages_per_site: int,
     website_fetcher,
 ) -> dict[str, Any]:
-    host = _normalize_text(domain).lower() or _domain_from_url(website)
+    host = _normalized_domain_key(domain, website)
     if not host:
         return {
             "candidates": [],
@@ -384,6 +421,7 @@ def _crawl_domain_candidates(
             "blocked_403": False,
             "person_found": False,
             "role_found": False,
+            "timed_out": False,
         }
 
     runtime: dict[str, Any] | None = None
@@ -402,7 +440,10 @@ def _crawl_domain_candidates(
         if idx > 0 and sleep_ms > 0:
             time.sleep(float(sleep_ms) / 1000.0)
 
-        resp = website_fetcher(url)
+        try:
+            resp = website_fetcher(url)
+        except Exception as exc:
+            resp = {"status": 0, "url": url, "html": "", "error": f"{type(exc).__name__}:{exc}"}
         status = int(resp.get("status") or 0)
         html = str(resp.get("html") or "")
         error = _normalize_text(resp.get("error") or "")
@@ -412,12 +453,14 @@ def _crawl_domain_candidates(
             if runtime is None:
                 runtime = scraper_engine.probe_crawl4ai_runtime()
             if runtime.get("crawl4ai_installed") and runtime.get("playwright_browsers_installed"):
-                crawl_resp = scraper_engine.crawl_page(url, mode="browser", headless=True, sleep_ms=0)
+                crawl_resp = _crawl4ai_fetch_with_timeout(url, WEBSITE_CRAWL4AI_TIMEOUT_SECONDS)
                 if bool(crawl_resp.get("ok")) and str(crawl_resp.get("html") or ""):
                     status = int(crawl_resp.get("status") or status or 200)
                     html = str(crawl_resp.get("html") or "")
                     error = _normalize_text(crawl_resp.get("error") or "")
                 else:
+                    if "timeout" in _normalize_text(crawl_resp.get("error") or "").lower():
+                        saw_timeout = True
                     last_status = status
                     continue
             else:
@@ -463,6 +506,7 @@ def _crawl_domain_candidates(
         "blocked_403": bool(blocked_403),
         "person_found": bool(person_found),
         "role_found": bool(role_found),
+        "timed_out": bool(saw_timeout),
     }
 
 
@@ -531,6 +575,7 @@ def enrich_autogrow_rows(
         "website_enrich_role_inbox_found": 0,
         "website_enrich_blocked_403": 0,
         "website_enrich_no_email": 0,
+        "website_enrich_timeout": 0,
         "website_sites_crawled": 0,
     }
     diagnostics: list[dict[str, Any]] = []
@@ -549,6 +594,8 @@ def enrich_autogrow_rows(
     domain_cache: dict[str, dict[str, Any]] = {}
     website_result_cache: dict[str, dict[str, Any]] = {}
     needs_review_domains: set[str] = set()
+    website_attempted_domains: set[str] = set()
+    website_timeout_domains: set[str] = set()
     head_calls = 0
     crawled_sites = 0
 
@@ -605,6 +652,8 @@ def enrich_autogrow_rows(
                     website = _normalize_text(cached.get("website") or f"https://{resolved_domain}")
                 metrics["domain_resolved"] += 1
 
+        resolved_domain = _normalized_domain_key(resolved_domain, website)
+
         if resolved_domain:
             row["domain"] = resolved_domain
         if website:
@@ -621,8 +670,10 @@ def enrich_autogrow_rows(
         )
 
         if website_enrich_eligible:
-            metrics["website_enrich_attempted"] += 1
-            domain_key = _normalize_text(resolved_domain).lower()
+            domain_key = _normalized_domain_key(resolved_domain, website)
+            if domain_key and domain_key not in website_attempted_domains:
+                website_attempted_domains.add(domain_key)
+                metrics["website_enrich_attempted"] += 1
             website_result = website_result_cache.get(domain_key)
 
             if website_result is None:
@@ -637,6 +688,8 @@ def enrich_autogrow_rows(
                         "blocked_403": bool(cached_payload.get("blocked_403")),
                         "person_found": bool(cached_payload.get("person_found")),
                         "role_found": bool(cached_payload.get("role_found")),
+                        "timed_out": bool(cached_payload.get("timed_out")),
+                        "_cache_used": True,
                     }
                 elif crawled_sites < max(0, int(max_sites_per_run or 0)):
                     website_result = _crawl_domain_candidates(
@@ -646,6 +699,7 @@ def enrich_autogrow_rows(
                         max_pages_per_site=max(1, int(max_pages_per_site or 1)),
                         website_fetcher=get_page,
                     )
+                    website_result["_cache_used"] = False
                     crawled_sites += 1
                     metrics["website_sites_crawled"] += 1
                     if allow_cache_write:
@@ -660,6 +714,7 @@ def enrich_autogrow_rows(
                             "blocked_403": bool(website_result.get("blocked_403")),
                             "person_found": bool(website_result.get("person_found")),
                             "role_found": bool(website_result.get("role_found")),
+                            "timed_out": bool(website_result.get("timed_out")),
                         }
                         _write_website_cache(cache_path, cache_payload)
                 else:
@@ -671,6 +726,8 @@ def enrich_autogrow_rows(
                         "blocked_403": False,
                         "person_found": False,
                         "role_found": False,
+                        "timed_out": False,
+                        "_cache_used": False,
                     }
 
                 website_result_cache[domain_key] = dict(website_result)
@@ -682,6 +739,13 @@ def enrich_autogrow_rows(
                 metrics["website_enrich_person_found"] += 1
             if bool(website_result.get("role_found")):
                 metrics["website_enrich_role_inbox_found"] += 1
+            if (
+                bool(website_result.get("timed_out"))
+                and not bool(website_result.get("_cache_used"))
+                and domain_key not in website_timeout_domains
+            ):
+                website_timeout_domains.add(domain_key)
+                metrics["website_enrich_timeout"] += 1
 
             reason = _normalize_text(website_result.get("reason") or "")
             if reason in {"403", "captcha", "no_contact_page", "no_email_found", "timeout"} and domain_key not in needs_review_domains:

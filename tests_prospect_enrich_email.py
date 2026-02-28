@@ -300,6 +300,104 @@ class TestProspectEnrichEmail(unittest.TestCase):
         self.assertEqual(out_one["rows"][0].get("email") or "", "contact@example.com")
         self.assertEqual(out_two["rows"][0].get("email") or "", "contact@example.com")
 
+    def test_timeout_then_recover_counts_timeout_without_needs_review(self):
+        row = {
+            "firm": "Example Safety LLC",
+            "contact_name": "",
+            "domain": "example.com",
+            "website": "https://example.com",
+            "email": "",
+            "state": "TX",
+        }
+
+        def website_fetcher(url: str):  # type: ignore[no-untyped-def]
+            if url.endswith("/contact"):
+                return {"status": 200, "url": url, "html": "<html><body>jane@example.com</body></html>", "error": ""}
+            return {"status": 0, "url": url, "html": "", "error": "TimeoutError:timed out"}
+
+        with tempfile.TemporaryDirectory() as d:
+            out = enrich.enrich_autogrow_rows(
+                [row],
+                domain_enabled=True,
+                hunter_enabled=False,
+                hunter_api_key="",
+                sleep_ms=0,
+                hunter_usage_path=Path(d) / "hunter_usage.json",
+                website_fetcher=website_fetcher,
+                allow_cache_write=False,
+            )
+
+        self.assertEqual(out["rows"][0].get("email") or "", "jane@example.com")
+        self.assertEqual(int(out["metrics"].get("website_enrich_timeout") or 0), 1)
+        self.assertEqual(len(out.get("needs_review") or []), 0)
+
+    def test_all_timeout_adds_timeout_needs_review(self):
+        row = {
+            "firm": "Example Safety LLC",
+            "contact_name": "",
+            "domain": "example.com",
+            "website": "https://example.com",
+            "email": "",
+            "state": "TX",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            out = enrich.enrich_autogrow_rows(
+                [row],
+                domain_enabled=True,
+                hunter_enabled=False,
+                hunter_api_key="",
+                sleep_ms=0,
+                hunter_usage_path=Path(d) / "hunter_usage.json",
+                website_fetcher=lambda url: {"status": 0, "url": url, "html": "", "error": "TimeoutError:timed out"},
+                allow_cache_write=False,
+            )
+
+        self.assertEqual(int(out["metrics"].get("website_enrich_timeout") or 0), 1)
+        self.assertEqual(len(out.get("needs_review") or []), 1)
+        self.assertEqual((out["needs_review"][0].get("reason") or "").strip(), "timeout")
+
+    def test_dedup_by_domain_crawls_each_domain_once_per_run(self):
+        rows = [
+            {
+                "firm": "Example Safety LLC",
+                "contact_name": "",
+                "domain": "example.com",
+                "website": "https://example.com",
+                "email": "",
+                "state": "TX",
+            },
+            {
+                "firm": "Example Safety West LLC",
+                "contact_name": "",
+                "domain": "www.example.com",
+                "website": "https://www.example.com",
+                "email": "",
+                "state": "TX",
+            },
+        ]
+        calls = {"n": 0}
+
+        def website_fetcher(url: str):  # type: ignore[no-untyped-def]
+            calls["n"] += 1
+            return {"status": 200, "url": url, "html": "<html><body>jane@example.com</body></html>", "error": ""}
+
+        with tempfile.TemporaryDirectory() as d:
+            out = enrich.enrich_autogrow_rows(
+                rows,
+                domain_enabled=True,
+                hunter_enabled=False,
+                hunter_api_key="",
+                sleep_ms=0,
+                hunter_usage_path=Path(d) / "hunter_usage.json",
+                website_fetcher=website_fetcher,
+                allow_cache_write=False,
+            )
+
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(int(out["metrics"].get("website_enrich_attempted") or 0), 1)
+        self.assertEqual(out["rows"][0].get("email") or "", "jane@example.com")
+        self.assertEqual(out["rows"][1].get("email") or "", "jane@example.com")
+
 
 if __name__ == "__main__":
     unittest.main()

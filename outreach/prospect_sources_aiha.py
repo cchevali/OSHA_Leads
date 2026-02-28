@@ -219,14 +219,27 @@ def _extract_page_paragraphs(html: str) -> tuple[list[str], str]:
 def _split_segments(paragraphs: list[str]) -> list[str]:
     if not paragraphs:
         return []
+    direct_segments = []
+    for paragraph in paragraphs:
+        text = _normalize_text(paragraph)
+        if not text:
+            continue
+        if "contact email:" in text.lower() and re.search(
+            r"\b(?:Commercial|Residential|Commercial/Residential)\b", text, flags=re.I
+        ):
+            direct_segments.append(text)
+    if direct_segments:
+        return direct_segments
+
     merged = " ".join(paragraphs)
     if not merged:
         return []
 
+    # Non-overlapping segment starts prevent suffix-only truncation (for example "LLC", "Consulting").
     start_pattern = re.compile(
-        r"(?=(?:^|\s)([A-Z0-9][A-Za-z0-9&'().,/\- ]{2,}?)\s+(?:Commercial|Residential|Commercial/Residential)\b)"
+        r"(?:^|\s)([A-Z][A-Za-z0-9&'().,/\- ]{2,}?)\s+(?:Commercial|Residential|Commercial/Residential)\b"
     )
-    starts = [m.start() for m in start_pattern.finditer(merged)]
+    starts = [m.start(1) for m in start_pattern.finditer(merged)]
     if not starts:
         return [merged]
 
