@@ -539,11 +539,83 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
             self.assertIn("GENERATOR_AUTOGROW_BACKLOG_CURRENT=3", out)
             self.assertIn("GENERATOR_AUTOGROW_NEW_NEEDED=57", out)
-            self.assertIn("GENERATOR_AUTOGROW_STATE=CA backlog_current=3 new_needed=57", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATE=CA backlog_current=3 backlog_sendable_current=3 new_needed=57", out)
             self.assertIn("GENERATOR_STATE_BACKLOG_BELOW_TARGET state=CA backlog_current=3 target=60 gap=57", out)
             self.assertIn("GENERATOR_AIHA_ROWS_ACCEPTED=57", out)
             self.assertIn("GENERATOR_AUTOGROW_TOTAL_ACCEPTED=57", out)
             self.assertIn("GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=0 states=none", out)
+
+    def test_safety_net_forces_when_sendable_below_floor_even_with_large_pool(self):
+        from outreach import crm_store
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                for i in range(27):
+                    conn.execute(
+                        """
+                        INSERT INTO prospects(
+                          prospect_id, firm, contact_name, email, title, city, state, website, source,
+                          score, status, created_at, last_contacted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"tx_pool_{i}",
+                            "Firm",
+                            "",
+                            f"info+{i}@exampletx.com",
+                            "Owner",
+                            "Austin",
+                            "TX",
+                            "",
+                            "seed",
+                            0,
+                            "new",
+                            now,
+                            None,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "0",
+                "PROSPECT_AUTOGROW_SAFETY_NET_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA",
+                "OUTREACH_SKIP_ROLE_INBOXES": "1",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
+                    return_value={
+                        "rows": [],
+                        "cache_used": False,
+                        "cache_age_days": 0,
+                        "cache_path": data_dir / "prospect_generation" / "cache" / "aiha" / "state_TX.json",
+                        "pages_fetched": 0,
+                        "parse_mode": "TEXT_CONTAINER",
+                        "diagnostics_path": None,
+                    },
+                ):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_BACKLOG_CURRENT=0", out)
+            self.assertIn("GENERATOR_AUTOGROW_SAFETY_NET_FORCED=1 reason=SENDABLE_BELOW_FLOOR states=TX:0", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATE=TX backlog_current=0 backlog_sendable_current=0", out)
 
     def test_autogrow_enabled_with_empty_sources_emits_explicit_skip_token(self):
         from outreach import run_prospect_generation as generator

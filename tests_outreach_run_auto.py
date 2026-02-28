@@ -348,6 +348,337 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertEqual(p2.returncode, 0, msg=p2.stderr + "\n" + p2.stdout)
             self.assertIn("would_contact_prospect_ids=p1", p2.stdout)
 
+    def test_dry_run_zero_signals_emits_skip_no_signals_and_zero_contacts(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            signal_db = tmp / "signals.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "A",
+                        "firm": "F",
+                        "email": "a@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    }
+                ],
+            )
+            _seed_signal_db(
+                signal_db,
+                [
+                    {"site_state": "CA", "date_opened": "2026-02-24", "parse_invalid": 0},
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SIGNAL_DB": str(signal_db),
+            }
+
+            p = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("OUTREACH_SKIP_NO_SIGNALS state=TX window_days=14", out)
+            self.assertIn("would_contact_prospect_ids=(none)", out)
+
+    def test_dry_run_sendable_zero_with_nonzero_pool_emits_empty_state_no_send(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            signal_db = tmp / "signals.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_tx1",
+                        "contact_name": "A",
+                        "firm": "F",
+                        "email": "a@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    }
+                ],
+            )
+            _seed_signal_db(
+                signal_db,
+                [
+                    {"site_state": "CA", "date_opened": "2026-02-24", "parse_invalid": 0},
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SIGNAL_DB": str(signal_db),
+            }
+
+            p = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("OUTREACH_EMPTY_STATE_NO_SEND=1 state=CA", out)
+            self.assertIn("would_contact_prospect_ids=(none)", out)
+
+    def test_prior_sent_event_prospect_is_not_reselected(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            signal_db = tmp / "signals.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_sent",
+                        "contact_name": "A",
+                        "firm": "F",
+                        "email": "sent@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "status": "new",
+                    },
+                    {
+                        "prospect_id": "p_new",
+                        "contact_name": "B",
+                        "firm": "F",
+                        "email": "new@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "status": "new",
+                    },
+                ],
+            )
+            conn = sqlite3.connect(str(crm_db))
+            try:
+                conn.execute(
+                    "INSERT INTO outreach_events(prospect_id, ts, event_type, batch_id, metadata_json) VALUES (?, ?, 'sent', ?, '{}')",
+                    ("p_sent", "2026-02-23T00:00:00+00:00", "2026-02-23_TX"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            _seed_signal_db(
+                signal_db,
+                [
+                    {"site_state": "TX", "date_opened": "2026-02-24", "parse_invalid": 0},
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SIGNAL_DB": str(signal_db),
+            }
+
+            p = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("would_contact_prospect_ids=p_new", out)
+            self.assertNotIn("would_contact_prospect_ids=p_sent", out)
+
+    def test_role_inbox_skip_toggle_excludes_when_on_includes_when_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            signal_db = tmp / "signals.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_role",
+                        "contact_name": "Role",
+                        "firm": "F",
+                        "email": "info@role.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    },
+                    {
+                        "prospect_id": "p_person",
+                        "contact_name": "Person",
+                        "firm": "F",
+                        "email": "person@person.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    },
+                ],
+            )
+            _seed_signal_db(
+                signal_db,
+                [
+                    {"site_state": "TX", "date_opened": "2026-02-24", "parse_invalid": 0},
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env_base = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SIGNAL_DB": str(signal_db),
+            }
+
+            p_on = self._run(["--dry-run", "--for-date", "2026-02-24"], env_base)
+            self.assertEqual(p_on.returncode, 0, msg=p_on.stderr + "\n" + p_on.stdout)
+            self.assertIn("would_contact_prospect_ids=p_person", p_on.stdout or "")
+            manifest_line = next((ln for ln in (p_on.stdout or "").splitlines() if "manifest_path=" in ln), "")
+            manifest_path = Path(manifest_line.split("manifest_path=", 1)[1].strip())
+            with open(manifest_path, "r", newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            role_rows = [r for r in rows if (r.get("prospect_id") or "") == "p_role"]
+            self.assertEqual(len(role_rows), 1)
+            self.assertEqual((role_rows[0].get("reason") or ""), "role_inbox_email")
+
+            p_off = self._run(["--dry-run", "--for-date", "2026-02-24"], {**env_base, "OUTREACH_SKIP_ROLE_INBOXES": "0"})
+            self.assertEqual(p_off.returncode, 0, msg=p_off.stderr + "\n" + p_off.stdout)
+            selected_line = self._stdout_value(p_off.stdout or "", "PASS_AUTO_DRY_RUN would_contact_prospect_ids")
+            self.assertIn("p_person", selected_line)
+            self.assertIn("p_role", selected_line)
+
+    def test_plan_and_dry_run_emit_selection_debug_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            signal_db = tmp / "signals.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "Debug",
+                        "firm": "F",
+                        "email": "debug@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    }
+                ],
+            )
+            _seed_signal_db(
+                signal_db,
+                [
+                    {"site_state": "TX", "date_opened": "2026-02-24", "parse_invalid": 0},
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SIGNAL_DB": str(signal_db),
+            }
+
+            plan = self._run(["--plan", "--for-date", "2026-02-24"], env)
+            self.assertEqual(plan.returncode, 0, msg=plan.stderr + "\n" + plan.stdout)
+            self.assertIn("OUTREACH_SELECTION_DEBUG mode=plan", plan.stdout or "")
+            self.assertIn("OUTREACH_SELECTION_DEBUG_ROW idx=1 prospect_id=p1", plan.stdout or "")
+
+            dry_run = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
+            self.assertEqual(dry_run.returncode, 0, msg=dry_run.stderr + "\n" + dry_run.stdout)
+            self.assertIn("OUTREACH_SELECTION_DEBUG mode=dry_run", dry_run.stdout or "")
+            self.assertIn("OUTREACH_SELECTION_DEBUG_ROW idx=1 prospect_id=p1", dry_run.stdout or "")
+
+    def test_live_pre_send_duplicate_guard_drops_candidate_and_emits_token(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            signal_db = tmp / "signals.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "A",
+                        "firm": "F",
+                        "email": "a@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 6,
+                    }
+                ],
+            )
+            _seed_signal_db(signal_db, [{"site_state": "TX", "date_opened": "2026-02-24", "parse_invalid": 0}])
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SIGNAL_DB": str(signal_db),
+            }
+            weekday_now = {
+                "timezone": "America/New_York",
+                "datetime": datetime(2026, 2, 24, 9, 0, 0),
+                "date": date(2026, 2, 24),
+                "date_text": "2026-02-24",
+                "weekday_idx": 1,
+                "weekday_name": "tue",
+                "is_weekend": False,
+            }
+            send_calls = {"count": 0}
+
+            def _fake_send_outreach(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                send_calls["count"] += 1
+                return {"ok": True, "prospect_id": "p1"}
+
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(roa, "_outreach_local_now", return_value=weekday_now), mock.patch.object(
+                    roa.gm, "_load_local_suppression_set", return_value=set()
+                ), mock.patch.object(
+                    roa.gm, "_one_click_config_present", return_value=(True, "")
+                ), mock.patch.object(
+                    roa.gm, "_read_template_text", return_value="template"
+                ), mock.patch.object(
+                    roa, "_prepare_signal_content_with_triage",
+                    return_value={
+                        "recent_leads_original": [],
+                        "recent_leads": [],
+                        "last_refresh_et": "2026-02-24 09:00 ET",
+                        "signal_tokens": {
+                            "RECENT_SIGNALS_LINES": "",
+                            "RECENT_SIGNALS_HTML": "",
+                            "STATE_FULL_NAME": "Texas",
+                            "STATE_METRO_EXAMPLES": "Austin",
+                            "SIGNALS_WINDOW_NOTE_TEXT": "",
+                            "SIGNALS_WINDOW_NOTE_HTML": "",
+                            "SIGNALS_FALLBACK_TEXT": "",
+                            "SIGNALS_FALLBACK_HTML": "",
+                        },
+                    },
+                ), mock.patch.object(
+                    roa, "_send_outreach_email", side_effect=_fake_send_outreach
+                ), mock.patch.object(
+                    roa, "_send_summary_email", return_value=(True, "")
+                ), mock.patch.object(
+                    roa, "_write_events_and_status_updates", return_value=None
+                ), mock.patch.object(
+                    roa, "_append_ledger_records", return_value=None
+                ), mock.patch.object(
+                    roa, "_has_prior_sent_event", return_value=True
+                ):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--for-date", "2026-02-24"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            self.assertIn("OUTREACH_DUPLICATE_GUARD_DROPPED=1", out.getvalue())
+            self.assertEqual(send_calls["count"], 0)
+
     def test_to_mismatch_fails(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -732,6 +1063,8 @@ class TestOutreachRunAuto(unittest.TestCase):
 
             text_body = summary_capture.get("text", "")
             html_body = summary_capture.get("html", "")
+            self.assertIn("- state_rotation_selected: CA", text_body)
+            self.assertIn("- state_effective_send: CA", text_body)
             self.assertIn("- crm_uncontacted_by_state:", text_body)
             self.assertIn("- crm_pool_total_by_state:", text_body)
             self.assertIn("- crm_uncontacted_sendable_by_state:", text_body)
@@ -743,6 +1076,8 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("- GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=", text_body)
             self.assertIn("- contacted_count:", text_body)
 
+            self.assertIn("<strong>state_rotation_selected:</strong> CA", html_body)
+            self.assertIn("<strong>state_effective_send:</strong> CA", html_body)
             self.assertIn("<strong>crm_uncontacted_by_state:</strong>", html_body)
             self.assertIn("<strong>crm_pool_total_by_state:</strong>", html_body)
             self.assertIn("<strong>crm_uncontacted_sendable_by_state:</strong>", html_body)
@@ -1287,16 +1622,16 @@ class TestOutreachRunAuto(unittest.TestCase):
                                 batch=batch,
                                 template_text=template_text,
                                 html_template_text=html_template_text,
-                                recent_signals_lines="- Example Co (Miami, FL) | Programmed | Opened 2026-02-18 | Observed 2026-02-18",
-                                recent_signals_html="<div>Example Co &middot; Observed 2026-02-18</div>",
+                                recent_signals_lines="- Metro Safety Co (Miami, FL) | Programmed | Opened 2026-02-18 | Observed 2026-02-18",
+                                recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-02-18</div>",
                                 last_refresh_et="2026-02-18 08:00 ET",
                                 signal_tokens={
                                     "STATE_FULL_NAME": "California" if expected_state == "CA" else "Florida",
                                     "STATE_METRO_EXAMPLES": "Los Angeles, Inland Empire"
                                     if expected_state == "CA"
                                     else "Miami, Orlando",
-                                    "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
-                                    "SIGNALS_WINDOW_NOTE_HTML": "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+                                    "SIGNALS_WINDOW_NOTE_TEXT": "",
+                                    "SIGNALS_WINDOW_NOTE_HTML": "",
                                     "SIGNALS_FALLBACK_TEXT": "",
                                     "SIGNALS_FALLBACK_HTML": "",
                                 },
@@ -1309,28 +1644,21 @@ class TestOutreachRunAuto(unittest.TestCase):
                                 ],
                             )
                             expected_subject = (
-                                "1 new California inspections your safety team may not have seen yet"
+                                "Quick heads up — new CA inspection opened Feb 18"
                                 if expected_state == "CA"
-                                else "1 new Florida inspections your defense team may not have seen yet"
+                                else "Quick heads up — new FL inspection opened Feb 18"
                             )
                             self.assertEqual(subject, expected_subject)
-                            self.assertIn(f"Recent OSHA inspections opened in {expected_state}:", text_body)
-                            self.assertIn("outreach window is open now", text_body)
-                            self.assertIn("is exactly the kind of team this feed is built for", text_body)
-                            self.assertIn("14-day trial feed - no commitment, no login required", text_body)
-                            self.assertIn(
-                                "Every item links to the public OSHA record so your team can verify in 30 seconds.",
-                                text_body,
-                            )
-                            self.assertIn("I'm Chase at MicroFlowOps.", text_body)
+                            self.assertIn("I spotted a new OSHA inspection", text_body)
+                            self.assertIn("opened recently and none have citations yet", text_body)
+                            self.assertIn("Happy to set up a short trial feed", text_body)
                             self.assertEqual(html_body.count(">Unsubscribe</a>"), 1)
-                            self.assertEqual(html_body.count(">Manage preferences</a>"), 1)
+                            self.assertEqual(html_body.count(">Manage preferences</a>"), 0)
                             self.assertEqual(html_body.count("unsubscribe.example/u"), 1)
                             addr_idx = html_body.find("11539 Links Dr, Reston, VA 20190")
                             self.assertGreater(addr_idx, 0)
                             pre_footer = html_body[:addr_idx]
                             self.assertNotIn("unsubscribe.example/u", pre_footer)
-                            self.assertNotIn("unsubscribe.example/prefs", pre_footer)
                             rendered = "\n".join([subject, text_body, html_body]).lower()
                             for pattern in banned_patterns:
                                 self.assertIsNone(
@@ -1342,7 +1670,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                     gc.collect()
                     time.sleep(0.05)
 
-    def test_render_payload_falls_back_to_appears_to_serve_when_firm_missing(self):
+    def test_render_payload_uses_generic_variant_when_name_and_firm_missing(self):
         template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt")
         html_template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html")
         conn = sqlite3.connect(":memory:")
@@ -1361,7 +1689,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             )
             conn.execute(
                 "INSERT INTO prospect_preview(prospect_id, contact_name, firm, email, title) VALUES(?, ?, ?, ?, ?)",
-                ("p1", "Alex Example", "", "alex@example.com", "Operations Lead"),
+                ("p1", "", "", "alex@example.com", "Operations Lead"),
             )
             row = conn.execute("SELECT * FROM prospect_preview").fetchone()
             self.assertIsNotNone(row)
@@ -1376,14 +1704,14 @@ class TestOutreachRunAuto(unittest.TestCase):
                     batch="2026-02-17_CA",
                     template_text=template_text,
                     html_template_text=html_template_text,
-                    recent_signals_lines="- Example Co (San Jose, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
-                    recent_signals_html="<div>Example Co &middot; Observed 2026-02-18</div>",
+                    recent_signals_lines="- Metro Safety Co (San Jose, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
+                    recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-02-18</div>",
                     last_refresh_et="2026-02-18 08:00 ET",
                     signal_tokens={
                         "STATE_FULL_NAME": "California",
                         "STATE_METRO_EXAMPLES": "Los Angeles, Inland Empire",
-                        "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
-                        "SIGNALS_WINDOW_NOTE_HTML": "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+                        "SIGNALS_WINDOW_NOTE_TEXT": "",
+                        "SIGNALS_WINDOW_NOTE_HTML": "",
                         "SIGNALS_FALLBACK_TEXT": "",
                         "SIGNALS_FALLBACK_HTML": "",
                     },
@@ -1395,9 +1723,12 @@ class TestOutreachRunAuto(unittest.TestCase):
                         }
                     ],
                 )
-            self.assertEqual(subject, "New OSHA inspection in CA — opened Feb 18")
-            self.assertIn("your firm appears to serve California", text_body)
-            self.assertIn("ignore this or unsubscribe below", text_body)
+            self.assertEqual(subject, "Quick heads up — new CA inspection opened Feb 18")
+            self.assertIn(
+                "Hi - saw a new OSHA inspection in California that might be relevant to your team:",
+                text_body,
+            )
+            self.assertIn("Opened recently and none have citations yet.", text_body)
         finally:
             conn.close()
 
@@ -1452,7 +1783,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                     "site_state": "CA",
                     "site_city": "Los Angeles",
                     "inspection_type": "Complaint",
-                    "establishment_name": "Example Co",
+                    "establishment_name": "Metro Safety Co",
                 }
             ]
             argv = [
@@ -1522,8 +1853,8 @@ class TestOutreachRunAuto(unittest.TestCase):
                 signal_tokens = {
                     "STATE_FULL_NAME": "California",
                     "STATE_METRO_EXAMPLES": "Los Angeles, Inland Empire",
-                    "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
-                    "SIGNALS_WINDOW_NOTE_HTML": "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+                    "SIGNALS_WINDOW_NOTE_TEXT": "",
+                    "SIGNALS_WINDOW_NOTE_HTML": "",
                     "SIGNALS_FALLBACK_TEXT": "",
                     "SIGNALS_FALLBACK_HTML": "",
                 }
@@ -1538,8 +1869,8 @@ class TestOutreachRunAuto(unittest.TestCase):
                         batch="2026-02-18_CA",
                         template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt"),
                         html_template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html"),
-                        recent_signals_lines="- Example Co (Los Angeles, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
-                        recent_signals_html="<div>Example Co &middot; Observed 2026-02-18</div>",
+                        recent_signals_lines="- Metro Safety Co (Los Angeles, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
+                        recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-02-18</div>",
                         last_refresh_et="2026-02-18 08:00 ET",
                         signal_tokens=signal_tokens,
                         recent_leads=list(recent_leads),
@@ -1551,7 +1882,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             mailmerge_opening = next((ln.strip() for ln in mailmerge_body.splitlines() if ln.strip()), "")
             run_auto_opening = next((ln.strip() for ln in run_auto_text.splitlines() if ln.strip()), "")
             self.assertEqual(run_auto_opening, mailmerge_opening)
-            self.assertIn("outreach window is open now", run_auto_opening.lower())
+            self.assertEqual(run_auto_opening, "Hi Casey,")
 
     def test_domain_dedupe_and_role_inbox_penalty_ordering_is_deterministic(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1646,7 +1977,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 rows = list(csv.DictReader(f))
             dropped_role = [r for r in rows if (r.get("prospect_id") or "") == "p_domain_role"]
             self.assertEqual(len(dropped_role), 1)
-            self.assertEqual((dropped_role[0].get("reason") or ""), "domain_dedup")
+            self.assertEqual((dropped_role[0].get("reason") or ""), "role_inbox_email")
             for field in ["domain", "segment", "role_or_title", "state_pref", "rank_reason"]:
                 self.assertIn(field, rows[0], msg=f"missing manifest field {field}")
 

@@ -4,6 +4,7 @@ param(
   [string] $OshaSmokeTo = '',
   [Nullable[int]] $OutreachSuppressionMaxAgeHours = $null,
   [Nullable[int]] $OutreachFallbackOnEmptyState = $null,
+  [Nullable[int]] $OutreachSkipRoleInboxes = $null,
   [Nullable[int]] $ProspectAutoGrowEnabled = $null,
   [string] $ProspectAutoGrowStates = '',
   [string] $ProspectAutoGrowSources = '',
@@ -304,6 +305,7 @@ try {
     'OshaSmokeTo',
     'OutreachSuppressionMaxAgeHours',
     'OutreachFallbackOnEmptyState',
+    'OutreachSkipRoleInboxes',
     'ProspectAutoGrowEnabled',
     'ProspectAutoGrowStates',
     'ProspectAutoGrowSources',
@@ -361,6 +363,11 @@ try {
   if ($PSBoundParameters.ContainsKey('OutreachFallbackOnEmptyState')) {
     if (($OutreachFallbackOnEmptyState -ne 0) -and ($OutreachFallbackOnEmptyState -ne 1)) {
       Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachFallbackOnEmptyState'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('OutreachSkipRoleInboxes')) {
+    if (($OutreachSkipRoleInboxes -ne 0) -and ($OutreachSkipRoleInboxes -ne 1)) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachSkipRoleInboxes'
     }
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowEnabled') -and $ProspectAutoGrowEnabled -notin @(0, 1)) {
@@ -558,6 +565,8 @@ try {
         Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG ('decrypt_failed detail=' + (Compact-Detail $_.Exception.Message))
       }
       $printMap = Parse-DotenvMap $printPlain
+      $outreachSkipRoleInboxesValue = if (Map-HasValue $printMap 'OUTREACH_SKIP_ROLE_INBOXES') { ([string]$printMap['OUTREACH_SKIP_ROLE_INBOXES']).Trim() } else { '1' }
+      Write-Output ('outreach_skip_role_inboxes=' + $outreachSkipRoleInboxesValue)
       $aiTriageEnabledValue = '0'
       if (Map-HasValue $printMap 'AI_TRIAGE_ENABLED') {
         $rawAiEnabled = ([string]$printMap['AI_TRIAGE_ENABLED']).Trim().ToLowerInvariant()
@@ -634,6 +643,12 @@ try {
       Set-MapValue -Map $map -Key 'OUTREACH_FALLBACK_ON_EMPTY_STATE' -Value ([string]$OutreachFallbackOnEmptyState) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'OUTREACH_FALLBACK_ON_EMPTY_STATE')) {
       Set-MapValue -Map $map -Key 'OUTREACH_FALLBACK_ON_EMPTY_STATE' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('OutreachSkipRoleInboxes')) {
+      Set-MapValue -Map $map -Key 'OUTREACH_SKIP_ROLE_INBOXES' -Value ([string]$OutreachSkipRoleInboxes) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'OUTREACH_SKIP_ROLE_INBOXES')) {
+      Set-MapValue -Map $map -Key 'OUTREACH_SKIP_ROLE_INBOXES' -Value '1' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('BounceImapHost')) {
