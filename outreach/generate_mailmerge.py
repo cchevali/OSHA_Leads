@@ -5,6 +5,7 @@ import html as _html
 import json
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -283,10 +284,21 @@ def _segment_descriptor(segment: str, role_or_title: str) -> str:
     return ""
 
 
+def _clean_company_name(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = " ".join(text.lower().split())
+    if normalized in {"your firm", "your company", "company", "unknown", "n/a", "na", "none", "-", "--"}:
+        return ""
+    return text
+
+
 def _build_copy_tokens(
     *,
     state_full_name: str,
     state_metro_examples: str,
+    first_name: str,
     firm_name: str,
     segment: str,
     role_or_title: str,
@@ -294,51 +306,74 @@ def _build_copy_tokens(
 ) -> dict[str, str]:
     signal_count = len(list(recent_leads or []))
     segment_desc = _segment_descriptor(segment=segment, role_or_title=role_or_title)
-    if signal_count > 0:
-        opening_text = (
-            f"Hi - these {signal_count} {state_full_name} inspections opened in the last 14 days. "
-            "Most won't have citations for weeks, which means the outreach window is open now."
+    clean_first = str(first_name or "").strip()
+    clean_firm = _clean_company_name(firm_name)
+    low_signal = signal_count == 1
+
+    if clean_first:
+        greeting_text = f"Hi {clean_first},"
+        count_phrase = "a new OSHA inspection" if low_signal else "a few new OSHA inspections"
+        opened_phrase = "opened recently" if low_signal else "most opened in the last two weeks"
+        intro_text = (
+            f"I spotted {count_phrase} in {state_full_name} that your team might want to know about — "
+            f"{opened_phrase} and none have citations yet:"
+        )
+        post_cards_text = ""
+        trial_text = (
+            "I track these daily across every state using public OSHA data. "
+            "Happy to set up a short trial feed for whatever metros matter to you — just reply with the cities."
+        )
+    elif clean_firm:
+        greeting_text = f"Hi - saw a few things {clean_firm} should probably have on their radar:"
+        intro_text = ""
+        post_cards_text = (
+            f"These are new OSHA inspections opened in {state_full_name} in the last two weeks — "
+            "none have citations yet."
+        )
+        trial_text = (
+            "I track these daily across every state using public OSHA data. "
+            "Happy to set up a trial feed for whatever metros matter to you — just reply with the cities."
         )
     else:
-        opening_text = (
-            f"Hi - no new {state_full_name} inspections were captured in the last 14 days, so the most recent "
-            "signals are below while the outreach window is still open."
+        greeting_text = (
+            f"Hi - saw a new OSHA inspection in {state_full_name} that might be relevant to your team:"
+            if low_signal
+            else f"Hi - saw a few new OSHA inspections in {state_full_name} that might be relevant to your team:"
+        )
+        intro_text = ""
+        post_cards_text = (
+            "Opened recently and none have citations yet."
+            if low_signal
+            else "Most opened in the last two weeks and none have citations yet."
+        )
+        trial_text = (
+            "I track these daily across every state using public OSHA data. "
+            "Happy to set up a trial feed for whatever metros matter to you — just reply with the cities."
         )
 
-    firm_name_raw = str(firm_name or "").strip()
-    if firm_name_raw:
-        relevance_text = (
-            f"{firm_name_raw} is exactly the kind of team this feed is built for. "
-            f"This is the signal your {state_full_name} team would see every morning on a trial."
-        )
-    else:
-        relevance_text = (
-            f"You're getting this because your firm appears to serve {state_full_name}. "
-            "If that's wrong, ignore this or unsubscribe below."
-        )
-
-    cta_text = (
-        f"Want to see this for {state_metro_examples} or your specific metros? Reply with the cities and I'll set up "
-        "a 14-day trial feed - no commitment, no login required."
-    )
-    trust_text = "Every item links to the public OSHA record so your team can verify in 30 seconds."
-    company_intro_text = (
-        "I'm Chase at MicroFlowOps. We monitor public OSHA inspection activity daily and send a short \"new opens\" "
-        "brief by region to safety consultants, OSHA defense, and compliance service providers."
-    )
     return {
         "SIGNAL_COUNT": str(max(0, signal_count)),
         "SEGMENT_DESCRIPTOR": segment_desc,
-        "OPENING_LINE_TEXT": opening_text,
-        "OPENING_LINE_HTML": _html_escape(opening_text),
-        "RELEVANCE_LINE_TEXT": relevance_text,
-        "RELEVANCE_LINE_HTML": _html_escape(relevance_text),
-        "CTA_LINE_TEXT": cta_text,
-        "CTA_LINE_HTML": _html_escape(cta_text),
-        "TRUST_LINE_TEXT": trust_text,
-        "TRUST_LINE_HTML": _html_escape(trust_text),
-        "COMPANY_INTRO_TEXT": company_intro_text,
-        "COMPANY_INTRO_HTML": _html_escape(company_intro_text),
+        "GREETING_LINE_TEXT": greeting_text,
+        "GREETING_LINE_HTML": _html_escape(greeting_text),
+        "INTRO_LINE_TEXT": intro_text,
+        "INTRO_LINE_HTML": _html_escape(intro_text),
+        "POST_CARDS_LINE_TEXT": post_cards_text,
+        "POST_CARDS_LINE_HTML": _html_escape(post_cards_text),
+        "TRIAL_LINE_TEXT": trial_text,
+        "TRIAL_LINE_HTML": _html_escape(trial_text),
+        # Legacy keys retained to avoid breaking custom templates.
+        "OPENING_LINE_TEXT": intro_text,
+        "OPENING_LINE_HTML": _html_escape(intro_text),
+        "RELEVANCE_LINE_TEXT": "",
+        "RELEVANCE_LINE_HTML": "",
+        "CTA_LINE_TEXT": trial_text,
+        "CTA_LINE_HTML": _html_escape(trial_text),
+        "TRUST_LINE_TEXT": "",
+        "TRUST_LINE_HTML": "",
+        "COMPANY_INTRO_TEXT": "",
+        "COMPANY_INTRO_HTML": "",
+        "STATE_METRO_EXAMPLES_TEXT": state_metro_examples,
     }
 
 
@@ -629,7 +664,70 @@ def _subject_source_rows(db_path: str | None, state: str, recent_leads: list[dic
         historical_rows, _max_opened = _history_rows_for_state(db_path=db_path, state=state, limit=3)
         if historical_rows:
             return list(historical_rows)
-    return _sample_rows()
+    return []
+
+
+def _normalized_inspection_type(value: object) -> str:
+    text = " ".join(str(value or "").strip().split()).lower()
+    if not text:
+        return ""
+    return text
+
+
+def _subject_primary_inspection_type(leads: list[dict] | None) -> str:
+    labels = [_normalized_inspection_type((lead or {}).get("inspection_type")) for lead in (leads or [])]
+    labels = [label for label in labels if label]
+    if not labels:
+        return ""
+    counts = Counter(labels)
+    if len(counts) == 1:
+        return next(iter(counts))
+    top_count = max(counts.values())
+    winners = [label for label, count in counts.items() if count == top_count]
+    if len(winners) != 1:
+        return ""
+    return winners[0]
+
+
+def _truncate_subject(subject: str, max_len: int = 64) -> str:
+    text = str(subject or "").strip()
+    if len(text) <= max_len:
+        return text
+    return _truncate_text(text, max_len)
+
+
+def _subject_for_multi_signal(*, signal_count: int, state_abbrev: str, primary_type: str) -> str:
+    type_part = f" {primary_type}" if primary_type else ""
+    candidates = [
+        f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections opened this month",
+        f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections opened",
+        f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections",
+    ]
+    if primary_type:
+        candidates.extend(
+            [
+                f"Quick heads up — {signal_count} new {state_abbrev} inspections opened this month",
+                f"Quick heads up — {signal_count} new {state_abbrev} inspections opened",
+                f"Quick heads up — {signal_count} new {state_abbrev} inspections",
+            ]
+        )
+    candidates.append(f"Heads up — {signal_count} new {state_abbrev} inspections")
+    for candidate in candidates:
+        if len(candidate) <= 64:
+            return candidate
+    return _truncate_subject(candidates[-1], max_len=64)
+
+
+def _subject_for_single_signal(*, state_abbrev: str, opened_label: str) -> str:
+    candidates = [
+        f"Quick heads up — new {state_abbrev} inspection opened {opened_label}",
+        f"Quick heads up — new {state_abbrev} inspection opened recently",
+        f"Heads up — new {state_abbrev} inspection opened recently",
+    ]
+    for candidate in candidates:
+        if len(candidate) <= 64:
+            return candidate
+    return _truncate_subject(candidates[-1], max_len=64)
 
 
 def build_outreach_subject(
@@ -640,23 +738,29 @@ def build_outreach_subject(
     state_full_name: str | None = None,
     signal_count: int | None = None,
 ) -> str:
-    label = (_norm_state(state_or_label) or str(state_or_label or "").strip() or "OSHA").strip()
-    normalized_segment = str(segment_descriptor or "").strip()
+    del segment_descriptor, state_full_name
+    label = (_norm_state(state_or_label) or str(state_or_label or "").strip().upper() or "OSHA").strip()
     try:
         subject_signal_count = int(signal_count) if signal_count is not None else len(list(recent_leads or []))
     except Exception:
         subject_signal_count = len(list(recent_leads or []))
-    if normalized_segment and subject_signal_count > 0:
-        resolved_state_full = str(state_full_name or "").strip() or _state_full_name(label)
-        return (
-            f"{subject_signal_count} new {resolved_state_full} inspections your {normalized_segment} may not have seen yet"
-        )
+    subject_signal_count = max(0, int(subject_signal_count))
     source_rows = _subject_source_rows(db_path=db_path, state=label, recent_leads=recent_leads)
-    opened_label = _subject_opened_or_observed_date(source_rows[0]) if source_rows else "recently"
-    return f"New OSHA inspection in {label} — opened {opened_label}"
+    subject_rows = list(recent_leads or []) or source_rows
+    if subject_signal_count >= 2:
+        primary_type = _subject_primary_inspection_type(subject_rows)
+        return _subject_for_multi_signal(
+            signal_count=subject_signal_count,
+            state_abbrev=label,
+            primary_type=primary_type,
+        )
+    row_for_date = subject_rows[0] if subject_rows else {}
+    opened_label = _subject_opened_or_observed_date(row_for_date) if row_for_date else "recently"
+    return _subject_for_single_signal(state_abbrev=label, opened_label=opened_label)
 
 
 def _build_signal_template_tokens(db_path: str, state: str, recent_leads: list[dict], lookback_days: int = 14) -> dict[str, str]:
+    del db_path, lookback_days
     state_code = _norm_state(state)
     state_name = _state_full_name(state_code)
 
@@ -668,69 +772,11 @@ def _build_signal_template_tokens(db_path: str, state: str, recent_leads: list[d
         "STATE_METRO_EXAMPLES": _state_metro_examples(state_code),
         "RECENT_SIGNALS_LINES": recent_text,
         "RECENT_SIGNALS_HTML": recent_html,
-        "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
-        "SIGNALS_WINDOW_NOTE_HTML": (
-            "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>"
-        ),
+        "SIGNALS_WINDOW_NOTE_TEXT": "",
+        "SIGNALS_WINDOW_NOTE_HTML": "",
         "SIGNALS_FALLBACK_TEXT": "",
         "SIGNALS_FALLBACK_HTML": "",
     }
-    if recent_leads:
-        return tokens
-
-    historical_rows, max_opened = _history_rows_for_state(db_path=db_path, state=state_code, limit=3)
-    if historical_rows:
-        historical_text = _recent_signals_text_lines_from_leads(historical_rows)
-        historical_html = _recent_signals_html_from_leads(historical_rows)
-        tokens["RECENT_SIGNALS_LINES"] = f"- No recent signals in the last {lookback_days} days for {state_name}."
-        tokens["RECENT_SIGNALS_HTML"] = (
-            f"<div style=\"font-size: 13px; color: #555;\">No recent signals in the last {lookback_days} days for "
-            f"{_html_escape(state_name)}.</div>"
-        )
-        latest_line = f" Latest opened date in our data: {max_opened}." if max_opened and max_opened != "NONE" else ""
-        tokens["SIGNALS_WINDOW_NOTE_TEXT"] = (
-            f"14-day window is currently empty for {state_name}.{latest_line}".strip()
-        )
-        tokens["SIGNALS_WINDOW_NOTE_HTML"] = (
-            f"<span>14-day window is currently empty for {_html_escape(state_name)}.{_html_escape(latest_line)}</span>"
-        )
-        tokens["SIGNALS_FALLBACK_TEXT"] = (
-            f"Most recent signals we have for {state_name} (outside the {lookback_days}-day window):\n"
-            f"{historical_text}"
-        ).strip()
-        tokens["SIGNALS_FALLBACK_HTML"] = (
-            f"<p style=\"font-size: 13px; line-height: 1.6; margin: 12px 0 8px 0; color: #444;\">"
-            f"Most recent signals we have for {_html_escape(state_name)} (outside the {lookback_days}-day window):"
-            f"</p><div>{historical_html}</div>"
-        )
-        return tokens
-
-    sample_rows = _sample_rows()[:3]
-    sample_text = _recent_signals_text_lines_from_leads(sample_rows)
-    sample_html = _recent_signals_html_from_leads(sample_rows)
-    tokens["RECENT_SIGNALS_LINES"] = f"- No recent signals in the last {lookback_days} days for {state_name}."
-    tokens["RECENT_SIGNALS_HTML"] = (
-        f"<div style=\"font-size: 13px; color: #555;\">No recent signals in the last {lookback_days} days for "
-        f"{_html_escape(state_name)}.</div>"
-    )
-    tokens["SIGNALS_WINDOW_NOTE_TEXT"] = (
-        f"14-day window is currently empty for {state_name}. We can backfill the last 45 days during trial."
-    )
-    tokens["SIGNALS_WINDOW_NOTE_HTML"] = (
-        f"<span>14-day window is currently empty for {_html_escape(state_name)}. "
-        "We can backfill the last 45 days during trial.</span>"
-    )
-    tokens["SIGNALS_FALLBACK_TEXT"] = (
-        "Example signals (sample, not state-specific):\n"
-        f"{sample_text}"
-    ).strip()
-    tokens["SIGNALS_FALLBACK_HTML"] = (
-        "<p style=\"font-size: 13px; line-height: 1.6; margin: 12px 0 8px 0; color: #444;\">"
-        "Example signals (sample, not state-specific):"
-        "</p><div>"
-        + sample_html
-        + "</div>"
-    )
     return tokens
 
 
@@ -1046,7 +1092,7 @@ def _render_preview(args: argparse.Namespace) -> int:
         rows = [
             {
                 "prospect_id": "preview",
-                "first_name": "there",
+                "first_name": "",
                 "firm": "",
                 "title": "",
                 "email": "preview@example.com",
@@ -1057,18 +1103,18 @@ def _render_preview(args: argparse.Namespace) -> int:
     unsub_url = "https://unsubscribe.example.internal/unsubscribe?token=preview"
     prefs_url = "https://unsubscribe.example.internal/prefs?token=preview"
     prefs_link = prefs_url
-    sample_feed_url = (os.getenv("MICROFLOWOPS_SAMPLE_FEED_URL") or DEFAULT_SAMPLE_FEED_URL).strip() or DEFAULT_SAMPLE_FEED_URL
     mailing_address = _resolve_outreach_mailing_address()
     microflowops_url = (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
 
     for idx, row in enumerate(rows, start=1):
-        first_name = _row_text_value(row, ["first_name", "contact_name"]) or "there"
+        first_name = _row_text_value(row, ["first_name", "contact_name"])
         firm_name_raw = _row_text_value(row, ["firm"])
         segment = _row_text_value(row, ["segment", "buyer_segment"])
         role_or_title = _row_text_value(row, ["role_or_title", "role", "contact_role", "title"])
         copy_tokens = _build_copy_tokens(
             state_full_name=signal_tokens["STATE_FULL_NAME"],
             state_metro_examples=signal_tokens["STATE_METRO_EXAMPLES"],
+            first_name=first_name,
             firm_name=firm_name_raw,
             segment=segment,
             role_or_title=role_or_title,
@@ -1095,11 +1141,14 @@ def _render_preview(args: argparse.Namespace) -> int:
                 "SIGNALS_WINDOW_NOTE_TEXT": signal_tokens["SIGNALS_WINDOW_NOTE_TEXT"],
                 "SIGNALS_FALLBACK_TEXT": signal_tokens["SIGNALS_FALLBACK_TEXT"],
                 "LAST_REFRESH_ET": last_refresh_et,
-                "SAMPLE_FEED_URL": sample_feed_url,
                 "UNSUBSCRIBE_URL": unsub_url,
                 "PREFS_URL": prefs_link,
                 "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
                 "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
+                "GREETING_LINE_TEXT": copy_tokens["GREETING_LINE_TEXT"],
+                "INTRO_LINE_TEXT": copy_tokens["INTRO_LINE_TEXT"],
+                "POST_CARDS_LINE_TEXT": copy_tokens["POST_CARDS_LINE_TEXT"],
+                "TRIAL_LINE_TEXT": copy_tokens["TRIAL_LINE_TEXT"],
                 "OPENING_LINE_TEXT": copy_tokens["OPENING_LINE_TEXT"],
                 "RELEVANCE_LINE_TEXT": copy_tokens["RELEVANCE_LINE_TEXT"],
                 "CTA_LINE_TEXT": copy_tokens["CTA_LINE_TEXT"],
@@ -1121,11 +1170,14 @@ def _render_preview(args: argparse.Namespace) -> int:
                     "{{SIGNALS_WINDOW_NOTE_HTML}}": signal_tokens["SIGNALS_WINDOW_NOTE_HTML"],
                     "{{SIGNALS_FALLBACK_HTML}}": signal_tokens["SIGNALS_FALLBACK_HTML"],
                     "{{LAST_REFRESH_ET}}": _html_escape(last_refresh_et),
-                    "{{SAMPLE_FEED_URL}}": _html_escape(sample_feed_url),
                     "{{UNSUBSCRIBE_URL}}": _html_escape(unsub_url),
                     "{{PREFS_URL}}": _html_escape(prefs_link),
                     "{{MAILING_ADDRESS}}": _html_escape(mailing_address),
                     "{{MICROFLOWOPS_URL}}": _html_escape(microflowops_url),
+                    "{{GREETING_LINE_HTML}}": copy_tokens["GREETING_LINE_HTML"],
+                    "{{INTRO_LINE_HTML}}": copy_tokens["INTRO_LINE_HTML"],
+                    "{{POST_CARDS_LINE_HTML}}": copy_tokens["POST_CARDS_LINE_HTML"],
+                    "{{TRIAL_LINE_HTML}}": copy_tokens["TRIAL_LINE_HTML"],
                     "{{OPENING_LINE_HTML}}": copy_tokens["OPENING_LINE_HTML"],
                     "{{RELEVANCE_LINE_HTML}}": copy_tokens["RELEVANCE_LINE_HTML"],
                     "{{CTA_LINE_HTML}}": copy_tokens["CTA_LINE_HTML"],
@@ -1142,13 +1194,11 @@ def _render_preview(args: argparse.Namespace) -> int:
             )
 
         unsub_anchor_count = html_body.count(">Unsubscribe</a>")
-        prefs_anchor_count = html_body.count(">Manage preferences</a>")
         unsub_url_count = html_body.count("unsubscribe.example.internal/unsubscribe?token=preview")
         address_idx = html_body.find(mailing_address)
         pre_footer = html_body[:address_idx] if address_idx > 0 else html_body
         pre_footer_unsub_count = pre_footer.count("unsubscribe.example.internal/unsubscribe?token=preview")
         footer_unsub_present = unsub_anchor_count > 0
-        footer_prefs_present = prefs_anchor_count > 0
         unsubscribe_count_exactly_one = unsub_url_count == 1
         no_duplicate_unsub_pre_footer = pre_footer_unsub_count == 0
 
@@ -1159,7 +1209,6 @@ def _render_preview(args: argparse.Namespace) -> int:
         print(
             "COMPLIANCE_CHECKS "
             f"footer_unsubscribe_present={str(footer_unsub_present).lower()} "
-            f"footer_manage_preferences_present={str(footer_prefs_present).lower()} "
             f"unsubscribe_link_count_exactly_one={str(unsubscribe_count_exactly_one).lower()} "
             f"unsubscribe_link_count={unsub_url_count} "
             f"pre_footer_unsubscribe_link_count={pre_footer_unsub_count} "
@@ -1395,10 +1444,10 @@ def main() -> int:
         segment = _row_text_value(r, ["segment", "buyer_segment"])
         role_or_title = _row_text_value(r, ["role_or_title", "role", "contact_role", "title"])
         prefs_link = prefs_url or unsub_url or ""
-        sample_feed_url = (os.getenv("MICROFLOWOPS_SAMPLE_FEED_URL") or DEFAULT_SAMPLE_FEED_URL).strip() or DEFAULT_SAMPLE_FEED_URL
         copy_tokens = _build_copy_tokens(
             state_full_name=signal_tokens["STATE_FULL_NAME"],
             state_metro_examples=signal_tokens["STATE_METRO_EXAMPLES"],
+            first_name=first_name,
             firm_name=firm_name_raw,
             segment=segment,
             role_or_title=role_or_title,
@@ -1416,7 +1465,7 @@ def main() -> int:
         text_body = _render_template(
             template_text,
             {
-                "FIRST_NAME": first_name or "there",
+                "FIRST_NAME": first_name,
                 "FIRM": firm,
                 "STATE": state_filter,
                 "STATE_FULL_NAME": signal_tokens["STATE_FULL_NAME"],
@@ -1426,11 +1475,14 @@ def main() -> int:
                 "SIGNALS_WINDOW_NOTE_TEXT": signal_tokens["SIGNALS_WINDOW_NOTE_TEXT"],
                 "SIGNALS_FALLBACK_TEXT": signal_tokens["SIGNALS_FALLBACK_TEXT"],
                 "LAST_REFRESH_ET": last_refresh_et,
-                "SAMPLE_FEED_URL": sample_feed_url,
                 "UNSUBSCRIBE_URL": unsub_url or "",
                 "PREFS_URL": prefs_url or prefs_link,
                 "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
                 "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
+                "GREETING_LINE_TEXT": copy_tokens["GREETING_LINE_TEXT"],
+                "INTRO_LINE_TEXT": copy_tokens["INTRO_LINE_TEXT"],
+                "POST_CARDS_LINE_TEXT": copy_tokens["POST_CARDS_LINE_TEXT"],
+                "TRIAL_LINE_TEXT": copy_tokens["TRIAL_LINE_TEXT"],
                 "OPENING_LINE_TEXT": copy_tokens["OPENING_LINE_TEXT"],
                 "RELEVANCE_LINE_TEXT": copy_tokens["RELEVANCE_LINE_TEXT"],
                 "CTA_LINE_TEXT": copy_tokens["CTA_LINE_TEXT"],
@@ -1447,7 +1499,7 @@ def main() -> int:
             html_body = _render_template(
                 html_template_text,
                 {
-                    "{{FIRST_NAME}}": _html_escape(first_name or "there"),
+                    "{{FIRST_NAME}}": _html_escape(first_name),
                     "{{FIRM}}": _html_escape(firm),
                     "{{STATE}}": _html_escape(state_filter),
                     "{{STATE_FULL_NAME}}": _html_escape(signal_tokens["STATE_FULL_NAME"]),
@@ -1456,11 +1508,14 @@ def main() -> int:
                     "{{SIGNALS_WINDOW_NOTE_HTML}}": signal_tokens["SIGNALS_WINDOW_NOTE_HTML"],
                     "{{SIGNALS_FALLBACK_HTML}}": signal_tokens["SIGNALS_FALLBACK_HTML"],
                     "{{LAST_REFRESH_ET}}": _html_escape(last_refresh_et),
-                    "{{SAMPLE_FEED_URL}}": _html_escape(sample_feed_url),
                     "{{UNSUBSCRIBE_URL}}": _html_escape(unsub_url or prefs_link),
                     "{{PREFS_URL}}": _html_escape(prefs_url or prefs_link),
                     "{{MAILING_ADDRESS}}": _html_escape(mailing_address),
                     "{{MICROFLOWOPS_URL}}": _html_escape(microflowops_url),
+                    "{{GREETING_LINE_HTML}}": copy_tokens["GREETING_LINE_HTML"],
+                    "{{INTRO_LINE_HTML}}": copy_tokens["INTRO_LINE_HTML"],
+                    "{{POST_CARDS_LINE_HTML}}": copy_tokens["POST_CARDS_LINE_HTML"],
+                    "{{TRIAL_LINE_HTML}}": copy_tokens["TRIAL_LINE_HTML"],
                     "{{OPENING_LINE_HTML}}": copy_tokens["OPENING_LINE_HTML"],
                     "{{RELEVANCE_LINE_HTML}}": copy_tokens["RELEVANCE_LINE_HTML"],
                     "{{CTA_LINE_HTML}}": copy_tokens["CTA_LINE_HTML"],

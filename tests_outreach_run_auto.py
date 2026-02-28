@@ -1287,16 +1287,16 @@ class TestOutreachRunAuto(unittest.TestCase):
                                 batch=batch,
                                 template_text=template_text,
                                 html_template_text=html_template_text,
-                                recent_signals_lines="- Example Co (Miami, FL) | Programmed | Opened 2026-02-18 | Observed 2026-02-18",
-                                recent_signals_html="<div>Example Co &middot; Observed 2026-02-18</div>",
+                                recent_signals_lines="- Metro Safety Co (Miami, FL) | Programmed | Opened 2026-02-18 | Observed 2026-02-18",
+                                recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-02-18</div>",
                                 last_refresh_et="2026-02-18 08:00 ET",
                                 signal_tokens={
                                     "STATE_FULL_NAME": "California" if expected_state == "CA" else "Florida",
                                     "STATE_METRO_EXAMPLES": "Los Angeles, Inland Empire"
                                     if expected_state == "CA"
                                     else "Miami, Orlando",
-                                    "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
-                                    "SIGNALS_WINDOW_NOTE_HTML": "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+                                    "SIGNALS_WINDOW_NOTE_TEXT": "",
+                                    "SIGNALS_WINDOW_NOTE_HTML": "",
                                     "SIGNALS_FALLBACK_TEXT": "",
                                     "SIGNALS_FALLBACK_HTML": "",
                                 },
@@ -1309,28 +1309,21 @@ class TestOutreachRunAuto(unittest.TestCase):
                                 ],
                             )
                             expected_subject = (
-                                "1 new California inspections your safety team may not have seen yet"
+                                "Quick heads up — new CA inspection opened Feb 18"
                                 if expected_state == "CA"
-                                else "1 new Florida inspections your defense team may not have seen yet"
+                                else "Quick heads up — new FL inspection opened Feb 18"
                             )
                             self.assertEqual(subject, expected_subject)
-                            self.assertIn(f"Recent OSHA inspections opened in {expected_state}:", text_body)
-                            self.assertIn("outreach window is open now", text_body)
-                            self.assertIn("is exactly the kind of team this feed is built for", text_body)
-                            self.assertIn("14-day trial feed - no commitment, no login required", text_body)
-                            self.assertIn(
-                                "Every item links to the public OSHA record so your team can verify in 30 seconds.",
-                                text_body,
-                            )
-                            self.assertIn("I'm Chase at MicroFlowOps.", text_body)
+                            self.assertIn("I spotted a new OSHA inspection", text_body)
+                            self.assertIn("opened recently and none have citations yet", text_body)
+                            self.assertIn("Happy to set up a short trial feed", text_body)
                             self.assertEqual(html_body.count(">Unsubscribe</a>"), 1)
-                            self.assertEqual(html_body.count(">Manage preferences</a>"), 1)
+                            self.assertEqual(html_body.count(">Manage preferences</a>"), 0)
                             self.assertEqual(html_body.count("unsubscribe.example/u"), 1)
                             addr_idx = html_body.find("11539 Links Dr, Reston, VA 20190")
                             self.assertGreater(addr_idx, 0)
                             pre_footer = html_body[:addr_idx]
                             self.assertNotIn("unsubscribe.example/u", pre_footer)
-                            self.assertNotIn("unsubscribe.example/prefs", pre_footer)
                             rendered = "\n".join([subject, text_body, html_body]).lower()
                             for pattern in banned_patterns:
                                 self.assertIsNone(
@@ -1342,7 +1335,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                     gc.collect()
                     time.sleep(0.05)
 
-    def test_render_payload_falls_back_to_appears_to_serve_when_firm_missing(self):
+    def test_render_payload_uses_generic_variant_when_name_and_firm_missing(self):
         template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt")
         html_template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html")
         conn = sqlite3.connect(":memory:")
@@ -1361,7 +1354,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             )
             conn.execute(
                 "INSERT INTO prospect_preview(prospect_id, contact_name, firm, email, title) VALUES(?, ?, ?, ?, ?)",
-                ("p1", "Alex Example", "", "alex@example.com", "Operations Lead"),
+                ("p1", "", "", "alex@example.com", "Operations Lead"),
             )
             row = conn.execute("SELECT * FROM prospect_preview").fetchone()
             self.assertIsNotNone(row)
@@ -1376,14 +1369,14 @@ class TestOutreachRunAuto(unittest.TestCase):
                     batch="2026-02-17_CA",
                     template_text=template_text,
                     html_template_text=html_template_text,
-                    recent_signals_lines="- Example Co (San Jose, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
-                    recent_signals_html="<div>Example Co &middot; Observed 2026-02-18</div>",
+                    recent_signals_lines="- Metro Safety Co (San Jose, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
+                    recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-02-18</div>",
                     last_refresh_et="2026-02-18 08:00 ET",
                     signal_tokens={
                         "STATE_FULL_NAME": "California",
                         "STATE_METRO_EXAMPLES": "Los Angeles, Inland Empire",
-                        "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
-                        "SIGNALS_WINDOW_NOTE_HTML": "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+                        "SIGNALS_WINDOW_NOTE_TEXT": "",
+                        "SIGNALS_WINDOW_NOTE_HTML": "",
                         "SIGNALS_FALLBACK_TEXT": "",
                         "SIGNALS_FALLBACK_HTML": "",
                     },
@@ -1395,9 +1388,12 @@ class TestOutreachRunAuto(unittest.TestCase):
                         }
                     ],
                 )
-            self.assertEqual(subject, "New OSHA inspection in CA — opened Feb 18")
-            self.assertIn("your firm appears to serve California", text_body)
-            self.assertIn("ignore this or unsubscribe below", text_body)
+            self.assertEqual(subject, "Quick heads up — new CA inspection opened Feb 18")
+            self.assertIn(
+                "Hi - saw a new OSHA inspection in California that might be relevant to your team:",
+                text_body,
+            )
+            self.assertIn("Opened recently and none have citations yet.", text_body)
         finally:
             conn.close()
 
@@ -1452,7 +1448,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                     "site_state": "CA",
                     "site_city": "Los Angeles",
                     "inspection_type": "Complaint",
-                    "establishment_name": "Example Co",
+                    "establishment_name": "Metro Safety Co",
                 }
             ]
             argv = [
@@ -1522,8 +1518,8 @@ class TestOutreachRunAuto(unittest.TestCase):
                 signal_tokens = {
                     "STATE_FULL_NAME": "California",
                     "STATE_METRO_EXAMPLES": "Los Angeles, Inland Empire",
-                    "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
-                    "SIGNALS_WINDOW_NOTE_HTML": "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+                    "SIGNALS_WINDOW_NOTE_TEXT": "",
+                    "SIGNALS_WINDOW_NOTE_HTML": "",
                     "SIGNALS_FALLBACK_TEXT": "",
                     "SIGNALS_FALLBACK_HTML": "",
                 }
@@ -1538,8 +1534,8 @@ class TestOutreachRunAuto(unittest.TestCase):
                         batch="2026-02-18_CA",
                         template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt"),
                         html_template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html"),
-                        recent_signals_lines="- Example Co (Los Angeles, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
-                        recent_signals_html="<div>Example Co &middot; Observed 2026-02-18</div>",
+                        recent_signals_lines="- Metro Safety Co (Los Angeles, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
+                        recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-02-18</div>",
                         last_refresh_et="2026-02-18 08:00 ET",
                         signal_tokens=signal_tokens,
                         recent_leads=list(recent_leads),
@@ -1551,7 +1547,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             mailmerge_opening = next((ln.strip() for ln in mailmerge_body.splitlines() if ln.strip()), "")
             run_auto_opening = next((ln.strip() for ln in run_auto_text.splitlines() if ln.strip()), "")
             self.assertEqual(run_auto_opening, mailmerge_opening)
-            self.assertIn("outreach window is open now", run_auto_opening.lower())
+            self.assertEqual(run_auto_opening, "Hi Casey,")
 
     def test_domain_dedupe_and_role_inbox_penalty_ordering_is_deterministic(self):
         with tempfile.TemporaryDirectory() as d:

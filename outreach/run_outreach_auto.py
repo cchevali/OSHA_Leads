@@ -1373,7 +1373,7 @@ def _render_outreach_payload(
     signal_tokens: dict[str, str] | None = None,
     recent_leads: list[dict] | None = None,
 ) -> tuple[str, str, str, str]:
-    first_name = (str(row["contact_name"] or "").split(" ")[:1] or [""])[0].strip() or "there"
+    first_name = (str(row["contact_name"] or "").split(" ")[:1] or [""])[0].strip()
     firm_name_raw = str(row["firm"] or "").strip()
     firm = firm_name_raw or "your firm"
     segment = _extract_segment(row)
@@ -1397,18 +1397,18 @@ def _render_outreach_payload(
     state_metro_examples = token_map.get("STATE_METRO_EXAMPLES") or gm._state_metro_examples(state)
     signals_window_note_text = token_map.get(
         "SIGNALS_WINDOW_NOTE_TEXT",
-        "Opened = inspection opened date; Observed = first day it appeared in our feed.",
+        "",
     )
     signals_window_note_html = token_map.get(
         "SIGNALS_WINDOW_NOTE_HTML",
-        "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+        "",
     )
     signals_fallback_text = token_map.get("SIGNALS_FALLBACK_TEXT", "")
     signals_fallback_html = token_map.get("SIGNALS_FALLBACK_HTML", "")
-    sample_feed_url = (os.getenv("MICROFLOWOPS_SAMPLE_FEED_URL") or gm.DEFAULT_SAMPLE_FEED_URL).strip() or gm.DEFAULT_SAMPLE_FEED_URL
     copy_tokens = gm._build_copy_tokens(
         state_full_name=state_full_name,
         state_metro_examples=state_metro_examples,
+        first_name=first_name,
         firm_name=firm_name_raw,
         segment=segment,
         role_or_title=role_or_title,
@@ -1436,11 +1436,14 @@ def _render_outreach_payload(
                 "SIGNALS_WINDOW_NOTE_TEXT": signals_window_note_text,
                 "SIGNALS_FALLBACK_TEXT": signals_fallback_text,
                 "LAST_REFRESH_ET": last_refresh_et,
-                "SAMPLE_FEED_URL": sample_feed_url,
                 "UNSUBSCRIBE_URL": unsub_url,
                 "PREFS_URL": prefs_link,
                 "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
                 "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
+                "GREETING_LINE_TEXT": copy_tokens["GREETING_LINE_TEXT"],
+                "INTRO_LINE_TEXT": copy_tokens["INTRO_LINE_TEXT"],
+                "POST_CARDS_LINE_TEXT": copy_tokens["POST_CARDS_LINE_TEXT"],
+                "TRIAL_LINE_TEXT": copy_tokens["TRIAL_LINE_TEXT"],
                 "OPENING_LINE_TEXT": copy_tokens["OPENING_LINE_TEXT"],
                 "RELEVANCE_LINE_TEXT": copy_tokens["RELEVANCE_LINE_TEXT"],
                 "CTA_LINE_TEXT": copy_tokens["CTA_LINE_TEXT"],
@@ -1464,13 +1467,16 @@ def _render_outreach_payload(
                 "{{SIGNALS_WINDOW_NOTE_HTML}}": signals_window_note_html,
                 "{{SIGNALS_FALLBACK_HTML}}": signals_fallback_html,
                 "{{LAST_REFRESH_ET}}": gm._html_escape(last_refresh_et),
-                "{{SAMPLE_FEED_URL}}": gm._html_escape(sample_feed_url),
                 "{{UNSUBSCRIBE_URL}}": gm._html_escape(unsub_url),
                 "{{PREFS_URL}}": gm._html_escape(prefs_link),
                 "{{MAILING_ADDRESS}}": gm._html_escape(gm._resolve_outreach_mailing_address()),
                 "{{MICROFLOWOPS_URL}}": gm._html_escape(
                     (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
                 ),
+                "{{GREETING_LINE_HTML}}": copy_tokens["GREETING_LINE_HTML"],
+                "{{INTRO_LINE_HTML}}": copy_tokens["INTRO_LINE_HTML"],
+                "{{POST_CARDS_LINE_HTML}}": copy_tokens["POST_CARDS_LINE_HTML"],
+                "{{TRIAL_LINE_HTML}}": copy_tokens["TRIAL_LINE_HTML"],
                 "{{OPENING_LINE_HTML}}": copy_tokens["OPENING_LINE_HTML"],
                 "{{RELEVANCE_LINE_HTML}}": copy_tokens["RELEVANCE_LINE_HTML"],
                 "{{CTA_LINE_HTML}}": copy_tokens["CTA_LINE_HTML"],
