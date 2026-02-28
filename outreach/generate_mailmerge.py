@@ -326,8 +326,9 @@ def _build_copy_tokens(
         greeting_text = f"Hi {clean_first},"
         count_phrase = "a new OSHA inspection" if low_signal else "a few new OSHA inspections"
         opened_phrase = "opened recently" if low_signal else "most opened in the last two weeks"
+        team_phrase = f"your team at {clean_firm}" if clean_firm else "your team"
         intro_text = (
-            f"I spotted {count_phrase} in {state_full_name} that your team might want to know about — "
+            f"I spotted {count_phrase} in {state_full_name} that {team_phrase} might want to know about — "
             f"{opened_phrase} and none have citations yet:"
         )
         post_cards_text = ""
