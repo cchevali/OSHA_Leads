@@ -1132,7 +1132,20 @@ class TestOutreachMailmerge(unittest.TestCase):
                         "territory_code": "X",
                         "source": "s",
                         "notes": "",
-                    }
+                    },
+                    {
+                        "prospect_id": "p_preview_4",
+                        "first_name": "Riley",
+                        "last_name": "Preview",
+                        "firm": "Inc.",
+                        "title": "Managing Partner",
+                        "email": "preview4@example.com",
+                        "state": "CA",
+                        "city": "Los Angeles",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    },
                 ],
             )
             snapshot_before = sorted(
@@ -1144,7 +1157,7 @@ class TestOutreachMailmerge(unittest.TestCase):
                 state="CA",
                 input_csv=preview_input,
                 db_path=db_path,
-                limit=3,
+                limit=4,
             )
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             stdout = p.stdout or ""
@@ -1159,11 +1172,21 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertIn("BODY_HTML_PREVIEW:", stdout)
             self.assertIn("COMPLIANCE_CHECKS ", stdout)
             self.assertIn("Hi Casey,", stdout)
+            self.assertIn("Hi Riley,", stdout)
             self.assertIn("Hi - saw a few things Acme Industrial should probably have on their radar:", stdout)
             self.assertIn(
                 "Hi - saw a few new OSHA inspections in California that might be relevant to your team:",
                 stdout,
             )
+            self.assertIn(
+                "I spotted a few new OSHA inspections in California that your team at Northwind Safety might want to know about",
+                stdout,
+            )
+            self.assertIn(
+                "I spotted a few new OSHA inspections in California that your team might want to know about",
+                stdout,
+            )
+            self.assertNotIn("that your team at Inc. might want to know about", stdout)
             self.assertNotIn("You're getting this because", stdout)
             self.assertNotIn("Opened = inspection opened date; Observed =", stdout)
             self.assertNotIn("no commitment, no login required", stdout)
