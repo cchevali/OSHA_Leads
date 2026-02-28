@@ -90,7 +90,21 @@ ROLE_PRIORITY_RULES: list[tuple[int, tuple[str, ...], str]] = [
     (1, ("safety manager", "safety director", "ehs", "hse", "osha", "safety"), "safety_leader"),
     (2, ("operations", "compliance", "plant manager", "general manager"), "operations_compliance"),
 ]
-ROLE_INBOX_LOCALS = {"info", "support", "hello", "sales", "contact", "admin", "office"}
+ROLE_INBOX_LOCALS = {
+    "info",
+    "contact",
+    "admin",
+    "office",
+    "support",
+    "sales",
+    "hello",
+    "help",
+    "billing",
+    "accounts",
+    "careers",
+    "jobs",
+    "hr",
+}
 BUYER_SEGMENT_HINTS = ("attorney", "safety consultant", "ehs")
 OPTIONAL_PROSPECT_COLUMNS = (
     "segment",
@@ -107,6 +121,9 @@ FILTER_BREAKDOWN_FILTER_KEYS = (
     "status_bounced",
     "status_converted",
     "already_contacted",
+    "role_inbox_email",
+    "no_signals",
+    "duplicate_guard",
     "domain_dedup",
     "daily_limit",
 )
@@ -559,10 +576,20 @@ def _role_priority(role_or_title: str) -> tuple[int, str]:
     return 3, "other"
 
 
+def _email_local_part(email: str) -> str:
+    value = _norm_email(email)
+    if "@" not in value:
+        return ""
+    local_part = value.split("@", 1)[0]
+    return local_part.split("+", 1)[0]
+
+
+def _is_role_inbox_email(email: str) -> bool:
+    return _email_local_part(email) in ROLE_INBOX_LOCALS
+
+
 def _role_inbox_penalty(email: str) -> int:
-    local_part = _norm_email(email).split("@", 1)[0] if "@" in _norm_email(email) else ""
-    local = local_part.split("+", 1)[0]
-    return 1 if local in ROLE_INBOX_LOCALS else 0
+    return 1 if _is_role_inbox_email(email) else 0
 
 
 def _segment_penalty(segment: str) -> tuple[int, str]:
@@ -618,6 +645,7 @@ def _skip_reason(
     suppressed_emails: set[str],
     sent_ids: set[str],
     allow_repeat: bool,
+    skip_role_inboxes: bool,
 ) -> str:
     status = str(row["status"] or "").strip().lower()
     if status in EXCLUDED_STATUSES:
@@ -630,6 +658,8 @@ def _skip_reason(
         return "invalid_email"
     if email in suppressed_emails:
         return "suppressed"
+    if skip_role_inboxes and _is_role_inbox_email(email):
+        return "role_inbox_email"
 
     if not allow_repeat:
         if str(row["prospect_id"]) in sent_ids:
@@ -707,6 +737,7 @@ def _select_candidates(
     limit: int,
     suppressed_emails: set[str],
     allow_repeat: bool,
+    skip_role_inboxes: bool,
 ) -> tuple[list[dict], Counter, list[dict], dict[str, int]]:
     cols = _prospect_select_columns(conn)
     query = "SELECT " + ", ".join(cols) + " FROM prospects WHERE UPPER(COALESCE(state, '')) = ?"
@@ -725,7 +756,13 @@ def _select_candidates(
             role_inbox_penalty_count += 1
         if not _safe_text(candidate["state_pref"]):
             missing_state_pref_count += 1
-        reason = _skip_reason(row, suppressed_emails=suppressed_emails, sent_ids=sent_ids, allow_repeat=allow_repeat)
+        reason = _skip_reason(
+            row,
+            suppressed_emails=suppressed_emails,
+            sent_ids=sent_ids,
+            allow_repeat=allow_repeat,
+            skip_role_inboxes=skip_role_inboxes,
+        )
         if reason:
             skipped[reason] += 1
             dropped = _candidate_csv_row(candidate)
@@ -783,11 +820,108 @@ def _count_pool_total_all_states(conn: sqlite3.Connection) -> int:
         return 0
 
 
+def _has_prior_sent_event(conn: sqlite3.Connection, prospect_id: str) -> bool:
+    pid = _safe_text(prospect_id)
+    if not pid:
+        return False
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM outreach_events WHERE prospect_id = ? AND event_type = 'sent' LIMIT 1",
+            (pid,),
+        ).fetchone()
+    except Exception:
+        return False
+    return bool(row)
+
+
+def _signal_window_days() -> int:
+    raw = _safe_text(os.getenv("OUTREACH_SIGNAL_WINDOW_DAYS", "14"))
+    if not raw:
+        return 14
+    try:
+        return max(1, int(raw))
+    except Exception:
+        return 14
+
+
+def _count_real_signals_for_state_window(
+    *,
+    db_path: str,
+    state: str,
+    run_date: date,
+    window_days: int,
+) -> int:
+    path = Path(str(db_path or "").strip())
+    if not path.exists():
+        return 0
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(path))
+        if not _table_exists(conn, "inspections"):
+            return 0
+        cols = _table_columns(conn, "inspections")
+        state_col = "site_state" if "site_state" in cols else ("state" if "state" in cols else "")
+        if not state_col:
+            return 0
+        if "date_opened" in cols:
+            date_expr = "substr(COALESCE(date_opened, ''), 1, 10)"
+        elif "first_seen_at" in cols:
+            date_expr = "substr(COALESCE(first_seen_at, ''), 1, 10)"
+        elif "last_seen_at" in cols:
+            date_expr = "substr(COALESCE(last_seen_at, ''), 1, 10)"
+        else:
+            return 0
+        cutoff = (run_date - timedelta(days=max(1, int(window_days)))).isoformat()
+        parse_invalid_clause = " AND COALESCE(parse_invalid, 0) = 0" if "parse_invalid" in cols else ""
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM inspections
+            WHERE UPPER(COALESCE({state_col}, '')) = ?
+              AND {date_expr} >= ?
+              {parse_invalid_clause}
+            """,
+            (_safe_text(state).upper(), cutoff),
+        ).fetchone()
+        return max(0, int((row[0] if row else 0) or 0))
+    except Exception:
+        return 0
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _mini_reason(reason: str, max_len: int = 120) -> str:
+    text = _safe_text(reason).replace(";", "; ")
+    if not text:
+        return "eligible"
+    if len(text) <= max_len:
+        return text
+    return text[:max_len].rstrip() + "..."
+
+
+def _print_selection_debug(selected: list[dict], *, mode: str) -> None:
+    total = len(list(selected or []))
+    shown = min(10, total)
+    print(f"OUTREACH_SELECTION_DEBUG mode={_safe_text(mode)} total_selected={total} shown={shown}")
+    for idx, candidate in enumerate(list(selected or [])[:10], start=1):
+        print(
+            "OUTREACH_SELECTION_DEBUG_ROW "
+            f"idx={idx} "
+            f"prospect_id={_safe_text(candidate.get('prospect_id') or '')} "
+            f"why_sendable={_mini_reason(str(candidate.get('rank_reason') or ''))}"
+        )
+
+
 def _crm_uncontacted_by_state(
     conn: sqlite3.Connection,
     states: list[str],
     suppressed_emails: set[str],
     allow_repeat: bool,
+    skip_role_inboxes: bool,
 ) -> dict[str, int]:
     normalized_states = [str(s or "").strip().upper() for s in states if str(s or "").strip()]
     counts: dict[str, int] = {s: 0 for s in normalized_states}
@@ -817,6 +951,7 @@ def _crm_uncontacted_by_state(
             suppressed_emails=suppressed_emails,
             sent_ids=sent_ids,
             allow_repeat=allow_repeat,
+            skip_role_inboxes=skip_role_inboxes,
         )
         if reason:
             continue
@@ -829,6 +964,7 @@ def _crm_funnel_breakdown_for_summary(
     states: list[str],
     suppressed_emails: set[str],
     allow_repeat: bool,
+    skip_role_inboxes: bool,
     selected_state: str,
 ) -> dict:
     normalized_states = [str(s or "").strip().upper() for s in states if str(s or "").strip()]
@@ -870,6 +1006,7 @@ def _crm_funnel_breakdown_for_summary(
             suppressed_emails=suppressed_emails,
             sent_ids=sent_ids,
             allow_repeat=allow_repeat,
+            skip_role_inboxes=skip_role_inboxes,
         )
         if reason == "invalid_email":
             out["invalid_email_count"] = int(out["invalid_email_count"]) + 1
@@ -1373,9 +1510,10 @@ def _render_outreach_payload(
     signal_tokens: dict[str, str] | None = None,
     recent_leads: list[dict] | None = None,
 ) -> tuple[str, str, str, str]:
-    first_name = (str(row["contact_name"] or "").split(" ")[:1] or [""])[0].strip() or "there"
+    first_name = (str(row["contact_name"] or "").split(" ")[:1] or [""])[0].strip()
     firm_name_raw = str(row["firm"] or "").strip()
-    firm = firm_name_raw or "your firm"
+    clean_firm = gm._clean_company_name(firm_name_raw)
+    firm = clean_firm or "your team"
     segment = _extract_segment(row)
     role_or_title = _extract_role_or_title(row)
     prospect_id = str(row["prospect_id"] or "").strip()
@@ -1397,18 +1535,18 @@ def _render_outreach_payload(
     state_metro_examples = token_map.get("STATE_METRO_EXAMPLES") or gm._state_metro_examples(state)
     signals_window_note_text = token_map.get(
         "SIGNALS_WINDOW_NOTE_TEXT",
-        "Opened = inspection opened date; Observed = first day it appeared in our feed.",
+        "",
     )
     signals_window_note_html = token_map.get(
         "SIGNALS_WINDOW_NOTE_HTML",
-        "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>",
+        "",
     )
     signals_fallback_text = token_map.get("SIGNALS_FALLBACK_TEXT", "")
     signals_fallback_html = token_map.get("SIGNALS_FALLBACK_HTML", "")
-    sample_feed_url = (os.getenv("MICROFLOWOPS_SAMPLE_FEED_URL") or gm.DEFAULT_SAMPLE_FEED_URL).strip() or gm.DEFAULT_SAMPLE_FEED_URL
     copy_tokens = gm._build_copy_tokens(
         state_full_name=state_full_name,
         state_metro_examples=state_metro_examples,
+        first_name=first_name,
         firm_name=firm_name_raw,
         segment=segment,
         role_or_title=role_or_title,
@@ -1436,11 +1574,14 @@ def _render_outreach_payload(
                 "SIGNALS_WINDOW_NOTE_TEXT": signals_window_note_text,
                 "SIGNALS_FALLBACK_TEXT": signals_fallback_text,
                 "LAST_REFRESH_ET": last_refresh_et,
-                "SAMPLE_FEED_URL": sample_feed_url,
                 "UNSUBSCRIBE_URL": unsub_url,
                 "PREFS_URL": prefs_link,
                 "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
                 "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
+                "GREETING_LINE_TEXT": copy_tokens["GREETING_LINE_TEXT"],
+                "INTRO_LINE_TEXT": copy_tokens["INTRO_LINE_TEXT"],
+                "POST_CARDS_LINE_TEXT": copy_tokens["POST_CARDS_LINE_TEXT"],
+                "TRIAL_LINE_TEXT": copy_tokens["TRIAL_LINE_TEXT"],
                 "OPENING_LINE_TEXT": copy_tokens["OPENING_LINE_TEXT"],
                 "RELEVANCE_LINE_TEXT": copy_tokens["RELEVANCE_LINE_TEXT"],
                 "CTA_LINE_TEXT": copy_tokens["CTA_LINE_TEXT"],
@@ -1464,13 +1605,16 @@ def _render_outreach_payload(
                 "{{SIGNALS_WINDOW_NOTE_HTML}}": signals_window_note_html,
                 "{{SIGNALS_FALLBACK_HTML}}": signals_fallback_html,
                 "{{LAST_REFRESH_ET}}": gm._html_escape(last_refresh_et),
-                "{{SAMPLE_FEED_URL}}": gm._html_escape(sample_feed_url),
                 "{{UNSUBSCRIBE_URL}}": gm._html_escape(unsub_url),
                 "{{PREFS_URL}}": gm._html_escape(prefs_link),
                 "{{MAILING_ADDRESS}}": gm._html_escape(gm._resolve_outreach_mailing_address()),
                 "{{MICROFLOWOPS_URL}}": gm._html_escape(
                     (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
                 ),
+                "{{GREETING_LINE_HTML}}": copy_tokens["GREETING_LINE_HTML"],
+                "{{INTRO_LINE_HTML}}": copy_tokens["INTRO_LINE_HTML"],
+                "{{POST_CARDS_LINE_HTML}}": copy_tokens["POST_CARDS_LINE_HTML"],
+                "{{TRIAL_LINE_HTML}}": copy_tokens["TRIAL_LINE_HTML"],
                 "{{OPENING_LINE_HTML}}": copy_tokens["OPENING_LINE_HTML"],
                 "{{RELEVANCE_LINE_HTML}}": copy_tokens["RELEVANCE_LINE_HTML"],
                 "{{CTA_LINE_HTML}}": copy_tokens["CTA_LINE_HTML"],
@@ -2158,6 +2302,10 @@ def main() -> int:
     batch = _batch_id(state, run_date)
     limit = _daily_limit()
     fallback_on_empty_state = _bool_env(os.getenv("OUTREACH_FALLBACK_ON_EMPTY_STATE", "0"))
+    skip_role_inboxes = _bool_env(os.getenv("OUTREACH_SKIP_ROLE_INBOXES", "1"))
+    debug_selection_live = _bool_env(os.getenv("OUTREACH_DEBUG_SELECTION", "0"))
+    signal_window_days = _signal_window_days()
+    osha_db = str((os.getenv("OUTREACH_SIGNAL_DB") or "").strip() or (REPO_ROOT / "data" / "osha.sqlite"))
     crm_db = _crm_db_path()
     suppression_csv = _suppression_csv_path()
     export_ledger = _export_ledger_path()
@@ -2174,6 +2322,10 @@ def main() -> int:
         print(f"{PASS_AUTO_PRINT_CONFIG} batch_id={batch}")
         print(f"{PASS_AUTO_PRINT_CONFIG} run_date={run_date.isoformat()}")
         print(f"outreach_fallback_on_empty_state={1 if fallback_on_empty_state else 0}")
+        print(f"outreach_skip_role_inboxes={1 if skip_role_inboxes else 0}")
+        print(f"outreach_debug_selection={1 if debug_selection_live else 0}")
+        print(f"outreach_signal_window_days={signal_window_days}")
+        print(f"{PASS_AUTO_PRINT_CONFIG} outreach_signal_db={Path(osha_db).resolve()}")
         print(f"OUTREACH_WEEKDAYS_ONLY={1 if OUTREACH_WEEKDAYS_ONLY else 0}")
         print(f"outreach_effective_timezone={local_now['timezone']}")
         print(f"outreach_effective_local_date={local_now['date_text']}")
@@ -2236,6 +2388,7 @@ def main() -> int:
             states=states,
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
+            skip_role_inboxes=skip_role_inboxes,
             selected_state=rotation_state,
         )
         fallback_decision = _empty_state_fallback_decision(
@@ -2254,7 +2407,33 @@ def main() -> int:
             limit=limit,
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
+            skip_role_inboxes=skip_role_inboxes,
         )
+        effective_sendable_estimate = max(
+            0,
+            int((crm_funnel_for_fallback.get("uncontacted_sendable_by_state") or {}).get(state, 0)),
+        )
+        real_signal_count = _count_real_signals_for_state_window(
+            db_path=osha_db,
+            state=state,
+            run_date=run_date,
+            window_days=signal_window_days,
+        )
+        no_signal_guard_enabled = bool(args.dry_run or is_live_send)
+        no_signal_skip = bool(no_signal_guard_enabled and real_signal_count <= 0)
+        if no_signal_skip:
+            print(f"OUTREACH_SKIP_NO_SIGNALS state={state} window_days={signal_window_days}")
+            selected_before_guard = list(selected)
+            for candidate in selected_before_guard:
+                skipped["no_signals"] += 1
+                dropped = _candidate_csv_row(candidate)
+                dropped.update({"status": "dropped", "reason": "no_signals"})
+                manifest_rows.append(dropped)
+            selected = []
+        empty_state_no_send = bool(effective_sendable_estimate <= 0 and len(selected) == 0 and not no_signal_skip)
+        if empty_state_no_send and bool(args.dry_run or is_live_send):
+            print(f"OUTREACH_EMPTY_STATE_NO_SEND=1 state={state}")
+
         pool_total_all_states = _count_pool_total_all_states(conn)
         plan_diagnostics = _build_plan_diagnostics(
             run_date=run_date,
@@ -2282,6 +2461,7 @@ def main() -> int:
             states=states,
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
+            skip_role_inboxes=skip_role_inboxes,
             selected_state=state,
         )
         state_inventory_lines_pre = _outreach_state_inventory_health_lines(
@@ -2295,6 +2475,9 @@ def main() -> int:
             sendable_by_state=crm_funnel_pre["uncontacted_sendable_by_state"],
             desired_daily_limit=limit,
         )
+        debug_mode = "plan" if args.plan else ("dry_run" if args.dry_run else "live")
+        if bool(args.plan or args.dry_run or (is_live_send and debug_selection_live)):
+            _print_selection_debug(selected, mode=debug_mode)
 
         if args.plan:
             _print_state_selection_tokens(rotation_state=rotation_state, effective_state=state)
@@ -2385,7 +2568,19 @@ def main() -> int:
         recent_leads = list(signal_ctx.get("recent_leads") or [])
 
         send_results: list[dict] = []
+        duplicate_guard_dropped = 0
+        sendable_selected: list[dict] = []
         for selected_candidate in selected:
+            candidate_pid = str(selected_candidate.get("prospect_id") or "")
+            if _has_prior_sent_event(conn, candidate_pid):
+                duplicate_guard_dropped += 1
+                skipped["duplicate_guard"] += 1
+                dropped = _candidate_csv_row(selected_candidate)
+                dropped.update({"status": "dropped", "reason": "duplicate_guard"})
+                manifest_rows.append(dropped)
+                continue
+            sendable_selected.append(selected_candidate)
+        for selected_candidate in sendable_selected:
             row = selected_candidate["row"]
             send_results.append(
                 _send_outreach_email(
@@ -2401,10 +2596,14 @@ def main() -> int:
                     recent_leads=recent_leads,
                 )
             )
+        if duplicate_guard_dropped > 0:
+            print(f"OUTREACH_DUPLICATE_GUARD_DROPPED={duplicate_guard_dropped}")
 
         _write_events_and_status_updates(conn, batch=batch, results=send_results)
         _append_ledger_records(path=export_ledger, batch=batch, state=state, results=send_results)
 
+        skipped_count = int(sum(skipped.values()))
+        top_skip = _format_top_reasons(skipped, limit=5)
         contacted_count = sum(1 for r in send_results if r.get("ok"))
         failed_count = sum(1 for r in send_results if not r.get("ok"))
         uncontacted_by_state = _crm_uncontacted_by_state(
@@ -2412,12 +2611,14 @@ def main() -> int:
             states=states,
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
+            skip_role_inboxes=skip_role_inboxes,
         )
         crm_funnel = _crm_funnel_breakdown_for_summary(
             conn=conn,
             states=states,
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
+            skip_role_inboxes=skip_role_inboxes,
             selected_state=state,
         )
         uncontacted_by_state_text = _format_state_counts(states=states, counts=uncontacted_by_state)
@@ -2484,6 +2685,8 @@ def main() -> int:
         subject = f"[AUTO] Outreach {batch} contacted={contacted_count} skipped={skipped_count} failed={failed_count}"
         text_body = (
             "Outreach auto-run summary\n"
+            f"- state_rotation_selected: {rotation_state}\n"
+            f"- state_effective_send: {state}\n"
             f"- state: {state}\n"
             f"- batch: {batch}\n"
             f"- outreach_states_config: {','.join(states)}\n"
@@ -2510,7 +2713,9 @@ def main() -> int:
         html_body = (
             "<div style=\"font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;\">"
             "<h3>Outreach Auto-Run Summary</h3>"
-            f"<p><strong>state:</strong> {state}<br>"
+            f"<p><strong>state_rotation_selected:</strong> {rotation_state}<br>"
+            f"<strong>state_effective_send:</strong> {state}<br>"
+            f"<strong>state:</strong> {state}<br>"
             f"<strong>batch:</strong> {batch}<br>"
             f"<strong>outreach_states_config:</strong> {','.join(states)}<br>"
             f"<strong>crm_uncontacted_by_state:</strong> {uncontacted_by_state_text}<br>"

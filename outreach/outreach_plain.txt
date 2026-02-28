@@ -1,31 +1,16 @@
-OPENING_LINE_TEXT
+GREETING_LINE_TEXT
 
-RELEVANCE_LINE_TEXT
+INTRO_LINE_TEXT
 
-Recent OSHA inspections opened in STATE:
-SIGNALS_WINDOW_NOTE_TEXT
 RECENT_SIGNALS_LINES
-SIGNALS_FALLBACK_TEXT
 
-Last refresh: LAST_REFRESH_ET
+POST_CARDS_LINE_TEXT
 
-See a live sample feed (real public data) -> SAMPLE_FEED_URL
+TRIAL_LINE_TEXT
 
-CTA_LINE_TEXT
+Chase Chevalier
+MicroFlowOps · microflowops.com
 
-TRUST_LINE_TEXT
-
-COMPANY_INTRO_TEXT
-
-Notes:
-- Accident, Complaint, and Referral describe OSHA activity signals (not citations).
-- Informational only; not legal advice.
-
-Opt out anytime: Unsubscribe | Manage preferences
+Informational only; not legal advice.
+Opt out anytime: Unsubscribe
 UNSUBSCRIBE_URL
-PREFS_URL
-
-Thanks,
-Chase Chevalier, Founder
-MicroFlowOps - https://microflowops.com
-support@microflowops.com
