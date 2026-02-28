@@ -36,6 +36,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "OshaSmokeTo",
             "OutreachSuppressionMaxAgeHours",
             "OutreachFallbackOnEmptyState",
+            "OutreachSkipRoleInboxes",
             "ProspectAutoGrowEnabled",
             "ProspectAutoGrowSources",
             "ProspectAutoGrowBacklogTarget",
@@ -86,6 +87,8 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("PROSPECT_AUTOGROW_STATES", text)
         self.assertIn("PROSPECT_AUTOGROW_SOURCES", text)
         self.assertIn("OUTREACH_FALLBACK_ON_EMPTY_STATE", text)
+        self.assertIn("OUTREACH_SKIP_ROLE_INBOXES", text)
+        self.assertIn("outreach_skip_role_inboxes=", text)
         self.assertIn("OHS_BG", text)
         self.assertIn("APOLLO", text)
         self.assertIn("APOLLO_API_KEY", text)

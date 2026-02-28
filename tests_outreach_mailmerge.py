@@ -863,6 +863,12 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertEqual((out_rows[0].get("subject") or "").strip(), "Quick heads up — new FL inspection opened recently")
             self.assertLess(len((out_rows[0].get("subject") or "").strip()), 65)
 
+    def test_clean_company_name_treats_suffix_only_values_as_missing(self):
+        from outreach import generate_mailmerge as gm
+
+        self.assertEqual(gm._clean_company_name("Inc."), "")
+        self.assertEqual(gm._clean_company_name("Precision Environmental Inc."), "Precision Environmental Inc.")
+
     def test_outreach_overlay_flag_off_keeps_mailmerge_schema_without_ai_columns(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

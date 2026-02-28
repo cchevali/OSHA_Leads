@@ -56,6 +56,11 @@ class TestProspectGenerationBacklog(unittest.TestCase):
                     "INSERT INTO prospects(prospect_id,firm,contact_name,email,title,city,state,website,source,score,status,created_at,last_contacted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("p_bad", "Firm", "", "bad-email", "Owner", "Austin", "TX", "", "seed", 0, "new", now, None),
                 )
+                # role inbox
+                conn.execute(
+                    "INSERT INTO prospects(prospect_id,firm,contact_name,email,title,city,state,website,source,score,status,created_at,last_contacted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("p_role", "Firm", "", "info@business.com", "Owner", "Austin", "TX", "", "seed", 0, "new", now, None),
+                )
                 # free domain
                 conn.execute(
                     "INSERT INTO prospects(prospect_id,firm,contact_name,email,title,city,state,website,source,score,status,created_at,last_contacted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -64,8 +69,20 @@ class TestProspectGenerationBacklog(unittest.TestCase):
                 conn.commit()
 
                 suppressed = {"supp@business.com"}
-                count = generator.compute_uncontacted_backlog(conn=conn, state="TX", suppressed_emails=suppressed)
+                count = generator.compute_uncontacted_backlog(
+                    conn=conn,
+                    state="TX",
+                    suppressed_emails=suppressed,
+                    skip_role_inboxes=True,
+                )
                 self.assertEqual(count, 1)
+                count_with_role = generator.compute_uncontacted_backlog(
+                    conn=conn,
+                    state="TX",
+                    suppressed_emails=suppressed,
+                    skip_role_inboxes=False,
+                )
+                self.assertEqual(count_with_role, 2)
             finally:
                 conn.close()
 

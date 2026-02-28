@@ -67,6 +67,21 @@ AUTOGROW_REJECT_KEYS = (
     "duplicate_in_batch",
 )
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
+ROLE_INBOX_LOCALS = {
+    "info",
+    "contact",
+    "admin",
+    "office",
+    "support",
+    "sales",
+    "hello",
+    "help",
+    "billing",
+    "accounts",
+    "careers",
+    "jobs",
+    "hr",
+}
 APOLLO_DEFAULT_PERSON_TITLES = [
     "labor and employment attorney",
     "employment attorney",
@@ -165,6 +180,18 @@ def _valid_email(value: str) -> bool:
 
 def _normalize_email(value: str) -> str:
     return (value or "").strip().lower()
+
+
+def _email_local_part(email: str) -> str:
+    value = _normalize_email(email)
+    if "@" not in value:
+        return ""
+    local = value.split("@", 1)[0]
+    return local.split("+", 1)[0]
+
+
+def _is_role_inbox_email(email: str) -> bool:
+    return _email_local_part(email) in ROLE_INBOX_LOCALS
 
 
 def _normalize_state(value: str) -> str:
@@ -576,7 +603,12 @@ def _fetch_prior_sent_ids(conn: sqlite3.Connection | None) -> set[str]:
     return out
 
 
-def compute_uncontacted_backlog(conn: sqlite3.Connection | None, state: str, suppressed_emails: set[str]) -> int:
+def compute_uncontacted_backlog(
+    conn: sqlite3.Connection | None,
+    state: str,
+    suppressed_emails: set[str],
+    skip_role_inboxes: bool | None = None,
+) -> int:
     if conn is None or not _table_exists(conn, "prospects"):
         return 0
 
@@ -587,6 +619,8 @@ def compute_uncontacted_backlog(conn: sqlite3.Connection | None, state: str, sup
     target_state = _normalize_state(state)
     if not target_state:
         return 0
+    if skip_role_inboxes is None:
+        skip_role_inboxes = _bool_env(os.getenv("OUTREACH_SKIP_ROLE_INBOXES", "1"))
 
     sent_ids = _fetch_prior_sent_ids(conn)
     status_col = "status" if "status" in columns else "''"
@@ -609,6 +643,8 @@ def compute_uncontacted_backlog(conn: sqlite3.Connection | None, state: str, sup
         if _email_domain(email) in pools.FREE_EMAIL_DOMAINS:
             continue
         if email in suppressed_emails:
+            continue
+        if bool(skip_role_inboxes) and _is_role_inbox_email(email):
             continue
 
         status = _normalize_text(str(row["status"] or "")).lower()
@@ -1047,7 +1083,16 @@ def _print_tokens(
     print(f"GENERATOR_AUTOGROW_MAX_FETCH_PAGES_PER_RUN={autogrow['max_fetch_pages']}")
     print(f"GENERATOR_AUTOGROW_HTTP_SLEEP_MS={autogrow['sleep_ms']}")
     safety_net_forced = bool(autogrow.get("safety_net_forced"))
-    print(f"GENERATOR_AUTOGROW_SAFETY_NET_FORCED={1 if safety_net_forced else 0}")
+    safety_net_reason = _normalize_text(str(autogrow.get("safety_net_reason") or ""))
+    safety_net_detail_states = [str(s or "").strip().upper() for s in list(autogrow.get("safety_net_forced_details") or []) if str(s or "").strip()]
+    if safety_net_forced:
+        print(
+            "GENERATOR_AUTOGROW_SAFETY_NET_FORCED=1 "
+            f"reason={safety_net_reason or 'SENDABLE_BELOW_FLOOR'} "
+            f"states={','.join(safety_net_detail_states) if safety_net_detail_states else 'none'}"
+        )
+    else:
+        print("GENERATOR_AUTOGROW_SAFETY_NET_FORCED=0")
     safety_net_states = [str(s or "").strip().upper() for s in list(autogrow.get("safety_net_states") or []) if str(s or "").strip()]
     print(f"GENERATOR_AUTOGROW_SAFETY_NET_STATES={','.join(safety_net_states) if safety_net_states else 'none'}")
     state_details = list(autogrow.get("state_details") or [])
@@ -1102,6 +1147,7 @@ def _print_tokens(
             "GENERATOR_AUTOGROW_STATE="
             f"{state} "
             f"backlog_current={int(detail.get('backlog_current') or 0)} "
+            f"backlog_sendable_current={int(detail.get('backlog_sendable_current') or detail.get('backlog_current') or 0)} "
             f"new_needed={int(detail.get('new_needed') or 0)} "
             f"aiha_candidate={int(detail.get('aiha_candidate') or 0)} "
             f"aiha_accepted={int(detail.get('aiha_accepted') or 0)} "
@@ -1393,32 +1439,44 @@ def main(argv: list[str] | None = None) -> int:
     selected_backlog_current = 0
     selected_new_needed = 0
     safety_net_forced_states: list[str] = []
+    safety_net_forced_state_details: list[str] = []
     cohort_summary: dict[str, object] = _default_input_cohort()
     try:
         suppressed_emails = _load_suppression_set(data_dir=data_dir, conn=conn)
         cohort_summary = _compute_input_cohort(conn=conn, states_scope=effective_states, suppressed_emails=suppressed_emails)
         existing_crm_emails = _existing_crm_emails(conn)
+        skip_role_inboxes = _bool_env(os.getenv("OUTREACH_SKIP_ROLE_INBOXES", "1"))
+        safety_net_floor = 3
         for state_item in autogrow_states:
-            backlog_current_item = compute_uncontacted_backlog(conn=conn, state=state_item, suppressed_emails=suppressed_emails)
+            backlog_current_item = compute_uncontacted_backlog(
+                conn=conn,
+                state=state_item,
+                suppressed_emails=suppressed_emails,
+                skip_role_inboxes=skip_role_inboxes,
+            )
             pool_total_current = _count_crm_pool_total(conn=conn, state=state_item)
             safety_forced = bool(
                 (not bool(autogrow_cfg["enabled"]))
                 and bool(autogrow_cfg.get("safety_net_enabled"))
-                and int(pool_total_current) > 0
-                and int(backlog_current_item) == 0
+                and int(backlog_current_item) < int(safety_net_floor)
             )
             effective_autogrow = bool(autogrow_cfg["enabled"]) or safety_forced
             new_needed_item = max(0, int(autogrow_cfg["backlog_target"]) - int(backlog_current_item)) if effective_autogrow else 0
             state_norm = _normalize_state(state_item)
             if safety_forced and state_norm and state_norm not in safety_net_forced_states:
                 safety_net_forced_states.append(state_norm)
+            if safety_forced and state_norm:
+                safety_net_forced_state_details.append(f"{state_norm}:{int(backlog_current_item)}")
             detail: dict[str, object] = {
                 "state": state_norm,
                 "pool_total_current": int(pool_total_current),
                 "backlog_current": int(backlog_current_item),
+                "backlog_sendable_current": int(backlog_current_item),
                 "new_needed": int(new_needed_item),
                 "effective_autogrow": bool(effective_autogrow),
                 "safety_net_forced": bool(safety_forced),
+                "safety_net_reason": "SENDABLE_BELOW_FLOOR" if safety_forced else "",
+                "safety_net_floor": int(safety_net_floor),
             }
             for prefix in AUTOGROW_SOURCE_PREFIX.values():
                 detail[f"{prefix}_candidate"] = 0
@@ -1448,6 +1506,8 @@ def main(argv: list[str] | None = None) -> int:
         "sleep_ms": int(autogrow_cfg["sleep_ms"]),
         "safety_net_forced": bool(safety_net_forced_states),
         "safety_net_states": list(safety_net_forced_states),
+        "safety_net_forced_details": list(safety_net_forced_state_details),
+        "safety_net_reason": "SENDABLE_BELOW_FLOOR" if bool(safety_net_forced_states) else "",
         "state_details": autogrow_state_details,
         "total_states": len(autogrow_state_details),
         "total_accepted": 0,

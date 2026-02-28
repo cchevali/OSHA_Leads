@@ -291,6 +291,18 @@ def _clean_company_name(value: str) -> str:
     normalized = " ".join(text.lower().split())
     if normalized in {"your firm", "your company", "company", "unknown", "n/a", "na", "none", "-", "--"}:
         return ""
+    suffix_only = {
+        "inc",
+        "llc",
+        "co",
+        "company",
+        "corp",
+        "ltd",
+        "lp",
+    }
+    normalized_token = "".join(ch for ch in normalized if ch.isalnum())
+    if normalized_token in suffix_only:
+        return ""
     return text
 
 
