@@ -309,16 +309,6 @@ def _parse_int_env(raw: str, default: int, minimum: int) -> int:
     return value
 
 
-def _parse_optional_int_env(raw: str, minimum: int) -> int | None:
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    value = int(text)
-    if value < minimum:
-        raise ValueError(f"value_below_minimum raw={text} minimum={minimum}")
-    return value
-
-
 def _parse_for_date(raw: str) -> date:
     text = str(raw or "").strip()
     if not text:
@@ -445,14 +435,21 @@ def _generation_website_email_cache_dir(data_dir: Path) -> Path:
 
 
 def _parse_enrich_config(data_dir: Path) -> dict:
-    sleep_override_ms = _parse_optional_int_env(os.getenv("PROSPECT_ENRICH_HTTP_SLEEP_MS", ""), minimum=0)
+    enrich_sleep_raw = str(os.getenv("PROSPECT_ENRICH_HTTP_SLEEP_MS", "") or "").strip()
+    autogrow_sleep_raw = str(os.getenv("PROSPECT_AUTOGROW_HTTP_SLEEP_MS", "") or "").strip()
+    if enrich_sleep_raw:
+        sleep_ms = _parse_int_env(enrich_sleep_raw, default=750, minimum=0)
+    elif autogrow_sleep_raw:
+        sleep_ms = _parse_int_env(autogrow_sleep_raw, default=750, minimum=0)
+    else:
+        sleep_ms = 750
     return {
         "domain_enabled": _bool_env(os.getenv("PROSPECT_ENRICH_DOMAIN_ENABLED", "0")),
         "hunter_enabled": _bool_env(os.getenv("PROSPECT_ENRICH_HUNTER_ENABLED", "0")),
         "allow_role_inbox": _bool_env(os.getenv("PROSPECT_ENRICH_ALLOW_ROLE_INBOX", "0")),
         "max_sites_per_run": _parse_int_env(os.getenv("PROSPECT_ENRICH_MAX_SITES_PER_RUN", ""), default=25, minimum=1),
         "max_pages_per_site": _parse_int_env(os.getenv("PROSPECT_ENRICH_MAX_PAGES_PER_SITE", ""), default=5, minimum=1),
-        "sleep_ms": sleep_override_ms,
+        "sleep_ms": sleep_ms,
         "hunter_api_key": _normalize_text(os.getenv("HUNTER_API_KEY", "")),
         "hunter_usage_path": _generation_hunter_usage_path(data_dir),
         "website_cache_dir": _generation_website_email_cache_dir(data_dir),
@@ -1749,9 +1746,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             rows_candidate = list(result.get("rows") or [])
             if rows_candidate:
-                enrich_sleep_ms = enrich_cfg.get("sleep_ms")
-                if enrich_sleep_ms is None:
-                    enrich_sleep_ms = int(autogrow_cfg.get("sleep_ms") or 0)
                 enrich_out = prospect_enrich_email.enrich_autogrow_rows(
                     rows=rows_candidate,
                     domain_enabled=bool(enrich_cfg.get("domain_enabled")),
@@ -1760,7 +1754,7 @@ def main(argv: list[str] | None = None) -> int:
                     allow_role_inbox=bool(enrich_cfg.get("allow_role_inbox")),
                     max_sites_per_run=max(0, int(website_sites_remaining)),
                     max_pages_per_site=int(enrich_cfg.get("max_pages_per_site") or 5),
-                    sleep_ms=int(enrich_sleep_ms or 0),
+                    sleep_ms=int(enrich_cfg.get("sleep_ms") or 0),
                     hunter_usage_path=Path(enrich_cfg.get("hunter_usage_path") or _generation_hunter_usage_path(data_dir)),
                     website_cache_dir=Path(
                         enrich_cfg.get("website_cache_dir") or _generation_website_email_cache_dir(data_dir)
