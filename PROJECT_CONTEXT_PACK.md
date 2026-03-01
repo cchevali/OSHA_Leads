@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=9502abca690240cde3b975219cd64d8b858b0867
-PACK_BUILD_UTC=2026-02-28T03:07:21Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=db12daf651964fec7ff2e2776c6c43dc9366611ac7e89431f2978ebafab14c07 docs/DECISIONS.md=434952d034ca10d897c96764c90c5ad218ea616e01b6339e4a86ccdea0c198a8 docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=7f5ecbd624b14e2d510d5bb5e09702598677eb7c669e153195abe6911f8c7a4b docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=f9ddb99cb98f5fdc03993cf6a69b0ae19b57a26aac3a99aad8358e426d420aab
+PACK_GIT_SHA=e0e004afdd089a51783495ead0f1997526ca0465
+PACK_BUILD_UTC=2026-03-01T01:32:40Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=b14910bc3b228b9a7027232642470df431cd4ec2f61db12192d14e5d3c0494ea docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=dbcfded51d9ed91cd81e4e370a3d2fbaaff7ff04302236b35a802f14cc9ea729
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -112,9 +112,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - BCSP uses plain HTTP parsing (`search_results.php`) and is maintained as a future enrichment input (contact/location only; not directly sendable without employer/domain resolution).
    - OSHA_NEWS uses a lazy-loaded Crawl4AI wrapper (`outreach/scraper_engine.py`) with warning-level degradation when Crawl4AI/Playwright browsers are unavailable.
    - STATE_LIC Phase 1 uses the Texas TDLR public Socrata dataset (`7358-krk7`) and provides licensed-business metadata including address/phone/county fields.
-   - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering: domain resolution -> deterministic website crawl (`/`, `/contact`, `/contact-us`, `/about`, `/about-us`, `/team`) -> candidate ranking (`website_mailto`/`website_visible` over guesses) -> final `email` selection with audit fields (`email_source`, `email_kind`, `email_candidates_json`).
-   - AIHA rows feed enrichment with parsed `website` when present; if absent, enrichment resolves domain from AIHA `firm` (`company_name`) before crawl/pattern fallback.
-   - Website enrichment writes per-domain cache under `${DATA_DIR}/prospect_generation/cache/website_email/` (14-day TTL) and exception review CSV under `${DATA_DIR}/prospect_generation/diagnostics/website_enrich_needs_review_<YYYYMMDD>.csv`.
+   - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering to populate existing `website`/`email` fields via domain resolution + pattern guesses.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts the generated CSV into `crm.sqlite`.
@@ -444,35 +442,6 @@ Prospect autogrow is expanding to browser-backed scraping sources (for example B
 
 - Operators must perform a one-time `crawl4ai-setup` when enabling OSHA_NEWS in production.
 - Generator output now includes additional readiness/availability tokens in `--print-config` and `--doctor` paths.
-
-## ADR-0010: Website Email Extraction As Generator-Stage Enrichment (Opus Technique Automation)
-
-Date: 2026-02-28
-Status: Accepted
-
-### Context
-
-Domain-only pattern guessing improved fill-rate but left high uncertainty when real contact emails were available on company websites. Operators also needed deterministic auditing and a single manual-review artifact for bot-wall/no-email exceptions.
-
-### Decision
-
-- Extend `outreach/prospect_enrich_email.py` with deterministic website crawling (fixed path order, capped pages/sites, domain cache TTL 14 days) after domain resolution and before pattern fallback.
-- Extract candidates from `mailto:` and visible text, rank person emails ahead of role inboxes, and gate role inbox selection via `PROSPECT_ENRICH_ALLOW_ROLE_INBOX` (default `0`).
-- Persist enrichment audit fields in generator output: `email_source`, `email_kind`, `email_candidates_json`.
-- Emit website-specific generator telemetry tokens and write a single review CSV: `website_enrich_needs_review_<YYYYMMDD>.csv`.
-
-### Rationale
-
-- Keeps enrichment deterministic, low-cost, and compatible with existing send logic.
-- Improves accuracy by preferring observed site emails before guessed patterns.
-- Preserves compliance posture with conservative default role-inbox selection.
-- Provides operator-friendly exception handling via one diagnostics artifact.
-
-### Consequences
-
-- Generator schema adds additive audit columns in `prospects_latest.csv`.
-- Enrichment now depends on website crawl caps and cache state; dry runs remain no-write for generator output.
-- Send-side behavior (`OUTREACH_SKIP_ROLE_INBOXES`, cadence/scoring/templates/suppression) remains unchanged.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -833,6 +802,16 @@ cd C:\dev\OSHA_Leads
 ```
 
 CSV seed is optional bootstrap/debug only. Ongoing intake should run discovery, not CSV imports.
+
+### CRM Diagnostics (read-only)
+
+Use these commands instead of inline `py -3 -c "..."` one-liners. PowerShell quoting/escaping around embedded SQL/Python and `<`/`>` is brittle and can fail silently.
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py stats
+
+.\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py verify-import --csv .\apollo_export.csv
+```
 
 ### Prospect Generation (Scheduled First)
 

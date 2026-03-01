@@ -312,6 +312,16 @@ cd C:\dev\OSHA_Leads
 
 CSV seed is optional bootstrap/debug only. Ongoing intake should run discovery, not CSV imports.
 
+### CRM Diagnostics (read-only)
+
+Use these commands instead of inline `py -3 -c "..."` one-liners. PowerShell quoting/escaping around embedded SQL/Python and `<`/`>` is brittle and can fail silently.
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py stats
+
+.\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py verify-import --csv .\apollo_export.csv
+```
+
 ### Prospect Generation (Scheduled First)
 
 Run canonical prospect generation first each day. This writes the discovery feed CSV that discovery imports into CRM:

@@ -27,10 +27,7 @@ class TestProspectSourcesAiha(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         emails = sorted([r["email"] for r in rows])
         self.assertEqual(emails, ["jane@acmesafety.com", "sam@bravoehs.com"])
-        firms = sorted([str(r.get("firm") or "") for r in rows])
-        self.assertEqual(firms, ["Acme Safety Consulting", "Bravo EHS"])
         self.assertEqual(rows[0]["state"], "CA")
-        self.assertTrue(any(str(r.get("website") or "").startswith("https://") for r in rows))
 
     def test_parse_aiha_page_fallback(self):
         rows, mode = aiha.parse_aiha_page(self._read("page_fallback.html"), "26-27")

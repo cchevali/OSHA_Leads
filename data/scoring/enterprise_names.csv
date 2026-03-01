@@ -1,0 +1,12 @@
+pattern,match_type,reason
+Delaware North,contains,National hospitality enterprise
+Walmart,contains,National retailer with in-house EHS
+Amazon,contains,National logistics/retail enterprise
+Target,contains,National retailer with in-house EHS
+Home Depot,contains,National retailer with in-house EHS
+FedEx,contains,National logistics enterprise
+UPS,contains,National logistics enterprise
+Sysco,contains,National food distribution enterprise
+US Postal Service,contains,Federal agency
+United States Postal,contains,Federal agency
+Department of,contains,Government agency
