@@ -25,6 +25,7 @@ param(
   [string] $TrialConversionUrl = '',
   [Nullable[int]] $AiTriageEnabled = $null,
   [string] $AiTriageOpenAiModel = '',
+  [Nullable[int]] $SignalFreshnessMaxDays = $null,
   [string] $HudApiToken = '',
   [string] $StripePriceIdCore = '',
   [string] $StripePriceIdMulti = '',
@@ -326,6 +327,7 @@ try {
     'TrialConversionUrl',
     'AiTriageEnabled',
     'AiTriageOpenAiModel',
+    'SignalFreshnessMaxDays',
     'HudApiToken',
     'StripePriceIdCore',
     'StripePriceIdMulti',
@@ -393,6 +395,9 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('AiTriageEnabled') -and $AiTriageEnabled -notin @(0, 1)) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_AiTriageEnabled'
+  }
+  if ($PSBoundParameters.ContainsKey('SignalFreshnessMaxDays') -and $SignalFreshnessMaxDays -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_SignalFreshnessMaxDays'
   }
   if ($PSBoundParameters.ContainsKey('BounceImapPort') -and $BounceImapPort -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapPort'
@@ -580,6 +585,10 @@ try {
       if (Map-HasValue $printMap 'AI_TRIAGE_OPENAI_MODEL') {
         $aiTriageModelValue = ([string]$printMap['AI_TRIAGE_OPENAI_MODEL']).Trim()
       }
+      $signalFreshnessMaxDaysValue = '30'
+      if (Map-HasValue $printMap 'SIGNAL_FRESHNESS_MAX_DAYS') {
+        $signalFreshnessMaxDaysValue = ([string]$printMap['SIGNAL_FRESHNESS_MAX_DAYS']).Trim()
+      }
       $openAiKeyPresent = if (Map-HasValue $printMap 'OPENAI_API_KEY') { 'YES' } else { 'NO' }
       $apolloApiKeyPresent = if (Map-HasValue $printMap 'APOLLO_API_KEY') { 'YES' } else { 'NO' }
       $hunterApiKeyPresent = if (Map-HasValue $printMap 'HUNTER_API_KEY') { 'YES' } else { 'NO' }
@@ -590,6 +599,7 @@ try {
       $prospectEnrichHunterEnabledValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_HUNTER_ENABLED') { ([string]$printMap['PROSPECT_ENRICH_HUNTER_ENABLED']).Trim() } else { '0' }
       Write-Output ('ai_triage_enabled=' + $aiTriageEnabledValue)
       Write-Output ('ai_triage_openai_model=' + $aiTriageModelValue)
+      Write-Output ('signal_freshness_max_days=' + $signalFreshnessMaxDaysValue)
       Write-Output ('openai_api_key_present=' + $openAiKeyPresent)
       Write-Output ('apollo_api_key_present=' + $apolloApiKeyPresent)
       Write-Output ('hunter_api_key_present=' + $hunterApiKeyPresent)
@@ -814,6 +824,12 @@ try {
       Set-MapValue -Map $map -Key 'AI_TRIAGE_OPENAI_MODEL' -Value (($AiTriageOpenAiModel -as [string]).Trim()) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'AI_TRIAGE_OPENAI_MODEL')) {
       Set-MapValue -Map $map -Key 'AI_TRIAGE_OPENAI_MODEL' -Value 'gpt-4.1-mini' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('SignalFreshnessMaxDays')) {
+      Set-MapValue -Map $map -Key 'SIGNAL_FRESHNESS_MAX_DAYS' -Value ([string]$SignalFreshnessMaxDays) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'SIGNAL_FRESHNESS_MAX_DAYS')) {
+      Set-MapValue -Map $map -Key 'SIGNAL_FRESHNESS_MAX_DAYS' -Value '30' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('HudApiToken')) {

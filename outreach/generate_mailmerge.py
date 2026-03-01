@@ -499,22 +499,21 @@ def _best_effort_recent_leads_and_refresh(db_path: str, state: str, limit: int =
             try:
                 import send_digest_email as sde
 
-                leads, low_fallback, _stats = sde.get_leads_for_period(
+                leads, _low_fallback, _stats = sde.get_leads_for_period(
                     conn=conn,
                     states=[state],
                     since_days=14,
                     new_only_days=36500,
                     skip_first_seen_filter=True,
                     territory_code=None,
-                    content_filter="high_medium",
-                    include_low_fallback=True,
+                    content_filter="all",
+                    include_low_fallback=False,
                     window_start=None,
                     new_only_cutoff=None,
                     include_changed=True,
                     use_opened_window=False,
                 )
-                selected = leads if leads else low_fallback
-                recent = list(selected[: max(0, int(limit))])
+                recent = list((leads or [])[: max(0, int(limit))])
             except Exception:
                 recent = []
 
@@ -625,6 +624,7 @@ def _history_rows_for_state(db_path: str, state: str, limit: int = 3) -> tuple[l
                 "establishment_name",
                 "site_city",
                 "site_state",
+                "mail_state",
                 "inspection_type",
                 "date_opened",
                 "first_seen_at",
@@ -800,63 +800,93 @@ def _triage_recent_signals_for_outreach(
     dry_run_suffix: str = "export",
 ) -> tuple[list[dict], dict]:
     overlay_enabled = _bool_env_enabled("OUTREACH_TRIAGE_OVERLAY_ENABLED", default=False)
-    if not overlay_enabled:
-        return list(recent_leads or []), {
-            "enabled": False,
-            "ai_triage_action": "AI_DISABLED",
-            "ai_triage_conf": "",
-            "ai_triage_reasons": "",
-            "ai_triage_details_relpath": "",
-            "decisions": [],
-            "artifact_path": None,
-        }
-
     items = [
         {"activity_nr": str(r.get("activity_nr") or "").strip(), "url": str(r.get("source_url") or "").strip()}
         for r in (recent_leads or [])
         if str(r.get("activity_nr") or "").strip()
     ]
+    cache_result = {"fetched": 0, "skipped_cached": 0, "failed": 0}
     try:
-        cache_result = scoring_osha_detail_cache.ensure_cached_for_activities(
-            activity_items=items,
-            sleep_ms=800,
-            ttl_days=30,
-            dry_run=False,
+        cache_rows = scoring_osha_detail_cache.load_detail_cache_rows(None, [str(r.get("activity_nr") or "") for r in (recent_leads or [])])
+        decisions = scoring_triage_overlay.triage(
+            list(recent_leads or []),
+            cache_rows,
+            mode="outreach_examples",
+            allow_ai=bool(overlay_enabled),
         )
-        cache_rows = scoring_osha_detail_cache.load_detail_cache_rows(
-            None,
-            [str(r.get("activity_nr") or "") for r in (recent_leads or [])],
-        )
-        decisions = scoring_triage_overlay.triage(list(recent_leads or []), cache_rows, mode="outreach_examples")
     except Exception:
         decisions = []
-        cache_result = {"fetched": 0, "skipped_cached": 0, "failed": 0}
+    by_key = scoring_triage_overlay.decisions_by_activity(decisions)
+    high_rows: list[dict] = []
+    medium_rows: list[dict] = []
+    low_rows: list[dict] = []
+    suppressed = 0
+    for row in list(recent_leads or []):
+        key = str(row.get("activity_nr") or row.get("lead_key") or "").strip()
+        d = by_key.get(key, {})
+        final_priority = str(d.get("final_priority") or "").strip().upper()
+        if not final_priority:
+            action_hint = str(d.get("action") or "").strip().lower()
+            if action_hint == "remove_from_customer_email":
+                final_priority = "SUPPRESS"
+            elif action_hint == "downgrade_to_medium":
+                final_priority = "MEDIUM"
+            elif action_hint == "downgrade_to_low":
+                final_priority = "LOW"
+            elif action_hint == "promote_candidate":
+                final_priority = "HIGH"
+            else:
+                current_hint = str(d.get("current_priority") or "").strip().upper()
+                if current_hint in {"HIGH", "MEDIUM", "LOW"}:
+                    final_priority = current_hint
+        if final_priority == "SUPPRESS":
+            suppressed += 1
+            continue
+        if final_priority == "HIGH":
+            high_rows.append(row)
+        elif final_priority == "MEDIUM":
+            medium_rows.append(row)
+        elif final_priority == "LOW":
+            low_rows.append(row)
+        else:
+            # Fallback to score tier when decision missing.
+            try:
+                score = int(row.get("lead_score") or 0)
+            except Exception:
+                score = 0
+            if score >= 10:
+                high_rows.append(row)
+            elif score >= 6:
+                medium_rows.append(row)
+            else:
+                low_rows.append(row)
 
-    remove_keys = {
-        str(d.get("activity_nr") or d.get("lead_key") or "").strip()
-        for d in (decisions or [])
-        if str(d.get("action") or "") == "remove_from_customer_email"
-    }
-    filtered = [r for r in (recent_leads or []) if str(r.get("activity_nr") or r.get("lead_key") or "").strip() not in remove_keys]
+    # Outreach examples are HIGH-first with MEDIUM backfill; LOW never shown.
+    filtered = list(high_rows) + list(medium_rows)
     action, conf, reasons = scoring_triage_overlay.summarize_outreach_example_triage(decisions)
+    if not overlay_enabled:
+        action = "AI_DISABLED"
+        conf = ""
+        reasons = ""
     artifact_path = _outreach_triage_artifact_path(batch=batch, dry_run_suffix=dry_run_suffix)
     relpath = _relpath_to_data_root(artifact_path)
     print(
         "OUTREACH_TRIAGE_OVERLAY "
-        f"enabled=1 recent_before={len(recent_leads or [])} recent_after={len(filtered)} "
-        f"removed={max(0, len(recent_leads or []) - len(filtered))} "
+        f"enabled={1 if overlay_enabled else 0} recent_before={len(recent_leads or [])} recent_after={len(filtered)} "
+        f"suppressed={suppressed} high={len(high_rows)} medium={len(medium_rows)} low_hidden={len(low_rows)} "
         f"cache_fetched={int(cache_result.get('fetched', 0))} "
         f"cache_skipped={int(cache_result.get('skipped_cached', 0))} "
         f"cache_failed={int(cache_result.get('failed', 0))}"
     )
+    print(f"OUTREACH_CARD_EXAMPLES high={len(high_rows)} medium_backfill={len(medium_rows)} total={len(filtered)}")
     return filtered, {
-        "enabled": True,
+        "enabled": bool(overlay_enabled),
         "ai_triage_action": action,
         "ai_triage_conf": conf,
         "ai_triage_reasons": reasons,
-        "ai_triage_details_relpath": relpath,
+        "ai_triage_details_relpath": relpath if overlay_enabled else "",
         "decisions": decisions,
-        "artifact_path": artifact_path,
+        "artifact_path": artifact_path if overlay_enabled else None,
     }
 
 
@@ -1078,7 +1108,13 @@ def _render_preview(args: argparse.Namespace) -> int:
     recent_leads, last_refresh_et = _best_effort_recent_leads_and_refresh(
         db_path=str(args.db),
         state=state_filter,
-        limit=5,
+        limit=12,
+    )
+    preview_batch = f"PREVIEW_{state_filter}"
+    recent_leads, _preview_triage_ctx = _triage_recent_signals_for_outreach(
+        batch=preview_batch,
+        recent_leads=list(recent_leads or []),
+        dry_run_suffix="preview",
     )
     recent_leads = list(recent_leads[:5])
     signal_tokens = _build_signal_template_tokens(
@@ -1297,8 +1333,7 @@ def main() -> int:
     except Exception:
         html_template_text = ""
 
-    overlay_enabled = _bool_env_enabled("OUTREACH_TRIAGE_OVERLAY_ENABLED", default=False)
-    signal_fetch_limit = 12 if overlay_enabled else 5
+    signal_fetch_limit = 12
 
     # Precompute state-level snippets for template rendering.
     recent_leads, last_refresh_et = _best_effort_recent_leads_and_refresh(

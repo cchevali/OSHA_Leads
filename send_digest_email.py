@@ -1566,6 +1566,7 @@ def get_leads_for_period(
         else "('osha:activity:' || activity_nr) AS lead_key"
     )
     mail_zip_expr = "mail_zip" if _has_column(conn, "inspections", "mail_zip") else "NULL AS mail_zip"
+    mail_state_expr = "mail_state" if _has_column(conn, "inspections", "mail_state") else "NULL AS mail_state"
     site_county_expr = "site_county" if _has_column(conn, "inspections", "site_county") else "NULL AS site_county"
     area_office_expr = "area_office" if _has_column(conn, "inspections", "area_office") else "NULL AS area_office"
     changed_at_expr = "changed_at" if _has_column(conn, "inspections", "changed_at") else "NULL AS changed_at"
@@ -1585,6 +1586,7 @@ def get_leads_for_period(
             site_state,
             site_zip,
             {mail_zip_expr},
+            {mail_state_expr},
             {site_county_expr},
             {area_office_expr},
             naics,
@@ -2134,6 +2136,8 @@ def _write_trial_triage_artifacts(
             "before": int(before_count),
             "after": int(after_count),
             "removed": int(overlay_stats.get("removed", 0)),
+            "suppressed": int(overlay_stats.get("suppressed", 0)),
+            "raised": int(overlay_stats.get("raised", 0)),
             "downgraded_to_medium": int(overlay_stats.get("downgraded_to_medium", 0)),
             "downgraded_to_low": int(overlay_stats.get("downgraded_to_low", 0)),
             "promote_candidates": int(overlay_stats.get("promote_candidates", 0)),
@@ -2167,7 +2171,9 @@ def _write_trial_triage_artifacts(
         f"- Date: `{gen_date}`",
         f"- Before count: `{int(before_count)}`",
         f"- After count: `{int(after_count)}`",
-        f"- Removed highs/mediums: `{int(overlay_stats.get('removed', 0))}`",
+        f"- Suppressed signals: `{int(overlay_stats.get('suppressed', 0))}`",
+        f"- Raised priority: `{int(overlay_stats.get('raised', 0))}`",
+        f"- Removed signals: `{int(overlay_stats.get('removed', 0))}`",
         f"- Downgraded to medium: `{int(overlay_stats.get('downgraded_to_medium', 0))}`",
         f"- Downgraded to low: `{int(overlay_stats.get('downgraded_to_low', 0))}`",
         f"- Promote candidates: `{int(overlay_stats.get('promote_candidates', 0))}`",
@@ -2202,36 +2208,28 @@ def _apply_trial_triage_overlay_if_enabled(
     leads: list[dict[str, Any]],
     dry_run: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, int], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    if not _bool_env_enabled("TRIAL_TRIAGE_OVERLAY_ENABLED", default=False):
-        return leads, {}, [], [], []
     if not _is_trial_subscriber(subscriber_key):
         return leads, {}, [], [], []
+    ai_gate_enabled = _bool_env_enabled("TRIAL_TRIAGE_OVERLAY_ENABLED", default=False)
     if not leads:
-        print("TRIAL_TRIAGE_OVERLAY enabled=1 before=0 after=0")
+        print(f"TRIAL_TRIAGE_OVERLAY rules_enabled=1 ai_enabled={1 if ai_gate_enabled else 0} before=0 after=0")
         return leads, {"kept": 0}, [], [], []
 
-    activity_items = [
-        {
-            "activity_nr": str(row.get("activity_nr") or "").strip(),
-            "url": str(row.get("source_url") or "").strip(),
-        }
-        for row in leads
-        if str(row.get("activity_nr") or "").strip()
-    ]
     try:
-        cache_result = scoring_osha_detail_cache.ensure_cached_for_activities(
-            activity_items=activity_items,
-            sleep_ms=800,
-            ttl_days=30,
-            dry_run=bool(dry_run),
-        )
+        del dry_run
+        cache_result = {"fetched": 0, "skipped_cached": 0, "failed": 0}
         cache_rows = scoring_osha_detail_cache.load_detail_cache_rows(
             None,
             [str(r.get("activity_nr") or "") for r in leads],
         )
-        decisions = scoring_triage_overlay.triage(leads, cache_rows, mode="trial_render")
+        decisions = scoring_triage_overlay.triage(
+            leads,
+            cache_rows,
+            mode="trial_render",
+            allow_ai=bool(ai_gate_enabled),
+        )
     except Exception as exc:
-        logger.warning("Trial triage overlay failed; using original leads: %s", exc)
+        logger.warning("Trial triage rules failed; using original leads: %s", exc)
         print(f"TRIAL_TRIAGE_OVERLAY_ERROR detail={exc.__class__.__name__}")
         return leads, {}, [], [], []
 
@@ -2248,10 +2246,12 @@ def _apply_trial_triage_overlay_if_enabled(
     after_count = len(adjusted_leads)
     print(
         "TRIAL_TRIAGE_OVERLAY "
-        f"enabled=1 before={before_count} after={after_count} "
+        f"rules_enabled=1 ai_enabled={1 if ai_gate_enabled else 0} before={before_count} after={after_count} "
         f"removed={int(overlay_stats.get('removed', 0))} "
+        f"suppressed={int(overlay_stats.get('suppressed', 0))} "
         f"downgraded_medium={int(overlay_stats.get('downgraded_to_medium', 0))} "
         f"downgraded_low={int(overlay_stats.get('downgraded_to_low', 0))} "
+        f"raised={int(overlay_stats.get('raised', 0))} "
         f"promote_candidates={int(overlay_stats.get('promote_candidates', 0))} "
         f"cache_fetched={int(cache_result.get('fetched', 0))} "
         f"cache_skipped={int(cache_result.get('skipped_cached', 0))} "
@@ -3287,6 +3287,10 @@ def main() -> None:
         include_changed = False
     # summary_label set after leads computed
     trial_territory_debug_enabled = _is_trial_subscriber(config.get("subscriber_key"))
+    selection_content_filter = content_filter
+    if args.mode == "daily" and trial_territory_debug_enabled:
+        # Always run deterministic signal rules on the full territory-eligible pool first.
+        selection_content_filter = "all"
     territory_debug_rows: list[dict] = []
     if trial_territory_debug_enabled:
         leads, low_fallback, filter_stats, territory_debug_rows, _exclude_rows = get_leads_for_period(
@@ -3296,7 +3300,7 @@ def main() -> None:
             new_only_days=int(config["new_only_days"]),
             skip_first_seen_filter=skip_first_seen_filter,
             territory_code=territory_code,
-            content_filter=content_filter,
+            content_filter=selection_content_filter,
             include_low_fallback=include_low_fallback,
             window_start=window_start,
             new_only_cutoff=new_only_cutoff,
@@ -3314,7 +3318,7 @@ def main() -> None:
             new_only_days=int(config["new_only_days"]),
             skip_first_seen_filter=skip_first_seen_filter,
             territory_code=territory_code,
-            content_filter=content_filter,
+            content_filter=selection_content_filter,
             include_low_fallback=include_low_fallback,
             window_start=window_start,
             new_only_cutoff=new_only_cutoff,
@@ -3438,6 +3442,23 @@ def main() -> None:
                 dry_run=bool(args.dry_run),
             )
         )
+        if trial_territory_debug_enabled and selection_content_filter == "all":
+            post_triage_pool = list(leads or [])
+            # Apply the subscriber content filter after rules/AI priority classification.
+            filtered_leads, _excluded = apply_content_filter(leads, content_filter)
+            filtered_leads, _dedupe_removed = dedupe_by_activity_nr(filtered_leads)
+            leads = list(filtered_leads)
+            if content_filter == "high_medium" and len(leads) == 0 and include_low_fallback:
+                fallback_base, _ = dedupe_by_activity_nr(post_triage_pool)
+                low_candidates = [lead for lead in fallback_base if int(lead.get("lead_score") or 0) < 6]
+                low_candidates.sort(
+                    key=lambda lead: (int(lead.get("lead_score") or 0), lead.get("date_opened") or ""),
+                    reverse=True,
+                )
+                low_fallback = low_candidates[:LOW_FALLBACK_LIMIT]
+            filter_stats["after_content_filter"] = len(leads)
+            filter_stats["after_dedupe"] = len(leads)
+            filter_stats["final_leads"] = len(leads)
         if triage_overlay_stats:
             shown_counts = {"high": 0, "medium": 0, "low": 0}
             for lead in leads:

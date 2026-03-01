@@ -18,10 +18,26 @@ SCRIPT = REPO_ROOT / "run_prospect_generation.py"
 
 
 class TestProspectGeneration(unittest.TestCase):
+    _STRIP_ENV_PREFIXES = (
+        "PROSPECT_AUTOGROW_",
+        "PROSPECT_ENRICH_",
+        "OUTREACH_",
+        "APOLLO_",
+        "HUNTER_",
+        "AI_TRIAGE_",
+        "TRIAL_",
+    )
+    _STRIP_ENV_KEYS = (
+        "DATA_DIR",
+        "SIGNAL_FRESHNESS_MAX_DAYS",
+        "UNSUB_ENDPOINT_BASE",
+        "UNSUB_SECRET",
+    )
+
     def _test_env(self, env_overrides: dict[str, str | None]) -> dict[str, str]:
         env = os.environ.copy()
         for key in list(env.keys()):
-            if key.startswith("PROSPECT_AUTOGROW_") or key.startswith("APOLLO_"):
+            if key in self._STRIP_ENV_KEYS or any(key.startswith(prefix) for prefix in self._STRIP_ENV_PREFIXES):
                 env.pop(key, None)
         env["PYTHONPATH"] = str(REPO_ROOT)
         for k, v in env_overrides.items():
@@ -417,7 +433,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows", return_value=mocked_fetch_result) as mocked_fetch:
                     with redirect_stdout(buf):
                         rc = generator.main(["--for-date", "2026-02-18"])
@@ -523,7 +539,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
                     return_value=mocked_fetch_result,
@@ -595,7 +611,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "OUTREACH_SKIP_ROLE_INBOXES": "1",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
                     return_value={
@@ -634,7 +650,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows") as mocked_fetch:
                     with redirect_stdout(buf):
                         rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
@@ -729,7 +745,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
                     return_value=aiha_result,
@@ -805,7 +821,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
                     side_effect=_aiha_fetch,
@@ -905,7 +921,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
                     return_value=aiha_result,
@@ -983,7 +999,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows",
                     return_value=apollo_result,
@@ -1028,7 +1044,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows",
                     return_value={"rows": [], "cache_path": data_dir / "apollo.json", "error": "rate_limited", "diagnostics_path": None},
@@ -1085,7 +1101,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows",
                     return_value=apollo_result,
@@ -1112,7 +1128,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
             buf = io.StringIO()
             err_buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
                     return_value={
@@ -1141,7 +1157,7 @@ class TestProspectGeneration(unittest.TestCase):
             "APOLLO_ENRICH_ENABLED": "1",
         }
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, env, clear=False):
+        with mock.patch.dict(os.environ, self._test_env(env), clear=True):
             with mock.patch(
                 "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
                 return_value={"ok": True, "forbidden": False, "status": 200, "endpoint": "api/v1/usage_stats/api_usage_stats"},
@@ -1160,7 +1176,7 @@ class TestProspectGeneration(unittest.TestCase):
         }
         out_buf = io.StringIO()
         err_buf = io.StringIO()
-        with mock.patch.dict(os.environ, env, clear=False):
+        with mock.patch.dict(os.environ, self._test_env(env), clear=True):
             with mock.patch(
                 "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
                 return_value={
@@ -1238,7 +1254,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "APOLLO_ENRICH_ENABLED": "1",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows", return_value=aiha_result):
                     with mock.patch("outreach.run_prospect_generation.prospect_sources_ohs_bg.fetch_ohs_bg_state_rows", return_value=ohs_result):
                         with mock.patch("outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows", return_value=apollo_result):
@@ -1299,7 +1315,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "APOLLO_ENRICH_MAX_PER_RUN": "5",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows", side_effect=_apollo_fetch):
                     with redirect_stdout(buf):
                         rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
@@ -1433,7 +1449,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "PROSPECT_AUTOGROW_SOURCES": "BCSP,OSHA_NEWS,STATE_LIC",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_crawl4ai_runtime", return_value={"crawl4ai_installed": False, "playwright_browsers_installed": False, "error_reason": "missing"}):
                     with mock.patch(
                         "outreach.run_prospect_generation.scraper_engine.probe_source_availability",
@@ -1493,7 +1509,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "PROSPECT_ENRICH_DOMAIN_ENABLED": "1",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows",
                     return_value=state_lic_result,
@@ -1546,7 +1562,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "PROSPECT_AUTOGROW_SOURCES": "STATE_LIC",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows",
                     return_value=state_lic_result,
@@ -1586,7 +1602,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "PROSPECT_AUTOGROW_SOURCES": "BCSP",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.fetch_bcsp_state_rows", return_value=bcsp_result):
                     with redirect_stdout(buf):
                         rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
@@ -1631,7 +1647,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "diagnostics_path": None,
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.fetch_bcsp_state_rows", return_value=bcsp_fail):
                     with mock.patch("outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows", return_value=state_lic_ok):
                         with redirect_stdout(buf):
@@ -1677,7 +1693,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "diagnostics_path": None,
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows", return_value=apollo_result):
                     with redirect_stdout(buf):
                         rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
@@ -1692,7 +1708,7 @@ class TestProspectGeneration(unittest.TestCase):
             "PROSPECT_AUTOGROW_SOURCES": "BCSP,STATE_LIC",
         }
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, env, clear=False):
+        with mock.patch.dict(os.environ, self._test_env(env), clear=True):
             with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_crawl4ai_runtime", return_value={"crawl4ai_installed": False, "playwright_browsers_installed": False, "error_reason": "missing"}):
                 with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_source_availability", side_effect=[{"available": True, "reason": "http_html"}, {"available": True, "reason": "http_api"}]):
                     with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.doctor_probe_bcsp", return_value={"ok": True, "status": 200, "url": "https://directory.bcsp.org/"}):
@@ -1708,3 +1724,4 @@ class TestProspectGeneration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
