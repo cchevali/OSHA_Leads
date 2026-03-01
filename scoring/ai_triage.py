@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -12,8 +13,9 @@ import requests
 from scoring import paths as scoring_paths
 
 
-AI_PROMPT_VERSION = "ai_triage_v1"
+AI_PROMPT_VERSION = "ai_triage_v2_raise_only"
 _DISABLED_EMITTED = False
+_UNAVAILABLE_EMITTED = False
 
 
 def _utc_now_iso() -> str:
@@ -31,6 +33,17 @@ def _emit_disabled(reason: str = "", missing: str = "") -> None:
         parts.append(f"reason={reason}")
     print(" ".join(parts))
     _DISABLED_EMITTED = True
+
+
+def _emit_unavailable(detail: str = "") -> None:
+    global _UNAVAILABLE_EMITTED
+    if _UNAVAILABLE_EMITTED:
+        return
+    msg = "WARN_AI_TRIAGE_UNAVAILABLE"
+    if detail:
+        msg += f" detail={detail}"
+    print(msg)
+    _UNAVAILABLE_EMITTED = True
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -70,12 +83,11 @@ def connect_ai_cache(db_path: str | Path | None = None) -> sqlite3.Connection:
         """
         CREATE TABLE IF NOT EXISTS ai_triage_cache (
             item_key TEXT NOT NULL,
-            prompt_version TEXT NOT NULL,
-            content_sha256 TEXT NOT NULL,
+            prompt_hash TEXT NOT NULL,
             model TEXT NOT NULL,
             response_json TEXT NOT NULL,
             created_at_utc TEXT NOT NULL,
-            PRIMARY KEY (item_key, prompt_version, content_sha256)
+            PRIMARY KEY (item_key, prompt_hash)
         )
         """
     )
@@ -83,52 +95,48 @@ def connect_ai_cache(db_path: str | Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def get_cached(
-    conn: sqlite3.Connection,
-    *,
-    item_key: str,
-    prompt_version: str,
-    content_sha256: str,
-) -> dict[str, Any] | None:
+def get_cached(conn: sqlite3.Connection, *, item_key: str, prompt_hash: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
         SELECT response_json
         FROM ai_triage_cache
-        WHERE item_key = ? AND prompt_version = ? AND content_sha256 = ?
+        WHERE item_key = ? AND prompt_hash = ?
         LIMIT 1
         """,
-        (str(item_key or ""), str(prompt_version or ""), str(content_sha256 or "")),
+        (str(item_key or ""), str(prompt_hash or "")),
     ).fetchone()
     if not row:
         return None
     try:
-        return json.loads(str(row["response_json"] or "{}"))
+        payload = json.loads(str(row["response_json"] or "{}"))
     except Exception:
         return None
+    if isinstance(payload, dict):
+        payload["cached"] = 1
+        return payload
+    return None
 
 
 def put_cached(
     conn: sqlite3.Connection,
     *,
     item_key: str,
-    prompt_version: str,
-    content_sha256: str,
+    prompt_hash: str,
     model: str,
     payload: dict[str, Any],
 ) -> None:
     conn.execute(
         """
-        INSERT INTO ai_triage_cache(item_key, prompt_version, content_sha256, model, response_json, created_at_utc)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(item_key, prompt_version, content_sha256) DO UPDATE SET
+        INSERT INTO ai_triage_cache(item_key, prompt_hash, model, response_json, created_at_utc)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(item_key, prompt_hash) DO UPDATE SET
             model=excluded.model,
             response_json=excluded.response_json,
             created_at_utc=excluded.created_at_utc
         """,
         (
             str(item_key or ""),
-            str(prompt_version or ""),
-            str(content_sha256 or ""),
+            str(prompt_hash or ""),
             str(model or ""),
             json.dumps(payload, separators=(",", ":"), sort_keys=True),
             _utc_now_iso(),
@@ -139,62 +147,73 @@ def put_cached(
 
 def _strict_schema() -> dict[str, Any]:
     return {
-        "name": "triage_decision",
+        "name": "signal_priority",
         "schema": {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "key": {"type": "string"},
-                "decision": {
+                "priority": {
                     "type": "string",
-                    "enum": ["keep", "downgrade", "remove", "promote_candidate"],
+                    "enum": ["HIGH", "MEDIUM", "LOW"],
                 },
-                "suggested_tier": {
-                    "type": "string",
-                    "enum": ["high", "medium", "low", "none"],
-                },
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                "reasons": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 4,
-                    "items": {"type": "string"},
-                },
+                "reason": {"type": "string", "minLength": 1, "maxLength": 280},
             },
-            "required": ["key", "decision", "suggested_tier", "confidence", "reasons"],
+            "required": ["priority", "reason"],
         },
         "strict": True,
     }
 
 
-def _build_prompt(item: dict[str, Any], detail_row: dict[str, Any], mode: str) -> tuple[str, str]:
-    system = (
-        "You are classifying OSHA inspection signals for email triage. "
-        "Return only the structured decision. Be conservative. Prefer keep unless strong reasons."
+def _system_prompt() -> str:
+    return (
+        "You are classifying OSHA inspection signals for relevance to independent safety "
+        "consultants and OSHA defense attorneys who serve small to mid-size employers in "
+        "construction, manufacturing, and industrial trades. "
+        "Classify with these criteria: HIGH = active construction/industrial high-hazard signal, "
+        "referral/complaint trigger, emphasis program NAICS, multi-employer site, or likely external safety-help need. "
+        "MEDIUM = active inspection with moderate hazard profile, non-emphasis construction/industrial, "
+        "or ambiguous company profile. "
+        "LOW = routine planned inspection of low-hazard employer, large enterprise with in-house EHS, "
+        "or minimal information content. "
+        "Return strict JSON only."
     )
+
+
+def prompt_hash() -> str:
+    material = {
+        "version": AI_PROMPT_VERSION,
+        "system": _system_prompt(),
+        "schema": _strict_schema()["schema"],
+    }
+    blob = json.dumps(material, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _build_prompt(item: dict[str, Any], detail_row: dict[str, Any], mode: str) -> tuple[str, str]:
+    system = _system_prompt()
     user_payload = {
-        "mode": mode,
-        "item": {
+        "mode": str(mode or ""),
+        "signal": {
             "activity_nr": str(item.get("activity_nr") or ""),
-            "lead_key": str(item.get("lead_key") or ""),
-            "current_priority": str(item.get("current_priority") or ""),
-            "lead_score": item.get("lead_score"),
-            "date_opened": item.get("date_opened"),
-            "first_seen_at": item.get("first_seen_at"),
-            "last_seen_at": item.get("last_seen_at"),
-            "changed_at": item.get("changed_at"),
+            "establishment_name": item.get("establishment_name"),
+            "site_city": item.get("site_city"),
+            "site_state": item.get("site_state"),
+            "naics": item.get("naics"),
+            "naics_desc": item.get("naics_desc"),
+            "sic": item.get("sic"),
             "inspection_type": item.get("inspection_type"),
+            "scope": item.get("scope"),
             "case_status": item.get("case_status"),
             "emphasis": item.get("emphasis"),
+            "violations_count": item.get("violations_count"),
+            "serious_violations": item.get("serious_violations"),
+            "willful_violations": item.get("willful_violations"),
+            "repeat_violations": item.get("repeat_violations"),
         },
         "detail_cache": {
             "inspection_type": detail_row.get("inspection_type"),
             "case_status": detail_row.get("case_status"),
             "scope": detail_row.get("scope"),
-            "advanced_notice": detail_row.get("advanced_notice"),
-            "ownership": detail_row.get("ownership"),
-            "safety_health": detail_row.get("safety_health"),
-            "union_status": detail_row.get("union_status"),
             "naics": detail_row.get("naics"),
             "sic": detail_row.get("sic"),
             "office": detail_row.get("office"),
@@ -209,17 +228,24 @@ def _build_prompt(item: dict[str, Any], detail_row: dict[str, Any], mode: str) -
 def _responses_api_call(*, system_text: str, user_text: str) -> dict[str, Any] | None:
     key = _api_key()
     if not key:
-        _emit_disabled(missing="OPENAI_API_KEY")
+        _emit_unavailable("missing_openai_api_key")
         return None
     payload = {
         "model": model_name(),
         "temperature": 0,
-        "max_output_tokens": 200,
+        "max_output_tokens": 180,
         "input": [
             {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
             {"role": "user", "content": [{"type": "input_text", "text": user_text}]},
         ],
-        "text": {"format": {"type": "json_schema", "name": "triage_decision", "schema": _strict_schema()["schema"], "strict": True}},
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "signal_priority",
+                "schema": _strict_schema()["schema"],
+                "strict": True,
+            }
+        },
     }
     url = _base_url().rstrip("/") + "/responses"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -227,9 +253,9 @@ def _responses_api_call(*, system_text: str, user_text: str) -> dict[str, Any] |
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=30)
             if resp.status_code >= 300:
+                _emit_unavailable(f"http_{resp.status_code}")
                 return None
             data = resp.json()
-            # Best-effort parse across response variants.
             text = ""
             if isinstance(data, dict):
                 text = str(data.get("output_text") or "")
@@ -247,21 +273,39 @@ def _responses_api_call(*, system_text: str, user_text: str) -> dict[str, Any] |
                             if text:
                                 break
             if not text:
+                _emit_unavailable("empty_response_text")
                 return None
             parsed = json.loads(text)
             if not isinstance(parsed, dict):
+                _emit_unavailable("invalid_json_object")
                 return None
             return parsed
-        except Exception:
+        except Exception as exc:
+            _emit_unavailable(f"request_error_{exc.__class__.__name__}")
             continue
     return None
+
+
+def _normalize_priority(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"HIGH", "MEDIUM", "LOW"}:
+        return text
+    return "LOW"
+
+
+def _normalize_reason(value: Any) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return "No additional reasoning provided."
+    if len(text) > 280:
+        return text[:280].rstrip()
+    return text
 
 
 def get_or_compute(
     *,
     item_key: str,
     mode: str,
-    content_sha256: str,
     item: dict[str, Any],
     detail_row: dict[str, Any],
     cache_db_path: str | Path | None = None,
@@ -270,19 +314,16 @@ def get_or_compute(
         _emit_disabled(reason="disabled")
         return None
     if not _api_key():
-        _emit_disabled(missing="OPENAI_API_KEY")
+        _emit_unavailable("missing_openai_api_key")
         return None
-    if not str(item_key or "").strip() or not str(content_sha256 or "").strip():
+    norm_key = str(item_key or "").strip()
+    if not norm_key:
         return None
 
+    p_hash = prompt_hash()
     conn = connect_ai_cache(cache_db_path)
     try:
-        cached = get_cached(
-            conn,
-            item_key=item_key,
-            prompt_version=AI_PROMPT_VERSION,
-            content_sha256=content_sha256,
-        )
+        cached = get_cached(conn, item_key=norm_key, prompt_hash=p_hash)
         if cached:
             return cached
         system_text, user_text = _build_prompt(item=item, detail_row=detail_row, mode=mode)
@@ -290,27 +331,20 @@ def get_or_compute(
         if not parsed:
             return None
         normalized = {
-            "key": str(parsed.get("key") or item_key),
-            "decision": str(parsed.get("decision") or "keep"),
-            "suggested_tier": str(parsed.get("suggested_tier") or "none"),
-            "confidence": float(parsed.get("confidence") or 0.0),
-            "reasons": [str(x).strip().lower() for x in (parsed.get("reasons") or []) if str(x).strip()][:4],
-            "provenance": "ai_cached",
+            "priority": _normalize_priority(parsed.get("priority")),
+            "reason": _normalize_reason(parsed.get("reason")),
+            "prompt_hash": p_hash,
             "prompt_version": AI_PROMPT_VERSION,
-            "content_sha256": str(content_sha256),
             "model": model_name(),
+            "cached": 0,
         }
-        if not normalized["reasons"]:
-            normalized["reasons"] = ["ai_unspecified"]
         put_cached(
             conn,
-            item_key=item_key,
-            prompt_version=AI_PROMPT_VERSION,
-            content_sha256=content_sha256,
+            item_key=norm_key,
+            prompt_hash=p_hash,
             model=model_name(),
             payload=normalized,
         )
         return normalized
     finally:
         conn.close()
-

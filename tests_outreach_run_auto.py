@@ -103,6 +103,35 @@ def _seed_signal_db(path: Path, rows: list[dict]) -> None:
 
 
 class TestOutreachRunAuto(unittest.TestCase):
+    _STRIP_ENV_PREFIXES = (
+        "PROSPECT_AUTOGROW_",
+        "PROSPECT_ENRICH_",
+        "OUTREACH_",
+        "APOLLO_",
+        "HUNTER_",
+        "AI_TRIAGE_",
+        "TRIAL_",
+    )
+    _STRIP_ENV_KEYS = (
+        "DATA_DIR",
+        "SIGNAL_FRESHNESS_MAX_DAYS",
+        "UNSUB_ENDPOINT_BASE",
+        "UNSUB_SECRET",
+    )
+
+    def _test_env(self, env_overrides: dict[str, str | None], base_env: dict[str, str] | None = None) -> dict[str, str]:
+        env = dict(base_env) if base_env is not None else os.environ.copy()
+        for key in list(env.keys()):
+            if key in self._STRIP_ENV_KEYS or any(key.startswith(prefix) for prefix in self._STRIP_ENV_PREFIXES):
+                env.pop(key, None)
+        env["PYTHONPATH"] = str(REPO_ROOT)
+        for k, v in env_overrides.items():
+            if v is None:
+                env.pop(k, None)
+            else:
+                env[k] = v
+        return env
+
     def _stdout_value(self, stdout: str, key: str) -> str:
         prefix = f"{key}="
         line = next((ln.strip() for ln in (stdout or "").splitlines() if ln.strip().startswith(prefix)), "")
@@ -115,13 +144,7 @@ class TestOutreachRunAuto(unittest.TestCase):
         env_overrides: dict[str, str | None],
         base_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
-        env = dict(base_env) if base_env is not None else os.environ.copy()
-        env["PYTHONPATH"] = str(REPO_ROOT)
-        for k, v in env_overrides.items():
-            if v is None:
-                env.pop(k, None)
-            else:
-                env[k] = v
+        env = self._test_env(env_overrides, base_env=base_env)
         return subprocess.run(
             [sys.executable, str(SCRIPT)] + args,
             cwd=str(REPO_ROOT),
@@ -292,7 +315,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                     "artifact_path": str(artifact_path),
                 },
             }
-            with mock.patch.dict(os.environ, {**env_base, "OUTREACH_TRIAGE_OVERLAY_ENABLED": "1"}, clear=False):
+            with mock.patch.dict(os.environ, self._test_env({**env_base, "OUTREACH_TRIAGE_OVERLAY_ENABLED": "1"}), clear=True):
                 with mock.patch.object(roa.gm, "_load_local_suppression_set", return_value=set()), mock.patch.object(
                     roa, "_prepare_signal_content_with_triage", return_value=signal_ctx_on
                 ):
@@ -634,7 +657,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 send_calls["count"] += 1
                 return {"ok": True, "prospect_id": "p1"}
 
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_outreach_local_now", return_value=weekday_now), mock.patch.object(
                     roa.gm, "_load_local_suppression_set", return_value=set()
                 ), mock.patch.object(
@@ -804,7 +827,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             def _fake_write(*_args, **_kwargs):  # type: ignore[no-untyped-def]
                 calls["write"] += 1
 
-            with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_data_dir", return_value=data_dir), mock.patch.object(
                     roa, "_crm_db_path", return_value=crm_db
                 ), mock.patch.object(
@@ -874,7 +897,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "is_weekend": True,
             }
 
-            with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_data_dir", return_value=data_dir), mock.patch.object(
                     roa, "_crm_db_path", return_value=crm_db
                 ), mock.patch.object(
@@ -1006,7 +1029,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 summary_capture["html"] = str(html_body)
                 return True, ""
 
-            with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_data_dir", return_value=data_dir), mock.patch.object(
                     roa, "_crm_db_path", return_value=crm_db
                 ), mock.patch.object(
@@ -1807,12 +1830,14 @@ class TestOutreachRunAuto(unittest.TestCase):
             gm_err = io.StringIO()
             with mock.patch.dict(
                 os.environ,
-                {
-                    "DATA_DIR": str(data_dir),
-                    "UNSUB_ENDPOINT_BASE": "https://unsub.example.internal/unsubscribe",
-                    "UNSUB_SECRET": "test_secret",
-                },
-                clear=False,
+                self._test_env(
+                    {
+                        "DATA_DIR": str(data_dir),
+                        "UNSUB_ENDPOINT_BASE": "https://unsub.example.internal/unsubscribe",
+                        "UNSUB_SECRET": "test_secret",
+                    }
+                ),
+                clear=True,
             ), mock.patch.object(
                 roa.gm, "_best_effort_recent_leads_and_refresh", return_value=(list(recent_leads), "2026-02-18 08:00 ET")
             ), mock.patch.object(
@@ -2045,13 +2070,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OSHA_SMOKE_TO": "allow@example.com",
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
             }
-            with mock.patch.dict(os.environ, {}, clear=False):
-                for key, value in env.items():
-                    if value is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = value
-
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_doctor_check_secrets_decrypt", return_value=(True, "")):
                     with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor"]):
                         out = io.StringIO()
@@ -2095,13 +2114,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OSHA_SMOKE_TO": None,
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
             }
-            with mock.patch.dict(os.environ, {}, clear=False):
-                for key, value in env.items():
-                    if value is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = value
-
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_doctor_check_secrets_decrypt", return_value=(True, "")):
                     with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor"]):
                         out = io.StringIO()
@@ -2143,7 +2156,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
             }
             captured: dict[str, str] = {}
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_doctor_context_pack_soft_check") as m_context, mock.patch.object(
                     roa, "_doctor_check_secrets_decrypt"
                 ) as m_secrets, mock.patch.object(roa, "_doctor_check_unsub") as m_unsub, mock.patch.object(
@@ -2210,7 +2223,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OSHA_SMOKE_TO": "allow@example.com",
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
             }
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_doctor_context_pack_soft_check") as m_context, mock.patch.object(
                     roa, "_doctor_check_secrets_decrypt"
                 ) as m_secrets, mock.patch.object(roa, "_doctor_check_unsub") as m_unsub, mock.patch.object(
@@ -2283,7 +2296,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OSHA_SMOKE_TO": "allow@example.com",
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
             }
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_doctor_context_pack_soft_check") as m_context, mock.patch.object(
                     roa, "_doctor_check_secrets_decrypt"
                 ) as m_secrets, mock.patch.object(roa, "_doctor_check_unsub") as m_unsub, mock.patch.object(
@@ -2354,7 +2367,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
                 "OUTREACH_SIGNAL_DB": str(signal_db),
             }
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_doctor_context_pack_soft_check", return_value=None), mock.patch.object(
                     roa, "_doctor_check_secrets_decrypt", return_value=(True, "")
                 ), mock.patch.object(roa, "_doctor_check_unsub", return_value=(True, "")), mock.patch.object(
@@ -2405,7 +2418,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
                 "OUTREACH_SIGNAL_DB": str(missing_db),
             }
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_doctor_context_pack_soft_check", return_value=None), mock.patch.object(
                     roa, "_doctor_check_secrets_decrypt", return_value=(True, "")
                 ), mock.patch.object(roa, "_doctor_check_unsub", return_value=(True, "")), mock.patch.object(
@@ -2457,7 +2470,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
                 "OUTREACH_SIGNAL_DB": str(signal_db),
             }
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_doctor_context_pack_soft_check", return_value=None), mock.patch.object(
                     roa, "_doctor_check_secrets_decrypt", return_value=(True, "")
                 ), mock.patch.object(roa, "_doctor_check_unsub", return_value=(True, "")), mock.patch.object(

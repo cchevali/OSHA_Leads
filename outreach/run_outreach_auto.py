@@ -1242,8 +1242,7 @@ def _prepare_signal_content_with_triage(
     osha_db: str,
     dry_run_suffix: str,
 ) -> dict[str, object]:
-    overlay_enabled = gm._bool_env_enabled("OUTREACH_TRIAGE_OVERLAY_ENABLED", default=False)
-    signal_fetch_limit = 12 if overlay_enabled else 5
+    signal_fetch_limit = 12
     recent_leads, last_refresh_et = gm._best_effort_recent_leads_and_refresh(
         db_path=osha_db,
         state=state,

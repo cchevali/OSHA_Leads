@@ -52,6 +52,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "TrialConversionUrl",
             "AiTriageEnabled",
             "AiTriageOpenAiModel",
+            "SignalFreshnessMaxDays",
             "StripePriceIdCore",
             "StripePriceIdMulti",
             "StripePriceIdPilot",
@@ -113,10 +114,12 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("web_stripe_webhook_secret_present", text)
         self.assertIn("AI_TRIAGE_ENABLED", text)
         self.assertIn("AI_TRIAGE_OPENAI_MODEL", text)
+        self.assertIn("SIGNAL_FRESHNESS_MAX_DAYS", text)
         self.assertIn("OPENAI_API_KEY", text)
         self.assertIn("missing_shell_OPENAI_API_KEY", text)
         self.assertIn("ai_triage_enabled=", text)
         self.assertIn("ai_triage_openai_model=", text)
+        self.assertIn("signal_freshness_max_days=", text)
         self.assertIn("openai_api_key_present=", text)
         self.assertIn("apollo_api_key_present=", text)
         self.assertIn("apollo_enrich_enabled=", text)

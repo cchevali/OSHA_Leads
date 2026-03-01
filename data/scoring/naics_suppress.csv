@@ -1,0 +1,7 @@
+naics_prefix,label,reason
+561720,Janitorial Services,NAICS_JANITORIAL
+722*,Food Services and Drinking Places,NAICS_FOOD_SERVICE
+721*,Accommodation / Hotels / Resorts,NAICS_ACCOMMODATION
+44-45*,Retail Trade,NAICS_RETAIL
+561*,Administrative/Support Services,NAICS_ADMIN_SUPPORT
+!561621,Security Systems Services,NAICS_ALLOW_SECURITY_SYSTEMS
