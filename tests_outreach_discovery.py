@@ -372,6 +372,59 @@ class TestOutreachDiscovery(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_live_upsert_does_not_overwrite_existing_email_with_blank_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            first_csv = tmp / "first.csv"
+            second_csv = tmp / "second.csv"
+
+            _write_rows(
+                first_csv,
+                [
+                    {
+                        "prospect_id": "same_1",
+                        "email": "keep@example.com",
+                        "state": "TX",
+                        "firm": "Keep Firm",
+                        "title": "Owner",
+                    }
+                ],
+            )
+            _write_rows(
+                second_csv,
+                [
+                    {
+                        "prospect_id": "same_1",
+                        "email": "",
+                        "state": "TX",
+                        "firm": "Keep Firm Updated",
+                        "title": "Owner",
+                    }
+                ],
+            )
+
+            first = self._run(["--input", str(first_csv)], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(first.returncode, 0, msg=first.stderr + "\n" + first.stdout)
+
+            second = self._run(["--input", str(second_csv)], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(second.returncode, 0, msg=second.stderr + "\n" + second.stdout)
+            block = self._assert_discovery_block(second.stdout or "", "OK")
+            self.assertEqual(block[2], "DISCOVERY_ROWS_READ=1")
+            self.assertEqual(block[3], "DISCOVERY_PROSPECTS_UPSERTED=0")
+            self.assertEqual(block[4], "DISCOVERY_SKIPPED_INVALID_EMAIL=1")
+            self.assertEqual(block[5], "DISCOVERY_SKIPPED_DUPLICATE_EMAIL=0")
+
+            conn = sqlite3.connect(str(data_dir / "crm.sqlite"))
+            try:
+                email = conn.execute(
+                    "SELECT email FROM prospects WHERE prospect_id = ?",
+                    ("same_1",),
+                ).fetchone()[0]
+                self.assertEqual(email, "keep@example.com")
+            finally:
+                conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
