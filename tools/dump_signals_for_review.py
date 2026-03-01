@@ -22,45 +22,98 @@ from scoring import triage_overlay
 import send_digest_email as sde
 
 AI_REVIEW_HEADER_LINES = [
-    "# AI SIGNAL TRIAGE REVIEW",
-    "# Classify each non-suppressed signal below for relevance to independent",
-    "# safety consultants and OSHA defense attorneys who serve small to mid-size",
-    "# employers in construction, manufacturing, and industrial trades.",
+    "# ============================================================",
+    "# MICROFLOWOPS — NIGHTLY SIGNAL TRIAGE REVIEW",
+    "# ============================================================",
     "#",
-    "# For each signal, return a CSV row with:",
-    "#   activity_nr, ai_priority, ai_reason",
+    "# CONTEXT:",
+    "# MicroFlowOps delivers daily OSHA inspection alerts to two audiences:",
+    "#   1. Trial/paid subscribers — safety consultants and OSHA defense",
+    "#      attorneys who receive territory-filtered daily digests",
+    "#   2. Cold outreach prospects — safety consultants and OSHA defense",
+    "#      attorneys who receive cold emails containing recent high-value",
+    "#      OSHA signal examples from their state",
     "#",
-    "# Priority definitions:",
-    "#   HIGH - Active inspection of a high-hazard trade employer, referral/complaint",
-    "#          trigger, OSHA emphasis program NAICS, multi-employer site, or company",
-    "#          clearly needing external safety help",
-    "#   MEDIUM - Active inspection with moderate hazard profile, non-emphasis",
-    "#            construction/industrial, or ambiguous company profile",
-    "#   LOW - Routine planned inspection of low-hazard employer, or minimal",
-    "#         information content",
+    "# Both audiences are employer-side professionals who help small to",
+    "# mid-size companies (under 500 employees) in construction,",
+    "# manufacturing, and industrial trades respond to OSHA enforcement",
+    "# activity. They use these signals to identify businesses that may",
+    "# need their services RIGHT NOW — before citations post publicly.",
     "#",
-    "# Rules:",
-    "#   - You may only RAISE priority above the rules_priority shown. Never lower it.",
-    "#   - Do not classify SUPPRESS signals. Skip them entirely.",
-    "#   - Consider: company name, NAICS description, inspection type, scope,",
-    "#     multi-employer patterns (same address), and whether the company profile",
-    "#     fits the target buyer audience.",
+    "# THE BUSINESS VALUE OF A SIGNAL depends on:",
+    "#   - Would a safety consultant or OSHA defense attorney want to",
+    "#     contact this company based on this inspection?",
+    "#   - Is this company the RIGHT SIZE for external help? (Solo shops",
+    "#     to mid-size. NOT national enterprises with in-house EHS teams.)",
+    "#   - Is the HAZARD PROFILE meaningful? (Construction, industrial,",
+    "#     manufacturing >> janitorial, retail, food service)",
+    "#   - Does the INSPECTION TYPE suggest urgency? (Referral/Complaint",
+    "#     = someone reported them. Accident = injury occurred. These are",
+    "#     far more urgent than routine Planned inspections.)",
+    "#   - Is there a PATTERN? (Multiple inspections at the same address",
+    "#     = multi-employer site enforcement action, very high value.)",
+    "#   - Would this signal make our digest or cold email look credible",
+    "#     and valuable, or would it make us look like we don't understand",
+    "#     the industry?",
     "#",
-    "# Return ONLY the CSV block. No commentary before or after.",
-    "# Format:",
+    "# WHAT YOU ARE DOING:",
+    "# Below are OSHA inspection signals with a rules-based priority",
+    "# already assigned. Rules handle structural patterns well (NAICS",
+    "# codes, inspection types, closed cases) but miss contextual",
+    "# judgment calls about company type, hazard inference from company",
+    "# names, and multi-signal patterns.",
+    "#",
+    "# You have FULL AUTHORITY to raise or lower any non-suppressed",
+    "# signal's priority. If rules say LOW and you see a trenching",
+    "# contractor that belongs at HIGH, raise it. If rules say HIGH",
+    "# but the company is a massive national chain that would never",
+    "# hire an independent safety consultant, lower it.",
+    "#",
+    "# PRIORITY DEFINITIONS:",
+    "#   HIGH   — Clear, actionable signal. A safety consultant would",
+    "#            want to call this company today. Referrals/complaints",
+    "#            at construction or industrial employers, emphasis",
+    "#            program NAICS, multi-employer sites, or any signal",
+    "#            where the need for external safety help is obvious.",
+    "#   MEDIUM — Moderate value. Worth including in a digest but not",
+    "#            a top prospect. Active inspections at construction or",
+    "#            industrial employers without strong urgency indicators.",
+    "#   LOW    — Minimal value. Routine planned inspection, low-hazard",
+    "#            industry, large enterprise, or insufficient information",
+    "#            to assess relevance.",
+    "#",
+    "# RULES:",
+    "#   - You may RAISE or LOWER priority vs rules_priority.",
+    "#   - For any LOWERING, your reason must explain why this signal is",
+    "#     less relevant to our audience than rules suggest.",
+    "#   - SUPPRESS signals are already removed by deterministic rules",
+    "#     (closed/no-inspection, stale >30 days, non-target industry).",
+    "#     Do not classify them. Skip them entirely.",
+    "#   - Return ONLY the CSV block. No commentary before or after.",
+    "#",
+    "# OUTPUT FORMAT (CSV):",
     "#   activity_nr,ai_priority,ai_reason",
+    "#   Do not use commas inside the ai_reason field. Use semicolons or dashes instead.",
+    "#",
+    "# ============================================================",
 ]
 
 AI_REVIEW_FOOTER_LINES = [
     "# --- END OF SIGNALS ---",
-    "# Return CSV now. Headers: activity_nr,ai_priority,ai_reason",
+    "# Classify all non-suppressed signals above.",
+    "# Return ONLY: activity_nr,ai_priority,ai_reason",
+    "# One row per non-suppressed signal. No extra text.",
 ]
+
+
+def _local_today_date() -> date:
+    return datetime.now().astimezone().date()
 
 
 def _parse_date(value: str) -> date:
     text = str(value or "").strip().lower()
     if text == "today":
-        return date.today()
+        return _local_today_date()
     return datetime.strptime(text, "%Y-%m-%d").date()
 
 
@@ -231,7 +284,7 @@ def _fetch_selected_for_group(
     states: list[str],
     territory_code: str,
 ) -> list[dict[str, Any]]:
-    since_days = max(1, int((date.today() - since_date).days) + 1)
+    since_days = max(1, int((_local_today_date() - since_date).days) + 1)
     leads, _low_fallback, _stats = sde.get_leads_for_period(
         conn=conn,
         states=states,
@@ -284,7 +337,7 @@ def main() -> int:
         action="store_true",
         help="Wrap output in a self-contained AI triage prompt header/footer.",
     )
-    ap.add_argument("--since", default=date.today().isoformat(), help="Inclusive start date (YYYY-MM-DD).")
+    ap.add_argument("--since", default=_local_today_date().isoformat(), help="Inclusive start date (YYYY-MM-DD).")
     ap.add_argument("--until", default="", help="Inclusive end date (YYYY-MM-DD). Defaults to --since.")
     ap.add_argument(
         "--db",
@@ -340,10 +393,11 @@ def main() -> int:
 
     db_path = Path(str(args.db)).expanduser().resolve(strict=False)
     out_dir = scoring_paths.data_root() / "audits"
+    today_local = _local_today_date()
     if args.for_ai_review:
-        out_path = out_dir / f"signals_for_ai_review_{date.today().strftime('%Y%m%d')}.txt"
+        out_path = out_dir / f"signals_for_ai_review_{today_local.strftime('%Y%m%d')}.txt"
     else:
-        out_path = out_dir / f"signals_for_review_{date.today().strftime('%Y%m%d')}.txt"
+        out_path = out_dir / f"signals_for_review_{today_local.strftime('%Y%m%d')}.txt"
 
     if args.print_config:
         if args.all_outreach:
@@ -383,7 +437,8 @@ def main() -> int:
             if blocks:
                 rendered_sections.extend(blocks)
             else:
-                rendered_sections.append("NO_SIGNALS_FOR_REVIEW")
+                if not args.for_ai_review:
+                    rendered_sections.append("NO_SIGNALS_FOR_REVIEW")
             if args.all_outreach:
                 rendered_sections.append("")
     finally:
@@ -394,8 +449,6 @@ def main() -> int:
         parts = ["\n".join(AI_REVIEW_HEADER_LINES).strip()]
         if body_text:
             parts.append(body_text)
-        else:
-            parts.append("NO_SIGNALS_FOR_REVIEW")
         parts.append("\n".join(AI_REVIEW_FOOTER_LINES).strip())
         output_text = "\n\n".join([str(p).strip() for p in parts if str(p).strip()]) + "\n"
     else:

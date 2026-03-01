@@ -35,6 +35,26 @@ def _rows_from_csv(path: Path) -> list[dict[str, str]]:
         return out
 
 
+def _cache_stats(cache_path: Path, prompt_hash: str) -> tuple[bool, int, int]:
+    if not cache_path.exists():
+        return (False, 0, 0)
+    conn = sqlite3.connect(str(cache_path))
+    try:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_triage_cache' LIMIT 1"
+        ).fetchone()
+        if not table:
+            return (True, 0, 0)
+        total_rows = int(conn.execute("SELECT COUNT(*) FROM ai_triage_cache").fetchone()[0] or 0)
+        rows_for_prompt = int(
+            conn.execute("SELECT COUNT(*) FROM ai_triage_cache WHERE prompt_hash = ?", (str(prompt_hash or ""),)).fetchone()[0]
+            or 0
+        )
+        return (True, total_rows, rows_for_prompt)
+    finally:
+        conn.close()
+
+
 def _load_leads_for_activity_numbers(db_path: Path, activity_numbers: list[str]) -> list[dict]:
     if not activity_numbers:
         return []
@@ -55,8 +75,8 @@ def _load_leads_for_activity_numbers(db_path: Path, activity_numbers: list[str])
         conn.close()
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description="Import manual AI triage CSV into AI triage cache with raise-only enforcement.")
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Import manual AI triage CSV into AI triage cache.")
     ap.add_argument("--input", default="", help="Input CSV path with activity_nr,ai_priority,ai_reason columns.")
     ap.add_argument(
         "--db",
@@ -65,16 +85,20 @@ def main() -> int:
     )
     ap.add_argument("--print-config", action="store_true", help="Print resolved config and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Validate only; no cache writes.")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     db_path = Path(str(args.db)).expanduser().resolve(strict=False)
     cache_path = scoring_paths.ai_triage_cache_db_path()
     prompt_hash = ai_triage.prompt_hash()
+    cache_exists, cache_total_rows, cache_rows_for_prompt = _cache_stats(cache_path, prompt_hash)
 
     if args.print_config:
         print(f"db={db_path}")
         print(f"ai_cache={cache_path}")
         print(f"prompt_hash={prompt_hash}")
+        print(f"ai_cache_exists={1 if cache_exists else 0}")
+        print(f"ai_cache_rows={cache_total_rows}")
+        print(f"ai_cache_rows_for_prompt={cache_rows_for_prompt}")
         return 0
 
     input_path = Path(str(args.input or "")).expanduser().resolve(strict=False)
@@ -93,7 +117,10 @@ def main() -> int:
 
     total = 0
     accepted = 0
-    rejected_lower = 0
+    raised = 0
+    lowered = 0
+    unchanged = 0
+    rejected_suppress = 0
     rejected_invalid = 0
     pending_writes: list[tuple[str, dict]] = []
     for row in rows:
@@ -101,14 +128,23 @@ def main() -> int:
         activity_nr = str(row.get("activity_nr") or "").strip()
         ai_priority = _norm_priority(row.get("ai_priority"))
         ai_reason = " ".join(str(row.get("ai_reason") or "").strip().split())
-        if not activity_nr or not ai_priority:
+        if not activity_nr or not ai_priority or activity_nr not in decision_by_activity:
             rejected_invalid += 1
             continue
         decision = decision_by_activity.get(activity_nr, {})
-        rules_priority = _norm_priority(decision.get("rules_priority")) or "LOW"
-        if PRIORITY_RANK.get(ai_priority, -1) <= PRIORITY_RANK.get(rules_priority, 0):
-            rejected_lower += 1
+        rules_priority = str(decision.get("rules_priority") or "").strip().upper()
+        if rules_priority == "SUPPRESS":
+            rejected_suppress += 1
             continue
+        rules_priority_norm = _norm_priority(rules_priority) or "LOW"
+        ai_rank = PRIORITY_RANK.get(ai_priority, -1)
+        rules_rank = PRIORITY_RANK.get(rules_priority_norm, 0)
+        if ai_rank > rules_rank:
+            raised += 1
+        elif ai_rank < rules_rank:
+            lowered += 1
+        else:
+            unchanged += 1
         payload = {
             "priority": ai_priority,
             "reason": ai_reason or "Imported manual AI triage result.",
@@ -134,9 +170,16 @@ def main() -> int:
         finally:
             conn.close()
 
-    print(f"IMPORT_AI_TRIAGE total={total} accepted={accepted} rejected_lower={rejected_lower}")
-    if rejected_invalid:
-        print(f"IMPORT_AI_TRIAGE_REJECTED_INVALID={rejected_invalid}")
+    print(
+        "IMPORT_AI_TRIAGE "
+        f"total={total} "
+        f"accepted={accepted} "
+        f"raised={raised} "
+        f"lowered={lowered} "
+        f"unchanged={unchanged} "
+        f"rejected_suppress={rejected_suppress} "
+        f"rejected_invalid={rejected_invalid}"
+    )
     return 0
 
 
