@@ -1566,6 +1566,7 @@ def get_leads_for_period(
         else "('osha:activity:' || activity_nr) AS lead_key"
     )
     mail_zip_expr = "mail_zip" if _has_column(conn, "inspections", "mail_zip") else "NULL AS mail_zip"
+    mail_state_expr = "mail_state" if _has_column(conn, "inspections", "mail_state") else "NULL AS mail_state"
     site_county_expr = "site_county" if _has_column(conn, "inspections", "site_county") else "NULL AS site_county"
     area_office_expr = "area_office" if _has_column(conn, "inspections", "area_office") else "NULL AS area_office"
     changed_at_expr = "changed_at" if _has_column(conn, "inspections", "changed_at") else "NULL AS changed_at"
@@ -1585,6 +1586,7 @@ def get_leads_for_period(
             site_state,
             site_zip,
             {mail_zip_expr},
+            {mail_state_expr},
             {site_county_expr},
             {area_office_expr},
             naics,

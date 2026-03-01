@@ -624,6 +624,7 @@ def _history_rows_for_state(db_path: str, state: str, limit: int = 3) -> tuple[l
                 "establishment_name",
                 "site_city",
                 "site_state",
+                "mail_state",
                 "inspection_type",
                 "date_opened",
                 "first_seen_at",

@@ -269,6 +269,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachStates TX,CA,FL `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
+  -SignalFreshnessMaxDays 30 `
+  -AiTriageEnabled 0 `
+  -AiTriageOpenAiModel gpt-4.1-mini `
   -OutreachFallbackOnEmptyState 0 `
   -OutreachSkipRoleInboxes 1 `
   -ProspectAutoGrowEnabled 1 `
@@ -291,6 +294,8 @@ This script:
 
 - Ensures `DATA_DIR`, `OSHA_SMOKE_TO`, `OUTREACH_STATES`, and `OUTREACH_DAILY_LIMIT` exist in `.env.sops`
 - Ensures `OUTREACH_SUPPRESSION_MAX_AGE_HOURS` is set to `240` when missing (or to your explicit parameter value)
+- Ensures `SIGNAL_FRESHNESS_MAX_DAYS` is set to `30` when missing (or to your explicit parameter value)
+- Ensures triage model defaults `AI_TRIAGE_ENABLED=0` and `AI_TRIAGE_OPENAI_MODEL=gpt-4.1-mini`
 - Ensures `OUTREACH_FALLBACK_ON_EMPTY_STATE` default `0` and `OUTREACH_SKIP_ROLE_INBOXES` default `1`
 - Ensures prospect enrichment defaults include `PROSPECT_ENRICH_DOMAIN_ENABLED=0`, `PROSPECT_ENRICH_HUNTER_ENABLED=0`, and `PROSPECT_ENRICH_ALLOW_ROLE_INBOX=0`
 - Ensures trial defaults `TRIAL_SENDS_LIMIT_DEFAULT`, `TRIAL_EXPIRED_BEHAVIOR_DEFAULT`, and optional `TRIAL_CONVERSION_URL` are managed in the same no-editor flow
@@ -478,6 +483,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachStates TX,CA,FL `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
+  -SignalFreshnessMaxDays 30 `
+  -AiTriageEnabled 0 `
+  -AiTriageOpenAiModel gpt-4.1-mini `
   -TrialSendsLimitDefault 14 `
   -TrialExpiredBehaviorDefault notify_once `
   -ProspectDiscoveryInput C:\path\to\prospects.csv
@@ -620,47 +628,99 @@ cd C:\dev\OSHA_Leads
 py -3 tools\cache_osha_inspection_detail.py --since-days 14
 ```
 
-Trial preview (triage overlay OFF vs ON):
+Triage behavior contract:
 
-- Requires `.\run_with_secrets.ps1` (trial preview entrypoints load operational env/secrets).
-- Rules-only overlay does not require AI keys. If enabling AI triage separately, set keys via `scripts\set_outreach_env.ps1` and run through the secrets wrapper.
+- Rules layer is always on for trial digest signal selection and outreach signal examples.
+- AI layer is optional and raise-only. It is evaluated only when `AI_TRIAGE_ENABLED=1` and the path gate is on:
+- Trial path gate: `TRIAL_TRIAGE_OVERLAY_ENABLED=1`
+- Outreach path gate: `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
+- AI never lowers rules priority and never unsuppresses a rules-suppressed signal.
+- If AI is enabled but unavailable (missing key/network/API error), execution degrades to rules-only and emits `WARN_AI_TRIAGE_UNAVAILABLE` plus `AI_TRIAGE_UNAVAILABLE=1`.
+
+Triage env keys:
+
+- `SIGNAL_FRESHNESS_MAX_DAYS` (default `30`)
+- `AI_TRIAGE_ENABLED` (default `0`)
+- `AI_TRIAGE_OPENAI_MODEL` (default `gpt-4.1-mini`)
+
+Rules-only trial dry run (no secrets required):
 
 ```powershell
 cd C:\dev\OSHA_Leads
-$env:TRIAL_TRIAGE_OVERLAY_ENABLED='0'; .\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --dry-run
+$env:TRIAL_TRIAGE_OVERLAY_ENABLED='1'
+py -3 run_wally_trial.py --test-send-daily --dry-run
 ```
+
+Rules + AI trial dry run (secrets required):
 
 ```powershell
 cd C:\dev\OSHA_Leads
-$env:TRIAL_TRIAGE_OVERLAY_ENABLED='1'; .\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --dry-run
+$env:TRIAL_TRIAGE_OVERLAY_ENABLED='1'
+$env:AI_TRIAGE_ENABLED='1'
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --dry-run
 ```
 
-Trial triage artifacts (only when overlay is enabled):
+Outreach dry run with rules always-on and optional AI gate:
+
+```powershell
+cd C:\dev\OSHA_Leads
+$env:OUTREACH_TRIAGE_OVERLAY_ENABLED='1'
+$env:AI_TRIAGE_ENABLED='1'
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
+```
+
+Render preview behavior:
+
+- Rules execute in render-preview.
+- AI executes only when `AI_TRIAGE_ENABLED=1` and OpenAI key is available via secrets wrapper.
+- Otherwise render-preview stays rules-only and emits warning telemetry.
+
+Scoring config files (committed, operator-editable):
+
+- `data/scoring/naics_emphasis_boost.csv` columns: `naics_prefix,label,boost_points`
+- `data/scoring/naics_suppress.csv` columns: `naics_prefix,label,reason`
+- `data/scoring/enterprise_names.csv` columns: `pattern,match_type,reason`
+
+Config update procedure:
+
+1. Edit CSV files in `data/scoring/`.
+2. Keep header row and valid column names unchanged.
+3. Use prefixes (`722*`), ranges (`44-45*`), and allow-overrides (`!561621`) as needed.
+4. Run `py -3 -m unittest -q`.
+5. Validate behavior with trial/outreach dry-run commands above before live sends.
+
+Trial triage artifacts:
 
 - `${DATA_DIR}\trials\<subscriber_key>\scoring\triage_<YYYY-MM-DD>.json`
 - `${DATA_DIR}\trials\<subscriber_key>\scoring\triage_report_<YYYY-MM-DD>.txt`
 - Fallback when `DATA_DIR` is unset: `.\out\trials\<subscriber_key>\scoring\...`
 
-Outreach preview (triage overlay OFF vs ON):
-
-- Requires `.\run_with_secrets.ps1` (normal outreach env/secrets workflow).
-- Overlay only affects example-signal selection/preview annotations; it does not change prospect ranking/cadence/order.
-
-```powershell
-cd C:\dev\OSHA_Leads
-$env:OUTREACH_TRIAGE_OVERLAY_ENABLED='0'; .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
-```
-
-```powershell
-cd C:\dev\OSHA_Leads
-$env:OUTREACH_TRIAGE_OVERLAY_ENABLED='1'; .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
-```
-
-Outreach triage artifacts (when overlay is enabled):
+Outreach triage artifacts (only when `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`):
 
 - Dry-run outbox/manifest still write under `out\outreach\<batch>\...`
 - Per-example triage JSON writes to `${DATA_DIR}\outreach\<batch>\signals_triage_<batch>_dry_run.json`
 - Fallback when `DATA_DIR` is unset: `.\out\outreach\<batch>\signals_triage_<batch>_dry_run.json`
+
+Weekly manual signal QA loop:
+
+1. Dump rules-classified signals for external review:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27 --print-config
+py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27 --dry-run
+py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27
+```
+
+2. Review exported signals (for example in Claude) and produce CSV with `activity_nr,ai_priority,ai_reason`.
+3. Validate and import reviewed raises into AI cache:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\import_ai_triage.py --print-config
+py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv --dry-run
+py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv
+```
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 
