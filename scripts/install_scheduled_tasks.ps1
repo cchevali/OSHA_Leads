@@ -75,7 +75,9 @@ function New-TaskDefinition(
 
 function Get-TaskDefinitions([string]$RepoRoot) {
   $weekdaySpec = 'MON,TUE,WED,THU,FRI'
+  $eveningSpec = 'SUN,MON,TUE,WED,THU'
   $ingestRunner = Join-Path $RepoRoot 'scripts\scheduled\run_osha_ingest_daily.ps1'
+  $ingestEveningRunner = Join-Path $RepoRoot 'scripts\scheduled\run_osha_ingest_evening.ps1'
   $generationRunner = Join-Path $RepoRoot 'scripts\scheduled\run_prospect_generation.ps1'
   $inboundRunner = Join-Path $RepoRoot 'scripts\scheduled\run_inbound_triage.ps1'
   $wrapper = Join-Path $RepoRoot 'run_with_secrets.ps1'
@@ -84,6 +86,7 @@ function Get-TaskDefinitions([string]$RepoRoot) {
 
   return @(
     (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '06:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestRunner)),
+    (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Evening' -ScheduleType 'weekly' -Weekdays $eveningSpec -StartTime '20:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestEveningRunner)),
     (New-TaskDefinition -Name 'OSHA_Prospect_Generation' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $generationRunner)),
     (New-TaskDefinition -Name 'OSHA_Prospect_Discovery' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:30' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $discovery)),
     (New-TaskDefinition -Name 'OSHA_Outreach_Auto' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $outreach)),
@@ -547,6 +550,7 @@ if ($modeArg -notin $modes) {
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $requiredPaths = @(
   (Join-Path $repoRoot 'scripts\scheduled\run_osha_ingest_daily.ps1'),
+  (Join-Path $repoRoot 'scripts\scheduled\run_osha_ingest_evening.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_prospect_generation.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_inbound_triage.ps1'),
   (Join-Path $repoRoot 'run_with_secrets.ps1'),
