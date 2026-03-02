@@ -137,6 +137,8 @@ class TestSignalReviewTools(unittest.TestCase):
                     code = dump_tool.main()
             self.assertEqual(code, 0)
             text = out.getvalue()
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_DIR=", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
             self.assertIn("SIGNAL 1001", text)
             self.assertIn("Rules priority: HIGH", text)
             self.assertNotIn("SIGNAL_REVIEW_OUT=", text)
@@ -562,9 +564,9 @@ class TestSignalReviewTools(unittest.TestCase):
             self.assertIn("# MICROFLOWOPS — NIGHTLY SIGNAL TRIAGE REVIEW", text)
             self.assertIn("FULL AUTHORITY to raise or lower", text)
             self.assertIn("# --- END OF SIGNALS ---", text)
-            self.assertIn("SIGNAL 9101", text)
-            self.assertIn("Rules priority: SUPPRESS", text)
+            self.assertNotIn("SIGNAL 9101", text)
             self.assertIn("SIGNAL 9102", text)
+            self.assertIn("AI_REVIEW_DUMP_MATCHED_TOTAL=1", text)
             self.assertIn("# Return ONLY: activity_nr,ai_priority,ai_reason", text)
             self.assertIn("Do not use commas inside the ai_reason field", text)
             self.assertNotIn("You may only RAISE", text)
@@ -605,13 +607,16 @@ class TestSignalReviewTools(unittest.TestCase):
             self.assertIn("# --- END OF SIGNALS ---", text)
             self.assertNotIn("\nSIGNAL ", text)
             self.assertNotIn("NO_SIGNALS_FOR_REVIEW", text)
+            self.assertIn("AI_REVIEW_DUMP_MATCHED_TOTAL=0", text)
+            self.assertIn("WARN_AI_REVIEW_DUMP_EMPTY=1 reason=NO_MATCHES", text)
+            self.assertIn("AI_REVIEW_DUMP_MAX_FIRST_SEEN=", text)
+            self.assertIn("AI_REVIEW_DUMP_MAX_DATE_OPENED=", text)
 
-    def test_dump_signals_for_ai_review_default_output_path(self):
+    def test_dump_signals_for_ai_review_default_output_path_without_data_dir(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             db_path = tmp / "osha.sqlite"
             sqlite3.connect(str(db_path)).close()
-            data_root = tmp / "out"
 
             fake_leads = [
                 {
@@ -632,8 +637,10 @@ class TestSignalReviewTools(unittest.TestCase):
             fake_decisions = [{"activity_nr": "9201", "rules_priority": "MEDIUM", "reasons": ["rules_default"]}]
 
             out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = ""
             with (
-                mock.patch.object(dump_tool.scoring_paths, "data_root", return_value=data_root),
+                mock.patch.dict(os.environ, env, clear=False),
                 mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
                 mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
                 mock.patch.object(dump_tool.sde, "get_leads_for_period", return_value=(fake_leads, [], {})),
@@ -657,12 +664,240 @@ class TestSignalReviewTools(unittest.TestCase):
 
             self.assertEqual(code, 0)
             text = out.getvalue()
-            self.assertIn("SIGNAL_REVIEW_OUT=", text)
-            self.assertIn("signals_for_ai_review_", text)
-            out_file = next((line.split("=", 1)[1].strip() for line in text.splitlines() if line.startswith("SIGNAL_REVIEW_OUT=")), "")
-            self.assertTrue(out_file.endswith(".txt"))
-            self.assertIn("signals_for_ai_review_", out_file)
-            self.assertTrue(Path(out_file).exists())
+            expected_dir = str((dump_tool.REPO_ROOT / "out" / "audits").resolve(strict=False))
+            self.assertIn(f"AI_REVIEW_DUMP_OUTPUT_DIR={expected_dir}", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
+
+    def test_dump_signals_for_ai_review_output_path_uses_data_dir_when_set(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+            data_dir = tmp / "runtime_data"
+
+            fake_leads = [
+                {
+                    "activity_nr": "9202",
+                    "establishment_name": "Output DataDir Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Inspection",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-02-20",
+                    "first_seen_at": "2026-02-20T10:00:00Z",
+                }
+            ]
+            fake_decisions = [{"activity_nr": "9202", "rules_priority": "MEDIUM", "reasons": ["rules_default"]}]
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", return_value=(fake_leads, [], {})),
+                mock.patch.object(dump_tool.triage_overlay, "triage", return_value=fake_decisions),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--territory",
+                        "TX_TRI",
+                        "--since",
+                        "today",
+                        "--for-ai-review",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            expected_dir = str((data_dir / "audits").resolve(strict=False))
+            self.assertIn(f"AI_REVIEW_DUMP_OUTPUT_DIR={expected_dir}", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
+
+    def test_dump_signals_print_config_is_no_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+            out_dir = tmp / "audits_output"
+
+            out = io.StringIO()
+            with (
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--territory",
+                        "TX_TRI",
+                        "--for-ai-review",
+                        "--since",
+                        "2026-02-20",
+                        "--print-config",
+                        "--output-dir",
+                        str(out_dir),
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("AI_REVIEW_DUMP_DATA_DIR=", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_DIR=", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
+            self.assertIn("AI_REVIEW_DUMP_SINCE=2026-02-20", text)
+            self.assertIn("AI_REVIEW_DUMP_UNTIL=", text)
+            self.assertIn("AI_REVIEW_DUMP_STATES=TX", text)
+            self.assertIn("AI_REVIEW_DUMP_TERRITORIES=TX_TRI", text)
+            self.assertFalse(out_dir.exists())
+
+    def test_dump_signals_include_suppressed_adds_skip_section(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+
+            fake_leads = [
+                {
+                    "activity_nr": "9301",
+                    "establishment_name": "Suppressed Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "561720",
+                    "naics_desc": "Janitorial Services",
+                    "inspection_type": "Inspection",
+                    "scope": "Partial",
+                    "case_status": "CLOSED",
+                    "date_opened": "2026-02-20",
+                    "first_seen_at": "2026-02-20T10:00:00Z",
+                },
+                {
+                    "activity_nr": "9302",
+                    "establishment_name": "Active Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Complaint",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-02-20",
+                    "first_seen_at": "2026-02-20T10:00:00Z",
+                },
+            ]
+            fake_decisions = [
+                {"activity_nr": "9301", "rules_priority": "SUPPRESS", "reasons": ["no_insp_closed"]},
+                {"activity_nr": "9302", "rules_priority": "HIGH", "reasons": ["referral_or_complaint"]},
+            ]
+
+            out = io.StringIO()
+            with (
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", return_value=(fake_leads, [], {})),
+                mock.patch.object(dump_tool.triage_overlay, "triage", return_value=fake_decisions),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--territory",
+                        "TX_TRI",
+                        "--since",
+                        "2026-02-20",
+                        "--for-ai-review",
+                        "--include-suppressed",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("SUPPRESSED (skip)", text)
+            self.assertIn("SIGNAL 9301", text)
+            self.assertIn("SIGNAL 9302", text)
+
+    def test_dump_signals_output_override_precedence(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+            output_dir = tmp / "dir_precedence"
+            explicit_path = tmp / "explicit_dir" / "custom_dump.txt"
+
+            fake_leads = [
+                {
+                    "activity_nr": "9401",
+                    "establishment_name": "Precedence Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Inspection",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-02-20",
+                    "first_seen_at": "2026-02-20T10:00:00Z",
+                }
+            ]
+            fake_decisions = [{"activity_nr": "9401", "rules_priority": "MEDIUM", "reasons": ["rules_default"]}]
+
+            out = io.StringIO()
+            with (
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", return_value=(fake_leads, [], {})),
+                mock.patch.object(dump_tool.triage_overlay, "triage", return_value=fake_decisions),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--territory",
+                        "TX_TRI",
+                        "--since",
+                        "2026-02-20",
+                        "--for-ai-review",
+                        "--output-dir",
+                        str(output_dir),
+                        "--output",
+                        str(explicit_path),
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn(f"AI_REVIEW_DUMP_OUTPUT_PATH={explicit_path.resolve(strict=False)}", text)
+            self.assertTrue(explicit_path.exists())
+            self.assertFalse(output_dir.exists())
 
 
 if __name__ == "__main__":

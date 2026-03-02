@@ -160,7 +160,7 @@ function Add-ResolvedSchedule([array]$Tasks, [datetime]$NowLocal) {
 function Emit-TaskConfig([array]$Tasks, [string]$Mode, [hashtable]$SchedulerCredentials) {
   Write-Output ('INSTALL_SCHEDULED_TASKS_MODE=' + $Mode)
   Write-Output ('INSTALL_SCHEDULED_TASKS_TASK_COUNT=' + $Tasks.Count)
-  Write-Output 'INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=1'
+  Write-Output 'INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=0'
   Write-Output 'INSTALL_SCHEDULED_TASKS_WEEKDAY_SCHEDULE=MON,TUE,WED,THU,FRI'
   Write-Output ('INSTALL_SCHEDULED_TASKS_TASK_SCHED_USER=' + ([string]$SchedulerCredentials.User))
   if ([bool]$SchedulerCredentials.PasswordPresent) {
