@@ -1,6 +1,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 . (Join-Path $PSScriptRoot 'secrets_tooling.ps1')
 
@@ -8,6 +11,38 @@ function Fail([string]$Message) {
   # Single-line error only (no secrets).
   Write-Output ("FAIL: " + $Message)
   exit 1
+}
+
+function Invoke-NativeAllowStderr {
+  param(
+    [string]$FilePath,
+    [string[]]$ArgumentList = @()
+  )
+
+  $stdoutPath = [System.IO.Path]::GetTempFileName()
+  $stderrPath = [System.IO.Path]::GetTempFileName()
+  try {
+    $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $stdoutLines = @()
+    $stderrLines = @()
+    if (Test-Path -LiteralPath $stdoutPath) {
+      $stdoutLines = @(Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue)
+    }
+    if (Test-Path -LiteralPath $stderrPath) {
+      $stderrLines = @(Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue)
+    }
+    return @{
+      Output = @($stdoutLines + $stderrLines)
+      ExitCode = [int]$proc.ExitCode
+    }
+  } finally {
+    if (Test-Path -LiteralPath $stdoutPath) {
+      Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $stderrPath) {
+      Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+  }
 }
 
 try {
@@ -58,11 +93,9 @@ try {
     if ($CheckDecrypt) {
       # Sanity check: ensure this machine can decrypt .env.sops (discard plaintext; no temp files).
       $cmdLine = '"' + $sopsExe + '" --decrypt --input-type dotenv --output-type dotenv "' + $envSopsPath + '" 1>nul'
-      $prevEap = $ErrorActionPreference
-      $ErrorActionPreference = 'Continue'
-      $err = & cmd /c $cmdLine 2>&1
-      $code = $LASTEXITCODE
-      $ErrorActionPreference = $prevEap
+      $decryptResult = Invoke-NativeAllowStderr -FilePath 'cmd' -ArgumentList @('/c', $cmdLine)
+      $err = @($decryptResult.Output)
+      $code = [int]$decryptResult.ExitCode
       if ($code -ne 0) {
         $errText = ''
         if ($err -is [string]) {
@@ -112,13 +145,20 @@ try {
   Set-EnvFromDotenvText -DotenvText $plain
 
   $exe = $Command[0]
+  if (-not (Get-Command -Name $exe -ErrorAction SilentlyContinue)) {
+    Fail ("Command not found: " + $exe)
+  }
   $args = @()
   if ($Command.Count -gt 1) {
     $args = $Command[1..($Command.Count - 1)]
   }
 
-  & $exe @args
-  exit $LASTEXITCODE
+  $runResult = Invoke-NativeAllowStderr -FilePath $exe -ArgumentList $args
+  foreach ($line in @($runResult.Output)) {
+    Write-Output $line
+  }
+  $exitCode = [int]$runResult.ExitCode
+  exit $exitCode
 } catch {
   Fail $_.Exception.Message
 } finally {

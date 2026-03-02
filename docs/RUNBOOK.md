@@ -722,7 +722,7 @@ py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv --dry-
 py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv
 ```
 
-### Nightly AI triage dump (manual + scheduled)
+### Nightly AI triage dump (manual)
 
 Canonical manual command path (always loads secrets/DATA_DIR via wrapper):
 
@@ -760,11 +760,6 @@ Empty dump interpretation (file may contain only headers/section markers):
 - `WARN_AI_REVIEW_DUMP_EMPTY=1 reason=NO_MATCHES since=<...> until=<...>`
 - `AI_REVIEW_DUMP_MAX_FIRST_SEEN=<iso|empty>`
 - `AI_REVIEW_DUMP_MAX_DATE_OPENED=<iso|empty>`
-
-Scheduled task alignment:
-
-- `OSHA_Osha_Ingest_Evening` runs `scripts\scheduled\run_osha_ingest_evening.ps1` at `20:45` local on `SUN,MON,TUE,WED,THU`.
-- The scheduled runner calls the same canonical wrapper (`scripts\dump_signals_for_ai_review.ps1`) so manual and scheduled invocations stay path-consistent.
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 

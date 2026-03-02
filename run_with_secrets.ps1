@@ -1,6 +1,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 function Invoke-ContextPackSoftCheck {
   param([string]$RepoRoot)
@@ -88,4 +91,5 @@ if ($args -contains '--diagnostics') {
 }
 
 & $targetPath @args
-exit $LASTEXITCODE
+$exitCode = $LASTEXITCODE
+exit $exitCode
