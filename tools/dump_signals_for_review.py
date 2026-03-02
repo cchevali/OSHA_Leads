@@ -21,6 +21,7 @@ from scoring import paths as scoring_paths
 from scoring import triage_overlay
 
 import send_digest_email as sde
+from runtime_data_dir import resolve_data_dir
 
 AI_REVIEW_HEADER_LINES = [
     "# ============================================================",
@@ -348,13 +349,7 @@ def _render_group_sections(
 
 
 def _resolve_default_audits_dir() -> Path:
-    raw_data_dir = str(os.getenv("DATA_DIR") or "").strip()
-    if raw_data_dir:
-        base = Path(raw_data_dir).expanduser()
-        if not base.is_absolute():
-            base = REPO_ROOT / base
-        return (base.resolve(strict=False) / "audits").resolve(strict=False)
-    return (REPO_ROOT / "out" / "audits").resolve(strict=False)
+    return (resolve_data_dir(REPO_ROOT).effective_path / "audits").resolve(strict=False)
 
 
 def _resolve_output_path(
@@ -497,14 +492,19 @@ def main() -> int:
         for_ai_review=bool(args.for_ai_review),
         today_local=today_local,
     )
-    raw_data_dir = str(os.getenv("DATA_DIR") or "").strip()
+    data_dir_resolution = resolve_data_dir(REPO_ROOT)
+    effective_data_dir = str(data_dir_resolution.effective_path)
+    data_dir_source = str(data_dir_resolution.source or "default")
     states_csv = ",".join(states)
     territories_csv = ",".join(trial_territories if args.all_outreach else ([territory_code] if territory_code else []))
+    if data_dir_resolution.warning_token:
+        print(data_dir_resolution.warning_token)
     print(f"AI_REVIEW_DUMP_OUTPUT_DIR={out_dir}")
     print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
 
     if args.print_config:
-        print(f"AI_REVIEW_DUMP_DATA_DIR={raw_data_dir}")
+        print(f"AI_REVIEW_DUMP_DATA_DIR={effective_data_dir}")
+        print(f"AI_REVIEW_DUMP_DATA_DIR_SOURCE={data_dir_source}")
         print(f"AI_REVIEW_DUMP_OUTPUT_DIR={out_dir}")
         print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
         print(f"AI_REVIEW_DUMP_SINCE={since_date.isoformat()}")

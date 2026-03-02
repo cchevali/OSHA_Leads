@@ -746,13 +746,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_a
 
 Output location is DATA_DIR-aware:
 
-- If `DATA_DIR` is set: `${DATA_DIR}\audits`
-- If `DATA_DIR` is unset: `.\out\audits`
+- Effective precedence for wrapped commands (`.\run_with_secrets.ps1 -- ...`):
+- Inherited process `DATA_DIR` (non-empty) wins.
+- Else `.env.sops` `DATA_DIR` is used.
+- Else fallback is repo `.\out`.
+- Invalid values (`""`, `out`, non-rooted relative path) fall back to repo `.\out`.
 
 Machine-readable path tokens:
 
+- `MFO_DATA_DIR_EFFECTIVE=<abs_path|empty>`
+- `MFO_DATA_DIR_SOURCE=inherited|dotenv|default`
+- `WARN_ENV_CONFLICT=1 key=DATA_DIR inherited=<...> dotenv=<...> using=<...>`
+- `WARN_DATA_DIR_NOT_ABSOLUTE=1 value=<...> behavior=FALLBACK_TO_REPO_OUT`
 - `AI_REVIEW_DUMP_OUTPUT_DIR=<abs_path>`
 - `AI_REVIEW_DUMP_OUTPUT_PATH=<abs_path>`
+- `AI_REVIEW_DUMP_DATA_DIR=<effective_abs_path|empty>`
+- `AI_REVIEW_DUMP_DATA_DIR_SOURCE=<inherited|dotenv|default>`
 
 Empty dump interpretation (file may contain only headers/section markers):
 
@@ -760,6 +769,11 @@ Empty dump interpretation (file may contain only headers/section markers):
 - `WARN_AI_REVIEW_DUMP_EMPTY=1 reason=NO_MATCHES since=<...> until=<...>`
 - `AI_REVIEW_DUMP_MAX_FIRST_SEEN=<iso|empty>`
 - `AI_REVIEW_DUMP_MAX_DATE_OPENED=<iso|empty>`
+
+DATA_DIR persistence and edits:
+
+- Use `scripts\set_outreach_env.ps1` as the only supported way to persist `.env.sops` keys.
+- Do not manually edit `.env.sops`.
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 

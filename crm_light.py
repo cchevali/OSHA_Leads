@@ -10,6 +10,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from runtime_data_dir import resolve_data_dir
+
 try:
     from zoneinfo import ZoneInfo
 except Exception:  # pragma: no cover
@@ -90,12 +92,7 @@ def resolve_crm_db_path(db_path: str | Path | None = None) -> Path:
     raw_override = str(db_path or "").strip()
     if raw_override:
         return Path(raw_override).expanduser().resolve(strict=False)
-
-    raw_data_dir = (os.getenv("DATA_DIR") or "").strip()
-    if raw_data_dir:
-        return (Path(raw_data_dir).expanduser().resolve(strict=False) / "crm_light.sqlite").resolve(strict=False)
-
-    return (REPO_ROOT / "out" / "crm_light.sqlite").resolve(strict=False)
+    return (resolve_data_dir(REPO_ROOT).effective_path / "crm_light.sqlite").resolve(strict=False)
 
 
 def data_dir() -> Path:

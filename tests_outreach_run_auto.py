@@ -750,6 +750,9 @@ class TestOutreachRunAuto(unittest.TestCase):
             out = p.stdout or ""
             self.assertIn("PASS_AUTO_PRINT_CONFIG", out)
             self.assertIn(f"data_dir={data_dir.resolve()}", out)
+            self.assertIn("data_dir_source=inherited", out)
+            self.assertIn("mfo_data_dir_effective=(empty)", out)
+            self.assertIn("mfo_data_dir_source=(empty)", out)
             self.assertIn(f"crm_db={(data_dir / 'crm.sqlite').resolve()}", out)
             self.assertIn(f"suppression_csv={(data_dir / 'suppression.csv').resolve()}", out)
             self.assertIn("outreach_daily_limit=200 source=default", out)
@@ -779,6 +782,7 @@ class TestOutreachRunAuto(unittest.TestCase):
 
             out = p.stdout or ""
             self.assertIn("outreach_daily_limit=17 source=env", out)
+            self.assertIn("data_dir_source=inherited", out)
             self.assertIn("OUTREACH_WEEKDAYS_ONLY=1", out)
             self.assertIn("trial_conversion_url_present=YES", out)
 
@@ -2185,6 +2189,69 @@ class TestOutreachRunAuto(unittest.TestCase):
 
             self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
             self.assertEqual(captured.get("run_date"), "2001-01-02")
+
+    def test_doctor_data_dir_pass_token_for_absolute_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime_data"
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
+            }
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch.object(roa, "_doctor_context_pack_soft_check", return_value=None), mock.patch.object(
+                    roa, "_doctor_check_secrets_decrypt", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_crm", return_value=(True, "")), mock.patch.object(
+                    roa, "_doctor_check_signal_freshness", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_suppression", return_value=(True, "")), mock.patch.object(
+                    roa, "_doctor_check_unsub", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_provider", return_value=(True, "")), mock.patch.object(
+                    roa, "_doctor_check_dry_run_artifact", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_idempotency", return_value=(True, "")):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            text = out.getvalue()
+            self.assertIn(f"PASS_DOCTOR_DATA_DIR={data_dir.resolve()} source=inherited", text)
+            self.assertIn("PASS_DOCTOR_COMPLETE", text)
+
+    def test_doctor_data_dir_warns_for_invalid_relative_value(self):
+        with tempfile.TemporaryDirectory() as d:
+            _tmp = Path(d)
+            env = {
+                "DATA_DIR": "out",
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+                "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
+            }
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch.object(roa, "_doctor_context_pack_soft_check", return_value=None), mock.patch.object(
+                    roa, "_doctor_check_secrets_decrypt", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_crm", return_value=(True, "")), mock.patch.object(
+                    roa, "_doctor_check_signal_freshness", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_suppression", return_value=(True, "")), mock.patch.object(
+                    roa, "_doctor_check_unsub", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_provider", return_value=(True, "")), mock.patch.object(
+                    roa, "_doctor_check_dry_run_artifact", return_value=(True, "")
+                ), mock.patch.object(roa, "_doctor_check_idempotency", return_value=(True, "")):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            text = out.getvalue()
+            self.assertIn("WARN_DOCTOR_DATA_DIR_NOT_ABSOLUTE=1 value=out behavior=FALLBACK_TO_REPO_OUT", text)
+            self.assertIn("PASS_DOCTOR_COMPLETE", text)
 
     def test_doctor_success_pass_tokens_only_and_no_db_mutation(self):
         with tempfile.TemporaryDirectory() as d:

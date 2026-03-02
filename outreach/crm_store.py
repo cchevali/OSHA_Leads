@@ -1,8 +1,8 @@
-import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from runtime_data_dir import DataDirResolution, resolve_data_dir
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTREACH_EVENTS_MIGRATION_COLUMNS = {
@@ -13,12 +13,12 @@ OUTREACH_EVENTS_MIGRATION_COLUMNS = {
 }
 
 
+def data_dir_resolution() -> DataDirResolution:
+    return resolve_data_dir(REPO_ROOT)
+
+
 def data_dir() -> Path:
-    raw = (os.getenv("DATA_DIR") or "").strip()
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (REPO_ROOT / p)
-    return REPO_ROOT / "out"
+    return data_dir_resolution().effective_path
 
 
 def crm_db_path() -> Path:
