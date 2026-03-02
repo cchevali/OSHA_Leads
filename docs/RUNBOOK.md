@@ -707,9 +707,9 @@ Weekly manual signal QA loop:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27 --print-config
-py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27 --dry-run
-py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -PrintConfig
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1
 ```
 
 2. Review exported signals (for example in Claude) and produce CSV with `activity_nr,ai_priority,ai_reason`.
@@ -721,6 +721,50 @@ py -3 tools\import_ai_triage.py --print-config
 py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv --dry-run
 py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv
 ```
+
+### Nightly AI triage dump (manual + scheduled)
+
+Canonical manual command path (always loads secrets/DATA_DIR via wrapper):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1
+```
+
+Common variants:
+
+```powershell
+# side-effect free resolved config
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -PrintConfig
+
+# inspect output only (no file write)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -DryRun
+
+# explicit window / scope override
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -Since 2026-03-01 -Until 2026-03-01 -AllOutreach
+```
+
+Output location is DATA_DIR-aware:
+
+- If `DATA_DIR` is set: `${DATA_DIR}\audits`
+- If `DATA_DIR` is unset: `.\out\audits`
+
+Machine-readable path tokens:
+
+- `AI_REVIEW_DUMP_OUTPUT_DIR=<abs_path>`
+- `AI_REVIEW_DUMP_OUTPUT_PATH=<abs_path>`
+
+Empty dump interpretation (file may contain only headers/section markers):
+
+- `AI_REVIEW_DUMP_MATCHED_TOTAL=0`
+- `WARN_AI_REVIEW_DUMP_EMPTY=1 reason=NO_MATCHES since=<...> until=<...>`
+- `AI_REVIEW_DUMP_MAX_FIRST_SEEN=<iso|empty>`
+- `AI_REVIEW_DUMP_MAX_DATE_OPENED=<iso|empty>`
+
+Scheduled task alignment:
+
+- `OSHA_Osha_Ingest_Evening` runs `scripts\scheduled\run_osha_ingest_evening.ps1` at `20:45` local on `SUN,MON,TUE,WED,THU`.
+- The scheduled runner calls the same canonical wrapper (`scripts\dump_signals_for_ai_review.ps1`) so manual and scheduled invocations stay path-consistent.
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 

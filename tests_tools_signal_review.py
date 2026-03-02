@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import os
 import sqlite3
 import tempfile
@@ -13,6 +14,86 @@ from tools import import_ai_triage as import_tool
 
 
 class TestSignalReviewTools(unittest.TestCase):
+    @staticmethod
+    def _create_inspections_table(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE inspections(
+                activity_nr TEXT,
+                establishment_name TEXT,
+                site_city TEXT,
+                site_state TEXT,
+                site_zip TEXT,
+                inspection_type TEXT,
+                scope TEXT,
+                case_status TEXT,
+                naics TEXT,
+                naics_desc TEXT,
+                sic TEXT,
+                emphasis TEXT,
+                violations_count INTEGER,
+                serious_violations INTEGER,
+                willful_violations INTEGER,
+                repeat_violations INTEGER,
+                date_opened TEXT,
+                first_seen_at TEXT,
+                lead_score INTEGER,
+                mail_state TEXT
+            )
+            """
+        )
+
+    @staticmethod
+    def _insert_inspection(
+        conn: sqlite3.Connection,
+        *,
+        activity_nr: str,
+        lead_score: int,
+        case_status: str = "OPEN",
+        scope: str = "Partial",
+    ) -> None:
+        conn.execute(
+            "INSERT INTO inspections VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                activity_nr,
+                f"Company {activity_nr}",
+                "Austin",
+                "TX",
+                "78701",
+                "Inspection",
+                scope,
+                case_status,
+                "236220",
+                "Construction",
+                "",
+                "",
+                0,
+                None,
+                None,
+                None,
+                "2026-02-20",
+                "2026-02-20T00:00:00Z",
+                int(lead_score),
+                "TX",
+            ),
+        )
+
+    @staticmethod
+    def _parse_import_counts(text: str) -> dict[str, int]:
+        line = next((ln for ln in text.splitlines() if ln.startswith("IMPORT_AI_TRIAGE ")), "")
+        out: dict[str, int] = {}
+        for part in line.split():
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            if key == "IMPORT_AI_TRIAGE":
+                continue
+            try:
+                out[key] = int(value)
+            except Exception:
+                pass
+        return out
+
     def test_dump_signals_print_config_and_dry_run(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -56,11 +137,13 @@ class TestSignalReviewTools(unittest.TestCase):
                     code = dump_tool.main()
             self.assertEqual(code, 0)
             text = out.getvalue()
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_DIR=", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
             self.assertIn("SIGNAL 1001", text)
             self.assertIn("Rules priority: HIGH", text)
             self.assertNotIn("SIGNAL_REVIEW_OUT=", text)
 
-    def test_import_ai_triage_raise_only_dry_run(self):
+    def test_import_ai_triage_accepts_lower_high_to_low(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             db_path = tmp / "osha.sqlite"
@@ -68,86 +151,11 @@ class TestSignalReviewTools(unittest.TestCase):
             with open(input_csv, "w", encoding="utf-8", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=["activity_nr", "ai_priority", "ai_reason"])
                 writer.writeheader()
-                writer.writerow({"activity_nr": "m1", "ai_priority": "LOW", "ai_reason": "not a raise"})
-                writer.writerow({"activity_nr": "m2", "ai_priority": "MEDIUM", "ai_reason": "raise one tier"})
+                writer.writerow({"activity_nr": "m1", "ai_priority": "LOW", "ai_reason": "large enterprise context"})
 
             conn = sqlite3.connect(str(db_path))
-            conn.execute(
-                """
-                CREATE TABLE inspections(
-                    activity_nr TEXT,
-                    establishment_name TEXT,
-                    site_city TEXT,
-                    site_state TEXT,
-                    site_zip TEXT,
-                    inspection_type TEXT,
-                    scope TEXT,
-                    case_status TEXT,
-                    naics TEXT,
-                    naics_desc TEXT,
-                    sic TEXT,
-                    emphasis TEXT,
-                    violations_count INTEGER,
-                    serious_violations INTEGER,
-                    willful_violations INTEGER,
-                    repeat_violations INTEGER,
-                    date_opened TEXT,
-                    first_seen_at TEXT,
-                    lead_score INTEGER,
-                    mail_state TEXT
-                )
-                """
-            )
-            conn.execute(
-                "INSERT INTO inspections VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    "m1",
-                    "Alpha",
-                    "Austin",
-                    "TX",
-                    "78701",
-                    "Inspection",
-                    "Partial",
-                    "OPEN",
-                    "236220",
-                    "Construction",
-                    "",
-                    "",
-                    0,
-                    None,
-                    None,
-                    None,
-                    "2026-02-20",
-                    "2026-02-20T00:00:00Z",
-                    6,
-                    "TX",
-                ),
-            )
-            conn.execute(
-                "INSERT INTO inspections VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    "m2",
-                    "Beta",
-                    "Austin",
-                    "TX",
-                    "78701",
-                    "Inspection",
-                    "Partial",
-                    "OPEN",
-                    "236220",
-                    "Construction",
-                    "",
-                    "",
-                    0,
-                    None,
-                    None,
-                    None,
-                    "2026-02-20",
-                    "2026-02-20T00:00:00Z",
-                    3,
-                    "TX",
-                ),
-            )
+            self._create_inspections_table(conn)
+            self._insert_inspection(conn, activity_nr="m1", lead_score=10)
             conn.commit()
             conn.close()
 
@@ -155,8 +163,201 @@ class TestSignalReviewTools(unittest.TestCase):
             with redirect_stdout(out), mock.patch("sys.argv", ["import_ai_triage.py", "--input", str(input_csv), "--db", str(db_path), "--dry-run"]):
                 code = import_tool.main()
             self.assertEqual(code, 0)
-            text = out.getvalue()
-            self.assertIn("IMPORT_AI_TRIAGE total=2 accepted=1 rejected_lower=1", text)
+            counts = self._parse_import_counts(out.getvalue())
+            self.assertEqual(counts.get("total"), 1)
+            self.assertEqual(counts.get("accepted"), 1)
+            self.assertEqual(counts.get("lowered"), 1)
+            self.assertEqual(counts.get("rejected_invalid"), 0)
+            self.assertNotIn("rejected_lower", out.getvalue())
+
+    def test_import_ai_triage_accepts_raise_low_to_high(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            input_csv = tmp / "ai_review.csv"
+            with open(input_csv, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["activity_nr", "ai_priority", "ai_reason"])
+                writer.writeheader()
+                writer.writerow({"activity_nr": "m2", "ai_priority": "HIGH", "ai_reason": "urgent complaint pattern"})
+
+            conn = sqlite3.connect(str(db_path))
+            self._create_inspections_table(conn)
+            self._insert_inspection(conn, activity_nr="m2", lead_score=0)
+            conn.commit()
+            conn.close()
+
+            out = io.StringIO()
+            with redirect_stdout(out), mock.patch("sys.argv", ["import_ai_triage.py", "--input", str(input_csv), "--db", str(db_path), "--dry-run"]):
+                code = import_tool.main()
+            self.assertEqual(code, 0)
+            counts = self._parse_import_counts(out.getvalue())
+            self.assertEqual(counts.get("total"), 1)
+            self.assertEqual(counts.get("accepted"), 1)
+            self.assertEqual(counts.get("raised"), 1)
+
+    def test_import_ai_triage_rejects_suppressed_signal(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            input_csv = tmp / "ai_review.csv"
+            with open(input_csv, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["activity_nr", "ai_priority", "ai_reason"])
+                writer.writeheader()
+                writer.writerow({"activity_nr": "s1", "ai_priority": "HIGH", "ai_reason": "should be blocked"})
+
+            conn = sqlite3.connect(str(db_path))
+            self._create_inspections_table(conn)
+            self._insert_inspection(conn, activity_nr="s1", lead_score=6, case_status="CLOSED", scope="No Insp")
+            conn.commit()
+            conn.close()
+
+            out = io.StringIO()
+            with redirect_stdout(out), mock.patch("sys.argv", ["import_ai_triage.py", "--input", str(input_csv), "--db", str(db_path), "--dry-run"]):
+                code = import_tool.main()
+            self.assertEqual(code, 0)
+            counts = self._parse_import_counts(out.getvalue())
+            self.assertEqual(counts.get("total"), 1)
+            self.assertEqual(counts.get("accepted"), 0)
+            self.assertEqual(counts.get("rejected_suppress"), 1)
+
+    def test_import_ai_triage_rejects_invalid_priority(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            input_csv = tmp / "ai_review.csv"
+            with open(input_csv, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["activity_nr", "ai_priority", "ai_reason"])
+                writer.writeheader()
+                writer.writerow({"activity_nr": "m3", "ai_priority": "URGENT", "ai_reason": "invalid priority"})
+
+            conn = sqlite3.connect(str(db_path))
+            self._create_inspections_table(conn)
+            self._insert_inspection(conn, activity_nr="m3", lead_score=6)
+            conn.commit()
+            conn.close()
+
+            out = io.StringIO()
+            with redirect_stdout(out), mock.patch("sys.argv", ["import_ai_triage.py", "--input", str(input_csv), "--db", str(db_path), "--dry-run"]):
+                code = import_tool.main()
+            self.assertEqual(code, 0)
+            counts = self._parse_import_counts(out.getvalue())
+            self.assertEqual(counts.get("total"), 1)
+            self.assertEqual(counts.get("accepted"), 0)
+            self.assertEqual(counts.get("rejected_invalid"), 1)
+
+    def test_import_ai_triage_count_reconciliation(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            input_csv = tmp / "ai_review.csv"
+            with open(input_csv, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["activity_nr", "ai_priority", "ai_reason"])
+                writer.writeheader()
+                writer.writerow({"activity_nr": "a_high", "ai_priority": "LOW", "ai_reason": "lower"})
+                writer.writerow({"activity_nr": "a_low", "ai_priority": "HIGH", "ai_reason": "raise"})
+                writer.writerow({"activity_nr": "a_mid", "ai_priority": "MEDIUM", "ai_reason": "same"})
+                writer.writerow({"activity_nr": "a_sup", "ai_priority": "HIGH", "ai_reason": "should reject suppress"})
+                writer.writerow({"activity_nr": "missing", "ai_priority": "HIGH", "ai_reason": "missing activity"})
+                writer.writerow({"activity_nr": "a_bad", "ai_priority": "BLAH", "ai_reason": "bad value"})
+
+            conn = sqlite3.connect(str(db_path))
+            self._create_inspections_table(conn)
+            self._insert_inspection(conn, activity_nr="a_high", lead_score=10)
+            self._insert_inspection(conn, activity_nr="a_low", lead_score=0)
+            self._insert_inspection(conn, activity_nr="a_mid", lead_score=6)
+            self._insert_inspection(conn, activity_nr="a_sup", lead_score=6, case_status="CLOSED", scope="No Insp")
+            self._insert_inspection(conn, activity_nr="a_bad", lead_score=6)
+            conn.commit()
+            conn.close()
+
+            out = io.StringIO()
+            with redirect_stdout(out), mock.patch("sys.argv", ["import_ai_triage.py", "--input", str(input_csv), "--db", str(db_path), "--dry-run"]):
+                code = import_tool.main()
+            self.assertEqual(code, 0)
+            counts = self._parse_import_counts(out.getvalue())
+            self.assertEqual(counts.get("total"), 6)
+            self.assertEqual(
+                counts.get("raised", 0)
+                + counts.get("lowered", 0)
+                + counts.get("unchanged", 0)
+                + counts.get("rejected_suppress", 0)
+                + counts.get("rejected_invalid", 0),
+                counts.get("total", 0),
+            )
+
+    def test_import_ai_triage_parses_quoted_csv_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            input_csv = tmp / "ai_review.csv"
+            with open(input_csv, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["activity_nr", "ai_priority", "ai_reason"])
+                writer.writeheader()
+                writer.writerow({"activity_nr": "q1", "ai_priority": "MEDIUM", "ai_reason": "name says industrial, still moderate"})
+
+            conn = sqlite3.connect(str(db_path))
+            self._create_inspections_table(conn)
+            self._insert_inspection(conn, activity_nr="q1", lead_score=6)
+            conn.commit()
+            conn.close()
+
+            out = io.StringIO()
+            with redirect_stdout(out), mock.patch("sys.argv", ["import_ai_triage.py", "--input", str(input_csv), "--db", str(db_path), "--dry-run"]):
+                code = import_tool.main()
+            self.assertEqual(code, 0)
+            counts = self._parse_import_counts(out.getvalue())
+            self.assertEqual(counts.get("total"), 1)
+            self.assertEqual(counts.get("accepted"), 1)
+            self.assertEqual(counts.get("unchanged"), 1)
+            self.assertEqual(counts.get("rejected_invalid"), 0)
+
+    def test_import_ai_triage_duplicate_import_upserts(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            data_dir = tmp / "data"
+            input_one = tmp / "ai_review_one.csv"
+            input_two = tmp / "ai_review_two.csv"
+            cache_path = data_dir / "scoring" / "ai_triage_cache.sqlite"
+
+            with open(input_one, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["activity_nr", "ai_priority", "ai_reason"])
+                writer.writeheader()
+                writer.writerow({"activity_nr": "dup1", "ai_priority": "HIGH", "ai_reason": "first import"})
+            with open(input_two, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["activity_nr", "ai_priority", "ai_reason"])
+                writer.writeheader()
+                writer.writerow({"activity_nr": "dup1", "ai_priority": "LOW", "ai_reason": "second import overwrites"})
+
+            conn = sqlite3.connect(str(db_path))
+            self._create_inspections_table(conn)
+            self._insert_inspection(conn, activity_nr="dup1", lead_score=6)
+            conn.commit()
+            conn.close()
+
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            with mock.patch.dict(os.environ, env, clear=False):
+                code1 = import_tool.main(["--input", str(input_one), "--db", str(db_path)])
+                code2 = import_tool.main(["--input", str(input_two), "--db", str(db_path)])
+            self.assertEqual(code1, 0)
+            self.assertEqual(code2, 0)
+            self.assertTrue(cache_path.exists())
+
+            cache = sqlite3.connect(str(cache_path))
+            try:
+                row_count = int(
+                    cache.execute("SELECT COUNT(*) FROM ai_triage_cache WHERE item_key = ?", ("dup1",)).fetchone()[0] or 0
+                )
+                self.assertEqual(row_count, 1)
+                payload_json = cache.execute(
+                    "SELECT response_json FROM ai_triage_cache WHERE item_key = ? LIMIT 1", ("dup1",)
+                ).fetchone()[0]
+            finally:
+                cache.close()
+            payload = json.loads(str(payload_json or "{}"))
+            self.assertEqual(payload.get("reason"), "second import overwrites")
+            self.assertEqual(payload.get("priority"), "LOW")
 
     def test_import_ai_triage_print_config(self):
         out = io.StringIO()
@@ -166,6 +367,8 @@ class TestSignalReviewTools(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("ai_cache=", text)
         self.assertIn("prompt_hash=", text)
+        self.assertIn("ai_cache_rows=", text)
+        self.assertIn("ai_cache_rows_for_prompt=", text)
 
     def test_dump_signals_all_outreach_groups_by_state_and_territory(self):
         with tempfile.TemporaryDirectory() as d:
@@ -358,19 +561,62 @@ class TestSignalReviewTools(unittest.TestCase):
 
             self.assertEqual(code, 0)
             text = out.getvalue()
-            self.assertIn("# AI SIGNAL TRIAGE REVIEW", text)
+            self.assertIn("# MICROFLOWOPS — NIGHTLY SIGNAL TRIAGE REVIEW", text)
+            self.assertIn("FULL AUTHORITY to raise or lower", text)
             self.assertIn("# --- END OF SIGNALS ---", text)
-            self.assertIn("SIGNAL 9101", text)
-            self.assertIn("Rules priority: SUPPRESS", text)
+            self.assertNotIn("SIGNAL 9101", text)
             self.assertIn("SIGNAL 9102", text)
-            self.assertIn("# Return CSV now. Headers: activity_nr,ai_priority,ai_reason", text)
+            self.assertIn("AI_REVIEW_DUMP_MATCHED_TOTAL=1", text)
+            self.assertIn("# Return ONLY: activity_nr,ai_priority,ai_reason", text)
+            self.assertIn("Do not use commas inside the ai_reason field", text)
+            self.assertNotIn("You may only RAISE", text)
+            self.assertNotIn("Never lower", text)
 
-    def test_dump_signals_for_ai_review_default_output_path(self):
+    def test_dump_signals_for_ai_review_empty_has_header_footer_only(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             db_path = tmp / "osha.sqlite"
             sqlite3.connect(str(db_path)).close()
-            data_root = tmp / "out"
+
+            out = io.StringIO()
+            with (
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", return_value=([], [], {})),
+                mock.patch.object(dump_tool.triage_overlay, "triage", return_value=[]),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--territory",
+                        "TX_TRI",
+                        "--since",
+                        "today",
+                        "--for-ai-review",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("# MICROFLOWOPS — NIGHTLY SIGNAL TRIAGE REVIEW", text)
+            self.assertIn("# --- END OF SIGNALS ---", text)
+            self.assertNotIn("\nSIGNAL ", text)
+            self.assertNotIn("NO_SIGNALS_FOR_REVIEW", text)
+            self.assertIn("AI_REVIEW_DUMP_MATCHED_TOTAL=0", text)
+            self.assertIn("WARN_AI_REVIEW_DUMP_EMPTY=1 reason=NO_MATCHES", text)
+            self.assertIn("AI_REVIEW_DUMP_MAX_FIRST_SEEN=", text)
+            self.assertIn("AI_REVIEW_DUMP_MAX_DATE_OPENED=", text)
+
+    def test_dump_signals_for_ai_review_default_output_path_without_data_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
 
             fake_leads = [
                 {
@@ -391,8 +637,10 @@ class TestSignalReviewTools(unittest.TestCase):
             fake_decisions = [{"activity_nr": "9201", "rules_priority": "MEDIUM", "reasons": ["rules_default"]}]
 
             out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = ""
             with (
-                mock.patch.object(dump_tool.scoring_paths, "data_root", return_value=data_root),
+                mock.patch.dict(os.environ, env, clear=False),
                 mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
                 mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
                 mock.patch.object(dump_tool.sde, "get_leads_for_period", return_value=(fake_leads, [], {})),
@@ -416,12 +664,240 @@ class TestSignalReviewTools(unittest.TestCase):
 
             self.assertEqual(code, 0)
             text = out.getvalue()
-            self.assertIn("SIGNAL_REVIEW_OUT=", text)
-            self.assertIn("signals_for_ai_review_", text)
-            out_file = next((line.split("=", 1)[1].strip() for line in text.splitlines() if line.startswith("SIGNAL_REVIEW_OUT=")), "")
-            self.assertTrue(out_file.endswith(".txt"))
-            self.assertIn("signals_for_ai_review_", out_file)
-            self.assertTrue(Path(out_file).exists())
+            expected_dir = str((dump_tool.REPO_ROOT / "out" / "audits").resolve(strict=False))
+            self.assertIn(f"AI_REVIEW_DUMP_OUTPUT_DIR={expected_dir}", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
+
+    def test_dump_signals_for_ai_review_output_path_uses_data_dir_when_set(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+            data_dir = tmp / "runtime_data"
+
+            fake_leads = [
+                {
+                    "activity_nr": "9202",
+                    "establishment_name": "Output DataDir Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Inspection",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-02-20",
+                    "first_seen_at": "2026-02-20T10:00:00Z",
+                }
+            ]
+            fake_decisions = [{"activity_nr": "9202", "rules_priority": "MEDIUM", "reasons": ["rules_default"]}]
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", return_value=(fake_leads, [], {})),
+                mock.patch.object(dump_tool.triage_overlay, "triage", return_value=fake_decisions),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--territory",
+                        "TX_TRI",
+                        "--since",
+                        "today",
+                        "--for-ai-review",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            expected_dir = str((data_dir / "audits").resolve(strict=False))
+            self.assertIn(f"AI_REVIEW_DUMP_OUTPUT_DIR={expected_dir}", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
+
+    def test_dump_signals_print_config_is_no_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+            out_dir = tmp / "audits_output"
+
+            out = io.StringIO()
+            with (
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--territory",
+                        "TX_TRI",
+                        "--for-ai-review",
+                        "--since",
+                        "2026-02-20",
+                        "--print-config",
+                        "--output-dir",
+                        str(out_dir),
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("AI_REVIEW_DUMP_DATA_DIR=", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_DIR=", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
+            self.assertIn("AI_REVIEW_DUMP_SINCE=2026-02-20", text)
+            self.assertIn("AI_REVIEW_DUMP_UNTIL=", text)
+            self.assertIn("AI_REVIEW_DUMP_STATES=TX", text)
+            self.assertIn("AI_REVIEW_DUMP_TERRITORIES=TX_TRI", text)
+            self.assertFalse(out_dir.exists())
+
+    def test_dump_signals_include_suppressed_adds_skip_section(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+
+            fake_leads = [
+                {
+                    "activity_nr": "9301",
+                    "establishment_name": "Suppressed Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "561720",
+                    "naics_desc": "Janitorial Services",
+                    "inspection_type": "Inspection",
+                    "scope": "Partial",
+                    "case_status": "CLOSED",
+                    "date_opened": "2026-02-20",
+                    "first_seen_at": "2026-02-20T10:00:00Z",
+                },
+                {
+                    "activity_nr": "9302",
+                    "establishment_name": "Active Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Complaint",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-02-20",
+                    "first_seen_at": "2026-02-20T10:00:00Z",
+                },
+            ]
+            fake_decisions = [
+                {"activity_nr": "9301", "rules_priority": "SUPPRESS", "reasons": ["no_insp_closed"]},
+                {"activity_nr": "9302", "rules_priority": "HIGH", "reasons": ["referral_or_complaint"]},
+            ]
+
+            out = io.StringIO()
+            with (
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", return_value=(fake_leads, [], {})),
+                mock.patch.object(dump_tool.triage_overlay, "triage", return_value=fake_decisions),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--territory",
+                        "TX_TRI",
+                        "--since",
+                        "2026-02-20",
+                        "--for-ai-review",
+                        "--include-suppressed",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("SUPPRESSED (skip)", text)
+            self.assertIn("SIGNAL 9301", text)
+            self.assertIn("SIGNAL 9302", text)
+
+    def test_dump_signals_output_override_precedence(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+            output_dir = tmp / "dir_precedence"
+            explicit_path = tmp / "explicit_dir" / "custom_dump.txt"
+
+            fake_leads = [
+                {
+                    "activity_nr": "9401",
+                    "establishment_name": "Precedence Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Inspection",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-02-20",
+                    "first_seen_at": "2026-02-20T10:00:00Z",
+                }
+            ]
+            fake_decisions = [{"activity_nr": "9401", "rules_priority": "MEDIUM", "reasons": ["rules_default"]}]
+
+            out = io.StringIO()
+            with (
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", return_value=(fake_leads, [], {})),
+                mock.patch.object(dump_tool.triage_overlay, "triage", return_value=fake_decisions),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--territory",
+                        "TX_TRI",
+                        "--since",
+                        "2026-02-20",
+                        "--for-ai-review",
+                        "--output-dir",
+                        str(output_dir),
+                        "--output",
+                        str(explicit_path),
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn(f"AI_REVIEW_DUMP_OUTPUT_PATH={explicit_path.resolve(strict=False)}", text)
+            self.assertTrue(explicit_path.exists())
+            self.assertFalse(output_dir.exists())
 
 
 if __name__ == "__main__":

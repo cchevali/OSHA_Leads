@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -22,45 +23,98 @@ from scoring import triage_overlay
 import send_digest_email as sde
 
 AI_REVIEW_HEADER_LINES = [
-    "# AI SIGNAL TRIAGE REVIEW",
-    "# Classify each non-suppressed signal below for relevance to independent",
-    "# safety consultants and OSHA defense attorneys who serve small to mid-size",
-    "# employers in construction, manufacturing, and industrial trades.",
+    "# ============================================================",
+    "# MICROFLOWOPS — NIGHTLY SIGNAL TRIAGE REVIEW",
+    "# ============================================================",
     "#",
-    "# For each signal, return a CSV row with:",
-    "#   activity_nr, ai_priority, ai_reason",
+    "# CONTEXT:",
+    "# MicroFlowOps delivers daily OSHA inspection alerts to two audiences:",
+    "#   1. Trial/paid subscribers — safety consultants and OSHA defense",
+    "#      attorneys who receive territory-filtered daily digests",
+    "#   2. Cold outreach prospects — safety consultants and OSHA defense",
+    "#      attorneys who receive cold emails containing recent high-value",
+    "#      OSHA signal examples from their state",
     "#",
-    "# Priority definitions:",
-    "#   HIGH - Active inspection of a high-hazard trade employer, referral/complaint",
-    "#          trigger, OSHA emphasis program NAICS, multi-employer site, or company",
-    "#          clearly needing external safety help",
-    "#   MEDIUM - Active inspection with moderate hazard profile, non-emphasis",
-    "#            construction/industrial, or ambiguous company profile",
-    "#   LOW - Routine planned inspection of low-hazard employer, or minimal",
-    "#         information content",
+    "# Both audiences are employer-side professionals who help small to",
+    "# mid-size companies (under 500 employees) in construction,",
+    "# manufacturing, and industrial trades respond to OSHA enforcement",
+    "# activity. They use these signals to identify businesses that may",
+    "# need their services RIGHT NOW — before citations post publicly.",
     "#",
-    "# Rules:",
-    "#   - You may only RAISE priority above the rules_priority shown. Never lower it.",
-    "#   - Do not classify SUPPRESS signals. Skip them entirely.",
-    "#   - Consider: company name, NAICS description, inspection type, scope,",
-    "#     multi-employer patterns (same address), and whether the company profile",
-    "#     fits the target buyer audience.",
+    "# THE BUSINESS VALUE OF A SIGNAL depends on:",
+    "#   - Would a safety consultant or OSHA defense attorney want to",
+    "#     contact this company based on this inspection?",
+    "#   - Is this company the RIGHT SIZE for external help? (Solo shops",
+    "#     to mid-size. NOT national enterprises with in-house EHS teams.)",
+    "#   - Is the HAZARD PROFILE meaningful? (Construction, industrial,",
+    "#     manufacturing >> janitorial, retail, food service)",
+    "#   - Does the INSPECTION TYPE suggest urgency? (Referral/Complaint",
+    "#     = someone reported them. Accident = injury occurred. These are",
+    "#     far more urgent than routine Planned inspections.)",
+    "#   - Is there a PATTERN? (Multiple inspections at the same address",
+    "#     = multi-employer site enforcement action, very high value.)",
+    "#   - Would this signal make our digest or cold email look credible",
+    "#     and valuable, or would it make us look like we don't understand",
+    "#     the industry?",
     "#",
-    "# Return ONLY the CSV block. No commentary before or after.",
-    "# Format:",
+    "# WHAT YOU ARE DOING:",
+    "# Below are OSHA inspection signals with a rules-based priority",
+    "# already assigned. Rules handle structural patterns well (NAICS",
+    "# codes, inspection types, closed cases) but miss contextual",
+    "# judgment calls about company type, hazard inference from company",
+    "# names, and multi-signal patterns.",
+    "#",
+    "# You have FULL AUTHORITY to raise or lower any non-suppressed",
+    "# signal's priority. If rules say LOW and you see a trenching",
+    "# contractor that belongs at HIGH, raise it. If rules say HIGH",
+    "# but the company is a massive national chain that would never",
+    "# hire an independent safety consultant, lower it.",
+    "#",
+    "# PRIORITY DEFINITIONS:",
+    "#   HIGH   — Clear, actionable signal. A safety consultant would",
+    "#            want to call this company today. Referrals/complaints",
+    "#            at construction or industrial employers, emphasis",
+    "#            program NAICS, multi-employer sites, or any signal",
+    "#            where the need for external safety help is obvious.",
+    "#   MEDIUM — Moderate value. Worth including in a digest but not",
+    "#            a top prospect. Active inspections at construction or",
+    "#            industrial employers without strong urgency indicators.",
+    "#   LOW    — Minimal value. Routine planned inspection, low-hazard",
+    "#            industry, large enterprise, or insufficient information",
+    "#            to assess relevance.",
+    "#",
+    "# RULES:",
+    "#   - You may RAISE or LOWER priority vs rules_priority.",
+    "#   - For any LOWERING, your reason must explain why this signal is",
+    "#     less relevant to our audience than rules suggest.",
+    "#   - SUPPRESS signals are already removed by deterministic rules",
+    "#     (closed/no-inspection, stale >30 days, non-target industry).",
+    "#     Do not classify them. Skip them entirely.",
+    "#   - Return ONLY the CSV block. No commentary before or after.",
+    "#",
+    "# OUTPUT FORMAT (CSV):",
     "#   activity_nr,ai_priority,ai_reason",
+    "#   Do not use commas inside the ai_reason field. Use semicolons or dashes instead.",
+    "#",
+    "# ============================================================",
 ]
 
 AI_REVIEW_FOOTER_LINES = [
     "# --- END OF SIGNALS ---",
-    "# Return CSV now. Headers: activity_nr,ai_priority,ai_reason",
+    "# Classify all non-suppressed signals above.",
+    "# Return ONLY: activity_nr,ai_priority,ai_reason",
+    "# One row per non-suppressed signal. No extra text.",
 ]
+
+
+def _local_today_date() -> date:
+    return datetime.now().astimezone().date()
 
 
 def _parse_date(value: str) -> date:
     text = str(value or "").strip().lower()
     if text == "today":
-        return date.today()
+        return _local_today_date()
     return datetime.strptime(text, "%Y-%m-%d").date()
 
 
@@ -86,6 +140,18 @@ def _format_signal_block(lead: dict, decision: dict) -> str:
         f"  Date opened: {date_opened} | First seen: {first_seen}\n"
         f"  Rules priority: {rules_priority} ({reasons})\n"
     )
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
 
 
 def _parse_outreach_states(raw: str) -> list[str]:
@@ -231,7 +297,7 @@ def _fetch_selected_for_group(
     states: list[str],
     territory_code: str,
 ) -> list[dict[str, Any]]:
-    since_days = max(1, int((date.today() - since_date).days) + 1)
+    since_days = max(1, int((_local_today_date() - since_date).days) + 1)
     leads, _low_fallback, _stats = sde.get_leads_for_period(
         conn=conn,
         states=states,
@@ -256,10 +322,15 @@ def _fetch_selected_for_group(
     return selected
 
 
-def _render_group_blocks(selected: list[dict[str, Any]]) -> list[str]:
+def _render_group_sections(
+    selected: list[dict[str, Any]],
+    *,
+    include_suppressed: bool,
+) -> tuple[list[str], list[str]]:
     decisions = triage_overlay.triage(selected, {}, mode="trial_render", allow_ai=False)
     by_key = triage_overlay.decisions_by_activity(decisions)
-    blocks: list[str] = []
+    action_blocks: list[str] = []
+    suppressed_blocks: list[str] = []
     for lead in sorted(
         selected,
         key=lambda r: (str(r.get("date_opened") or ""), str(r.get("activity_nr") or "")),
@@ -267,8 +338,84 @@ def _render_group_blocks(selected: list[dict[str, Any]]) -> list[str]:
     ):
         key = str(lead.get("activity_nr") or lead.get("lead_key") or "").strip()
         decision = by_key.get(key, {})
-        blocks.append(_format_signal_block(lead, decision))
-    return blocks
+        rules_priority = str(decision.get("rules_priority") or "").strip().upper()
+        if rules_priority == "SUPPRESS":
+            if include_suppressed:
+                suppressed_blocks.append(_format_signal_block(lead, decision))
+            continue
+        action_blocks.append(_format_signal_block(lead, decision))
+    return action_blocks, suppressed_blocks
+
+
+def _resolve_default_audits_dir() -> Path:
+    raw_data_dir = str(os.getenv("DATA_DIR") or "").strip()
+    if raw_data_dir:
+        base = Path(raw_data_dir).expanduser()
+        if not base.is_absolute():
+            base = REPO_ROOT / base
+        return (base.resolve(strict=False) / "audits").resolve(strict=False)
+    return (REPO_ROOT / "out" / "audits").resolve(strict=False)
+
+
+def _resolve_output_path(
+    *,
+    output: str,
+    output_dir: str,
+    for_ai_review: bool,
+    today_local: date,
+) -> tuple[Path, Path]:
+    filename = (
+        f"signals_for_ai_review_{today_local.strftime('%Y%m%d')}.txt"
+        if for_ai_review
+        else f"signals_for_review_{today_local.strftime('%Y%m%d')}.txt"
+    )
+    if str(output or "").strip():
+        out_path = Path(str(output).strip()).expanduser().resolve(strict=False)
+    else:
+        if str(output_dir or "").strip():
+            out_dir = Path(str(output_dir).strip()).expanduser().resolve(strict=False)
+        else:
+            out_dir = _resolve_default_audits_dir()
+        out_path = (out_dir / filename).resolve(strict=False)
+    return out_path.parent.resolve(strict=False), out_path.resolve(strict=False)
+
+
+def _max_first_seen_iso(leads: list[dict[str, Any]]) -> str:
+    max_dt: datetime | None = None
+    for lead in list(leads or []):
+        dt = _parse_timestamp(str(lead.get("first_seen_at") or ""))
+        if not dt:
+            continue
+        if max_dt is None or dt > max_dt:
+            max_dt = dt
+    return max_dt.isoformat() if max_dt else ""
+
+
+def _max_date_opened_iso(leads: list[dict[str, Any]]) -> str:
+    max_date_opened: date | None = None
+    for lead in list(leads or []):
+        try:
+            opened = _parse_date(str(lead.get("date_opened") or ""))
+        except Exception:
+            continue
+        if max_date_opened is None or opened > max_date_opened:
+            max_date_opened = opened
+    return max_date_opened.isoformat() if max_date_opened else ""
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        os.replace(tmp_name, str(path))
+    finally:
+        try:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        except Exception:
+            pass
 
 
 def main() -> int:
@@ -284,7 +431,7 @@ def main() -> int:
         action="store_true",
         help="Wrap output in a self-contained AI triage prompt header/footer.",
     )
-    ap.add_argument("--since", default=date.today().isoformat(), help="Inclusive start date (YYYY-MM-DD).")
+    ap.add_argument("--since", default=_local_today_date().isoformat(), help="Inclusive start date (YYYY-MM-DD).")
     ap.add_argument("--until", default="", help="Inclusive end date (YYYY-MM-DD). Defaults to --since.")
     ap.add_argument(
         "--db",
@@ -293,11 +440,15 @@ def main() -> int:
     )
     ap.add_argument("--print-config", action="store_true", help="Print resolved config and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Do not write output file.")
+    ap.add_argument("--output-dir", default="", help="Optional output directory override.")
+    ap.add_argument("--output", default="", help="Optional full output file path override.")
+    ap.add_argument("--include-suppressed", action="store_true", help="Include SUPPRESS signals under a skip section.")
     args = ap.parse_args()
 
+    raw_until = str(args.until or "").strip()
     try:
         since_date = _parse_date(args.since)
-        until_date = _parse_date(args.until) if str(args.until or "").strip() else since_date
+        until_date = _parse_date(raw_until) if raw_until else since_date
     except Exception:
         print("ERR_SIGNAL_REVIEW_INVALID_DATE", file=sys.stderr)
         return 2
@@ -339,27 +490,27 @@ def main() -> int:
         groups.append(_group_for_territory(territory_code, definitions))
 
     db_path = Path(str(args.db)).expanduser().resolve(strict=False)
-    out_dir = scoring_paths.data_root() / "audits"
-    if args.for_ai_review:
-        out_path = out_dir / f"signals_for_ai_review_{date.today().strftime('%Y%m%d')}.txt"
-    else:
-        out_path = out_dir / f"signals_for_review_{date.today().strftime('%Y%m%d')}.txt"
+    today_local = _local_today_date()
+    out_dir, out_path = _resolve_output_path(
+        output=str(args.output or ""),
+        output_dir=str(args.output_dir or ""),
+        for_ai_review=bool(args.for_ai_review),
+        today_local=today_local,
+    )
+    raw_data_dir = str(os.getenv("DATA_DIR") or "").strip()
+    states_csv = ",".join(states)
+    territories_csv = ",".join(trial_territories if args.all_outreach else ([territory_code] if territory_code else []))
+    print(f"AI_REVIEW_DUMP_OUTPUT_DIR={out_dir}")
+    print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
 
     if args.print_config:
-        if args.all_outreach:
-            print("mode=all_outreach")
-            print(f"outreach_states={','.join(states)}")
-            print(f"trial_territories={','.join(trial_territories)}")
-            print(f"group_count={len(groups)}")
-        else:
-            print("mode=single_territory")
-            print(f"territory={territory_code}")
-        print(f"for_ai_review={1 if args.for_ai_review else 0}")
-        print(f"states={','.join(states)}")
-        print(f"since={since_date.isoformat()}")
-        print(f"until={until_date.isoformat()}")
-        print(f"db={db_path}")
-        print(f"out={out_path}")
+        print(f"AI_REVIEW_DUMP_DATA_DIR={raw_data_dir}")
+        print(f"AI_REVIEW_DUMP_OUTPUT_DIR={out_dir}")
+        print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
+        print(f"AI_REVIEW_DUMP_SINCE={since_date.isoformat()}")
+        print(f"AI_REVIEW_DUMP_UNTIL={until_date.isoformat() if raw_until else ''}")
+        print(f"AI_REVIEW_DUMP_STATES={states_csv}")
+        print(f"AI_REVIEW_DUMP_TERRITORIES={territories_csv}")
         return 0
 
     if not db_path.exists():
@@ -369,6 +520,8 @@ def main() -> int:
     conn = sqlite3.connect(str(db_path))
     try:
         rendered_sections: list[str] = []
+        total_actionable = 0
+        all_selected: list[dict[str, Any]] = []
         for group in groups:
             selected = _fetch_selected_for_group(
                 conn,
@@ -377,25 +530,43 @@ def main() -> int:
                 states=list(group.get("states") or []),
                 territory_code=str(group.get("territory_code") or ""),
             )
+            all_selected.extend(list(selected or []))
             if args.all_outreach:
                 rendered_sections.append(str(group.get("header") or "").strip())
-            blocks = _render_group_blocks(selected)
-            if blocks:
-                rendered_sections.extend(blocks)
+            action_blocks, suppressed_blocks = _render_group_sections(
+                selected,
+                include_suppressed=bool(args.include_suppressed),
+            )
+            total_actionable += len(action_blocks)
+            if action_blocks:
+                rendered_sections.extend(action_blocks)
             else:
-                rendered_sections.append("NO_SIGNALS_FOR_REVIEW")
+                if not args.for_ai_review:
+                    rendered_sections.append("NO_SIGNALS_FOR_REVIEW")
+            if args.include_suppressed and suppressed_blocks:
+                rendered_sections.append("SUPPRESSED (skip)")
+                rendered_sections.extend(suppressed_blocks)
             if args.all_outreach:
                 rendered_sections.append("")
     finally:
         conn.close()
+
+    max_first_seen = _max_first_seen_iso(all_selected)
+    max_date_opened = _max_date_opened_iso(all_selected)
+    print(f"AI_REVIEW_DUMP_MATCHED_TOTAL={total_actionable}")
+    print(f"AI_REVIEW_DUMP_MAX_FIRST_SEEN={max_first_seen}")
+    print(f"AI_REVIEW_DUMP_MAX_DATE_OPENED={max_date_opened}")
+    if total_actionable == 0:
+        print(
+            "WARN_AI_REVIEW_DUMP_EMPTY=1 "
+            f"reason=NO_MATCHES since={since_date.isoformat()} until={until_date.isoformat()}"
+        )
 
     body_text = "\n".join([str(x) for x in rendered_sections]).strip()
     if args.for_ai_review:
         parts = ["\n".join(AI_REVIEW_HEADER_LINES).strip()]
         if body_text:
             parts.append(body_text)
-        else:
-            parts.append("NO_SIGNALS_FOR_REVIEW")
         parts.append("\n".join(AI_REVIEW_FOOTER_LINES).strip())
         output_text = "\n\n".join([str(p).strip() for p in parts if str(p).strip()]) + "\n"
     else:
@@ -406,8 +577,8 @@ def main() -> int:
         print("NO_SIGNALS_FOR_REVIEW")
 
     if not args.dry_run:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(output_text, encoding="utf-8")
+        _atomic_write_text(out_path, output_text)
+        print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
         print(f"SIGNAL_REVIEW_OUT={out_path}")
     return 0
 
