@@ -201,6 +201,79 @@ class TestLowPriorityPrefs(unittest.TestCase):
         self.assertNotIn("Enable lows", text)
         self.assertNotIn("Also observed (not shown)", text)
 
+    def test_tier_summary_uses_rendered_counts_and_low_available_today_is_separate(self):
+        leads = [
+            {
+                "activity_nr": "a1",
+                "establishment_name": "Alpha Construction",
+                "site_city": "Austin",
+                "site_state": "TX",
+                "inspection_type": "Referral",
+                "date_opened": "2026-02-06",
+                "lead_score": 11,
+                "source_url": "https://example.com/a1",
+            },
+            {
+                "activity_nr": "a2",
+                "establishment_name": "Beta Industrial",
+                "site_city": "Dallas",
+                "site_state": "TX",
+                "inspection_type": "Inspection",
+                "date_opened": "2026-02-06",
+                "lead_score": 7,
+                "source_url": "https://example.com/a2",
+            },
+        ]
+        rendered_tier_counts = {"high": 1, "medium": 1, "low": 0}
+
+        html = generate_digest_html(
+            leads=leads,
+            low_fallback=[],
+            config=self.config,
+            gen_date="2026-02-06",
+            mode="daily",
+            territory_code="TX_TRIANGLE_V1",
+            content_filter="high_medium",
+            include_low_fallback=False,
+            branding=self.branding,
+            tier_counts=rendered_tier_counts,
+            low_available_today=8,
+            enable_lows_url="https://example.com/enable",
+            include_lows=False,
+            low_priority=[],
+            footer_html=self.footer_html,
+            summary_label="Newly observed today: 2 signals",
+        )
+        text = generate_digest_text(
+            leads=leads,
+            low_fallback=[],
+            config=self.config,
+            gen_date="2026-02-06",
+            mode="daily",
+            territory_code="TX_TRIANGLE_V1",
+            content_filter="high_medium",
+            include_low_fallback=False,
+            branding=self.branding,
+            tier_counts=rendered_tier_counts,
+            low_available_today=8,
+            enable_lows_url="https://example.com/enable",
+            include_lows=False,
+            low_priority=[],
+            footer_text=self.footer_text,
+            summary_label="Newly observed today: 2 signals",
+        )
+
+        self.assertIn("Newly observed today: 2 signals", html)
+        self.assertIn("Tier summary: High 1, Medium 1, Low 0", html)
+        self.assertIn("Low signals:", html)
+        self.assertIn("OFF", html)
+        self.assertIn("(8 available today)", html)
+
+        self.assertIn("Newly observed today: 2 signals", text)
+        self.assertIn("Tier summary: High 1, Medium 1, Low 0", text)
+        self.assertIn("Low signals: OFF", text)
+        self.assertIn("(8 available today)", text)
+
     def test_include_lows_preference_changes_rendering(self):
         with tempfile.TemporaryDirectory() as td:
             prefs_path = Path(td) / "prefs.csv"

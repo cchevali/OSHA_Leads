@@ -754,6 +754,13 @@ Output location is DATA_DIR-aware:
 - Else fallback is repo `.\out`.
 - Invalid values (`""`, `out`, non-rooted relative path) fall back to repo `.\out`.
 
+AI review dump date-window basis:
+
+- `--since/--until` are matched primarily on `first_seen_at` local date (when the signal first entered our DB).
+- Fallback to `date_opened` is used only when `first_seen_at` is missing/unparseable.
+- This keeps manual AI review aligned with what can actually be newly selected for daily sends.
+- Late-posted OSHA rows are expected: `date_opened` may be older than `first_seen_at`.
+
 Machine-readable path tokens:
 
 - `MFO_DATA_DIR_EFFECTIVE=<abs_path|empty>`
@@ -764,6 +771,9 @@ Machine-readable path tokens:
 - `AI_REVIEW_DUMP_OUTPUT_PATH=<abs_path>`
 - `AI_REVIEW_DUMP_DATA_DIR=<effective_abs_path|empty>`
 - `AI_REVIEW_DUMP_DATA_DIR_SOURCE=<inherited|dotenv|default>`
+- `AI_REVIEW_DUMP_FILTER_BASIS=FIRST_SEEN_FALLBACK_OPENED`
+- `AI_REVIEW_DUMP_MATCHED_BY_FIRST_SEEN=<n>`
+- `AI_REVIEW_DUMP_MATCHED_BY_OPENED_FALLBACK=<n>`
 
 Empty dump interpretation (file may contain only headers/section markers):
 
@@ -771,6 +781,11 @@ Empty dump interpretation (file may contain only headers/section markers):
 - `WARN_AI_REVIEW_DUMP_EMPTY=1 reason=NO_MATCHES since=<...> until=<...>`
 - `AI_REVIEW_DUMP_MAX_FIRST_SEEN=<iso|empty>`
 - `AI_REVIEW_DUMP_MAX_DATE_OPENED=<iso|empty>`
+
+Manual review timing note (Sun-Thu nights):
+
+- Signals first seen Monday morning can still send in Monday 8:00 AM digest before manual review.
+- This is expected with the current manual-only schedule and is not by itself evidence of ingest failure.
 
 DATA_DIR persistence and edits:
 
