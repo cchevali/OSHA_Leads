@@ -1944,7 +1944,7 @@ def _doctor_check_data_dir() -> tuple[bool, str]:
     if resolution.warning_token:
         print(
             "WARN_DOCTOR_DATA_DIR_NOT_ABSOLUTE=1 "
-            f"value={_safe_text(resolution.raw_value)} behavior=FALLBACK_TO_REPO_OUT"
+            f"value={_safe_text(resolution.raw_value)} behavior=UNSET_FOR_CHILD"
         )
         return True, ""
     print(f"{PASS_DOCTOR_DATA_DIR}={resolution.effective_path.resolve()} source={resolution.source}")

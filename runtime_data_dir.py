@@ -28,7 +28,7 @@ def _normalize_source(value: str) -> str:
 
 
 def _not_absolute_warn(raw_value: str) -> str:
-    return f"WARN_DATA_DIR_NOT_ABSOLUTE=1 value={raw_value} behavior=FALLBACK_TO_REPO_OUT"
+    return f"WARN_DATA_DIR_NOT_ABSOLUTE=1 value={raw_value} behavior=UNSET_FOR_CHILD"
 
 
 def resolve_data_dir(repo_root: Path | None = None) -> DataDirResolution:

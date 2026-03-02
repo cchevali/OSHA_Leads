@@ -757,7 +757,7 @@ Machine-readable path tokens:
 - `MFO_DATA_DIR_EFFECTIVE=<abs_path|empty>`
 - `MFO_DATA_DIR_SOURCE=inherited|dotenv|default`
 - `WARN_ENV_CONFLICT=1 key=DATA_DIR inherited=<...> dotenv=<...> using=<...>`
-- `WARN_DATA_DIR_NOT_ABSOLUTE=1 value=<...> behavior=FALLBACK_TO_REPO_OUT`
+- `WARN_DATA_DIR_NOT_ABSOLUTE=1 value=<...> behavior=UNSET_FOR_CHILD`
 - `AI_REVIEW_DUMP_OUTPUT_DIR=<abs_path>`
 - `AI_REVIEW_DUMP_OUTPUT_PATH=<abs_path>`
 - `AI_REVIEW_DUMP_DATA_DIR=<effective_abs_path|empty>`

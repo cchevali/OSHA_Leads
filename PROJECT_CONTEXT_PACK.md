@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=e0e004afdd089a51783495ead0f1997526ca0465
-PACK_BUILD_UTC=2026-03-01T01:32:40Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=3ec70a2246a3eb489387bd6b1d1949289ccee878bd044ca8c508c7b738d65a10 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=15211b21adca69d072094bff4a9de9075e45b45e87ab89a0815001dda6ada154
+PACK_GIT_SHA=9ca94163d55d60e41ada7f235b651eddb2809361
+PACK_BUILD_UTC=2026-03-02T04:15:04Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=6cbfebfc40b035c35e6988240ba463fb118795944ebaf03af981f378407a0fff docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=895ba574663377cb531ae9e67ea4774e8c4ad95d0b348c0e776c25f0bee7601a
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1198,9 +1198,9 @@ Weekly manual signal QA loop:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27 --print-config
-py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27 --dry-run
-py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -PrintConfig
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1
 ```
 
 2. Review exported signals (for example in Claude) and produce CSV with `activity_nr,ai_priority,ai_reason`.
@@ -1212,6 +1212,59 @@ py -3 tools\import_ai_triage.py --print-config
 py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv --dry-run
 py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv
 ```
+
+### Nightly AI triage dump (manual)
+
+Canonical manual command path (always loads secrets/DATA_DIR via wrapper):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1
+```
+
+Common variants:
+
+```powershell
+# side-effect free resolved config
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -PrintConfig
+
+# inspect output only (no file write)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -DryRun
+
+# explicit window / scope override
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -Since 2026-03-01 -Until 2026-03-01 -AllOutreach
+```
+
+Output location is DATA_DIR-aware:
+
+- Effective precedence for wrapped commands (`.\run_with_secrets.ps1 -- ...`):
+- Inherited process `DATA_DIR` (non-empty) wins.
+- Else `.env.sops` `DATA_DIR` is used.
+- Else fallback is repo `.\out`.
+- Invalid values (`""`, `out`, non-rooted relative path) fall back to repo `.\out`.
+
+Machine-readable path tokens:
+
+- `MFO_DATA_DIR_EFFECTIVE=<abs_path|empty>`
+- `MFO_DATA_DIR_SOURCE=inherited|dotenv|default`
+- `WARN_ENV_CONFLICT=1 key=DATA_DIR inherited=<...> dotenv=<...> using=<...>`
+- `WARN_DATA_DIR_NOT_ABSOLUTE=1 value=<...> behavior=UNSET_FOR_CHILD`
+- `AI_REVIEW_DUMP_OUTPUT_DIR=<abs_path>`
+- `AI_REVIEW_DUMP_OUTPUT_PATH=<abs_path>`
+- `AI_REVIEW_DUMP_DATA_DIR=<effective_abs_path|empty>`
+- `AI_REVIEW_DUMP_DATA_DIR_SOURCE=<inherited|dotenv|default>`
+
+Empty dump interpretation (file may contain only headers/section markers):
+
+- `AI_REVIEW_DUMP_MATCHED_TOTAL=0`
+- `WARN_AI_REVIEW_DUMP_EMPTY=1 reason=NO_MATCHES since=<...> until=<...>`
+- `AI_REVIEW_DUMP_MAX_FIRST_SEEN=<iso|empty>`
+- `AI_REVIEW_DUMP_MAX_DATE_OPENED=<iso|empty>`
+
+DATA_DIR persistence and edits:
+
+- Use `scripts\set_outreach_env.ps1` as the only supported way to persist `.env.sops` keys.
+- Do not manually edit `.env.sops`.
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 

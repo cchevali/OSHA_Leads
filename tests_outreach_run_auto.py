@@ -2250,7 +2250,7 @@ class TestOutreachRunAuto(unittest.TestCase):
 
             self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
             text = out.getvalue()
-            self.assertIn("WARN_DOCTOR_DATA_DIR_NOT_ABSOLUTE=1 value=out behavior=FALLBACK_TO_REPO_OUT", text)
+            self.assertIn("WARN_DOCTOR_DATA_DIR_NOT_ABSOLUTE=1 value=out behavior=UNSET_FOR_CHILD", text)
             self.assertIn("PASS_DOCTOR_COMPLETE", text)
 
     def test_doctor_success_pass_tokens_only_and_no_db_mutation(self):

@@ -268,7 +268,7 @@ function Resolve-MfoDataDirPolicy {
     if ($invalid) {
       $useDefaultFallback = $true
       $selectedSource = 'default'
-      $notAbsoluteWarn = ('WARN_DATA_DIR_NOT_ABSOLUTE=1 value=' + $candidate + ' behavior=FALLBACK_TO_REPO_OUT')
+      $notAbsoluteWarn = ('WARN_DATA_DIR_NOT_ABSOLUTE=1 value=' + $candidate + ' behavior=UNSET_FOR_CHILD')
     }
   }
 
