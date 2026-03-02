@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=ddcaa5ddc483dffbec446267a49aa57f6f4a5b39
-PACK_BUILD_UTC=2026-03-02T04:30:35Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=43be345f50bd6c92bf6cb1e514dfa83599797d54ecf588eb64488fff79cf7c81 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=52ad2ec7fce508223924a962926cbe5084843f5da2ff6594bc3ca869b44eedb4
+PACK_GIT_SHA=6ef91e4a7e9b03054b9efca6daa81b12c63d96b0
+PACK_BUILD_UTC=2026-03-02T17:09:07Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=a29505e4623a3a94f62162a3e9bde0160be00e024653b4040f6915ce8693acb9 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=017dbc1cbc80faaba66a966979956c8fc729f4338b17724e313db39f17f6a4de
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1245,6 +1245,13 @@ Output location is DATA_DIR-aware:
 - Else fallback is repo `.\out`.
 - Invalid values (`""`, `out`, non-rooted relative path) fall back to repo `.\out`.
 
+AI review dump date-window basis:
+
+- `--since/--until` are matched primarily on `first_seen_at` local date (when the signal first entered our DB).
+- Fallback to `date_opened` is used only when `first_seen_at` is missing/unparseable.
+- This keeps manual AI review aligned with what can actually be newly selected for daily sends.
+- Late-posted OSHA rows are expected: `date_opened` may be older than `first_seen_at`.
+
 Machine-readable path tokens:
 
 - `MFO_DATA_DIR_EFFECTIVE=<abs_path|empty>`
@@ -1255,6 +1262,9 @@ Machine-readable path tokens:
 - `AI_REVIEW_DUMP_OUTPUT_PATH=<abs_path>`
 - `AI_REVIEW_DUMP_DATA_DIR=<effective_abs_path|empty>`
 - `AI_REVIEW_DUMP_DATA_DIR_SOURCE=<inherited|dotenv|default>`
+- `AI_REVIEW_DUMP_FILTER_BASIS=FIRST_SEEN_FALLBACK_OPENED`
+- `AI_REVIEW_DUMP_MATCHED_BY_FIRST_SEEN=<n>`
+- `AI_REVIEW_DUMP_MATCHED_BY_OPENED_FALLBACK=<n>`
 
 Empty dump interpretation (file may contain only headers/section markers):
 
@@ -1262,6 +1272,11 @@ Empty dump interpretation (file may contain only headers/section markers):
 - `WARN_AI_REVIEW_DUMP_EMPTY=1 reason=NO_MATCHES since=<...> until=<...>`
 - `AI_REVIEW_DUMP_MAX_FIRST_SEEN=<iso|empty>`
 - `AI_REVIEW_DUMP_MAX_DATE_OPENED=<iso|empty>`
+
+Manual review timing note (Sun-Thu nights):
+
+- Signals first seen Monday morning can still send in Monday 8:00 AM digest before manual review.
+- This is expected with the current manual-only schedule and is not by itself evidence of ingest failure.
 
 DATA_DIR persistence and edits:
 

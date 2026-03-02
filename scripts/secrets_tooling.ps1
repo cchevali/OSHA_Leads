@@ -65,42 +65,36 @@ function Resolve-ExternalExe {
 }
 
 function Resolve-SopsExe {
-  $repoRoot = Resolve-RepoRoot
   return Resolve-ExternalExe `
     -ToolName 'sops' `
     -WinGetLinkExeNames @('sops.exe') `
     -WinGetPackagePrefixes @('Mozilla.SOPS_') `
     -WinGetPackageRelativeCandidates @('sops.exe') `
     -ExtraAbsoluteCandidates @(
-      (Join-Path $repoRoot 'tools\bin\sops.exe'),
       (Join-Path $env:ProgramFiles 'sops\sops.exe'),
       (Join-Path $env:ProgramFiles 'SOPS\sops.exe')
     )
 }
 
 function Resolve-AgeExe {
-  $repoRoot = Resolve-RepoRoot
   return Resolve-ExternalExe `
     -ToolName 'age' `
     -WinGetLinkExeNames @('age.exe') `
     -WinGetPackagePrefixes @('FiloSottile.age_') `
     -WinGetPackageRelativeCandidates @('age\age.exe','age.exe') `
     -ExtraAbsoluteCandidates @(
-      (Join-Path $repoRoot 'tools\bin\age.exe'),
       (Join-Path $env:ProgramFiles 'age\age.exe'),
       (Join-Path $env:ProgramFiles 'Age\age.exe')
     )
 }
 
 function Resolve-AgeKeygenExe {
-  $repoRoot = Resolve-RepoRoot
   return Resolve-ExternalExe `
     -ToolName 'age-keygen' `
     -WinGetLinkExeNames @('age-keygen.exe') `
     -WinGetPackagePrefixes @('FiloSottile.age_') `
     -WinGetPackageRelativeCandidates @('age\age-keygen.exe','age-keygen.exe') `
     -ExtraAbsoluteCandidates @(
-      (Join-Path $repoRoot 'tools\bin\age-keygen.exe'),
       (Join-Path $env:ProgramFiles 'age\age-keygen.exe'),
       (Join-Path $env:ProgramFiles 'Age\age-keygen.exe')
     )

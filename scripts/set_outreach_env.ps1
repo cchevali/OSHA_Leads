@@ -24,8 +24,6 @@ param(
   [string] $TrialExpiredBehaviorDefault = '',
   [string] $TrialConversionUrl = '',
   [Nullable[int]] $AiTriageEnabled = $null,
-  [Nullable[int]] $OutreachTriageOverlayEnabled = $null,
-  [Nullable[int]] $TrialTriageOverlayEnabled = $null,
   [string] $AiTriageOpenAiModel = '',
   [Nullable[int]] $SignalFreshnessMaxDays = $null,
   [string] $HudApiToken = '',
@@ -62,7 +60,6 @@ $ERR_SET_OUTREACH_ENV_WRITE = 'ERR_SET_OUTREACH_ENV_WRITE'
 $ERR_SET_OUTREACH_ENV_VERIFY = 'ERR_SET_OUTREACH_ENV_VERIFY'
 $ERR_SET_OUTREACH_ENV_PRINT_CONFIG = 'ERR_SET_OUTREACH_ENV_PRINT_CONFIG'
 $ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS = 'ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS'
-$WARN_SET_OUTREACH_ENV_OPENAI_KEY_MISSING = 'WARN_SET_OUTREACH_ENV_OPENAI_KEY_MISSING'
 
 $PASS_SET_OUTREACH_ENV_APPLY = 'PASS_SET_OUTREACH_ENV_APPLY'
 $PASS_SET_OUTREACH_ENV_VERIFY = 'PASS_SET_OUTREACH_ENV_VERIFY'
@@ -339,8 +336,6 @@ try {
     'TrialExpiredBehaviorDefault',
     'TrialConversionUrl',
     'AiTriageEnabled',
-    'OutreachTriageOverlayEnabled',
-    'TrialTriageOverlayEnabled',
     'AiTriageOpenAiModel',
     'SignalFreshnessMaxDays',
     'HudApiToken',
@@ -410,12 +405,6 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('AiTriageEnabled') -and $AiTriageEnabled -notin @(0, 1)) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_AiTriageEnabled'
-  }
-  if ($PSBoundParameters.ContainsKey('OutreachTriageOverlayEnabled') -and $OutreachTriageOverlayEnabled -notin @(0, 1)) {
-    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachTriageOverlayEnabled'
-  }
-  if ($PSBoundParameters.ContainsKey('TrialTriageOverlayEnabled') -and $TrialTriageOverlayEnabled -notin @(0, 1)) {
-    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TrialTriageOverlayEnabled'
   }
   if ($PSBoundParameters.ContainsKey('SignalFreshnessMaxDays') -and $SignalFreshnessMaxDays -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_SignalFreshnessMaxDays'
@@ -606,20 +595,6 @@ try {
       if (Map-HasValue $printMap 'AI_TRIAGE_OPENAI_MODEL') {
         $aiTriageModelValue = ([string]$printMap['AI_TRIAGE_OPENAI_MODEL']).Trim()
       }
-      $outreachTriageOverlayEnabledValue = '0'
-      if (Map-HasValue $printMap 'OUTREACH_TRIAGE_OVERLAY_ENABLED') {
-        $rawOutreachOverlay = ([string]$printMap['OUTREACH_TRIAGE_OVERLAY_ENABLED']).Trim().ToLowerInvariant()
-        if ($rawOutreachOverlay -in @('1','true','yes','on')) {
-          $outreachTriageOverlayEnabledValue = '1'
-        }
-      }
-      $trialTriageOverlayEnabledValue = '0'
-      if (Map-HasValue $printMap 'TRIAL_TRIAGE_OVERLAY_ENABLED') {
-        $rawTrialOverlay = ([string]$printMap['TRIAL_TRIAGE_OVERLAY_ENABLED']).Trim().ToLowerInvariant()
-        if ($rawTrialOverlay -in @('1','true','yes','on')) {
-          $trialTriageOverlayEnabledValue = '1'
-        }
-      }
       $signalFreshnessMaxDaysValue = '30'
       if (Map-HasValue $printMap 'SIGNAL_FRESHNESS_MAX_DAYS') {
         $signalFreshnessMaxDaysValue = ([string]$printMap['SIGNAL_FRESHNESS_MAX_DAYS']).Trim()
@@ -634,8 +609,6 @@ try {
       $prospectEnrichHunterEnabledValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_HUNTER_ENABLED') { ([string]$printMap['PROSPECT_ENRICH_HUNTER_ENABLED']).Trim() } else { '0' }
       Write-Output ('ai_triage_enabled=' + $aiTriageEnabledValue)
       Write-Output ('ai_triage_openai_model=' + $aiTriageModelValue)
-      Write-Output ('outreach_triage_overlay_enabled=' + $outreachTriageOverlayEnabledValue)
-      Write-Output ('trial_triage_overlay_enabled=' + $trialTriageOverlayEnabledValue)
       Write-Output ('signal_freshness_max_days=' + $signalFreshnessMaxDaysValue)
       Write-Output ('openai_api_key_present=' + $openAiKeyPresent)
       Write-Output ('apollo_api_key_present=' + $apolloApiKeyPresent)
@@ -850,26 +823,13 @@ try {
         $shellOpenAiKey = ($env:OPENAI_API_KEY -as [string])
         if ($null -eq $shellOpenAiKey) { $shellOpenAiKey = '' }
         $shellOpenAiKey = $shellOpenAiKey.Trim()
-        if ($shellOpenAiKey) {
-          Set-MapValue -Map $map -Key 'OPENAI_API_KEY' -Value $shellOpenAiKey -TouchedList $touched
-        } elseif (-not (Map-HasValue $map 'OPENAI_API_KEY')) {
-          Write-Output ($WARN_SET_OUTREACH_ENV_OPENAI_KEY_MISSING + ' ai_triage_enabled=1 behavior=cache_only_or_unavailable_on_miss')
+        if (-not $shellOpenAiKey) {
+          Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'missing_shell_OPENAI_API_KEY'
         }
+        Set-MapValue -Map $map -Key 'OPENAI_API_KEY' -Value $shellOpenAiKey -TouchedList $touched
       }
     } elseif (-not (Map-HasValue $map 'AI_TRIAGE_ENABLED')) {
       Set-MapValue -Map $map -Key 'AI_TRIAGE_ENABLED' -Value '0' -TouchedList $touched
-    }
-
-    if ($PSBoundParameters.ContainsKey('OutreachTriageOverlayEnabled')) {
-      Set-MapValue -Map $map -Key 'OUTREACH_TRIAGE_OVERLAY_ENABLED' -Value ([string]$OutreachTriageOverlayEnabled) -TouchedList $touched
-    } elseif (-not (Map-HasValue $map 'OUTREACH_TRIAGE_OVERLAY_ENABLED')) {
-      Set-MapValue -Map $map -Key 'OUTREACH_TRIAGE_OVERLAY_ENABLED' -Value '0' -TouchedList $touched
-    }
-
-    if ($PSBoundParameters.ContainsKey('TrialTriageOverlayEnabled')) {
-      Set-MapValue -Map $map -Key 'TRIAL_TRIAGE_OVERLAY_ENABLED' -Value ([string]$TrialTriageOverlayEnabled) -TouchedList $touched
-    } elseif (-not (Map-HasValue $map 'TRIAL_TRIAGE_OVERLAY_ENABLED')) {
-      Set-MapValue -Map $map -Key 'TRIAL_TRIAGE_OVERLAY_ENABLED' -Value '0' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('AiTriageOpenAiModel')) {

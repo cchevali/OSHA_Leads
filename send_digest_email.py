@@ -2357,6 +2357,7 @@ def generate_digest_html(
     snapshot_label: str | None = None,
     snapshot_days: int | None = None,
     snapshot_tier_counts: dict[str, int] | None = None,
+    low_available_today: int | None = None,
     snapshot_enable_lows_url: str | None = None,
     snapshot_disable_lows_url: str | None = None,
     snapshot_rows: list[dict] | None = None,
@@ -2440,7 +2441,7 @@ def generate_digest_html(
         )
     html.append("</div>")
     if mode == "daily" and tier_counts is not None:
-        low_today = int(tier_counts.get("low", 0))
+        low_today = int(low_available_today) if low_available_today is not None else int(tier_counts.get("low", 0))
         try:
             low_snapshot = (
                 int(snapshot_tier_counts.get("low", 0))
@@ -2630,6 +2631,7 @@ def generate_digest_text(
     snapshot_label: str | None = None,
     snapshot_days: int | None = None,
     snapshot_tier_counts: dict[str, int] | None = None,
+    low_available_today: int | None = None,
     snapshot_enable_lows_url: str | None = None,
     snapshot_disable_lows_url: str | None = None,
     snapshot_rows: list[dict] | None = None,
@@ -2674,7 +2676,8 @@ def generate_digest_text(
     if mode == "daily" and tier_counts is not None:
         high = int(tier_counts.get("high", 0))
         medium = int(tier_counts.get("medium", 0))
-        low_today = int(tier_counts.get("low", 0))
+        low_summary = int(tier_counts.get("low", 0))
+        low_today = int(low_available_today) if low_available_today is not None else int(tier_counts.get("low", 0))
         try:
             low_snapshot = (
                 int(snapshot_tier_counts.get("low", 0))
@@ -2684,13 +2687,12 @@ def generate_digest_text(
         except Exception:
             low_snapshot = 0
 
-        low = low_today
-        lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low}")
+        lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low_summary}")
         low_note = f"({low_today} available today)" if low_today > 0 else "(none observed today)"
         if include_lows:
             shown = len(low_priority or [])
-            if low > 0 and shown > 0 and shown < low:
-                low_note = f"(showing {shown} of {low} available today)"
+            if low_today > 0 and shown > 0 and shown < low_today:
+                low_note = f"(showing {shown} of {low_today} available today)"
             if disable_lows_url:
                 lines.append(f"Low signals: ON {low_note}. Disable lows: {disable_lows_url}")
             else:
@@ -3037,6 +3039,11 @@ def main() -> None:
         help="Allow live sends to customer recipients (requires allow_live_send and send_enabled)",
     )
     parser.add_argument(
+        "--allow-second-live-send-same-day",
+        action="store_true",
+        help="Emergency/manual override: allow a second live send on the same local day.",
+    )
+    parser.add_argument(
         "--debug-area-offices",
         action="store_true",
         help="Print distinct TX area_office values seen in last 30 days and exit",
@@ -3244,6 +3251,35 @@ def main() -> None:
         print(f"CONFIG_ERROR --smoke-cchevali recipient_mismatch recipients={recipients}", file=sys.stderr)
         raise SystemExit(1)
 
+    if (
+        live_allowed
+        and (not args.dry_run)
+        and _is_wally_trial_daily_mode(config, args.mode)
+        and (not bool(args.allow_second_live_send_same_day))
+        and _already_sent_today_local(last_sent_at, now_local, tz)
+    ):
+        local_date = now_local.date().isoformat()
+        print(
+            f"TRIAL_SKIP_ALREADY_SENT_TODAY=1 subscriber_key={subscriber_key or WALLY_TRIAL_SUBSCRIBER_KEY} "
+            f"local_date={local_date} guard=ON"
+        )
+        email_log_path = os.path.join(args.output_dir, "email_log.csv")
+        for recipient in recipients:
+            log_email_attempt(
+                email_log_path,
+                {
+                    "timestamp": timestamp,
+                    "customer_id": customer_id,
+                    "mode": args.mode,
+                    "recipient": recipient,
+                    "subject": f"OSHA Signals - {gen_date}",
+                    "status": "skipped_sent_today",
+                    "territory_code": territory_code or "",
+                    "content_filter": content_filter,
+                },
+            )
+        raise SystemExit(0)
+
     branding = resolve_branding(config)
 
     logger.info(
@@ -3330,6 +3366,7 @@ def main() -> None:
 
     # Tier counts must include low signals even when the default content filter hides them.
     tier_counts = None
+    render_tier_counts = None
     low_priority_all: list[dict] = []
     all_leads_deduped: list[dict] = []
     snapshot_label = None
@@ -3470,6 +3507,7 @@ def main() -> None:
                 else:
                     shown_counts["low"] += 1
             filter_stats["shown_priority_counts"] = shown_counts
+        render_tier_counts = _tier_counts(leads)
 
     logger.info("Leads after filters: %d", len(leads))
     logger.info(
@@ -3498,6 +3536,8 @@ def main() -> None:
         summary_label = f"Newly observed today: {len(leads)} signals"
     else:
         summary_label = f"{len(leads)} signals"
+
+    low_available_today = int(tier_counts.get("low", 0)) if isinstance(tier_counts, dict) else 0
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     run_diagnostics_path = os.path.join(args.output_dir, "run_diagnostics.jsonl")
@@ -3705,7 +3745,7 @@ def main() -> None:
     prefs_ok = True
     prefs_detail = ""
     if args.mode == "daily" and content_filter not in {"all", "low"}:
-        low_total = int(tier_counts.get("low", 0)) if tier_counts else 0
+        low_total = int(low_available_today)
         low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_tier_counts else 0
         if (low_total > 0 or low_snapshot > 0) and os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() not in {"1", "true", "yes"}:
             prefs_checked = True
@@ -3797,7 +3837,7 @@ def main() -> None:
             and subscriber_key
             and content_filter not in {"all", "low"}
         ):
-            low_total = int(tier_counts.get("low", 0)) if tier_counts else 0
+            low_total = int(low_available_today)
             low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_tier_counts else 0
             # Render a prefs toggle link when it matters:
             # - lows are available and currently hidden (enable)
@@ -3847,7 +3887,7 @@ def main() -> None:
             )
 
         if args.mode == "daily" and tier_counts is not None and content_filter not in {"all", "low"}:
-            low_today = int(tier_counts.get("low", 0))
+            low_today = int(low_available_today)
             print(
                 "LOW_SIGNALS_PREF "
                 f"lows_enabled={'YES' if include_lows_pref else 'NO'} "
@@ -3906,7 +3946,8 @@ def main() -> None:
             content_filter=content_filter,
             include_low_fallback=include_low_fallback,
             branding=branding,
-            tier_counts=tier_counts if args.mode == "daily" else None,
+            tier_counts=render_tier_counts if args.mode == "daily" else None,
+            low_available_today=low_available_today if args.mode == "daily" else None,
             enable_lows_url=enable_lows_url,
             disable_lows_url=disable_lows_url,
             include_lows=include_lows_pref,
@@ -3948,7 +3989,8 @@ def main() -> None:
                     content_filter=content_filter,
                     include_low_fallback=include_low_fallback,
                     branding=branding,
-                    tier_counts=tier_counts if args.mode == "daily" else None,
+                    tier_counts=render_tier_counts if args.mode == "daily" else None,
+                    low_available_today=low_available_today if args.mode == "daily" else None,
                     enable_lows_url=enable_lows_url,
                     disable_lows_url=disable_lows_url,
                     include_lows=include_lows_pref,
@@ -3989,7 +4031,8 @@ def main() -> None:
                     content_filter=content_filter,
                     include_low_fallback=include_low_fallback,
                     branding=branding,
-                    tier_counts=tier_counts if args.mode == "daily" else None,
+                    tier_counts=render_tier_counts if args.mode == "daily" else None,
+                    low_available_today=low_available_today if args.mode == "daily" else None,
                     enable_lows_url=enable_lows_url,
                     disable_lows_url=disable_lows_url,
                     include_lows=include_lows_pref,
@@ -4035,7 +4078,8 @@ def main() -> None:
                     content_filter=content_filter,
                     include_low_fallback=include_low_fallback,
                     branding=branding,
-                    tier_counts=tier_counts if args.mode == "daily" else None,
+                    tier_counts=render_tier_counts if args.mode == "daily" else None,
+                    low_available_today=low_available_today if args.mode == "daily" else None,
                     enable_lows_url=enable_lows_url,
                     disable_lows_url=disable_lows_url,
                     include_lows=include_lows_pref,
@@ -4069,7 +4113,8 @@ def main() -> None:
             content_filter=content_filter,
             include_low_fallback=include_low_fallback,
             branding=branding,
-            tier_counts=tier_counts if args.mode == "daily" else None,
+            tier_counts=render_tier_counts if args.mode == "daily" else None,
+            low_available_today=low_available_today if args.mode == "daily" else None,
             enable_lows_url=enable_lows_url,
             disable_lows_url=disable_lows_url,
             include_lows=include_lows_pref,
@@ -4100,11 +4145,11 @@ def main() -> None:
 
         if persist_trial_payload and trial_payload_path is not None and not trial_payload_written:
             payload_tiers = {"high": 0, "medium": 0, "low": 0}
-            if isinstance(tier_counts, dict):
+            if isinstance(render_tier_counts, dict):
                 payload_tiers = {
-                    "high": int(tier_counts.get("high", 0)),
-                    "medium": int(tier_counts.get("medium", 0)),
-                    "low": int(tier_counts.get("low", 0)),
+                    "high": int(render_tier_counts.get("high", 0)),
+                    "medium": int(render_tier_counts.get("medium", 0)),
+                    "low": int(render_tier_counts.get("low", 0)),
                 }
             selected_keys = _selected_lead_keys_for_payload(
                 leads=leads,
@@ -4157,7 +4202,7 @@ def main() -> None:
             if args.mode == "daily" and content_filter not in {"all", "low"}:
                 if include_lows_pref and (not disable_lows_url) and (not snapshot_disable_lows_url):
                     print("SMOKE_NOTE prefs_cta=missing_disable_lows_url")
-                if (not include_lows_pref) and (tier_counts and int(tier_counts.get("low", 0)) > 0) and (not enable_lows_url):
+                if (not include_lows_pref) and (int(low_available_today) > 0) and (not enable_lows_url):
                     print("SMOKE_NOTE prefs_cta=missing_enable_lows_url")
                 if snapshot_label and snapshot_tier_counts and int(snapshot_tier_counts.get("low", 0)) > 0:
                     if include_lows_pref and (not snapshot_disable_lows_url):
@@ -4167,9 +4212,9 @@ def main() -> None:
 
             # Print compact quality summary.
             terr_label = territory_display_name(territory_code) or (territory_code or "")
-            tier_high = int(tier_counts.get("high", 0)) if tier_counts else 0
-            tier_med = int(tier_counts.get("medium", 0)) if tier_counts else 0
-            tier_low = int(tier_counts.get("low", 0)) if tier_counts else 0
+            tier_high = int(render_tier_counts.get("high", 0)) if render_tier_counts else 0
+            tier_med = int(render_tier_counts.get("medium", 0)) if render_tier_counts else 0
+            tier_low = int(render_tier_counts.get("low", 0)) if render_tier_counts else 0
             html_bytes_now = _html_bytes(html_body)
             variant = "baseline" if args.mode == "baseline" else ("starter_snapshot" if snapshot_mode else "daily_new_since_last_send")
             new_count = int(len(leads))

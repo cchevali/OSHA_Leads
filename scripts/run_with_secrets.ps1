@@ -105,7 +105,8 @@ try {
 
     if ($CheckDecrypt) {
       # Sanity check: ensure this machine can decrypt .env.sops (discard plaintext; no temp files).
-      $decryptResult = Invoke-NativeAllowStderr -FilePath $sopsExe -ArgumentList @('--decrypt', '--input-type', 'dotenv', '--output-type', 'dotenv', $envSopsPath)
+      $cmdLine = '"' + $sopsExe + '" --decrypt --input-type dotenv --output-type dotenv "' + $envSopsPath + '" 1>nul'
+      $decryptResult = Invoke-NativeAllowStderr -FilePath 'cmd' -ArgumentList @('/c', $cmdLine)
       $err = @($decryptResult.Output)
       $code = [int]$decryptResult.ExitCode
       if ($code -ne 0) {
