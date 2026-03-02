@@ -2,8 +2,8 @@
 
 PACK_GIT_SHA=ddcaa5ddc483dffbec446267a49aa57f6f4a5b39
 PACK_BUILD_UTC=2026-03-02T04:30:35Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=b309a217350507922b43125263d7f9f9363e3c95e3bd72f41f14b6c153a15eb1 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=99d713fad985a3bae1daf20c4b10a5be5d7edf35a296c3689c8fe271c7daaac3
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=89249b4730ed0953162c7d2b7a303ab3812582054938417b0a1f09942b905e07 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=53eafca5094fbda157ad0aee9a4d2af6fb447f35b29f94961a603deee8fdd5a9
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1273,6 +1273,41 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
 ```
 
 - Expected token: `PASS_SET_OUTREACH_ENV_DATA_DIR value=<...> source=<param|inherited|unchanged>`
+
+### Tomorrow AI Prep (Non-Send)
+
+Use one command to run the full readiness pipeline now (manual AI import + ingest + generation + discovery + doctor + outreach/trial dry-runs):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -Apply
+```
+
+Dry-run and config variants:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -PrintConfig
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -DryRun
+```
+
+Notes:
+
+- The prep script auto-selects the newest `ai_review_*.csv` from `C:\osha_data\imports` (fallback: `${DATA_DIR}\imports`) unless `-AiReviewCsv` is passed.
+- It auto-creates `${DATA_DIR}\suppression.csv` (or `.\out\suppression.csv`) with header `email` in `-Apply` mode when missing.
+- Required AI gates for overlay behavior:
+- `AI_TRIAGE_ENABLED=1`
+- `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
+- `TRIAL_TRIAGE_OVERLAY_ENABLED=1`
+- Persist gates only through `scripts\set_outreach_env.ps1` (no manual `.env.sops` edits):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -AiTriageEnabled 1 -OutreachTriageOverlayEnabled 1 -TrialTriageOverlayEnabled 1 -OshaSmokeTo cchevali+oshasmoke@gmail.com
+```
+
+Readiness tokens:
+
+- `PIPELINE_READY_FOR_TOMORROW=1|0`
+- `PIPELINE_BLOCKERS=<csv|none>`
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 

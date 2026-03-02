@@ -783,6 +783,41 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
 
 - Expected token: `PASS_SET_OUTREACH_ENV_DATA_DIR value=<...> source=<param|inherited|unchanged>`
 
+### Tomorrow AI Prep (Non-Send)
+
+Use one command to run the full readiness pipeline now (manual AI import + ingest + generation + discovery + doctor + outreach/trial dry-runs):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -Apply
+```
+
+Dry-run and config variants:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -PrintConfig
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -DryRun
+```
+
+Notes:
+
+- The prep script auto-selects the newest `ai_review_*.csv` from `C:\osha_data\imports` (fallback: `${DATA_DIR}\imports`) unless `-AiReviewCsv` is passed.
+- It auto-creates `${DATA_DIR}\suppression.csv` (or `.\out\suppression.csv`) with header `email` in `-Apply` mode when missing.
+- Required AI gates for overlay behavior:
+- `AI_TRIAGE_ENABLED=1`
+- `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
+- `TRIAL_TRIAGE_OVERLAY_ENABLED=1`
+- Persist gates only through `scripts\set_outreach_env.ps1` (no manual `.env.sops` edits):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -AiTriageEnabled 1 -OutreachTriageOverlayEnabled 1 -TrialTriageOverlayEnabled 1 -OshaSmokeTo cchevali+oshasmoke@gmail.com
+```
+
+Readiness tokens:
+
+- `PIPELINE_READY_FOR_TOMORROW=1|0`
+- `PIPELINE_BLOCKERS=<csv|none>`
+
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 
 ```powershell
