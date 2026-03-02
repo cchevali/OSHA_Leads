@@ -90,11 +90,20 @@ if (-not (Test-Path -LiteralPath $targetPath)) {
 
 Invoke-ContextPackSoftCheck -RepoRoot $PSScriptRoot
 
-if ($args -contains '--diagnostics') {
+$forwardArgs = @($args)
+if ($forwardArgs.Count -ge 1 -and $forwardArgs[0] -eq '--') {
+  if ($forwardArgs.Count -ge 2) {
+    $forwardArgs = $forwardArgs[1..($forwardArgs.Count - 1)]
+  } else {
+    $forwardArgs = @()
+  }
+}
+
+if ($forwardArgs -contains '--diagnostics') {
   Write-Output ("DIAG: wrapper_path=" + $wrapperResolved)
   Write-Output ("DIAG: target_path=" + $targetResolved)
 }
 
-& $targetPath @args
+& $targetPath @forwardArgs
 $exitCode = $LASTEXITCODE
 exit $exitCode

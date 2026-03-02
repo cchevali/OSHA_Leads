@@ -24,7 +24,7 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
 
         check_call = "Invoke-ContextPackSoftCheck -RepoRoot $PSScriptRoot"
-        payload_call = "& $targetPath @args"
+        payload_call = "& $targetPath @forwardArgs"
         self.assertIn(check_call, text)
         self.assertIn(payload_call, text)
         self.assertLess(text.index(check_call), text.index(payload_call))
@@ -47,10 +47,16 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         self.assertTrue(SCRIPT.exists(), msg=f"missing script: {SCRIPT}")
         text = SCRIPT.read_text(encoding="utf-8")
         sentinel_assignment = "$env:MFO_CONTEXT_PACK_SOFT_CHECK_DONE = '1'"
-        payload_call = "& $targetPath @args"
+        payload_call = "& $targetPath @forwardArgs"
         self.assertIn(sentinel_assignment, text)
         self.assertIn(payload_call, text)
         self.assertLess(text.index(sentinel_assignment), text.index(payload_call))
+
+    def test_wrapper_supports_double_dash_delimiter(self):
+        self.assertTrue(SCRIPT.exists(), msg=f"missing script: {SCRIPT}")
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("if ($forwardArgs.Count -ge 1 -and $forwardArgs[0] -eq '--')", text)
+        self.assertIn("& $targetPath @forwardArgs", text)
 
 
 if __name__ == "__main__":
