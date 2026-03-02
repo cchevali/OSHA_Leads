@@ -8,7 +8,7 @@ import sqlite3
 import sys
 import tempfile
 import warnings
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -305,7 +305,7 @@ def _fetch_selected_for_group(
     until_date: date,
     states: list[str],
     territory_code: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], int, int]:
     since_days = max(1, int((_local_today_date() - since_date).days) + 1)
     leads, _low_fallback, _stats = sde.get_leads_for_period(
         conn=conn,
@@ -320,7 +320,18 @@ def _fetch_selected_for_group(
         use_opened_window=True,
     )
     selected: list[dict[str, Any]] = []
+    matched_by_first_seen = 0
+    matched_by_opened_fallback = 0
     for lead in list(leads or []):
+        first_seen_dt = _parse_timestamp(str(lead.get("first_seen_at") or ""))
+        if first_seen_dt is not None:
+            if first_seen_dt.tzinfo is None:
+                first_seen_dt = first_seen_dt.replace(tzinfo=timezone.utc)
+            first_seen_local = first_seen_dt.astimezone().date()
+            if since_date <= first_seen_local <= until_date:
+                selected.append(dict(lead))
+                matched_by_first_seen += 1
+            continue
         opened = str(lead.get("date_opened") or "").strip()
         try:
             opened_date = _parse_date(opened)
@@ -328,7 +339,8 @@ def _fetch_selected_for_group(
             continue
         if since_date <= opened_date <= until_date:
             selected.append(dict(lead))
-    return selected
+            matched_by_opened_fallback += 1
+    return selected, matched_by_first_seen, matched_by_opened_fallback
 
 
 def _render_group_sections(
@@ -512,6 +524,7 @@ def main() -> int:
         print(data_dir_resolution.warning_token)
     print(f"AI_REVIEW_DUMP_OUTPUT_DIR={out_dir}")
     print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
+    print("AI_REVIEW_DUMP_FILTER_BASIS=FIRST_SEEN_FALLBACK_OPENED")
 
     if args.print_config:
         print(f"AI_REVIEW_DUMP_DATA_DIR={effective_data_dir}")
@@ -533,14 +546,18 @@ def main() -> int:
         rendered_sections: list[str] = []
         total_actionable = 0
         all_selected: list[dict[str, Any]] = []
+        total_matched_by_first_seen = 0
+        total_matched_by_opened_fallback = 0
         for group in groups:
-            selected = _fetch_selected_for_group(
+            selected, matched_by_first_seen, matched_by_opened_fallback = _fetch_selected_for_group(
                 conn,
                 since_date=since_date,
                 until_date=until_date,
                 states=list(group.get("states") or []),
                 territory_code=str(group.get("territory_code") or ""),
             )
+            total_matched_by_first_seen += int(matched_by_first_seen)
+            total_matched_by_opened_fallback += int(matched_by_opened_fallback)
             all_selected.extend(list(selected or []))
             if effective_all_outreach:
                 rendered_sections.append(str(group.get("header") or "").strip())
@@ -565,6 +582,8 @@ def main() -> int:
     max_first_seen = _max_first_seen_iso(all_selected)
     max_date_opened = _max_date_opened_iso(all_selected)
     print(f"AI_REVIEW_DUMP_MATCHED_TOTAL={total_actionable}")
+    print(f"AI_REVIEW_DUMP_MATCHED_BY_FIRST_SEEN={total_matched_by_first_seen}")
+    print(f"AI_REVIEW_DUMP_MATCHED_BY_OPENED_FALLBACK={total_matched_by_opened_fallback}")
     print(f"AI_REVIEW_DUMP_MAX_FIRST_SEEN={max_first_seen}")
     print(f"AI_REVIEW_DUMP_MAX_DATE_OPENED={max_date_opened}")
     if total_actionable == 0:

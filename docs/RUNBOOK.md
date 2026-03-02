@@ -432,7 +432,9 @@ Optional empty-state planner fallback:
 - No-signal token: `OUTREACH_SKIP_NO_SIGNALS state=<STATE> window_days=<N>`
 - Empty-state no-send token: `OUTREACH_EMPTY_STATE_NO_SEND=1 state=<STATE>`
 - Pre-send duplicate token: `OUTREACH_DUPLICATE_GUARD_DROPPED=<n>`
+- Same-day live-run guard token: `OUTREACH_SKIP_ALREADY_SENT_TODAY=1 date=<YYYY-MM-DD> existing_batches=<csv|none> guard=ON`
 - Floor readiness token (manual ramp remains operator-controlled): `OUTREACH_RAMP_READY=<0|1> desired_daily_limit=<N> states_ready=<k> states_total=<m> ready_states=<csv|none>`
+- Emergency override (manual only): `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --allow-second-live-run-same-day`
 
 Artifact separation (do not mix these):
 
@@ -752,6 +754,13 @@ Output location is DATA_DIR-aware:
 - Else fallback is repo `.\out`.
 - Invalid values (`""`, `out`, non-rooted relative path) fall back to repo `.\out`.
 
+AI review dump date-window basis:
+
+- `--since/--until` are matched primarily on `first_seen_at` local date (when the signal first entered our DB).
+- Fallback to `date_opened` is used only when `first_seen_at` is missing/unparseable.
+- This keeps manual AI review aligned with what can actually be newly selected for daily sends.
+- Late-posted OSHA rows are expected: `date_opened` may be older than `first_seen_at`.
+
 Machine-readable path tokens:
 
 - `MFO_DATA_DIR_EFFECTIVE=<abs_path|empty>`
@@ -762,6 +771,9 @@ Machine-readable path tokens:
 - `AI_REVIEW_DUMP_OUTPUT_PATH=<abs_path>`
 - `AI_REVIEW_DUMP_DATA_DIR=<effective_abs_path|empty>`
 - `AI_REVIEW_DUMP_DATA_DIR_SOURCE=<inherited|dotenv|default>`
+- `AI_REVIEW_DUMP_FILTER_BASIS=FIRST_SEEN_FALLBACK_OPENED`
+- `AI_REVIEW_DUMP_MATCHED_BY_FIRST_SEEN=<n>`
+- `AI_REVIEW_DUMP_MATCHED_BY_OPENED_FALLBACK=<n>`
 
 Empty dump interpretation (file may contain only headers/section markers):
 
@@ -769,6 +781,11 @@ Empty dump interpretation (file may contain only headers/section markers):
 - `WARN_AI_REVIEW_DUMP_EMPTY=1 reason=NO_MATCHES since=<...> until=<...>`
 - `AI_REVIEW_DUMP_MAX_FIRST_SEEN=<iso|empty>`
 - `AI_REVIEW_DUMP_MAX_DATE_OPENED=<iso|empty>`
+
+Manual review timing note (Sun-Thu nights):
+
+- Signals first seen Monday morning can still send in Monday 8:00 AM digest before manual review.
+- This is expected with the current manual-only schedule and is not by itself evidence of ingest failure.
 
 DATA_DIR persistence and edits:
 
@@ -782,6 +799,41 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
 ```
 
 - Expected token: `PASS_SET_OUTREACH_ENV_DATA_DIR value=<...> source=<param|inherited|unchanged>`
+
+### Tomorrow AI Prep (Non-Send)
+
+Use one command to run the full readiness pipeline now (manual AI import + ingest + generation + discovery + doctor + outreach/trial dry-runs):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -Apply
+```
+
+Dry-run and config variants:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -PrintConfig
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -DryRun
+```
+
+Notes:
+
+- The prep script auto-selects the newest `ai_review_*.csv` from `C:\osha_data\imports` (fallback: `${DATA_DIR}\imports`) unless `-AiReviewCsv` is passed.
+- It auto-creates `${DATA_DIR}\suppression.csv` (or `.\out\suppression.csv`) with header `email` in `-Apply` mode when missing.
+- Required AI gates for overlay behavior:
+- `AI_TRIAGE_ENABLED=1`
+- `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
+- `TRIAL_TRIAGE_OVERLAY_ENABLED=1`
+- Persist gates only through `scripts\set_outreach_env.ps1` (no manual `.env.sops` edits):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -AiTriageEnabled 1 -OutreachTriageOverlayEnabled 1 -TrialTriageOverlayEnabled 1 -OshaSmokeTo cchevali+oshasmoke@gmail.com
+```
+
+Readiness tokens:
+
+- `PIPELINE_READY_FOR_TOMORROW=1|0`
+- `PIPELINE_BLOCKERS=<csv|none>`
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 
@@ -1056,6 +1108,9 @@ Operator workflow:
 Important:
 
 - Catch-up is allowed only for the Wally trial daily path and only when the subscriber has not already been sent that local day.
+- Same-day live-send guard token: `TRIAL_SKIP_ALREADY_SENT_TODAY=1 subscriber_key=<key> local_date=<YYYY-MM-DD> guard=ON`
+- Emergency override (manual only): pass `--allow-second-live-send-same-day` through `deliver_daily.py` / `send_digest_email.py`.
+- Recipient fan-out stays unchanged: one trial send run still targets both configured recipients (Wally + Brandon).
 - Do not temporarily widen `send_window_minutes` for missed trial sends; use the trial catch-up keys/workflow above.
 
 ## Trial Framework (Subscriber-Keyed)
