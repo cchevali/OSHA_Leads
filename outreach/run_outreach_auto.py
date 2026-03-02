@@ -75,6 +75,7 @@ PASS_DOCTOR_UNSUB = "PASS_DOCTOR_UNSUB"
 PASS_DOCTOR_PROVIDER_CONFIG = "PASS_DOCTOR_PROVIDER_CONFIG"
 PASS_DOCTOR_DRY_RUN_ARTIFACT = "PASS_DOCTOR_DRY_RUN_ARTIFACT"
 PASS_DOCTOR_IDEMPOTENCY = "PASS_DOCTOR_IDEMPOTENCY"
+PASS_DOCTOR_DATA_DIR = "PASS_DOCTOR_DATA_DIR"
 PASS_DOCTOR_COMPLETE = "PASS_DOCTOR_COMPLETE"
 DOCTOR_ENV_REMEDIATION = "Remediation: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\\set_outreach_env.ps1"
 
@@ -1938,6 +1939,18 @@ def _doctor_check_crm() -> tuple[bool, str]:
     return True, ""
 
 
+def _doctor_check_data_dir() -> tuple[bool, str]:
+    resolution = crm_store.data_dir_resolution()
+    if resolution.warning_token:
+        print(
+            "WARN_DOCTOR_DATA_DIR_NOT_ABSOLUTE=1 "
+            f"value={_safe_text(resolution.raw_value)} behavior=UNSET_FOR_CHILD"
+        )
+        return True, ""
+    print(f"{PASS_DOCTOR_DATA_DIR}={resolution.effective_path.resolve()} source={resolution.source}")
+    return True, ""
+
+
 def _doctor_check_suppression(ctx: dict[str, object]) -> tuple[bool, str]:
     suppression_csv = _suppression_csv_path()
     if not suppression_csv.exists():
@@ -2240,6 +2253,7 @@ def _run_doctor(allow_repeat: bool, run_date: date) -> tuple[bool, str]:
         return False, msg_env
 
     checks = [
+        _doctor_check_data_dir,
         _doctor_check_crm,
         lambda: _doctor_check_signal_freshness(ctx, run_date),
         lambda: _doctor_check_suppression(ctx),
@@ -2312,7 +2326,17 @@ def main() -> int:
     if args.print_config:
         daily_limit, daily_limit_source = _daily_limit_with_source()
         trial_conversion_url_present = "YES" if (os.getenv("TRIAL_CONVERSION_URL") or "").strip() else "NO"
-        print(f"{PASS_AUTO_PRINT_CONFIG} data_dir={_data_dir().resolve()}")
+        data_dir_resolution = crm_store.data_dir_resolution()
+        print(f"{PASS_AUTO_PRINT_CONFIG} data_dir={data_dir_resolution.effective_path.resolve()}")
+        print(f"{PASS_AUTO_PRINT_CONFIG} data_dir_source={data_dir_resolution.source}")
+        print(
+            f"{PASS_AUTO_PRINT_CONFIG} mfo_data_dir_effective="
+            f"{(os.getenv('MFO_DATA_DIR_EFFECTIVE') or '').strip() or '(empty)'}"
+        )
+        print(
+            f"{PASS_AUTO_PRINT_CONFIG} mfo_data_dir_source="
+            f"{(os.getenv('MFO_DATA_DIR_SOURCE') or '').strip() or '(empty)'}"
+        )
         print(f"{PASS_AUTO_PRINT_CONFIG} crm_db={crm_db.resolve()}")
         print(f"{PASS_AUTO_PRINT_CONFIG} suppression_csv={suppression_csv.resolve()}")
         print(f"{PASS_AUTO_PRINT_CONFIG} export_ledger={export_ledger.resolve()}")

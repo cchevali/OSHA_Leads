@@ -135,6 +135,31 @@ function Get-DotenvKeys {
   return @($keys)
 }
 
+function ConvertFrom-DotenvTextToMap {
+  param([Parameter(Mandatory = $true)] [string] $DotenvText)
+
+  $map = @{}
+  $lines = $DotenvText -split "`r?`n"
+  foreach ($line in $lines) {
+    $t = $line.Trim()
+    if ($t.Length -eq 0) { continue }
+    if ($t.StartsWith('#')) { continue }
+
+    $work = $line
+    if ($work -match '^\s*export\s+') {
+      $work = $work -replace '^\s*export\s+', ''
+    }
+    if ($work -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$') {
+      continue
+    }
+    $key = $Matches[1]
+    $rawValue = $Matches[2]
+    $value = ConvertFrom-DotenvValue -Raw $rawValue
+    $map[$key] = $value
+  }
+  return $map
+}
+
 function ConvertFrom-DotenvValue {
   param([Parameter(Mandatory = $true)] [string] $Raw)
 
@@ -156,7 +181,18 @@ function ConvertFrom-DotenvValue {
 }
 
 function Set-EnvFromDotenvText {
-  param([Parameter(Mandatory = $true)] [string] $DotenvText)
+  param(
+    [Parameter(Mandatory = $true)] [string] $DotenvText,
+    [string[]] $SkipKeys = @()
+  )
+
+  $skip = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($item in @($SkipKeys)) {
+    $token = [string]$item
+    if ($token) {
+      [void]$skip.Add($token)
+    }
+  }
 
   $lines = $DotenvText -split "`r?`n"
   foreach ($line in $lines) {
@@ -172,9 +208,81 @@ function Set-EnvFromDotenvText {
       continue
     }
     $key = $Matches[1]
+    if ($skip.Contains($key)) {
+      continue
+    }
     $rawValue = $Matches[2]
     $value = ConvertFrom-DotenvValue -Raw $rawValue
     Set-Item -Path ("Env:" + $key) -Value $value
+  }
+}
+
+function Resolve-MfoDataDirPolicy {
+  param(
+    [Parameter(Mandatory = $true)] [string] $RepoRoot,
+    [AllowNull()] [string] $InheritedDataDir,
+    [AllowNull()] [string] $DotenvDataDir
+  )
+
+  $repoPath = (Resolve-Path -LiteralPath $RepoRoot).Path
+  $defaultPath = (Join-Path $repoPath 'out')
+  $inherited = ([string]$InheritedDataDir)
+  $dotenv = ([string]$DotenvDataDir)
+  $inheritedTrimmed = $inherited.Trim()
+  $dotenvTrimmed = $dotenv.Trim()
+
+  $selectedSource = 'default'
+  $selectedValue = ''
+  if ($inheritedTrimmed) {
+    $selectedSource = 'inherited'
+    $selectedValue = $inheritedTrimmed
+  } elseif ($dotenvTrimmed) {
+    $selectedSource = 'dotenv'
+    $selectedValue = $dotenvTrimmed
+  }
+
+  $conflictWarn = ''
+  if ($inheritedTrimmed -and $dotenvTrimmed -and (-not [string]::Equals($inheritedTrimmed, $dotenvTrimmed, [System.StringComparison]::OrdinalIgnoreCase))) {
+    $conflictWarn = (
+      'WARN_ENV_CONFLICT=1 key=DATA_DIR inherited=' + $inheritedTrimmed +
+      ' dotenv=' + $dotenvTrimmed +
+      ' using=' + $selectedSource
+    )
+  }
+
+  $useDefaultFallback = $false
+  $notAbsoluteWarn = ''
+  if ($selectedSource -eq 'default') {
+    $useDefaultFallback = $true
+  } else {
+    $candidate = $selectedValue
+    $invalid = $false
+    if (-not $candidate) {
+      $invalid = $true
+    } elseif ($candidate -ieq 'out') {
+      $invalid = $true
+    } elseif (-not [System.IO.Path]::IsPathRooted($candidate)) {
+      $invalid = $true
+    }
+
+    if ($invalid) {
+      $useDefaultFallback = $true
+      $selectedSource = 'default'
+      $notAbsoluteWarn = ('WARN_DATA_DIR_NOT_ABSOLUTE=1 value=' + $candidate + ' behavior=UNSET_FOR_CHILD')
+    }
+  }
+
+  $effectivePath = $defaultPath
+  if (-not $useDefaultFallback) {
+    $effectivePath = [System.IO.Path]::GetFullPath($selectedValue)
+  }
+
+  return @{
+    EffectivePath = $effectivePath
+    Source = $selectedSource
+    UseDefaultFallback = [bool]$useDefaultFallback
+    ConflictWarnToken = $conflictWarn
+    NotAbsoluteWarnToken = $notAbsoluteWarn
   }
 }
 

@@ -734,7 +734,12 @@ class TestSignalReviewTools(unittest.TestCase):
             out_dir = tmp / "audits_output"
 
             out = io.StringIO()
+            env = dict(os.environ)
+            env.pop("DATA_DIR", None)
+            env.pop("MFO_DATA_DIR_EFFECTIVE", None)
+            env.pop("MFO_DATA_DIR_SOURCE", None)
             with (
+                mock.patch.dict(os.environ, env, clear=True),
                 mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
                 mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
                 redirect_stdout(out),
@@ -760,6 +765,7 @@ class TestSignalReviewTools(unittest.TestCase):
             self.assertEqual(code, 0)
             text = out.getvalue()
             self.assertIn("AI_REVIEW_DUMP_DATA_DIR=", text)
+            self.assertIn("AI_REVIEW_DUMP_DATA_DIR_SOURCE=default", text)
             self.assertIn("AI_REVIEW_DUMP_OUTPUT_DIR=", text)
             self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
             self.assertIn("AI_REVIEW_DUMP_SINCE=2026-02-20", text)
@@ -767,6 +773,48 @@ class TestSignalReviewTools(unittest.TestCase):
             self.assertIn("AI_REVIEW_DUMP_STATES=TX", text)
             self.assertIn("AI_REVIEW_DUMP_TERRITORIES=TX_TRI", text)
             self.assertFalse(out_dir.exists())
+
+    def test_dump_signals_direct_run_invalid_data_dir_warns_and_falls_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = "out"
+            env.pop("MFO_DATA_DIR_EFFECTIVE", None)
+            env.pop("MFO_DATA_DIR_SOURCE", None)
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--territory",
+                        "TX_TRI",
+                        "--for-ai-review",
+                        "--since",
+                        "2026-02-20",
+                        "--print-config",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            expected_data_dir = str((dump_tool.REPO_ROOT / "out").resolve(strict=False))
+            expected_audits = str((dump_tool.REPO_ROOT / "out" / "audits").resolve(strict=False))
+            self.assertIn("WARN_DATA_DIR_NOT_ABSOLUTE=1 value=out behavior=UNSET_FOR_CHILD", text)
+            self.assertIn(f"AI_REVIEW_DUMP_DATA_DIR={expected_data_dir}", text)
+            self.assertIn("AI_REVIEW_DUMP_DATA_DIR_SOURCE=default", text)
+            self.assertIn(f"AI_REVIEW_DUMP_OUTPUT_DIR={expected_audits}", text)
 
     def test_dump_signals_include_suppressed_adds_skip_section(self):
         with tempfile.TemporaryDirectory() as d:
