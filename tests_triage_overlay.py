@@ -2,6 +2,7 @@ import io
 import os
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from scoring import rules_config
@@ -171,11 +172,14 @@ class TestTriageOverlay(unittest.TestCase):
                 self.assertIn("multi_employer_site", [str(x) for x in d.get("reasons") or []])
 
     def test_freshness_boundary_30_kept_31_suppressed(self):
+        today_utc = datetime.now(timezone.utc).date()
+        opened_30 = (today_utc - timedelta(days=30)).isoformat()
+        opened_31 = (today_utc - timedelta(days=31)).isoformat()
         rows = [
             {
                 "activity_nr": "k30",
                 "lead_score": 7,
-                "date_opened": "2026-01-30",
+                "date_opened": opened_30,
                 "inspection_type": "Inspection",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -184,7 +188,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "k31",
                 "lead_score": 7,
-                "date_opened": "2026-01-29",
+                "date_opened": opened_31,
                 "inspection_type": "Inspection",
                 "scope": "Partial",
                 "case_status": "OPEN",

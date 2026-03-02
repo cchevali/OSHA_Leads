@@ -101,7 +101,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         self.assertEqual(proc.returncode, 0, msg=out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_MODE=print-config", out)
-        self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=1", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=0", out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAY_SCHEDULE=MON,TUE,WED,THU,FRI", out)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_PRINT_CONFIG", out)
 
@@ -170,6 +170,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("DRY_RUN_COMMAND_2=", out)
         self.assertIn("DRY_RUN_COMMAND_3=", out)
         self.assertIn("DRY_RUN_COMMAND_4=", out)
+        self.assertIn("DRY_RUN_COMMAND_5=", out)
         self.assertIn("DRY_RUN_COMMAND_5=", out)
         self.assertIn("/RU \"DESKTOP-Q8QM4N9\\lever\" /RP ***REDACTED***", out)
         self.assertNotIn("dont-print-me", out)

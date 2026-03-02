@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -139,6 +140,18 @@ def _format_signal_block(lead: dict, decision: dict) -> str:
         f"  Date opened: {date_opened} | First seen: {first_seen}\n"
         f"  Rules priority: {rules_priority} ({reasons})\n"
     )
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
 
 
 def _parse_outreach_states(raw: str) -> list[str]:
@@ -309,10 +322,15 @@ def _fetch_selected_for_group(
     return selected
 
 
-def _render_group_blocks(selected: list[dict[str, Any]]) -> list[str]:
+def _render_group_sections(
+    selected: list[dict[str, Any]],
+    *,
+    include_suppressed: bool,
+) -> tuple[list[str], list[str]]:
     decisions = triage_overlay.triage(selected, {}, mode="trial_render", allow_ai=False)
     by_key = triage_overlay.decisions_by_activity(decisions)
-    blocks: list[str] = []
+    action_blocks: list[str] = []
+    suppressed_blocks: list[str] = []
     for lead in sorted(
         selected,
         key=lambda r: (str(r.get("date_opened") or ""), str(r.get("activity_nr") or "")),
@@ -320,8 +338,84 @@ def _render_group_blocks(selected: list[dict[str, Any]]) -> list[str]:
     ):
         key = str(lead.get("activity_nr") or lead.get("lead_key") or "").strip()
         decision = by_key.get(key, {})
-        blocks.append(_format_signal_block(lead, decision))
-    return blocks
+        rules_priority = str(decision.get("rules_priority") or "").strip().upper()
+        if rules_priority == "SUPPRESS":
+            if include_suppressed:
+                suppressed_blocks.append(_format_signal_block(lead, decision))
+            continue
+        action_blocks.append(_format_signal_block(lead, decision))
+    return action_blocks, suppressed_blocks
+
+
+def _resolve_default_audits_dir() -> Path:
+    raw_data_dir = str(os.getenv("DATA_DIR") or "").strip()
+    if raw_data_dir:
+        base = Path(raw_data_dir).expanduser()
+        if not base.is_absolute():
+            base = REPO_ROOT / base
+        return (base.resolve(strict=False) / "audits").resolve(strict=False)
+    return (REPO_ROOT / "out" / "audits").resolve(strict=False)
+
+
+def _resolve_output_path(
+    *,
+    output: str,
+    output_dir: str,
+    for_ai_review: bool,
+    today_local: date,
+) -> tuple[Path, Path]:
+    filename = (
+        f"signals_for_ai_review_{today_local.strftime('%Y%m%d')}.txt"
+        if for_ai_review
+        else f"signals_for_review_{today_local.strftime('%Y%m%d')}.txt"
+    )
+    if str(output or "").strip():
+        out_path = Path(str(output).strip()).expanduser().resolve(strict=False)
+    else:
+        if str(output_dir or "").strip():
+            out_dir = Path(str(output_dir).strip()).expanduser().resolve(strict=False)
+        else:
+            out_dir = _resolve_default_audits_dir()
+        out_path = (out_dir / filename).resolve(strict=False)
+    return out_path.parent.resolve(strict=False), out_path.resolve(strict=False)
+
+
+def _max_first_seen_iso(leads: list[dict[str, Any]]) -> str:
+    max_dt: datetime | None = None
+    for lead in list(leads or []):
+        dt = _parse_timestamp(str(lead.get("first_seen_at") or ""))
+        if not dt:
+            continue
+        if max_dt is None or dt > max_dt:
+            max_dt = dt
+    return max_dt.isoformat() if max_dt else ""
+
+
+def _max_date_opened_iso(leads: list[dict[str, Any]]) -> str:
+    max_date_opened: date | None = None
+    for lead in list(leads or []):
+        try:
+            opened = _parse_date(str(lead.get("date_opened") or ""))
+        except Exception:
+            continue
+        if max_date_opened is None or opened > max_date_opened:
+            max_date_opened = opened
+    return max_date_opened.isoformat() if max_date_opened else ""
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        os.replace(tmp_name, str(path))
+    finally:
+        try:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        except Exception:
+            pass
 
 
 def main() -> int:
@@ -346,11 +440,15 @@ def main() -> int:
     )
     ap.add_argument("--print-config", action="store_true", help="Print resolved config and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Do not write output file.")
+    ap.add_argument("--output-dir", default="", help="Optional output directory override.")
+    ap.add_argument("--output", default="", help="Optional full output file path override.")
+    ap.add_argument("--include-suppressed", action="store_true", help="Include SUPPRESS signals under a skip section.")
     args = ap.parse_args()
 
+    raw_until = str(args.until or "").strip()
     try:
         since_date = _parse_date(args.since)
-        until_date = _parse_date(args.until) if str(args.until or "").strip() else since_date
+        until_date = _parse_date(raw_until) if raw_until else since_date
     except Exception:
         print("ERR_SIGNAL_REVIEW_INVALID_DATE", file=sys.stderr)
         return 2
@@ -392,28 +490,27 @@ def main() -> int:
         groups.append(_group_for_territory(territory_code, definitions))
 
     db_path = Path(str(args.db)).expanduser().resolve(strict=False)
-    out_dir = scoring_paths.data_root() / "audits"
     today_local = _local_today_date()
-    if args.for_ai_review:
-        out_path = out_dir / f"signals_for_ai_review_{today_local.strftime('%Y%m%d')}.txt"
-    else:
-        out_path = out_dir / f"signals_for_review_{today_local.strftime('%Y%m%d')}.txt"
+    out_dir, out_path = _resolve_output_path(
+        output=str(args.output or ""),
+        output_dir=str(args.output_dir or ""),
+        for_ai_review=bool(args.for_ai_review),
+        today_local=today_local,
+    )
+    raw_data_dir = str(os.getenv("DATA_DIR") or "").strip()
+    states_csv = ",".join(states)
+    territories_csv = ",".join(trial_territories if args.all_outreach else ([territory_code] if territory_code else []))
+    print(f"AI_REVIEW_DUMP_OUTPUT_DIR={out_dir}")
+    print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
 
     if args.print_config:
-        if args.all_outreach:
-            print("mode=all_outreach")
-            print(f"outreach_states={','.join(states)}")
-            print(f"trial_territories={','.join(trial_territories)}")
-            print(f"group_count={len(groups)}")
-        else:
-            print("mode=single_territory")
-            print(f"territory={territory_code}")
-        print(f"for_ai_review={1 if args.for_ai_review else 0}")
-        print(f"states={','.join(states)}")
-        print(f"since={since_date.isoformat()}")
-        print(f"until={until_date.isoformat()}")
-        print(f"db={db_path}")
-        print(f"out={out_path}")
+        print(f"AI_REVIEW_DUMP_DATA_DIR={raw_data_dir}")
+        print(f"AI_REVIEW_DUMP_OUTPUT_DIR={out_dir}")
+        print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
+        print(f"AI_REVIEW_DUMP_SINCE={since_date.isoformat()}")
+        print(f"AI_REVIEW_DUMP_UNTIL={until_date.isoformat() if raw_until else ''}")
+        print(f"AI_REVIEW_DUMP_STATES={states_csv}")
+        print(f"AI_REVIEW_DUMP_TERRITORIES={territories_csv}")
         return 0
 
     if not db_path.exists():
@@ -423,6 +520,8 @@ def main() -> int:
     conn = sqlite3.connect(str(db_path))
     try:
         rendered_sections: list[str] = []
+        total_actionable = 0
+        all_selected: list[dict[str, Any]] = []
         for group in groups:
             selected = _fetch_selected_for_group(
                 conn,
@@ -431,18 +530,37 @@ def main() -> int:
                 states=list(group.get("states") or []),
                 territory_code=str(group.get("territory_code") or ""),
             )
+            all_selected.extend(list(selected or []))
             if args.all_outreach:
                 rendered_sections.append(str(group.get("header") or "").strip())
-            blocks = _render_group_blocks(selected)
-            if blocks:
-                rendered_sections.extend(blocks)
+            action_blocks, suppressed_blocks = _render_group_sections(
+                selected,
+                include_suppressed=bool(args.include_suppressed),
+            )
+            total_actionable += len(action_blocks)
+            if action_blocks:
+                rendered_sections.extend(action_blocks)
             else:
                 if not args.for_ai_review:
                     rendered_sections.append("NO_SIGNALS_FOR_REVIEW")
+            if args.include_suppressed and suppressed_blocks:
+                rendered_sections.append("SUPPRESSED (skip)")
+                rendered_sections.extend(suppressed_blocks)
             if args.all_outreach:
                 rendered_sections.append("")
     finally:
         conn.close()
+
+    max_first_seen = _max_first_seen_iso(all_selected)
+    max_date_opened = _max_date_opened_iso(all_selected)
+    print(f"AI_REVIEW_DUMP_MATCHED_TOTAL={total_actionable}")
+    print(f"AI_REVIEW_DUMP_MAX_FIRST_SEEN={max_first_seen}")
+    print(f"AI_REVIEW_DUMP_MAX_DATE_OPENED={max_date_opened}")
+    if total_actionable == 0:
+        print(
+            "WARN_AI_REVIEW_DUMP_EMPTY=1 "
+            f"reason=NO_MATCHES since={since_date.isoformat()} until={until_date.isoformat()}"
+        )
 
     body_text = "\n".join([str(x) for x in rendered_sections]).strip()
     if args.for_ai_review:
@@ -459,8 +577,8 @@ def main() -> int:
         print("NO_SIGNALS_FOR_REVIEW")
 
     if not args.dry_run:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(output_text, encoding="utf-8")
+        _atomic_write_text(out_path, output_text)
+        print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
         print(f"SIGNAL_REVIEW_OUT={out_path}")
     return 0
 
