@@ -1766,6 +1766,25 @@ def _event_count_for_day(conn: sqlite3.Connection, event_type: str, run_date: da
     return int(row[0] or 0) if row else 0
 
 
+def _sent_batches_for_day(conn: sqlite3.Connection, run_date: date) -> list[str]:
+    day = run_date.isoformat()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT batch_id
+        FROM outreach_events
+        WHERE event_type = 'sent' AND substr(ts, 1, 10) = ?
+        ORDER BY batch_id
+        """,
+        (day,),
+    ).fetchall()
+    out: list[str] = []
+    for row in rows:
+        value = str((row[0] if row else "") or "").strip()
+        if value:
+            out.append(value)
+    return out
+
+
 def _doctor_check_secrets_decrypt() -> tuple[bool, str]:
     wrapper = REPO_ROOT / "run_with_secrets.ps1"
     if not wrapper.exists():
@@ -2292,6 +2311,11 @@ def main() -> int:
     ap.add_argument("--for-date", default="", help="Override run date (YYYY-MM-DD) for doctor/print-config/dry-run/plan.")
     ap.add_argument("--allow-repeat", action="store_true", help="Allow contacting previously contacted prospects.")
     ap.add_argument(
+        "--allow-second-live-run-same-day",
+        action="store_true",
+        help="Emergency/manual override: allow a second live outreach run on the same local day.",
+    )
+    ap.add_argument(
         "--allow-weekend-send",
         action="store_true",
         help="Emergency/manual override: allow live outreach sends on Sat/Sun.",
@@ -2433,6 +2457,16 @@ def main() -> int:
         )
         state = str(fallback_decision.get("to_state") or rotation_state).strip().upper() or rotation_state
         batch = _batch_id(state, run_date)
+
+        if is_live_send and (not bool(args.allow_second_live_run_same_day)):
+            existing_batches = _sent_batches_for_day(conn, run_date)
+            if existing_batches:
+                existing_batches_text = ",".join(existing_batches) if existing_batches else "none"
+                print(
+                    f"OUTREACH_SKIP_ALREADY_SENT_TODAY=1 date={run_date.isoformat()} "
+                    f"existing_batches={existing_batches_text} guard=ON"
+                )
+                return 0
 
         selected, skipped, manifest_rows, selection_stats = _select_candidates(
             conn=conn,

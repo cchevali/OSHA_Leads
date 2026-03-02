@@ -26,6 +26,7 @@ class TestRunOutreachAutoWrapper(unittest.TestCase):
         self.assertIn("--for-date", out)
         self.assertIn("--print-config", out)
         self.assertIn("--allow-repeat", out)
+        self.assertIn("--allow-second-live-run-same-day", out)
         self.assertIn("--to", out)
 
     def test_wrapper_is_thin_shim(self):

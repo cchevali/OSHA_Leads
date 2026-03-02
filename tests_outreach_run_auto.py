@@ -703,6 +703,115 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("OUTREACH_DUPLICATE_GUARD_DROPPED=1", out.getvalue())
             self.assertEqual(send_calls["count"], 0)
 
+    def test_live_skips_when_sent_events_exist_for_run_date(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "A",
+                        "firm": "F",
+                        "email": "a@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 6,
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            conn = sqlite3.connect(str(crm_db))
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO outreach_events(prospect_id, ts, event_type, batch_id, metadata_json)
+                    VALUES(?, ?, 'sent', ?, '{}')
+                    """,
+                    ("p1", "2026-02-24T13:13:24+00:00", "2026-02-24_TX"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA,FL",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+            weekday_now = {
+                "timezone": "America/New_York",
+                "datetime": datetime(2026, 2, 24, 9, 0, 0),
+                "date": date(2026, 2, 24),
+                "date_text": "2026-02-24",
+                "weekday_idx": 1,
+                "weekday_name": "tue",
+                "is_weekend": False,
+            }
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch.object(roa, "_outreach_local_now", return_value=weekday_now), mock.patch.object(
+                    roa, "_select_candidates", side_effect=AssertionError("selection should not run on same-day guard")
+                ):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            self.assertIn(
+                "OUTREACH_SKIP_ALREADY_SENT_TODAY=1 date=2026-02-24 existing_batches=2026-02-24_TX guard=ON",
+                out.getvalue(),
+            )
+
+    def test_live_same_day_override_bypasses_guard(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "A",
+                        "firm": "F",
+                        "email": "a@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 6,
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+            weekday_now = {
+                "timezone": "America/New_York",
+                "datetime": datetime(2026, 2, 24, 9, 0, 0),
+                "date": date(2026, 2, 24),
+                "date_text": "2026-02-24",
+                "weekday_idx": 1,
+                "weekday_name": "tue",
+                "is_weekend": False,
+            }
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch.object(roa, "_outreach_local_now", return_value=weekday_now), mock.patch.object(
+                    roa, "_sent_batches_for_day", return_value=["2026-02-24_TX"]
+                ), mock.patch.object(
+                    roa, "_select_candidates", side_effect=RuntimeError("after_same_day_guard")
+                ):
+                    with mock.patch.object(
+                        sys, "argv", ["run_outreach_auto.py", "--allow-second-live-run-same-day"]
+                    ):
+                        with self.assertRaisesRegex(RuntimeError, "after_same_day_guard"):
+                            roa.main()
+
     def test_to_mismatch_fails(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

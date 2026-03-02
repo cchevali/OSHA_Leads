@@ -317,7 +317,11 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 text,
             )
             self.assertIn("if %RUN_EXIT% EQU 0 (", text)
-            self.assertIn("py -3 run_trial_admin.py append-event --subscriber-key wally_trial --status SENT --variant DAILY --ts-utc \"%TRIAL_TS_UTC%\" --run-id \"%TRIAL_RUN_ID%\"", text)
+            self.assertIn(
+                "powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0scripts\\run_with_secrets.ps1\" python run_trial_admin.py append-event --subscriber-key wally_trial --status SENT --variant DAILY --run-id \"%TRIAL_RUN_ID%\" --send-mode LIVE --meta-source wally_trial_scheduler",
+                text,
+            )
+            self.assertNotIn("TRIAL_TS_UTC", text)
             self.assertIn("WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key=wally_trial", text)
 
     def test_run_live_send_appends_trial_event_once_on_success(self) -> None:
