@@ -8,6 +8,11 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
 function Invoke-ContextPackSoftCheck {
   param([string]$RepoRoot)
 
+  if ((([string]$env:MFO_CONTEXT_PACK_SOFT_CHECK_DONE).Trim() -eq '1')) {
+    return
+  }
+  $env:MFO_CONTEXT_PACK_SOFT_CHECK_DONE = '1'
+
   $contextPackScript = Join-Path $RepoRoot 'tools\project_context_pack.py'
   if (-not (Test-Path -LiteralPath $contextPackScript)) {
     Write-Output "WARN_CONTEXT_PACK_SCRIPT_MISSING tools/project_context_pack.py"
@@ -85,11 +90,20 @@ if (-not (Test-Path -LiteralPath $targetPath)) {
 
 Invoke-ContextPackSoftCheck -RepoRoot $PSScriptRoot
 
-if ($args -contains '--diagnostics') {
+$forwardArgs = @($args)
+if ($forwardArgs.Count -ge 1 -and $forwardArgs[0] -eq '--') {
+  if ($forwardArgs.Count -ge 2) {
+    $forwardArgs = $forwardArgs[1..($forwardArgs.Count - 1)]
+  } else {
+    $forwardArgs = @()
+  }
+}
+
+if ($forwardArgs -contains '--diagnostics') {
   Write-Output ("DIAG: wrapper_path=" + $wrapperResolved)
   Write-Output ("DIAG: target_path=" + $targetResolved)
 }
 
-& $targetPath @args
+& $targetPath @forwardArgs
 $exitCode = $LASTEXITCODE
 exit $exitCode

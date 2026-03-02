@@ -281,6 +281,24 @@ class TestWallyTrialDoctor(unittest.TestCase):
                     else:
                         os.environ[k] = v
 
+    def test_project_context_soft_check_skips_when_wrapper_already_checked(self) -> None:
+        old_val = os.environ.get("MFO_CONTEXT_PACK_SOFT_CHECK_DONE")
+        os.environ["MFO_CONTEXT_PACK_SOFT_CHECK_DONE"] = "1"
+        orig_run = run_wally_trial.subprocess.run
+
+        def _fail_run(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("subprocess.run should not be called when soft check sentinel is set")
+
+        run_wally_trial.subprocess.run = _fail_run  # type: ignore[assignment]
+        try:
+            run_wally_trial.run_project_context_soft_check(Path(run_wally_trial.__file__).resolve().parent)
+        finally:
+            run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]
+            if old_val is None:
+                os.environ.pop("MFO_CONTEXT_PACK_SOFT_CHECK_DONE", None)
+            else:
+                os.environ["MFO_CONTEXT_PACK_SOFT_CHECK_DONE"] = old_val
+
     def test_write_batch_runner_contains_deliver_tokens_and_ledger_mirror(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

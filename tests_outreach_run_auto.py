@@ -104,6 +104,7 @@ def _seed_signal_db(path: Path, rows: list[dict]) -> None:
 
 class TestOutreachRunAuto(unittest.TestCase):
     _STRIP_ENV_PREFIXES = (
+        "MFO_",
         "PROSPECT_AUTOGROW_",
         "PROSPECT_ENRICH_",
         "OUTREACH_",
@@ -2399,6 +2400,13 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("WARN_CONTEXT_PACK_STALE", text)
             self.assertIn("Upload PROJECT_CONTEXT_PACK.md to ChatGPT Project Settings -> Files", text)
             self.assertIn("PASS_DOCTOR_COMPLETE", text)
+
+    def test_doctor_context_pack_soft_check_skips_when_wrapper_already_checked(self):
+        env = self._test_env({"MFO_CONTEXT_PACK_SOFT_CHECK_DONE": "1"})
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch.object(roa, "subprocess") as m_subprocess:
+                roa._doctor_context_pack_soft_check()
+        self.assertFalse(m_subprocess.run.called)
 
     def test_doctor_signals_fresh_and_stale_emit_warn_only_and_exit_zero(self):
         with tempfile.TemporaryDirectory() as d:

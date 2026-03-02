@@ -64,6 +64,7 @@ $ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS = 'ERR_SET_OUTREACH_ENV_PRINT_CO
 $PASS_SET_OUTREACH_ENV_APPLY = 'PASS_SET_OUTREACH_ENV_APPLY'
 $PASS_SET_OUTREACH_ENV_VERIFY = 'PASS_SET_OUTREACH_ENV_VERIFY'
 $PASS_SET_OUTREACH_ENV_PRINT_CONFIG = 'PASS_SET_OUTREACH_ENV_PRINT_CONFIG'
+$PASS_SET_OUTREACH_ENV_DATA_DIR = 'PASS_SET_OUTREACH_ENV_DATA_DIR'
 $PASS_SET_OUTREACH_ENV_COMPLETE = 'PASS_SET_OUTREACH_ENV_COMPLETE'
 
 function Fail-Token([string]$Token, [string]$Detail = '') {
@@ -130,6 +131,15 @@ function Normalize-CommaList([string]$Raw) {
     }
   }
   return ($tokens -join ',')
+}
+
+function Test-ValidAbsoluteDataDir([string]$Value) {
+  $text = (($Value -as [string]))
+  if ($null -eq $text) { $text = '' }
+  $text = $text.Trim()
+  if (-not $text) { return $false }
+  if ($text -ieq 'out') { return $false }
+  return [System.IO.Path]::IsPathRooted($text)
 }
 
 function Parse-DotenvMap([string]$DotenvText) {
@@ -612,6 +622,8 @@ try {
       $taskSchedPasswordPresent = if (Map-HasValue $printMap 'TASK_SCHED_PASSWORD') { 'YES' } else { 'NO' }
       Write-Output ('task_sched_user=' + $taskSchedUserValue)
       Write-Output ('task_sched_password_present=' + $taskSchedPasswordPresent)
+      $printDataDir = if (Map-HasValue $printMap 'DATA_DIR') { ([string]$printMap['DATA_DIR']).Trim() } else { 'out' }
+      Pass-Token $PASS_SET_OUTREACH_ENV_DATA_DIR ('value=' + $printDataDir + ' source=unchanged')
       Pass-Token $PASS_SET_OUTREACH_ENV_COMPLETE 'mode=print_config'
       exit 0
     }
@@ -854,15 +866,31 @@ try {
       Set-MapValue -Map $map -Key 'STRIPE_WEBHOOK_SECRET' -Value $secret -TouchedList $touched
     }
 
+    $dataDirSource = 'unchanged'
+    $dataDirValue = ''
+    $existingDataDir = if (Map-HasValue $map 'DATA_DIR') { ([string]$map['DATA_DIR']).Trim() } else { '' }
+    $inheritedDataDir = (($env:DATA_DIR -as [string]))
+    if ($null -eq $inheritedDataDir) { $inheritedDataDir = '' }
+    $inheritedDataDir = $inheritedDataDir.Trim()
+
     if ($PSBoundParameters.ContainsKey('DataDir')) {
-      $dir = ($DataDir -as [string]).Trim()
-      if (-not $dir) {
-        Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_DataDir'
+      $dataDirValue = ($DataDir -as [string]).Trim()
+      if (-not (Test-ValidAbsoluteDataDir $dataDirValue)) {
+        Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_DataDir_absolute_required'
       }
-      Set-MapValue -Map $map -Key 'DATA_DIR' -Value $dir -TouchedList $touched
-    } elseif (-not (Map-HasValue $map 'DATA_DIR')) {
-      Set-MapValue -Map $map -Key 'DATA_DIR' -Value 'out' -TouchedList $touched
+      $dataDirSource = 'param'
+    } elseif ((-not (Test-ValidAbsoluteDataDir $existingDataDir)) -and (Test-ValidAbsoluteDataDir $inheritedDataDir)) {
+      $dataDirValue = $inheritedDataDir
+      $dataDirSource = 'inherited'
+    } elseif ($existingDataDir) {
+      $dataDirValue = $existingDataDir
+      $dataDirSource = 'unchanged'
+    } else {
+      $dataDirValue = 'out'
+      $dataDirSource = 'unchanged'
     }
+    Set-MapValue -Map $map -Key 'DATA_DIR' -Value $dataDirValue -TouchedList $touched
+    Pass-Token $PASS_SET_OUTREACH_ENV_DATA_DIR ('value=' + $dataDirValue + ' source=' + $dataDirSource)
 
     if ($PSBoundParameters.ContainsKey('ProspectDiscoveryInput')) {
       $discoveryInput = ($ProspectDiscoveryInput -as [string]).Trim()

@@ -774,6 +774,35 @@ class TestSignalReviewTools(unittest.TestCase):
             self.assertIn("AI_REVIEW_DUMP_TERRITORIES=TX_TRI", text)
             self.assertFalse(out_dir.exists())
 
+    def test_dump_signals_print_config_without_scope_defaults_to_all_outreach(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["OUTREACH_STATES"] = "TX,CA"
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={}),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--print-config",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("AI_REVIEW_DUMP_STATES=TX,CA", text)
+
     def test_dump_signals_direct_run_invalid_data_dir_warns_and_falls_back(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
