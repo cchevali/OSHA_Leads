@@ -13,6 +13,19 @@ function Fail([string]$Message) {
   exit 1
 }
 
+function Set-PythonWarningsFilter {
+  $filter = "ignore:urllib3"
+  $existing = [string]$env:PYTHONWARNINGS
+  if ($existing -and ($existing -split ',' | Where-Object { $_.Trim() -eq $filter })) {
+    return
+  }
+  if ($existing -and $existing.Trim().Length -gt 0) {
+    $env:PYTHONWARNINGS = ($existing.TrimEnd(',') + ',' + $filter)
+  } else {
+    $env:PYTHONWARNINGS = $filter
+  }
+}
+
 function Invoke-NativeAllowStderr {
   param(
     [string]$FilePath,
@@ -141,8 +154,44 @@ try {
     Fail "Decrypted env appears to contain an age key (refusing)"
   }
 
-  # Load into process env for the child command. Never print values.
-  Set-EnvFromDotenvText -DotenvText $plain
+  $inheritedDataDir = ''
+  if (Test-Path -LiteralPath 'Env:DATA_DIR') {
+    $inheritedDataDir = [string]$env:DATA_DIR
+  }
+  $dotenvMap = ConvertFrom-DotenvTextToMap -DotenvText $plain
+  $dotenvDataDir = ''
+  if ($dotenvMap.ContainsKey('DATA_DIR')) {
+    $dotenvDataDir = [string]$dotenvMap['DATA_DIR']
+  }
+  $dataDirPolicy = Resolve-MfoDataDirPolicy `
+    -RepoRoot $repoRoot `
+    -InheritedDataDir $inheritedDataDir `
+    -DotenvDataDir $dotenvDataDir
+
+  if ([string]$dataDirPolicy.ConflictWarnToken) {
+    Write-Output ([string]$dataDirPolicy.ConflictWarnToken)
+  }
+  if ([string]$dataDirPolicy.NotAbsoluteWarnToken) {
+    Write-Output ([string]$dataDirPolicy.NotAbsoluteWarnToken)
+  }
+
+  # Load decrypted keys for the child command; DATA_DIR is policy-managed below.
+  Set-EnvFromDotenvText -DotenvText $plain -SkipKeys @('DATA_DIR')
+  Set-PythonWarningsFilter
+
+  $effectiveDataDir = [string]$dataDirPolicy.EffectivePath
+  $effectiveDataDirSource = [string]$dataDirPolicy.Source
+  $env:MFO_DATA_DIR_EFFECTIVE = $effectiveDataDir
+  $env:MFO_DATA_DIR_SOURCE = $effectiveDataDirSource
+  if ([bool]$dataDirPolicy.UseDefaultFallback) {
+    Remove-Item -Path 'Env:DATA_DIR' -ErrorAction SilentlyContinue
+  } else {
+    Set-Item -Path 'Env:DATA_DIR' -Value $effectiveDataDir
+  }
+  if ($Diagnostics) {
+    Write-Output ("DIAG: mfo_data_dir_effective=" + $effectiveDataDir)
+    Write-Output ("DIAG: mfo_data_dir_source=" + $effectiveDataDirSource)
+  }
 
   $exe = $Command[0]
   if (-not (Get-Command -Name $exe -ErrorAction SilentlyContinue)) {

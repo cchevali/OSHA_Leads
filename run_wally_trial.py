@@ -9,10 +9,18 @@ import re
 import sqlite3
 import subprocess
 import sys
+import warnings
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"urllib3 .*doesn't match a supported version!",
+    category=Warning,
+    module=r"requests\.__init__",
+)
 
 try:
     from dotenv import load_dotenv
@@ -1231,6 +1239,8 @@ def _resolve_scheduler_credentials() -> tuple[str, str]:
 
 
 def run_project_context_soft_check(repo_root: Path) -> None:
+    if str(os.getenv("MFO_CONTEXT_PACK_SOFT_CHECK_DONE") or "").strip() == "1":
+        return
     script_path = repo_root / "tools" / "project_context_pack.py"
     if not script_path.exists():
         print("WARN_CONTEXT_PACK_SCRIPT_MISSING tools/project_context_pack.py")
