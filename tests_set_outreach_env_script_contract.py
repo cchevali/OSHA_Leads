@@ -74,6 +74,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "PASS_SET_OUTREACH_ENV_APPLY",
             "PASS_SET_OUTREACH_ENV_VERIFY",
             "PASS_SET_OUTREACH_ENV_PRINT_CONFIG",
+            "PASS_SET_OUTREACH_ENV_DATA_DIR",
             "PASS_SET_OUTREACH_ENV_COMPLETE",
         ]
 
@@ -129,6 +130,12 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("task_sched_password_present=", text)
         self.assertIn("TASK_SCHED_USER", text)
         self.assertIn("TASK_SCHED_PASSWORD", text)
+        self.assertIn("Test-ValidAbsoluteDataDir", text)
+        self.assertIn("invalid_DataDir_absolute_required", text)
+        self.assertIn("$dataDirSource = 'param'", text)
+        self.assertIn("$dataDirSource = 'inherited'", text)
+        self.assertIn("$dataDirSource = 'unchanged'", text)
+        self.assertIn("Pass-Token $PASS_SET_OUTREACH_ENV_DATA_DIR", text)
         self.assertNotIn("Write-Output ('OPENAI_API_KEY='", text)
         self.assertNotIn("Write-Output ('TASK_SCHED_PASSWORD='", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_ENABLED", text)

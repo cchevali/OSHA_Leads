@@ -774,6 +774,14 @@ DATA_DIR persistence and edits:
 
 - Use `scripts\set_outreach_env.ps1` as the only supported way to persist `.env.sops` keys.
 - Do not manually edit `.env.sops`.
+- Canonical persist command:
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -DataDir "C:\osha_data" -OshaSmokeTo cchevali+oshasmoke@gmail.com
+```
+
+- Expected token: `PASS_SET_OUTREACH_ENV_DATA_DIR value=<...> source=<param|inherited|unchanged>`
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 

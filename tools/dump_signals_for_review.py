@@ -7,6 +7,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import warnings
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,13 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"urllib3 .*doesn't match a supported version!",
+    category=Warning,
+    module=r"requests\.__init__",
+)
 
 import crm_light
 from lead_filters import load_territory_definitions, resolve_territory_code
@@ -456,8 +464,11 @@ def main() -> int:
     territory_code = ""
     states: list[str] = []
     trial_territories: list[str] = []
+    effective_all_outreach = bool(args.all_outreach)
+    if args.print_config and (not effective_all_outreach) and (not str(args.territory or "").strip()):
+        effective_all_outreach = True
 
-    if args.all_outreach:
+    if effective_all_outreach:
         states = _parse_outreach_states(os.getenv("OUTREACH_STATES", ""))
         if not states:
             print("ERR_SIGNAL_REVIEW_OUTREACH_STATES_MISSING", file=sys.stderr)
@@ -496,7 +507,7 @@ def main() -> int:
     effective_data_dir = str(data_dir_resolution.effective_path)
     data_dir_source = str(data_dir_resolution.source or "default")
     states_csv = ",".join(states)
-    territories_csv = ",".join(trial_territories if args.all_outreach else ([territory_code] if territory_code else []))
+    territories_csv = ",".join(trial_territories if effective_all_outreach else ([territory_code] if territory_code else []))
     if data_dir_resolution.warning_token:
         print(data_dir_resolution.warning_token)
     print(f"AI_REVIEW_DUMP_OUTPUT_DIR={out_dir}")
@@ -531,7 +542,7 @@ def main() -> int:
                 territory_code=str(group.get("territory_code") or ""),
             )
             all_selected.extend(list(selected or []))
-            if args.all_outreach:
+            if effective_all_outreach:
                 rendered_sections.append(str(group.get("header") or "").strip())
             action_blocks, suppressed_blocks = _render_group_sections(
                 selected,
@@ -546,7 +557,7 @@ def main() -> int:
             if args.include_suppressed and suppressed_blocks:
                 rendered_sections.append("SUPPRESSED (skip)")
                 rendered_sections.extend(suppressed_blocks)
-            if args.all_outreach:
+            if effective_all_outreach:
                 rendered_sections.append("")
     finally:
         conn.close()

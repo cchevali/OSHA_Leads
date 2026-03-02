@@ -6,12 +6,20 @@ import sqlite3
 import subprocess
 import sys
 import time
+import warnings
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"urllib3 .*doesn't match a supported version!",
+    category=Warning,
+    module=r"requests\.__init__",
+)
 
 try:
     from zoneinfo import ZoneInfo
@@ -1802,6 +1810,8 @@ def _doctor_check_secrets_decrypt() -> tuple[bool, str]:
 
 
 def _doctor_context_pack_soft_check() -> None:
+    if str(os.getenv("MFO_CONTEXT_PACK_SOFT_CHECK_DONE") or "").strip() == "1":
+        return
     script_path = REPO_ROOT / "tools" / "project_context_pack.py"
     if not script_path.exists():
         print("WARN_CONTEXT_PACK_SCRIPT_MISSING tools/project_context_pack.py")

@@ -13,6 +13,19 @@ function Fail([string]$Message) {
   exit 1
 }
 
+function Set-PythonWarningsFilter {
+  $filter = "ignore:urllib3"
+  $existing = [string]$env:PYTHONWARNINGS
+  if ($existing -and ($existing -split ',' | Where-Object { $_.Trim() -eq $filter })) {
+    return
+  }
+  if ($existing -and $existing.Trim().Length -gt 0) {
+    $env:PYTHONWARNINGS = ($existing.TrimEnd(',') + ',' + $filter)
+  } else {
+    $env:PYTHONWARNINGS = $filter
+  }
+}
+
 function Invoke-NativeAllowStderr {
   param(
     [string]$FilePath,
@@ -164,6 +177,7 @@ try {
 
   # Load decrypted keys for the child command; DATA_DIR is policy-managed below.
   Set-EnvFromDotenvText -DotenvText $plain -SkipKeys @('DATA_DIR')
+  Set-PythonWarningsFilter
 
   $effectiveDataDir = [string]$dataDirPolicy.EffectivePath
   $effectiveDataDirSource = [string]$dataDirPolicy.Source
