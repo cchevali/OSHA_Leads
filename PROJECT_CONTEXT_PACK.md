@@ -2,8 +2,8 @@
 
 PACK_GIT_SHA=ddcaa5ddc483dffbec446267a49aa57f6f4a5b39
 PACK_BUILD_UTC=2026-03-02T04:30:35Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=89249b4730ed0953162c7d2b7a303ab3812582054938417b0a1f09942b905e07 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=53eafca5094fbda157ad0aee9a4d2af6fb447f35b29f94961a603deee8fdd5a9
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=43be345f50bd6c92bf6cb1e514dfa83599797d54ecf588eb64488fff79cf7c81 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=52ad2ec7fce508223924a962926cbe5084843f5da2ff6594bc3ca869b44eedb4
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -923,7 +923,9 @@ Optional empty-state planner fallback:
 - No-signal token: `OUTREACH_SKIP_NO_SIGNALS state=<STATE> window_days=<N>`
 - Empty-state no-send token: `OUTREACH_EMPTY_STATE_NO_SEND=1 state=<STATE>`
 - Pre-send duplicate token: `OUTREACH_DUPLICATE_GUARD_DROPPED=<n>`
+- Same-day live-run guard token: `OUTREACH_SKIP_ALREADY_SENT_TODAY=1 date=<YYYY-MM-DD> existing_batches=<csv|none> guard=ON`
 - Floor readiness token (manual ramp remains operator-controlled): `OUTREACH_RAMP_READY=<0|1> desired_daily_limit=<N> states_ready=<k> states_total=<m> ready_states=<csv|none>`
+- Emergency override (manual only): `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --allow-second-live-run-same-day`
 
 Artifact separation (do not mix these):
 
@@ -1582,6 +1584,9 @@ Operator workflow:
 Important:
 
 - Catch-up is allowed only for the Wally trial daily path and only when the subscriber has not already been sent that local day.
+- Same-day live-send guard token: `TRIAL_SKIP_ALREADY_SENT_TODAY=1 subscriber_key=<key> local_date=<YYYY-MM-DD> guard=ON`
+- Emergency override (manual only): pass `--allow-second-live-send-same-day` through `deliver_daily.py` / `send_digest_email.py`.
+- Recipient fan-out stays unchanged: one trial send run still targets both configured recipients (Wally + Brandon).
 - Do not temporarily widen `send_window_minutes` for missed trial sends; use the trial catch-up keys/workflow above.
 
 ## Trial Framework (Subscriber-Keyed)

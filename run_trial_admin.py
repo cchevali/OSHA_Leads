@@ -409,18 +409,21 @@ def add_trial(
 
 def append_event(
     subscriber_key: str,
-    ts_utc: str,
     status: str,
     variant: str,
     run_id: str,
     crm_db_path: str | Path | None,
+    ts_utc: str = "",
     primary_recipient: str = "",
     send_mode: str = "",
     local_date: str = "",
     meta_source: str = "trial_admin_backfill",
 ) -> int:
     sk = _validate_subscriber_key(subscriber_key)
-    normalized_ts_utc = _parse_ts_utc(ts_utc)
+    if (ts_utc or "").strip():
+        normalized_ts_utc = _parse_ts_utc(ts_utc)
+    else:
+        normalized_ts_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
     normalized_status = ((status or "").strip().upper() or "SENT")
     normalized_variant = ((variant or "").strip() or "DAILY")
     normalized_run_id = (
@@ -1428,7 +1431,7 @@ def main(argv: list[str] | None = None) -> int:
 
     append = sub.add_parser("append-event", help="Append a single send event (for historical backfill).")
     append.add_argument("--subscriber-key", required=True)
-    append.add_argument("--ts-utc", required=True, help="ISO8601 timestamp with Z or timezone offset.")
+    append.add_argument("--ts-utc", default="", help="Optional ISO8601 timestamp with Z or timezone offset (defaults to current UTC).")
     append.add_argument("--status", default="SENT")
     append.add_argument("--variant", default="DAILY")
     append.add_argument("--run-id", default="", help="Optional run id; default backfill_<yyyymmddhhmmss>.")
@@ -1524,7 +1527,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             return append_event(
                 subscriber_key=str(args.subscriber_key),
-                ts_utc=str(args.ts_utc),
+                ts_utc=str(args.ts_utc or ""),
                 status=str(args.status),
                 variant=str(args.variant),
                 run_id=str(args.run_id),
