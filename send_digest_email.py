@@ -3037,11 +3037,6 @@ def main() -> None:
         help="Allow live sends to customer recipients (requires allow_live_send and send_enabled)",
     )
     parser.add_argument(
-        "--allow-second-live-send-same-day",
-        action="store_true",
-        help="Emergency/manual override: allow a second live send on the same local day.",
-    )
-    parser.add_argument(
         "--debug-area-offices",
         action="store_true",
         help="Print distinct TX area_office values seen in last 30 days and exit",
@@ -3248,35 +3243,6 @@ def main() -> None:
     if args.smoke_cchevali and recipients != [smoke_recipient]:
         print(f"CONFIG_ERROR --smoke-cchevali recipient_mismatch recipients={recipients}", file=sys.stderr)
         raise SystemExit(1)
-
-    if (
-        live_allowed
-        and (not args.dry_run)
-        and _is_wally_trial_daily_mode(config, args.mode)
-        and (not bool(args.allow_second_live_send_same_day))
-        and _already_sent_today_local(last_sent_at, now_local, tz)
-    ):
-        local_date = now_local.date().isoformat()
-        print(
-            f"TRIAL_SKIP_ALREADY_SENT_TODAY=1 subscriber_key={subscriber_key or WALLY_TRIAL_SUBSCRIBER_KEY} "
-            f"local_date={local_date} guard=ON"
-        )
-        email_log_path = os.path.join(args.output_dir, "email_log.csv")
-        for recipient in recipients:
-            log_email_attempt(
-                email_log_path,
-                {
-                    "timestamp": timestamp,
-                    "customer_id": customer_id,
-                    "mode": args.mode,
-                    "recipient": recipient,
-                    "subject": f"OSHA Signals - {gen_date}",
-                    "status": "skipped_sent_today",
-                    "territory_code": territory_code or "",
-                    "content_filter": content_filter,
-                },
-            )
-        raise SystemExit(0)
 
     branding = resolve_branding(config)
 
