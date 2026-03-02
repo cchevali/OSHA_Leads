@@ -313,9 +313,6 @@ def get_or_compute(
     if not enabled():
         _emit_disabled(reason="disabled")
         return None
-    if not _api_key():
-        _emit_unavailable("missing_openai_api_key")
-        return None
     norm_key = str(item_key or "").strip()
     if not norm_key:
         return None
