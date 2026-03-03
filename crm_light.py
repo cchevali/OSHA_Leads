@@ -29,7 +29,7 @@ PLAN_MAX_RECIPIENTS: dict[str, int] = {
     "multi": 15,
 }
 PAID_PLAN_CODES = {"core", "multi"}
-CRM_SCHEMA_VERSION = 7
+CRM_SCHEMA_VERSION = 8
 EMAIL_REGEX = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
@@ -210,6 +210,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS send_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             subscriber_key TEXT NOT NULL,
+            recipient_email TEXT NOT NULL DEFAULT '',
             ts_utc TEXT NOT NULL,
             variant TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
@@ -398,6 +399,19 @@ def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
         _set_schema_version(conn, 7)
         version = 7
 
+    if version < 8:
+        if not _has_column(conn, "send_events", "recipient_email"):
+            conn.execute("ALTER TABLE send_events ADD COLUMN recipient_email TEXT NOT NULL DEFAULT ''")
+            conn.execute("UPDATE send_events SET recipient_email = '' WHERE recipient_email IS NULL")
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_send_events_sub_recipient_status_ts
+                ON send_events (subscriber_key, recipient_email, status, ts_utc)
+            """
+        )
+        _set_schema_version(conn, 8)
+        version = 8
+
 def ensure_database(db_path: str | Path | None = None) -> Path:
     path = resolve_crm_db_path(db_path)
     with open_conn(path) as conn:
@@ -522,26 +536,45 @@ def append_send_event(
     run_id: str,
     meta: dict[str, Any] | None,
     ts_utc: str,
+    recipient_email: str = "",
 ) -> int:
     sk = (subscriber_key or "").strip().lower()
     if not sk:
         raise ValueError("subscriber_key required")
     payload = json.dumps(meta or {}, sort_keys=True)
     ts = (ts_utc or utc_now_iso()).strip()
-    cur = conn.execute(
-        """
-        INSERT INTO send_events (subscriber_key, ts_utc, variant, status, run_id, meta_json)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            sk,
-            ts,
-            (variant or "").strip(),
-            (status or "").strip(),
-            (run_id or "").strip(),
-            payload,
-        ),
-    )
+    recipient = normalize_email(recipient_email)
+    if _has_column(conn, "send_events", "recipient_email"):
+        cur = conn.execute(
+            """
+            INSERT INTO send_events (subscriber_key, recipient_email, ts_utc, variant, status, run_id, meta_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sk,
+                recipient,
+                ts,
+                (variant or "").strip(),
+                (status or "").strip(),
+                (run_id or "").strip(),
+                payload,
+            ),
+        )
+    else:
+        cur = conn.execute(
+            """
+            INSERT INTO send_events (subscriber_key, ts_utc, variant, status, run_id, meta_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sk,
+                ts,
+                (variant or "").strip(),
+                (status or "").strip(),
+                (run_id or "").strip(),
+                payload,
+            ),
+        )
     conn.commit()
     return int(cur.lastrowid or 0)
 
@@ -896,7 +929,11 @@ def get_last_sent_at(conn: sqlite3.Connection, subscriber_key: str, start_date: 
     if not sk:
         return None
     params: list[str] = [sk]
-    where = "subscriber_key = ? AND status = 'SENT'"
+    where = (
+        "subscriber_key = ? "
+        "AND lower(trim(status)) = 'sent' "
+        "AND (trim(coalesce(variant, '')) = '' OR lower(trim(variant)) = 'daily')"
+    )
     sd = (start_date or "").strip()
     if sd:
         where += " AND ts_utc >= ?"
@@ -915,6 +952,65 @@ def get_last_sent_at(conn: sqlite3.Connection, subscriber_key: str, start_date: 
     if value:
         return str(value).strip()
     return None
+
+
+def get_last_sent_at_for_recipient(
+    conn: sqlite3.Connection,
+    subscriber_key: str,
+    recipient_email: str,
+    start_date: str | None = None,
+) -> str | None:
+    sk = normalize_subscriber_key(subscriber_key)
+    recipient = normalize_email(recipient_email)
+    if not sk or not recipient:
+        return None
+    params: list[str] = [sk, recipient]
+    where = (
+        "subscriber_key = ? "
+        "AND lower(trim(status)) = 'sent' "
+        "AND lower(trim(recipient_email)) = ? "
+        "AND (trim(coalesce(variant, '')) = '' OR lower(trim(variant)) = 'daily')"
+    )
+    sd = (start_date or "").strip()
+    if sd:
+        where += " AND ts_utc >= ?"
+        params.append(f"{sd}T00:00:00+00:00")
+
+    if _has_column(conn, "send_events", "recipient_email"):
+        row = conn.execute(
+            f"""
+            SELECT MAX(ts_utc) last_sent_at
+            FROM send_events
+            WHERE {where}
+            """,
+            tuple(params),
+        ).fetchone()
+        if row and row["last_sent_at"]:
+            return str(row["last_sent_at"]).strip()
+
+        legacy_params: list[str] = [sk]
+        legacy_where = (
+            "subscriber_key = ? "
+            "AND lower(trim(status)) = 'sent' "
+            "AND trim(coalesce(recipient_email, '')) = '' "
+            "AND (trim(coalesce(variant, '')) = '' OR lower(trim(variant)) = 'daily')"
+        )
+        if sd:
+            legacy_where += " AND ts_utc >= ?"
+            legacy_params.append(f"{sd}T00:00:00+00:00")
+        legacy_row = conn.execute(
+            f"""
+            SELECT MAX(ts_utc) last_sent_at
+            FROM send_events
+            WHERE {legacy_where}
+            """,
+            tuple(legacy_params),
+        ).fetchone()
+        if legacy_row and legacy_row["last_sent_at"]:
+            return str(legacy_row["last_sent_at"]).strip()
+        return None
+
+    return get_last_sent_at(conn, sk, start_date=sd or None)
 
 
 def get_first_sent_at(conn: sqlite3.Connection, subscriber_key: str, start_date: str | None = None) -> str | None:
@@ -948,9 +1044,10 @@ def get_recent_send_events(conn: sqlite3.Connection, subscriber_key: str, limit:
     if not sk:
         return []
     n = max(1, int(limit or 10))
+    recipient_expr = "recipient_email" if _has_column(conn, "send_events", "recipient_email") else "'' AS recipient_email"
     rows = conn.execute(
-        """
-        SELECT id, subscriber_key, ts_utc, variant, status, run_id, meta_json
+        f"""
+        SELECT id, subscriber_key, {recipient_expr}, ts_utc, variant, status, run_id, meta_json
         FROM send_events
         WHERE subscriber_key = ?
         ORDER BY ts_utc DESC, id DESC

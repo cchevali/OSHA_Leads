@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover
 import crm_light
 import trial_audit
 from email_footer import build_footer_html, build_footer_text
-from lead_filters import load_territory_definitions, resolve_territory_code
+from lead_filters import load_territory_definitions, merge_territory_definition, resolve_territory_code
 from send_digest_email import build_unsubscribe_payload, resolve_branding, send_email
 
 
@@ -65,6 +65,7 @@ def _count_status_live_primary_weekdays(
 
 
 _RE_SUBSCRIBER_KEY = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+_RE_STATE_CODE = re.compile(r"^[A-Z]{2}$")
 TERRITORY_ALIASES: dict[str, str] = {
     "TX_TRIANGLE_V1": "TX_TRI",
     "TX_TRIANGLE": "TX_TRI",
@@ -130,6 +131,52 @@ def _normalize_territory(value: str) -> str:
     if canonical in defs:
         return canonical
     return TERRITORY_ALIASES.get(raw, raw)
+
+
+def _normalize_states_input(raw_values: str | list[str]) -> list[str]:
+    parts: list[str] = []
+    if isinstance(raw_values, str):
+        candidates = [raw_values]
+    else:
+        candidates = list(raw_values or [])
+    for token in candidates:
+        for piece in str(token or "").split(","):
+            value = piece.strip().upper()
+            if value:
+                parts.append(value)
+    out: list[str] = []
+    seen: set[str] = set()
+    for state in parts:
+        if not _RE_STATE_CODE.match(state):
+            raise ValueError(f"invalid state code '{state}' (expected 2-letter USPS code)")
+        if state in seen:
+            continue
+        seen.add(state)
+        out.append(state)
+    if not out:
+        raise ValueError("states required")
+    return out
+
+
+def _state_set_territory_code(subscriber_key: str) -> str:
+    return f"{str(subscriber_key or '').strip().upper()}_STATES"
+
+
+def _build_state_set_territory_definition(subscriber_key: str, states: list[str]) -> tuple[str, dict[str, Any]]:
+    normalized_states = _normalize_states_input(states)
+    code = _state_set_territory_code(subscriber_key)
+    states_csv = ",".join(normalized_states)
+    return code, {
+        "display_name": f"{code} Trial States",
+        "label": f"Trial states {states_csv}",
+        "description": f"Trial-only full-state territory for {states_csv}.",
+        "kind": "STATE_SET",
+        "states": normalized_states,
+        "cbsas": [],
+        "aliases": [],
+        "office_patterns": [],
+        "fallback_city_patterns": [],
+    }
 
 
 def _resolve_sends_limit_from_state(trial_state: dict[str, Any] | None) -> int:
@@ -1408,10 +1455,15 @@ def main(argv: list[str] | None = None) -> int:
     add = sub.add_parser("add-trial", help="Upsert a trial participant into crm_light + leads DB.")
     add.add_argument("--subscriber-key", required=True)
     add.add_argument("--email", required=True)
-    add.add_argument(
+    add_scope = add.add_mutually_exclusive_group(required=True)
+    add_scope.add_argument(
         "--territory",
-        required=True,
         help="Territory code or alias (e.g., TX_TRIANGLE_V1 -> TX_TRI).",
+    )
+    add_scope.add_argument(
+        "--states",
+        default="",
+        help="Comma-separated state scope (for example: CA,OR,WA).",
     )
     add.add_argument("--tz", default="America/Chicago")
     add.add_argument("--start-date", required=True, help="YYYY-MM-DD")
@@ -1658,7 +1710,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         subscriber_key = _validate_subscriber_key(args.subscriber_key)
         email = _validate_email(args.email)
-        territory_code = _normalize_territory(args.territory)
+        if str(args.states or "").strip():
+            normalized_states = _normalize_states_input(str(args.states))
+            territory_code, definition = _build_state_set_territory_definition(subscriber_key, normalized_states)
+            merge_territory_definition(territory_code, definition)
+        else:
+            territory_code = _normalize_territory(args.territory)
         tz = (args.tz or "").strip() or "America/Chicago"
         start_date = (args.start_date or "").strip()
         date.fromisoformat(start_date)
@@ -1682,6 +1739,8 @@ def main(argv: list[str] | None = None) -> int:
         print("OK add-trial")
         print(f"subscriber_key={subscriber_key}")
         print(f"territory_code={territory_code}")
+        if str(args.states or "").strip():
+            print(f"states={','.join(_normalize_states_input(str(args.states)))}")
         print(f"start_date={start_date}")
         print(f"sends_limit={sends_limit}")
         return 0

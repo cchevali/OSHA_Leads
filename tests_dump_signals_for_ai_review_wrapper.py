@@ -15,6 +15,9 @@ class TestDumpSignalsForAiReviewWrapper(unittest.TestCase):
         self.assertIn("--dry-run", text.lower())
         self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
         self.assertIn("--all-outreach", text.lower())
+        self.assertIn("$States", text)
+        self.assertIn("--states", text.lower())
+        self.assertIn("AI_REVIEW_DUMP_SCOPE=STATES", text)
 
 if __name__ == "__main__":
     unittest.main()

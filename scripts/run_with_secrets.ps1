@@ -58,6 +58,86 @@ function Invoke-NativeAllowStderr {
   }
 }
 
+function Resolve-PythonExePath {
+  $pythonCmd = Get-Command -Name 'python' -ErrorAction SilentlyContinue
+  if ($pythonCmd -and $pythonCmd.Source -and (Test-Path -LiteralPath $pythonCmd.Source)) {
+    try { return (Resolve-Path -LiteralPath $pythonCmd.Source).Path } catch { return $pythonCmd.Source }
+  }
+
+  $candidates = New-Object System.Collections.Generic.List[string]
+  $localAppData = ([string]$env:LOCALAPPDATA).Trim()
+  if ($localAppData) {
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python313\python.exe'))
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python312\python.exe'))
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python311\python.exe'))
+  }
+  [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python313\python.exe'))
+  [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python312\python.exe'))
+  [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python311\python.exe'))
+  [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python310\python.exe'))
+  [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python\python.exe'))
+  [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python313\python.exe'))
+  [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python312\python.exe'))
+  [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python311\python.exe'))
+
+  foreach ($candidate in @($candidates)) {
+    if (-not $candidate) { continue }
+    if (Test-Path -LiteralPath $candidate) {
+      try { return (Resolve-Path -LiteralPath $candidate).Path } catch { return $candidate }
+    }
+  }
+
+  $userRoots = @('C:\Users\lever', 'C:\Users\Public')
+  foreach ($root in $userRoots) {
+    $candidate = Join-Path $root 'AppData\Local\Programs\Python\Python313\python.exe'
+    if (Test-Path -LiteralPath $candidate) {
+      try { return (Resolve-Path -LiteralPath $candidate).Path } catch { return $candidate }
+    }
+  }
+
+  return $null
+}
+
+function Normalize-CommandForExecution {
+  param(
+    [string]$Exe,
+    [string[]]$CommandArgs
+  )
+
+  $resolvedExe = [string]$Exe
+  $resolvedArgs = @($CommandArgs)
+  $requested = ([string]$Exe).Trim().ToLowerInvariant()
+
+  if ($requested -eq 'py') {
+    $pythonExe = Resolve-PythonExePath
+    if ($pythonExe) {
+      $resolvedExe = $pythonExe
+      if ($resolvedArgs.Count -ge 1) {
+        $versionArg = ([string]$resolvedArgs[0]).Trim().ToLowerInvariant()
+        if ($versionArg -match '^-3(\.\d+)?$') {
+          if ($resolvedArgs.Count -ge 2) {
+            $resolvedArgs = $resolvedArgs[1..($resolvedArgs.Count - 1)]
+          } else {
+            $resolvedArgs = @()
+          }
+        }
+      }
+    }
+  } elseif ($requested -eq 'python') {
+    if (-not (Get-Command -Name 'python' -ErrorAction SilentlyContinue)) {
+      $pythonExe = Resolve-PythonExePath
+      if ($pythonExe) {
+        $resolvedExe = $pythonExe
+      }
+    }
+  }
+
+  return @{
+    Exe = $resolvedExe
+    Args = @($resolvedArgs)
+  }
+}
+
 try {
   $Diagnostics = $false
   $CheckDecrypt = $false
@@ -194,15 +274,26 @@ try {
   }
 
   $exe = $Command[0]
-  if (-not (Get-Command -Name $exe -ErrorAction SilentlyContinue)) {
-    Fail ("Command not found: " + $exe)
-  }
-  $args = @()
+  $childArgs = @()
   if ($Command.Count -gt 1) {
-    $args = $Command[1..($Command.Count - 1)]
+    $childArgs = $Command[1..($Command.Count - 1)]
   }
 
-  $runResult = Invoke-NativeAllowStderr -FilePath $exe -ArgumentList $args
+  $normalized = Normalize-CommandForExecution -Exe $exe -CommandArgs $childArgs
+  $exe = [string]$normalized.Exe
+  $childArgs = @()
+  foreach ($arg in @($normalized['Args'])) {
+    if ($null -eq $arg) {
+      continue
+    }
+    $childArgs += [string]$arg
+  }
+
+  if (-not (Get-Command -Name $exe -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $exe)) {
+    Fail ("Command not found: " + $exe)
+  }
+
+  $runResult = Invoke-NativeAllowStderr -FilePath $exe -ArgumentList $childArgs
   foreach ($line in @($runResult.Output)) {
     Write-Output $line
   }

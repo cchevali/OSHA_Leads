@@ -163,8 +163,13 @@ def _parse_timestamp(value: str) -> datetime | None:
         return None
 
 
-def _parse_outreach_states(raw: str) -> list[str]:
-    parts = [str(x or "").strip().upper() for x in str(raw or "").split(",")]
+def _parse_outreach_states(raw: str | list[str]) -> list[str]:
+    parts: list[str] = []
+    if isinstance(raw, list):
+        for token in raw:
+            parts.extend([str(x or "").strip().upper() for x in str(token or "").split(",")])
+    else:
+        parts = [str(x or "").strip().upper() for x in str(raw or "").split(",")]
     states: list[str] = []
     seen: set[str] = set()
     for value in parts:
@@ -298,6 +303,15 @@ def _group_for_territory(code: str, definitions: dict[str, dict[str, Any]]) -> d
     }
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    dt = value
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _fetch_selected_for_group(
     conn: sqlite3.Connection,
     *,
@@ -305,8 +319,11 @@ def _fetch_selected_for_group(
     until_date: date,
     states: list[str],
     territory_code: str,
+    strict_after: datetime | None = None,
+    subscriber_cbsa_allowlist: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     since_days = max(1, int((_local_today_date() - since_date).days) + 1)
+    strict_after_utc = _as_utc(strict_after)
     leads, _low_fallback, _stats = sde.get_leads_for_period(
         conn=conn,
         states=states,
@@ -318,6 +335,7 @@ def _fetch_selected_for_group(
         include_low_fallback=False,
         include_changed=True,
         use_opened_window=True,
+        subscriber_cbsa_allowlist=list(subscriber_cbsa_allowlist or []),
     )
     selected: list[dict[str, Any]] = []
     matched_by_first_seen = 0
@@ -325,9 +343,12 @@ def _fetch_selected_for_group(
     for lead in list(leads or []):
         first_seen_dt = _parse_timestamp(str(lead.get("first_seen_at") or ""))
         if first_seen_dt is not None:
-            if first_seen_dt.tzinfo is None:
-                first_seen_dt = first_seen_dt.replace(tzinfo=timezone.utc)
-            first_seen_local = first_seen_dt.astimezone().date()
+            first_seen_utc = _as_utc(first_seen_dt)
+            if first_seen_utc is None:
+                continue
+            if strict_after_utc is not None and first_seen_utc <= strict_after_utc:
+                continue
+            first_seen_local = first_seen_utc.astimezone().date()
             if since_date <= first_seen_local <= until_date:
                 selected.append(dict(lead))
                 matched_by_first_seen += 1
@@ -336,6 +357,8 @@ def _fetch_selected_for_group(
         try:
             opened_date = _parse_date(opened)
         except Exception:
+            continue
+        if strict_after_utc is not None and opened_date <= strict_after_utc.astimezone().date():
             continue
         if since_date <= opened_date <= until_date:
             selected.append(dict(lead))
@@ -366,6 +389,156 @@ def _render_group_sections(
             continue
         action_blocks.append(_format_signal_block(lead, decision))
     return action_blocks, suppressed_blocks
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+        LIMIT 1
+        """,
+        (str(table or "").strip(),),
+    ).fetchone()
+    return row is not None
+
+
+def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except Exception:
+        return False
+    return any(str(row[1]).strip().lower() == str(column).strip().lower() for row in rows)
+
+
+def _parse_recipient_json(raw: str) -> list[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return []
+    if not isinstance(payload, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in payload:
+        email = ""
+        if isinstance(item, dict):
+            email = crm_light.normalize_email(str(item.get("email") or ""))
+        else:
+            email = crm_light.normalize_email(str(item or ""))
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        out.append(email)
+    return out
+
+
+def _subscriber_states_for_scope(territory_code: str, definitions: dict[str, dict[str, Any]]) -> tuple[str, list[str]]:
+    raw = str(territory_code or "").strip()
+    if not raw:
+        return "", []
+    canonical = resolve_territory_code(raw, definitions)
+    if canonical in definitions:
+        states = [str(s).strip().upper() for s in (definitions[canonical].get("states") or []) if str(s).strip()]
+        return canonical, states
+    fallback = raw.strip().upper()
+    if len(fallback) == 2 and fallback.isalpha():
+        return "", [fallback]
+    return "", []
+
+
+def _load_subscriber_review_targets(definitions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    try:
+        crm_db_path = crm_light.crm_light_db_path()
+    except Exception:
+        return []
+    if not crm_db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(crm_db_path))
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return []
+
+    try:
+        if not _table_exists(conn, "subscribers"):
+            return []
+        status_column = "status" if _table_has_column(conn, "subscribers", "status") else ""
+        if not status_column:
+            return []
+
+        has_entitlements = _table_exists(conn, "subscriber_entitlements")
+        has_recipients_json = has_entitlements and _table_has_column(conn, "subscriber_entitlements", "recipients_json")
+        has_entitlement_email = has_entitlements and _table_has_column(conn, "subscriber_entitlements", "email")
+        has_cbsa = _table_exists(conn, "subscriber_cbsa")
+
+        ent_recipients_expr = "se.recipients_json AS entitlement_recipients_json" if has_recipients_json else "'' AS entitlement_recipients_json"
+        ent_email_expr = "se.email AS entitlement_email" if has_entitlement_email else "'' AS entitlement_email"
+        join_entitlements = "LEFT JOIN subscriber_entitlements se ON se.subscriber_key = s.subscriber_key" if has_entitlements else ""
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                s.subscriber_key AS subscriber_key,
+                s.email AS subscriber_email,
+                s.territory_code AS territory_code,
+                s.status AS subscriber_status,
+                {ent_recipients_expr},
+                {ent_email_expr}
+            FROM subscribers s
+            {join_entitlements}
+            WHERE lower(trim(s.status)) IN ('trial', 'live', 'paid', 'active')
+            ORDER BY lower(trim(s.status)), lower(trim(s.subscriber_key))
+            """
+        ).fetchall()
+
+        targets: list[dict[str, Any]] = []
+        for row in rows:
+            sk = crm_light.normalize_subscriber_key(str(row["subscriber_key"] or ""))
+            if not sk:
+                continue
+            status = str(row["subscriber_status"] or "").strip().lower()
+            territory, states = _subscriber_states_for_scope(str(row["territory_code"] or ""), definitions)
+            if not states:
+                continue
+            recipients = _parse_recipient_json(str(row["entitlement_recipients_json"] or ""))
+            if not recipients:
+                primary = crm_light.normalize_email(str(row["subscriber_email"] or ""))
+                if primary:
+                    recipients = [primary]
+                else:
+                    entitlement_email = crm_light.normalize_email(str(row["entitlement_email"] or ""))
+                    if entitlement_email:
+                        recipients = [entitlement_email]
+            if not recipients:
+                continue
+            cbsa_allowlist: list[str] = []
+            if has_cbsa:
+                try:
+                    cbsa_allowlist = crm_light.get_subscriber_cbsa_allowlist(conn, sk)
+                except Exception:
+                    cbsa_allowlist = []
+            targets.append(
+                {
+                    "subscriber_key": sk,
+                    "status": status,
+                    "territory_code": territory,
+                    "states": states,
+                    "recipients": recipients,
+                    "subscriber_email": crm_light.normalize_email(str(row["subscriber_email"] or "")),
+                    "cbsa_allowlist": cbsa_allowlist,
+                }
+            )
+        return targets
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _resolve_default_audits_dir() -> Path:
@@ -437,9 +610,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Dump territory OSHA signals for manual priority review.")
     ap.add_argument("--territory", default="", help="Territory code (for example TX_TRI).")
     ap.add_argument(
+        "--states",
+        nargs="+",
+        default=[],
+        help="Explicit state scope (comma-separated or list form, for example: CA,OR,WA).",
+    )
+    ap.add_argument(
         "--all-outreach",
         action="store_true",
-        help="Dump all OUTREACH_STATES plus configured trial territories in one grouped output.",
+        help="Dump all OUTREACH_STATES in one grouped output.",
     )
     ap.add_argument(
         "--for-ai-review",
@@ -447,7 +626,7 @@ def main() -> int:
         help="Wrap output in a self-contained AI triage prompt header/footer.",
     )
     ap.add_argument("--since", default=_local_today_date().isoformat(), help="Inclusive start date (YYYY-MM-DD).")
-    ap.add_argument("--until", default="", help="Inclusive end date (YYYY-MM-DD). Defaults to --since.")
+    ap.add_argument("--until", default="", help="Inclusive end date (YYYY-MM-DD). Defaults to local today.")
     ap.add_argument(
         "--db",
         default=str(scoring_paths.default_leads_db_path()),
@@ -463,7 +642,7 @@ def main() -> int:
     raw_until = str(args.until or "").strip()
     try:
         since_date = _parse_date(args.since)
-        until_date = _parse_date(raw_until) if raw_until else since_date
+        until_date = _parse_date(raw_until) if raw_until else _local_today_date()
     except Exception:
         print("ERR_SIGNAL_REVIEW_INVALID_DATE", file=sys.stderr)
         return 2
@@ -475,29 +654,44 @@ def main() -> int:
     groups: list[dict[str, Any]] = []
     territory_code = ""
     states: list[str] = []
-    trial_territories: list[str] = []
+    states_arg_present = bool(list(args.states or []))
+    states_scope = _parse_outreach_states(list(args.states or []))
+    territory_arg = str(args.territory or "").strip()
+    if states_arg_present and not states_scope:
+        print("ERR_SIGNAL_REVIEW_STATES_REQUIRED", file=sys.stderr)
+        return 2
+    scope_count = int(bool(args.all_outreach)) + int(bool(territory_arg)) + int(states_arg_present)
+    if scope_count > 1:
+        print("ERR_SIGNAL_REVIEW_SCOPE_CONFLICT", file=sys.stderr)
+        return 2
+
     effective_all_outreach = bool(args.all_outreach)
-    if args.print_config and (not effective_all_outreach) and (not str(args.territory or "").strip()):
+    if args.print_config and scope_count == 0:
         effective_all_outreach = True
 
-    if effective_all_outreach:
+    if states_scope:
+        states = list(states_scope)
+        groups.append(
+            {
+                "kind": "states",
+                "code": ",".join(states),
+                "states": list(states),
+                "territory_code": "",
+                "header": f"===== STATES {','.join(states)} =====",
+            }
+        )
+    elif effective_all_outreach:
         states = _parse_outreach_states(os.getenv("OUTREACH_STATES", ""))
         if not states:
             print("ERR_SIGNAL_REVIEW_OUTREACH_STATES_MISSING", file=sys.stderr)
             return 2
         for state in states:
             groups.append(_group_for_state(state))
-        trial_territories = sorted(_configured_trial_territory_codes(definitions))
-        for code in trial_territories:
-            group = _group_for_territory(code, definitions)
-            if not group["states"]:
-                continue
-            groups.append(group)
     else:
-        if not str(args.territory or "").strip():
+        if not territory_arg:
             print("ERR_SIGNAL_REVIEW_TERRITORY_REQUIRED", file=sys.stderr)
             return 2
-        territory_code = resolve_territory_code(str(args.territory or ""), definitions)
+        territory_code = resolve_territory_code(territory_arg, definitions)
         if territory_code not in definitions:
             print(f"ERR_SIGNAL_REVIEW_UNKNOWN_TERRITORY code={args.territory}", file=sys.stderr)
             return 2
@@ -519,9 +713,11 @@ def main() -> int:
     effective_data_dir = str(data_dir_resolution.effective_path)
     data_dir_source = str(data_dir_resolution.source or "default")
     states_csv = ",".join(states)
-    territories_csv = ",".join(trial_territories if effective_all_outreach else ([territory_code] if territory_code else []))
+    territories_csv = ",".join(([territory_code] if territory_code else []))
     if data_dir_resolution.warning_token:
         print(data_dir_resolution.warning_token)
+    if states_scope:
+        print(f"AI_REVIEW_DUMP_SCOPE=STATES states={states_csv}")
     print(f"AI_REVIEW_DUMP_OUTPUT_DIR={out_dir}")
     print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
     print("AI_REVIEW_DUMP_FILTER_BASIS=FIRST_SEEN_FALLBACK_OPENED")
@@ -532,7 +728,7 @@ def main() -> int:
         print(f"AI_REVIEW_DUMP_OUTPUT_DIR={out_dir}")
         print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
         print(f"AI_REVIEW_DUMP_SINCE={since_date.isoformat()}")
-        print(f"AI_REVIEW_DUMP_UNTIL={until_date.isoformat() if raw_until else ''}")
+        print(f"AI_REVIEW_DUMP_UNTIL={until_date.isoformat()}")
         print(f"AI_REVIEW_DUMP_STATES={states_csv}")
         print(f"AI_REVIEW_DUMP_TERRITORIES={territories_csv}")
         return 0
@@ -544,10 +740,15 @@ def main() -> int:
     conn = sqlite3.connect(str(db_path))
     try:
         rendered_sections: list[str] = []
-        total_actionable = 0
+        outreach_actionable = 0
+        subscribers_actionable = 0
         all_selected: list[dict[str, Any]] = []
         total_matched_by_first_seen = 0
         total_matched_by_opened_fallback = 0
+        rolling_days = max(0, int((until_date - since_date).days))
+        if effective_all_outreach:
+            rendered_sections.append(f"OUTREACH STATES — rolling {rolling_days} days through {until_date.isoformat()}")
+            rendered_sections.append("")
         for group in groups:
             selected, matched_by_first_seen, matched_by_opened_fallback = _fetch_selected_for_group(
                 conn,
@@ -565,7 +766,7 @@ def main() -> int:
                 selected,
                 include_suppressed=bool(args.include_suppressed),
             )
-            total_actionable += len(action_blocks)
+            outreach_actionable += len(action_blocks)
             if action_blocks:
                 rendered_sections.extend(action_blocks)
             else:
@@ -576,12 +777,91 @@ def main() -> int:
                 rendered_sections.extend(suppressed_blocks)
             if effective_all_outreach:
                 rendered_sections.append("")
+
+        if effective_all_outreach:
+            rendered_sections.append(f"TRIAL/LIVE SUBSCRIBERS — since last successful send through {until_date.isoformat()}")
+            rendered_sections.append("")
+            subscriber_targets = _load_subscriber_review_targets(definitions)
+            if not subscriber_targets:
+                rendered_sections.append("NO_SUBSCRIBERS_FOR_REVIEW")
+                rendered_sections.append("")
+            else:
+                crm_conn: sqlite3.Connection | None = None
+                try:
+                    crm_db_path = crm_light.crm_light_db_path()
+                    if crm_db_path.exists():
+                        crm_conn = sqlite3.connect(str(crm_db_path))
+                        crm_conn.row_factory = sqlite3.Row
+                    for target in subscriber_targets:
+                        subscriber_key = str(target.get("subscriber_key") or "").strip().lower()
+                        if not subscriber_key:
+                            continue
+                        subscriber_status = str(target.get("status") or "").strip().lower()
+                        subscriber_territory = str(target.get("territory_code") or "").strip().upper()
+                        subscriber_states = [str(s).strip().upper() for s in (target.get("states") or []) if str(s).strip()]
+                        cbsa_allowlist = [str(x).strip() for x in (target.get("cbsa_allowlist") or []) if str(x).strip()]
+                        recipients = [crm_light.normalize_email(str(x)) for x in (target.get("recipients") or []) if str(x).strip()]
+                        rendered_sections.append(
+                            f"===== SUBSCRIBER {subscriber_key} status={subscriber_status} territory={subscriber_territory} ====="
+                        )
+                        if not recipients:
+                            rendered_sections.append("NO_RECIPIENTS_CONFIGURED")
+                            rendered_sections.append("")
+                            continue
+                        for recipient in recipients:
+                            last_sent_at = ""
+                            if crm_conn is not None:
+                                try:
+                                    last_sent_at = str(
+                                        crm_light.get_last_sent_at_for_recipient(
+                                            crm_conn,
+                                            subscriber_key,
+                                            recipient,
+                                        )
+                                        or ""
+                                    ).strip()
+                                except Exception:
+                                    last_sent_at = ""
+                            cutoff_dt = _parse_timestamp(last_sent_at) if last_sent_at else None
+                            cutoff_label = last_sent_at if last_sent_at else f"fallback_since={since_date.isoformat()}"
+                            rendered_sections.append(f"---- recipient {recipient} since {cutoff_label} ----")
+                            selected, _matched_by_first_seen, _matched_by_opened_fallback = _fetch_selected_for_group(
+                                conn,
+                                since_date=since_date,
+                                until_date=until_date,
+                                states=subscriber_states,
+                                territory_code=subscriber_territory,
+                                strict_after=cutoff_dt,
+                                subscriber_cbsa_allowlist=cbsa_allowlist,
+                            )
+                            action_blocks, suppressed_blocks = _render_group_sections(
+                                selected,
+                                include_suppressed=bool(args.include_suppressed),
+                            )
+                            subscribers_actionable += len(action_blocks)
+                            if action_blocks:
+                                rendered_sections.extend(action_blocks)
+                            else:
+                                rendered_sections.append("NO_SIGNALS_SINCE_LAST_SEND")
+                            if args.include_suppressed and suppressed_blocks:
+                                rendered_sections.append("SUPPRESSED (skip)")
+                                rendered_sections.extend(suppressed_blocks)
+                            rendered_sections.append("")
+                finally:
+                    if crm_conn is not None:
+                        try:
+                            crm_conn.close()
+                        except Exception:
+                            pass
     finally:
         conn.close()
 
     max_first_seen = _max_first_seen_iso(all_selected)
     max_date_opened = _max_date_opened_iso(all_selected)
-    print(f"AI_REVIEW_DUMP_MATCHED_TOTAL={total_actionable}")
+    total_actionable = outreach_actionable + subscribers_actionable
+    print(f"AI_REVIEW_DUMP_MATCHED_TOTAL={outreach_actionable}")
+    print(f"AI_REVIEW_DUMP_OUTREACH_MATCHED_TOTAL={outreach_actionable}")
+    print(f"AI_REVIEW_DUMP_SUBSCRIBERS_MATCHED_TOTAL={subscribers_actionable}")
     print(f"AI_REVIEW_DUMP_MATCHED_BY_FIRST_SEEN={total_matched_by_first_seen}")
     print(f"AI_REVIEW_DUMP_MATCHED_BY_OPENED_FALLBACK={total_matched_by_opened_fallback}")
     print(f"AI_REVIEW_DUMP_MAX_FIRST_SEEN={max_first_seen}")

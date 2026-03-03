@@ -733,6 +733,11 @@ cd C:\dev\OSHA_Leads
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1
 ```
 
+Evening scheduler note:
+
+- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with explicit states `TX,CA,FL,OR,WA` before dumping AI review signals.
+- WA/OR can still be zero on a given day when upstream data has no in-window records.
+
 Common variants:
 
 ```powershell
@@ -744,6 +749,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_a
 
 # explicit window / scope override
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -Since 2026-03-01 -Until 2026-03-01 -AllOutreach
+
+# explicit state-scope override (manual/nightly include set)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -Since 2026-03-03 -Until 2026-03-03 -States CA,OR,WA
 ```
 
 Output location is DATA_DIR-aware:
@@ -771,6 +779,7 @@ Machine-readable path tokens:
 - `AI_REVIEW_DUMP_OUTPUT_PATH=<abs_path>`
 - `AI_REVIEW_DUMP_DATA_DIR=<effective_abs_path|empty>`
 - `AI_REVIEW_DUMP_DATA_DIR_SOURCE=<inherited|dotenv|default>`
+- `AI_REVIEW_DUMP_SCOPE=STATES states=<CSV>` (emitted when `-States` / `--states` scope override is used)
 - `AI_REVIEW_DUMP_FILTER_BASIS=FIRST_SEEN_FALLBACK_OPENED`
 - `AI_REVIEW_DUMP_MATCHED_BY_FIRST_SEEN=<n>`
 - `AI_REVIEW_DUMP_MATCHED_BY_OPENED_FALLBACK=<n>`
@@ -1297,6 +1306,7 @@ Expected markers:
 - `dry_run=YES`
 - `TRIAL_EVENT status=DRY_RUN`
 - `send_events` appended with `status=DRY_RUN` (does not count toward expiry)
+- Live smoke previews (`--test-send-daily` without `--dry-run`) append `status=TEST_SENT` and do not advance "since last successful send" subscriber cutoffs.
 
 ### Expiry QA (Limit=1)
 

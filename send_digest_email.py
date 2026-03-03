@@ -65,6 +65,7 @@ PILOT_WHITELIST_DEFAULT = ["cchevali+oshasmoke@gmail.com"]
 DEFAULT_REPLY_TO = "support@microflowops.com"
 DEFAULT_FROM_LOCAL_PART = "alerts"
 LOW_FALLBACK_LIMIT = 5
+TRIAL_STATE_SET_CAP = 25
 HEALTH_MIN_SHARE_DEFAULT = 0.1
 HEALTH_MIN_TOTAL_DEFAULT = 20
 SEND_WINDOW_MINUTES_DEFAULT = 20
@@ -357,6 +358,20 @@ def _tier_counts(leads: list[dict]) -> dict[str, int]:
         else:
             counts["low"] += 1
     return counts
+
+
+def _normalize_state_codes(raw_states: list[Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in list(raw_states or []):
+        state = str(item or "").strip().upper()
+        if len(state) != 2 or not state.isalpha():
+            continue
+        if state in seen:
+            continue
+        seen.add(state)
+        out.append(state)
+    return out
 
 
 def _select_snapshot_rows(
@@ -3091,14 +3106,19 @@ def main() -> None:
     config = load_customer_config(args.customer)
     customer_id = config["customer_id"]
     states = [state.upper() for state in config.get("states", [])]
+    subscriber_key = str(config.get("subscriber_key") or "").strip().lower()
 
     subscriber_profile = _load_subscriber_profile(args.db, config.get("subscriber_key"))
     if subscriber_profile and not subscriber_profile.get("active", 0):
         print("CONFIG_ERROR subscriber inactive", file=sys.stderr)
         raise SystemExit(1)
 
+    territory_definitions = load_territory_definitions()
     territory_code_raw = subscriber_profile.get("territory_code") or config.get("territory_code")
-    territory_code = resolve_territory_code(territory_code_raw, load_territory_definitions())
+    territory_code = resolve_territory_code(territory_code_raw, territory_definitions)
+    territory = territory_definitions.get(territory_code) or {}
+    territory_kind = str(territory.get("kind") or "LEGACY_REGEX").strip().upper()
+    territory_states = _normalize_state_codes(list(territory.get("states") or []))
     tz = resolve_timezone(config, territory_code)
     now_local = datetime.now(tz)
     gen_date = now_local.strftime("%Y-%m-%d")
@@ -3113,7 +3133,6 @@ def main() -> None:
     baseline_on_first_send = bool(config.get("baseline_on_first_send", True))
     last_sent_at = subscriber_profile.get("last_sent_at") if subscriber_profile else None
     allow_live_send = bool(config.get("allow_live_send", False))
-    subscriber_key = config.get("subscriber_key") or ""
     config_recipients = config.get("email_recipients") if isinstance(config.get("email_recipients"), list) else []
     first_config_recipient = config_recipients[0] if config_recipients else ""
     subscriber_email = subscriber_profile.get("email") or first_config_recipient or ""
@@ -3131,6 +3150,19 @@ def main() -> None:
     send_enabled_ok = True
     if subscriber_key:
         send_enabled_ok = bool(subscriber_profile.get("send_enabled"))
+
+    trial_subscriber = _is_trial_subscriber(subscriber_key)
+    trial_state_set_selection = bool(args.mode == "daily" and trial_subscriber and territory_kind == "STATE_SET")
+    if trial_state_set_selection:
+        normalized_selection_states = _normalize_state_codes(states)
+        if territory_states:
+            normalized_selection_states = territory_states
+        if normalized_selection_states:
+            states = list(normalized_selection_states)
+        print(
+            "TRIAL_STATE_SET_SELECTION "
+            f"territory_code={territory_code} states={','.join(states)}"
+        )
 
     missing = preflight_missing_vars(config, args.dry_run)
     if missing:
@@ -3322,7 +3354,7 @@ def main() -> None:
     elif args.mode == "daily":
         include_changed = False
     # summary_label set after leads computed
-    trial_territory_debug_enabled = _is_trial_subscriber(config.get("subscriber_key"))
+    trial_territory_debug_enabled = bool(trial_subscriber)
     selection_content_filter = content_filter
     if args.mode == "daily" and trial_territory_debug_enabled:
         # Always run deterministic signal rules on the full territory-eligible pool first.
@@ -3496,6 +3528,17 @@ def main() -> None:
             filter_stats["after_content_filter"] = len(leads)
             filter_stats["after_dedupe"] = len(leads)
             filter_stats["final_leads"] = len(leads)
+        if trial_state_set_selection:
+            total_pre_cap = len(leads)
+            if total_pre_cap > TRIAL_STATE_SET_CAP:
+                leads = list(leads[:TRIAL_STATE_SET_CAP])
+                filter_stats["after_dedupe"] = len(leads)
+                filter_stats["final_leads"] = len(leads)
+                filter_stats["shown_priority_counts"] = _tier_counts(leads)
+                print(
+                    "TRIAL_STATE_SET_CAPPED=1 "
+                    f"cap={TRIAL_STATE_SET_CAP} total_pre_cap={total_pre_cap}"
+                )
         if triage_overlay_stats:
             shown_counts = {"high": 0, "medium": 0, "low": 0}
             for lead in leads:
@@ -3744,6 +3787,19 @@ def main() -> None:
     prefs_checked = False
     prefs_ok = True
     prefs_detail = ""
+    crm_send_events_conn: sqlite3.Connection | None = None
+    crm_send_event_run_id = (
+        f"{str(args.mode or '').strip().upper()}:{str(territory_code or '').strip().upper()}:{territory_date}:{digest_hash[:16]}"
+    )
+    if live_allowed and not args.dry_run and not args.no_state_mutation:
+        try:
+            crm_light.ensure_database()
+            crm_send_events_conn = crm_light.connect()
+            crm_light.init_schema(crm_send_events_conn)
+        except Exception as exc:
+            crm_send_events_conn = None
+            logger.warning("CRM send_events logging unavailable: %s", exc)
+
     if args.mode == "daily" and content_filter not in {"all", "low"}:
         low_total = int(low_available_today)
         low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_tier_counts else 0
@@ -4307,6 +4363,34 @@ def main() -> None:
                 "content_filter": content_filter,
             },
         )
+        if crm_send_events_conn is not None:
+            try:
+                event_status = "SENT" if success else "FAILED"
+                crm_light.append_send_event(
+                    crm_send_events_conn,
+                    subscriber_key=subscriber_key or customer_id,
+                    recipient_email=recipient,
+                    variant=str(args.mode or "").strip().upper(),
+                    status=event_status,
+                    run_id=crm_send_event_run_id,
+                    meta={
+                        "customer_id": customer_id,
+                        "mode": str(args.mode or "").strip().lower(),
+                        "territory_code": str(territory_code or "").strip().upper(),
+                        "digest_hash": digest_hash,
+                        "smtp_message_id": str(message_id or ""),
+                        "error": str(error or ""),
+                    },
+                    ts_utc=datetime.now(timezone.utc).isoformat(),
+                )
+            except Exception as exc:
+                logger.warning("send_events append failed for %s: %s", recipient, exc)
+
+    if crm_send_events_conn is not None:
+        try:
+            crm_send_events_conn.close()
+        except Exception:
+            pass
 
     if not args.smoke_cchevali:
         print("\n" + "=" * 72)

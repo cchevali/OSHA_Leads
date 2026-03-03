@@ -6,9 +6,11 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
+import crm_light
 from tools import dump_signals_for_review as dump_tool
 from tools import import_ai_triage as import_tool
 
@@ -370,34 +372,13 @@ class TestSignalReviewTools(unittest.TestCase):
         self.assertIn("ai_cache_rows=", text)
         self.assertIn("ai_cache_rows_for_prompt=", text)
 
-    def test_dump_signals_all_outreach_groups_by_state_and_territory(self):
+    def test_dump_signals_all_outreach_groups_by_state(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             db_path = tmp / "osha.sqlite"
             sqlite3.connect(str(db_path)).close()
 
             def _fake_get_leads_for_period(*, states, territory_code=None, **kwargs):
-                if territory_code == "TX_TRI":
-                    return (
-                        [
-                            {
-                                "activity_nr": "9003",
-                                "establishment_name": "Trial Territory Co",
-                                "site_city": "Houston",
-                                "site_state": "TX",
-                                "site_zip": "77001",
-                                "naics": "236220",
-                                "naics_desc": "Commercial Building",
-                                "inspection_type": "Inspection",
-                                "scope": "Partial",
-                                "case_status": "OPEN",
-                                "date_opened": "2026-02-20",
-                                "first_seen_at": "2026-02-20T10:00:00Z",
-                            }
-                        ],
-                        [],
-                        {},
-                    )
                 if list(states or []) == ["TX"]:
                     return (
                         [
@@ -459,7 +440,6 @@ class TestSignalReviewTools(unittest.TestCase):
             with (
                 mock.patch.dict(os.environ, env, clear=False),
                 mock.patch.object(dump_tool, "load_territory_definitions", return_value=definitions),
-                mock.patch.object(dump_tool, "_configured_trial_territory_codes", return_value=["TX_TRI"]),
                 mock.patch.object(dump_tool.sde, "get_leads_for_period", side_effect=_fake_get_leads_for_period),
                 mock.patch.object(dump_tool.triage_overlay, "triage", side_effect=_fake_triage),
                 redirect_stdout(out),
@@ -479,12 +459,12 @@ class TestSignalReviewTools(unittest.TestCase):
                     code = dump_tool.main()
             self.assertEqual(code, 0)
             text = out.getvalue()
+            self.assertIn("OUTREACH STATES — rolling", text)
             self.assertIn("===== STATE TX =====", text)
             self.assertIn("===== STATE CA =====", text)
-            self.assertIn("===== TERRITORY TX_TRI =====", text)
             self.assertIn("SIGNAL 9001", text)
             self.assertIn("SIGNAL 9002", text)
-            self.assertIn("SIGNAL 9003", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTREACH_MATCHED_TOTAL=2", text)
             self.assertNotIn("SIGNAL_REVIEW_OUT=", text)
 
     def test_dump_signals_requires_territory_without_all_outreach(self):
@@ -867,6 +847,131 @@ class TestSignalReviewTools(unittest.TestCase):
             self.assertNotIn("SIGNAL 9502", text)
             self.assertIn("SIGNAL 9503", text)
 
+    def test_dump_signals_states_scope_includes_ca_and_excludes_tx(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            conn = sqlite3.connect(str(db_path))
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE inspections(
+                        activity_nr TEXT,
+                        date_opened TEXT,
+                        inspection_type TEXT,
+                        scope TEXT,
+                        case_status TEXT,
+                        establishment_name TEXT,
+                        site_city TEXT,
+                        site_state TEXT,
+                        site_zip TEXT,
+                        naics TEXT,
+                        naics_desc TEXT,
+                        violations_count INTEGER,
+                        emphasis TEXT,
+                        lead_score INTEGER,
+                        first_seen_at TEXT,
+                        last_seen_at TEXT,
+                        source_url TEXT,
+                        parse_invalid INTEGER DEFAULT 0
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO inspections(
+                        activity_nr,date_opened,inspection_type,scope,case_status,establishment_name,
+                        site_city,site_state,site_zip,naics,naics_desc,violations_count,emphasis,lead_score,
+                        first_seen_at,last_seen_at,source_url,parse_invalid
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                    """,
+                    (
+                        "ca1",
+                        "2026-03-02",
+                        "Complaint",
+                        "Partial",
+                        "OPEN",
+                        "California Signal Co",
+                        "Los Angeles",
+                        "CA",
+                        "90001",
+                        "236220",
+                        "Commercial Building",
+                        0,
+                        "",
+                        9,
+                        "2026-03-02T10:00:00Z",
+                        "2026-03-02T10:00:00Z",
+                        "https://example.com/ca1",
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO inspections(
+                        activity_nr,date_opened,inspection_type,scope,case_status,establishment_name,
+                        site_city,site_state,site_zip,naics,naics_desc,violations_count,emphasis,lead_score,
+                        first_seen_at,last_seen_at,source_url,parse_invalid
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                    """,
+                    (
+                        "tx1",
+                        "2026-03-02",
+                        "Complaint",
+                        "Partial",
+                        "OPEN",
+                        "Texas Signal Co",
+                        "Houston",
+                        "TX",
+                        "77001",
+                        "236220",
+                        "Commercial Building",
+                        0,
+                        "",
+                        9,
+                        "2026-03-02T10:00:00Z",
+                        "2026-03-02T10:00:00Z",
+                        "https://example.com/tx1",
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            fake_decisions = [
+                {"activity_nr": "ca1", "rules_priority": "HIGH", "reasons": ["rules_default"]},
+                {"activity_nr": "tx1", "rules_priority": "HIGH", "reasons": ["rules_default"]},
+            ]
+
+            out = io.StringIO()
+            with (
+                mock.patch.object(dump_tool.triage_overlay, "triage", return_value=fake_decisions),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--states",
+                        "CA,OR,WA",
+                        "--for-ai-review",
+                        "--since",
+                        "2026-03-02",
+                        "--until",
+                        "2026-03-02",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("AI_REVIEW_DUMP_SCOPE=STATES states=CA,OR,WA", text)
+            self.assertIn("AI_REVIEW_DUMP_FILTER_BASIS=FIRST_SEEN_FALLBACK_OPENED", text)
+            self.assertIn("SIGNAL ca1", text)
+            self.assertNotIn("SIGNAL tx1", text)
+
     def test_dump_signals_print_config_without_scope_defaults_to_all_outreach(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -937,6 +1042,464 @@ class TestSignalReviewTools(unittest.TestCase):
             self.assertIn(f"AI_REVIEW_DUMP_DATA_DIR={expected_data_dir}", text)
             self.assertIn("AI_REVIEW_DUMP_DATA_DIR_SOURCE=default", text)
             self.assertIn(f"AI_REVIEW_DUMP_OUTPUT_DIR={expected_audits}", text)
+
+    def test_dump_signals_until_omitted_defaults_to_local_today(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+
+            out = io.StringIO()
+            with (
+                mock.patch.object(dump_tool, "_local_today_date", return_value=date(2026, 3, 2)),
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool, "resolve_territory_code", return_value="TX_TRI"),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--territory",
+                        "TX_TRI",
+                        "--since",
+                        "2026-02-20",
+                        "--print-config",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("AI_REVIEW_DUMP_UNTIL=2026-03-02", text)
+
+    def test_dump_signals_outreach_rolling_window_header_and_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+
+            def _fake_get_leads_for_period(*, states, **_kwargs):
+                if list(states or []) == ["TX"]:
+                    return (
+                        [
+                            {
+                                "activity_nr": "r1",
+                                "establishment_name": "Texas Rolling Co",
+                                "site_city": "Austin",
+                                "site_state": "TX",
+                                "site_zip": "78701",
+                                "naics": "236220",
+                                "naics_desc": "Commercial Building",
+                                "inspection_type": "Complaint",
+                                "scope": "Partial",
+                                "case_status": "OPEN",
+                                "date_opened": "2026-03-01",
+                                "first_seen_at": "2026-03-01T10:00:00Z",
+                            }
+                        ],
+                        [],
+                        {},
+                    )
+                if list(states or []) == ["CA"]:
+                    return (
+                        [
+                            {
+                                "activity_nr": "r2",
+                                "establishment_name": "California Rolling Co",
+                                "site_city": "Los Angeles",
+                                "site_state": "CA",
+                                "site_zip": "90001",
+                                "naics": "236220",
+                                "naics_desc": "Commercial Building",
+                                "inspection_type": "Complaint",
+                                "scope": "Partial",
+                                "case_status": "OPEN",
+                                "date_opened": "2026-03-01",
+                                "first_seen_at": "2026-03-01T11:00:00Z",
+                            }
+                        ],
+                        [],
+                        {},
+                    )
+                return ([], [], {})
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["OUTREACH_STATES"] = "TX,CA"
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(dump_tool, "_local_today_date", return_value=date(2026, 3, 2)),
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", side_effect=_fake_get_leads_for_period),
+                mock.patch.object(
+                    dump_tool.triage_overlay,
+                    "triage",
+                    side_effect=lambda selected, *_args, **_kwargs: [
+                        {"activity_nr": str(row.get("activity_nr") or ""), "rules_priority": "HIGH", "reasons": ["rules_default"]}
+                        for row in list(selected or [])
+                    ],
+                ),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--all-outreach",
+                        "--for-ai-review",
+                        "--since",
+                        "2026-02-16",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("OUTREACH STATES — rolling 14 days through 2026-03-02", text)
+            self.assertIn("AI_REVIEW_DUMP_OUTREACH_MATCHED_TOTAL=2", text)
+
+    def test_dump_signals_subscriber_since_last_send_uses_recipient_cutoff(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+            crm_db_path = tmp / "crm_light.sqlite"
+
+            crm_conn = crm_light.connect(crm_db_path)
+            try:
+                crm_light.init_schema(crm_conn)
+                crm_light.upsert_subscriber(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    email="owner@example.com",
+                    territory_code="TX_TRI",
+                    tz="America/Chicago",
+                    status="trial",
+                )
+                crm_light.upsert_subscriber_entitlement(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    email="owner@example.com",
+                    plan_code="pilot",
+                    max_metros=4,
+                    active=True,
+                    source="test",
+                    recipients=[{"email": "trial-recipient@example.com"}],
+                )
+                crm_light.append_send_event(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    recipient_email="trial-recipient@example.com",
+                    variant="DAILY",
+                    status="SENT",
+                    run_id="run-1",
+                    meta={},
+                    ts_utc="2026-03-01T12:00:00+00:00",
+                )
+            finally:
+                crm_conn.close()
+
+            leads_for_tx = [
+                {
+                    "activity_nr": "s1",
+                    "establishment_name": "Before Cutoff Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Complaint",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-03-01",
+                    "first_seen_at": "2026-03-01T10:00:00Z",
+                },
+                {
+                    "activity_nr": "s2",
+                    "establishment_name": "After Cutoff Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Complaint",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-03-01",
+                    "first_seen_at": "2026-03-01T13:00:00Z",
+                },
+            ]
+
+            def _fake_get_leads_for_period(*, states, **_kwargs):
+                if list(states or []) == ["TX"]:
+                    return (list(leads_for_tx), [], {})
+                return ([], [], {})
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["OUTREACH_STATES"] = "TX"
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(dump_tool, "_local_today_date", return_value=date(2026, 3, 2)),
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool.crm_light, "crm_light_db_path", return_value=crm_db_path),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", side_effect=_fake_get_leads_for_period),
+                mock.patch.object(
+                    dump_tool.triage_overlay,
+                    "triage",
+                    side_effect=lambda selected, *_args, **_kwargs: [
+                        {"activity_nr": str(row.get("activity_nr") or ""), "rules_priority": "HIGH", "reasons": ["rules_default"]}
+                        for row in list(selected or [])
+                    ],
+                ),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--all-outreach",
+                        "--for-ai-review",
+                        "--since",
+                        "2026-02-16",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("---- recipient trial-recipient@example.com since 2026-03-01T12:00:00+00:00 ----", text)
+            self.assertIn("AI_REVIEW_DUMP_SUBSCRIBERS_MATCHED_TOTAL=1", text)
+
+    def test_dump_signals_subscriber_cutoff_ignores_test_send_daily_variant(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+            crm_db_path = tmp / "crm_light.sqlite"
+
+            crm_conn = crm_light.connect(crm_db_path)
+            try:
+                crm_light.init_schema(crm_conn)
+                crm_light.upsert_subscriber(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    email="owner@example.com",
+                    territory_code="TX_TRI",
+                    tz="America/Chicago",
+                    status="trial",
+                )
+                crm_light.upsert_subscriber_entitlement(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    email="owner@example.com",
+                    plan_code="pilot",
+                    max_metros=4,
+                    active=True,
+                    source="test",
+                    recipients=[{"email": "trial-recipient@example.com"}],
+                )
+                crm_light.append_send_event(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    recipient_email="trial-recipient@example.com",
+                    variant="DAILY",
+                    status="SENT",
+                    run_id="run-daily",
+                    meta={},
+                    ts_utc="2026-03-01T12:00:00+00:00",
+                )
+                crm_light.append_send_event(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    recipient_email="trial-recipient@example.com",
+                    variant="test_send_daily",
+                    status="SENT",
+                    run_id="run-smoke",
+                    meta={"send_mode": "TEST"},
+                    ts_utc="2026-03-01T12:30:00+00:00",
+                )
+            finally:
+                crm_conn.close()
+
+            leads_for_tx = [
+                {
+                    "activity_nr": "s_cutoff_1",
+                    "establishment_name": "Between Daily and Smoke",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Complaint",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-03-01",
+                    "first_seen_at": "2026-03-01T12:15:00Z",
+                },
+                {
+                    "activity_nr": "s_cutoff_2",
+                    "establishment_name": "After Smoke",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Complaint",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-03-01",
+                    "first_seen_at": "2026-03-01T12:45:00Z",
+                },
+            ]
+
+            def _fake_get_leads_for_period(*, states, **_kwargs):
+                if list(states or []) == ["TX"]:
+                    return (list(leads_for_tx), [], {})
+                return ([], [], {})
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["OUTREACH_STATES"] = "TX"
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(dump_tool, "_local_today_date", return_value=date(2026, 3, 2)),
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool.crm_light, "crm_light_db_path", return_value=crm_db_path),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", side_effect=_fake_get_leads_for_period),
+                mock.patch.object(
+                    dump_tool.triage_overlay,
+                    "triage",
+                    side_effect=lambda selected, *_args, **_kwargs: [
+                        {"activity_nr": str(row.get("activity_nr") or ""), "rules_priority": "HIGH", "reasons": ["rules_default"]}
+                        for row in list(selected or [])
+                    ],
+                ),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--all-outreach",
+                        "--for-ai-review",
+                        "--since",
+                        "2026-02-16",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("---- recipient trial-recipient@example.com since 2026-03-01T12:00:00+00:00 ----", text)
+            self.assertIn("SIGNAL s_cutoff_1", text)
+            self.assertIn("SIGNAL s_cutoff_2", text)
+            self.assertIn("AI_REVIEW_DUMP_SUBSCRIBERS_MATCHED_TOTAL=2", text)
+
+    def test_dump_signals_subscriber_section_includes_trial_and_live(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+            crm_db_path = tmp / "crm_light.sqlite"
+
+            crm_conn = crm_light.connect(crm_db_path)
+            try:
+                crm_light.init_schema(crm_conn)
+                crm_light.upsert_subscriber(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    email="trial-owner@example.com",
+                    territory_code="TX_TRI",
+                    tz="America/Chicago",
+                    status="trial",
+                )
+                crm_light.upsert_subscriber(
+                    crm_conn,
+                    subscriber_key="live_sub",
+                    email="live-owner@example.com",
+                    territory_code="TX_TRI",
+                    tz="America/Chicago",
+                    status="live",
+                )
+            finally:
+                crm_conn.close()
+
+            def _fake_get_leads_for_period(*, states, **_kwargs):
+                if list(states or []) == ["TX"]:
+                    return (
+                        [
+                            {
+                                "activity_nr": "z1",
+                                "establishment_name": "Shared Co",
+                                "site_city": "Austin",
+                                "site_state": "TX",
+                                "site_zip": "78701",
+                                "naics": "236220",
+                                "naics_desc": "Commercial Building",
+                                "inspection_type": "Complaint",
+                                "scope": "Partial",
+                                "case_status": "OPEN",
+                                "date_opened": "2026-03-01",
+                                "first_seen_at": "2026-03-01T09:00:00Z",
+                            }
+                        ],
+                        [],
+                        {},
+                    )
+                return ([], [], {})
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["OUTREACH_STATES"] = "TX"
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(dump_tool, "_local_today_date", return_value=date(2026, 3, 2)),
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool.crm_light, "crm_light_db_path", return_value=crm_db_path),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", side_effect=_fake_get_leads_for_period),
+                mock.patch.object(
+                    dump_tool.triage_overlay,
+                    "triage",
+                    side_effect=lambda selected, *_args, **_kwargs: [
+                        {"activity_nr": str(row.get("activity_nr") or ""), "rules_priority": "HIGH", "reasons": ["rules_default"]}
+                        for row in list(selected or [])
+                    ],
+                ),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--all-outreach",
+                        "--for-ai-review",
+                        "--since",
+                        "2026-02-16",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("===== SUBSCRIBER trial_sub status=trial territory=TX_TRI =====", text)
+            self.assertIn("===== SUBSCRIBER live_sub status=live territory=TX_TRI =====", text)
+            self.assertIn("AI_REVIEW_DUMP_SUBSCRIBERS_MATCHED_TOTAL=2", text)
 
     def test_dump_signals_include_suppressed_adds_skip_section(self):
         with tempfile.TemporaryDirectory() as d:

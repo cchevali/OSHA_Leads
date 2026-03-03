@@ -537,6 +537,69 @@ class TestTrialStatus(unittest.TestCase):
         for token in required_tokens:
             self.assertIn(token, help_text)
 
+    def test_test_send_daily_records_test_sent_not_sent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data"
+            leads_db = base / "osha.sqlite"
+            old_data_dir = os.environ.get("DATA_DIR")
+            os.environ["DATA_DIR"] = str(data_dir)
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="smoke_trial",
+                    start_date="2026-02-01",
+                    sends_limit=14,
+                )
+
+                orig_test_send = run_trial_daily._run_send_digest_test_daily
+
+                def _fake_test_send(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                    return 0, "QUALITY_SEND_OK recipient=cchevali+oshasmoke@gmail.com"
+
+                run_trial_daily._run_send_digest_test_daily = _fake_test_send  # type: ignore[assignment]
+                try:
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        code = run_trial_daily.run_trial_daily(
+                            subscriber_key="smoke_trial",
+                            leads_db=str(leads_db),
+                            crm_db=db,
+                            customer_arg="",
+                            send_live=False,
+                            dry_run=False,
+                            test_send_daily=True,
+                            print_config=False,
+                            allow_weekend_send=True,
+                        )
+                finally:
+                    run_trial_daily._run_send_digest_test_daily = orig_test_send  # type: ignore[assignment]
+
+                self.assertEqual(code, 0)
+                text = out.getvalue()
+                self.assertIn("TRIAL_EVENT status=TEST_SENT", text)
+                with crm_light.open_conn(db) as conn:
+                    crm_light.init_schema(conn)
+                    rows = conn.execute(
+                        """
+                        SELECT status, variant
+                        FROM send_events
+                        WHERE subscriber_key='smoke_trial'
+                        ORDER BY id ASC
+                        """
+                    ).fetchall()
+                statuses = [str(row[0] or "") for row in rows]
+                variants = [str(row[1] or "") for row in rows]
+                self.assertIn("TEST_SENT", statuses)
+                self.assertNotIn("SENT", statuses)
+                self.assertIn("test_send_daily", variants)
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+
     def test_weekend_live_run_skips_without_send_event_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

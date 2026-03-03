@@ -648,7 +648,7 @@ def run_trial_daily(
 
         if test_send_daily:
             code, out = _run_send_digest_test_daily(leads_db, customer_runtime, dry_run=dry_run)
-            status = "DRY_RUN" if dry_run else ("SENT" if code == 0 else "ERROR")
+            status = "DRY_RUN" if dry_run else ("TEST_SENT" if code == 0 else "ERROR")
             event_mode = "DRY_RUN" if dry_run else ("TEST" if code == 0 else "ERROR")
             crm_light.append_send_event(
                 conn,
@@ -738,7 +738,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--test-send-daily",
         action="store_true",
-        help="Laptop-safe: render daily digest to OSHA_SMOKE_TO with --no-state-mutation (records DRY_RUN/SENT).",
+        help="Laptop-safe: render daily digest to OSHA_SMOKE_TO with --no-state-mutation (records DRY_RUN/TEST_SENT).",
     )
 
     args = ap.parse_args(argv)

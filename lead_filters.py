@@ -310,6 +310,16 @@ def filter_by_territory(
             _add_debug_row(lead, matched=False, match_reason="STATE_NO_MATCH")
             continue
 
+        if kind == "STATE_SET":
+            filtered.append(lead)
+            _add_debug_row(
+                lead,
+                matched=True,
+                match_reason="STATE_SET_MATCH",
+                resolution_source="STATE_SET",
+            )
+            continue
+
         if kind == "CBSA_SET" and cbsa_set:
             resolution = resolve_lead_cbsa(lead)
             if resolution.cbsa:
