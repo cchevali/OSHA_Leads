@@ -223,8 +223,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
             ON send_events (subscriber_key, ts_utc);
         CREATE INDEX IF NOT EXISTS idx_send_events_sub_status_ts
             ON send_events (subscriber_key, status, ts_utc);
-        CREATE INDEX IF NOT EXISTS idx_send_events_sub_recipient_status_ts
-            ON send_events (subscriber_key, recipient_email, status, ts_utc);
 
         CREATE TABLE IF NOT EXISTS trial_state (
             subscriber_key TEXT PRIMARY KEY,

@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=e0e004afdd089a51783495ead0f1997526ca0465
-PACK_BUILD_UTC=2026-03-01T01:32:40Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=3ec70a2246a3eb489387bd6b1d1949289ccee878bd044ca8c508c7b738d65a10 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=15211b21adca69d072094bff4a9de9075e45b45e87ab89a0815001dda6ada154
+PACK_GIT_SHA=6ef91e4a7e9b03054b9efca6daa81b12c63d96b0
+PACK_BUILD_UTC=2026-03-02T17:09:07Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=b8d0f74d39efc27409758a78ca119a3bcef6a10c605d339301563b5df377b62a docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=2e3275e2445e51eae7510a868d23913ebabf77ae5d61bb72bdfe47acbaf52121
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -923,7 +923,9 @@ Optional empty-state planner fallback:
 - No-signal token: `OUTREACH_SKIP_NO_SIGNALS state=<STATE> window_days=<N>`
 - Empty-state no-send token: `OUTREACH_EMPTY_STATE_NO_SEND=1 state=<STATE>`
 - Pre-send duplicate token: `OUTREACH_DUPLICATE_GUARD_DROPPED=<n>`
+- Same-day live-run guard token: `OUTREACH_SKIP_ALREADY_SENT_TODAY=1 date=<YYYY-MM-DD> existing_batches=<csv|none> guard=ON`
 - Floor readiness token (manual ramp remains operator-controlled): `OUTREACH_RAMP_READY=<0|1> desired_daily_limit=<N> states_ready=<k> states_total=<m> ready_states=<csv|none>`
+- Emergency override (manual only): `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --allow-second-live-run-same-day`
 
 Artifact separation (do not mix these):
 
@@ -1198,9 +1200,9 @@ Weekly manual signal QA loop:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27 --print-config
-py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27 --dry-run
-py -3 tools\dump_signals_for_review.py --territory TX_TRI --since 2026-02-23 --until 2026-02-27
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -PrintConfig
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1
 ```
 
 2. Review exported signals (for example in Claude) and produce CSV with `activity_nr,ai_priority,ai_reason`.
@@ -1212,6 +1214,121 @@ py -3 tools\import_ai_triage.py --print-config
 py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv --dry-run
 py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv
 ```
+
+### Nightly AI triage dump (manual)
+
+Canonical manual command path (always loads secrets/DATA_DIR via wrapper):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1
+```
+
+Common variants:
+
+```powershell
+# side-effect free resolved config
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -PrintConfig
+
+# inspect output only (no file write)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -DryRun
+
+# explicit window / scope override
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -Since 2026-03-01 -Until 2026-03-01 -AllOutreach
+
+# explicit state-scope override (manual/nightly include set)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -Since 2026-03-03 -Until 2026-03-03 -States CA,OR,WA
+```
+
+Output location is DATA_DIR-aware:
+
+- Effective precedence for wrapped commands (`.\run_with_secrets.ps1 -- ...`):
+- Inherited process `DATA_DIR` (non-empty) wins.
+- Else `.env.sops` `DATA_DIR` is used.
+- Else fallback is repo `.\out`.
+- Invalid values (`""`, `out`, non-rooted relative path) fall back to repo `.\out`.
+
+AI review dump date-window basis:
+
+- `--since/--until` are matched primarily on `first_seen_at` local date (when the signal first entered our DB).
+- Fallback to `date_opened` is used only when `first_seen_at` is missing/unparseable.
+- This keeps manual AI review aligned with what can actually be newly selected for daily sends.
+- Late-posted OSHA rows are expected: `date_opened` may be older than `first_seen_at`.
+
+Machine-readable path tokens:
+
+- `MFO_DATA_DIR_EFFECTIVE=<abs_path|empty>`
+- `MFO_DATA_DIR_SOURCE=inherited|dotenv|default`
+- `WARN_ENV_CONFLICT=1 key=DATA_DIR inherited=<...> dotenv=<...> using=<...>`
+- `WARN_DATA_DIR_NOT_ABSOLUTE=1 value=<...> behavior=UNSET_FOR_CHILD`
+- `AI_REVIEW_DUMP_OUTPUT_DIR=<abs_path>`
+- `AI_REVIEW_DUMP_OUTPUT_PATH=<abs_path>`
+- `AI_REVIEW_DUMP_DATA_DIR=<effective_abs_path|empty>`
+- `AI_REVIEW_DUMP_DATA_DIR_SOURCE=<inherited|dotenv|default>`
+- `AI_REVIEW_DUMP_SCOPE=STATES states=<CSV>` (emitted when `-States` / `--states` scope override is used)
+- `AI_REVIEW_DUMP_FILTER_BASIS=FIRST_SEEN_FALLBACK_OPENED`
+- `AI_REVIEW_DUMP_MATCHED_BY_FIRST_SEEN=<n>`
+- `AI_REVIEW_DUMP_MATCHED_BY_OPENED_FALLBACK=<n>`
+
+Empty dump interpretation (file may contain only headers/section markers):
+
+- `AI_REVIEW_DUMP_MATCHED_TOTAL=0`
+- `WARN_AI_REVIEW_DUMP_EMPTY=1 reason=NO_MATCHES since=<...> until=<...>`
+- `AI_REVIEW_DUMP_MAX_FIRST_SEEN=<iso|empty>`
+- `AI_REVIEW_DUMP_MAX_DATE_OPENED=<iso|empty>`
+
+Manual review timing note (Sun-Thu nights):
+
+- Signals first seen Monday morning can still send in Monday 8:00 AM digest before manual review.
+- This is expected with the current manual-only schedule and is not by itself evidence of ingest failure.
+
+DATA_DIR persistence and edits:
+
+- Use `scripts\set_outreach_env.ps1` as the only supported way to persist `.env.sops` keys.
+- Do not manually edit `.env.sops`.
+- Canonical persist command:
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -DataDir "C:\osha_data" -OshaSmokeTo cchevali+oshasmoke@gmail.com
+```
+
+- Expected token: `PASS_SET_OUTREACH_ENV_DATA_DIR value=<...> source=<param|inherited|unchanged>`
+
+### Tomorrow AI Prep (Non-Send)
+
+Use one command to run the full readiness pipeline now (manual AI import + ingest + generation + discovery + doctor + outreach/trial dry-runs):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -Apply
+```
+
+Dry-run and config variants:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -PrintConfig
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -DryRun
+```
+
+Notes:
+
+- The prep script auto-selects the newest `ai_review_*.csv` from `C:\osha_data\imports` (fallback: `${DATA_DIR}\imports`) unless `-AiReviewCsv` is passed.
+- It auto-creates `${DATA_DIR}\suppression.csv` (or `.\out\suppression.csv`) with header `email` in `-Apply` mode when missing.
+- Required AI gates for overlay behavior:
+- `AI_TRIAGE_ENABLED=1`
+- `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
+- `TRIAL_TRIAGE_OVERLAY_ENABLED=1`
+- Persist gates only through `scripts\set_outreach_env.ps1` (no manual `.env.sops` edits):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -AiTriageEnabled 1 -OutreachTriageOverlayEnabled 1 -TrialTriageOverlayEnabled 1 -OshaSmokeTo cchevali+oshasmoke@gmail.com
+```
+
+Readiness tokens:
+
+- `PIPELINE_READY_FOR_TOMORROW=1|0`
+- `PIPELINE_BLOCKERS=<csv|none>`
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 
@@ -1486,6 +1603,9 @@ Operator workflow:
 Important:
 
 - Catch-up is allowed only for the Wally trial daily path and only when the subscriber has not already been sent that local day.
+- Same-day live-send guard token: `TRIAL_SKIP_ALREADY_SENT_TODAY=1 subscriber_key=<key> local_date=<YYYY-MM-DD> guard=ON`
+- Emergency override (manual only): pass `--allow-second-live-send-same-day` through `deliver_daily.py` / `send_digest_email.py`.
+- Recipient fan-out stays unchanged: one trial send run still targets both configured recipients (Wally + Brandon).
 - Do not temporarily widen `send_window_minutes` for missed trial sends; use the trial catch-up keys/workflow above.
 
 ## Trial Framework (Subscriber-Keyed)
