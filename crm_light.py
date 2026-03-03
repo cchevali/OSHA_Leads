@@ -929,7 +929,11 @@ def get_last_sent_at(conn: sqlite3.Connection, subscriber_key: str, start_date: 
     if not sk:
         return None
     params: list[str] = [sk]
-    where = "subscriber_key = ? AND status = 'SENT'"
+    where = (
+        "subscriber_key = ? "
+        "AND lower(trim(status)) = 'sent' "
+        "AND (trim(coalesce(variant, '')) = '' OR lower(trim(variant)) = 'daily')"
+    )
     sd = (start_date or "").strip()
     if sd:
         where += " AND ts_utc >= ?"
@@ -961,7 +965,12 @@ def get_last_sent_at_for_recipient(
     if not sk or not recipient:
         return None
     params: list[str] = [sk, recipient]
-    where = "subscriber_key = ? AND lower(trim(status)) = 'sent' AND lower(trim(recipient_email)) = ?"
+    where = (
+        "subscriber_key = ? "
+        "AND lower(trim(status)) = 'sent' "
+        "AND lower(trim(recipient_email)) = ? "
+        "AND (trim(coalesce(variant, '')) = '' OR lower(trim(variant)) = 'daily')"
+    )
     sd = (start_date or "").strip()
     if sd:
         where += " AND ts_utc >= ?"
@@ -980,7 +989,12 @@ def get_last_sent_at_for_recipient(
             return str(row["last_sent_at"]).strip()
 
         legacy_params: list[str] = [sk]
-        legacy_where = "subscriber_key = ? AND lower(trim(status)) = 'sent' AND trim(coalesce(recipient_email, '')) = ''"
+        legacy_where = (
+            "subscriber_key = ? "
+            "AND lower(trim(status)) = 'sent' "
+            "AND trim(coalesce(recipient_email, '')) = '' "
+            "AND (trim(coalesce(variant, '')) = '' OR lower(trim(variant)) = 'daily')"
+        )
         if sd:
             legacy_where += " AND ts_utc >= ?"
             legacy_params.append(f"{sd}T00:00:00+00:00")

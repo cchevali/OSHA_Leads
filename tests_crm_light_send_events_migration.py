@@ -148,6 +148,52 @@ class TestCrmLightSendEventsMigration(unittest.TestCase):
             self.assertIn("subscriber_key=facs_trial", text)
             self.assertIn("trial_effective_timezone=America/New_York", text)
 
+    def test_last_sent_at_ignores_non_daily_variants(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "crm_light.sqlite"
+            crm_light.ensure_database(db_path)
+
+            with crm_light.open_conn(db_path) as conn:
+                crm_light.init_schema(conn)
+                crm_light.upsert_subscriber(
+                    conn,
+                    subscriber_key="trial_sub",
+                    email="trial@example.com",
+                    territory_code="TX_TRI",
+                    tz="America/Chicago",
+                    status="trial",
+                )
+                crm_light.append_send_event(
+                    conn,
+                    subscriber_key="trial_sub",
+                    recipient_email="trial@example.com",
+                    variant="DAILY",
+                    status="SENT",
+                    run_id="run-daily",
+                    meta={},
+                    ts_utc="2026-03-01T12:00:00+00:00",
+                )
+                crm_light.append_send_event(
+                    conn,
+                    subscriber_key="trial_sub",
+                    recipient_email="trial@example.com",
+                    variant="test_send_daily",
+                    status="SENT",
+                    run_id="run-smoke",
+                    meta={"send_mode": "TEST"},
+                    ts_utc="2026-03-01T12:30:00+00:00",
+                )
+
+                last_for_recipient = crm_light.get_last_sent_at_for_recipient(
+                    conn,
+                    "trial_sub",
+                    "trial@example.com",
+                )
+                last_overall = crm_light.get_last_sent_at(conn, "trial_sub")
+
+            self.assertEqual(last_for_recipient, "2026-03-01T12:00:00+00:00")
+            self.assertEqual(last_overall, "2026-03-01T12:00:00+00:00")
+
 
 if __name__ == "__main__":
     unittest.main()

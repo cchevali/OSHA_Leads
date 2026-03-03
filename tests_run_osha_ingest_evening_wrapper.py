@@ -11,6 +11,8 @@ class TestRunOshaIngestEveningWrapper(unittest.TestCase):
         self.assertTrue(WRAPPER.exists(), msg=f"missing wrapper: {WRAPPER}")
         text = WRAPPER.read_text(encoding="utf-8")
         self.assertIn("run_osha_ingest_daily.py", text)
+        self.assertIn("--states", text)
+        self.assertIn("TX,CA,FL,OR,WA", text)
         self.assertIn("dump_signals_for_ai_review.ps1", text)
         self.assertIn("-SinceDays 14", text)
         self.assertIn("TASK_LOG_PATH=", text)

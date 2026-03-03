@@ -733,6 +733,11 @@ cd C:\dev\OSHA_Leads
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1
 ```
 
+Evening scheduler note:
+
+- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with explicit states `TX,CA,FL,OR,WA` before dumping AI review signals.
+- WA/OR can still be zero on a given day when upstream data has no in-window records.
+
 Common variants:
 
 ```powershell
@@ -1301,6 +1306,7 @@ Expected markers:
 - `dry_run=YES`
 - `TRIAL_EVENT status=DRY_RUN`
 - `send_events` appended with `status=DRY_RUN` (does not count toward expiry)
+- Live smoke previews (`--test-send-daily` without `--dry-run`) append `status=TEST_SENT` and do not advance "since last successful send" subscriber cutoffs.
 
 ### Expiry QA (Limit=1)
 

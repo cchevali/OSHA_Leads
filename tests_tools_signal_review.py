@@ -1280,6 +1280,134 @@ class TestSignalReviewTools(unittest.TestCase):
             self.assertIn("---- recipient trial-recipient@example.com since 2026-03-01T12:00:00+00:00 ----", text)
             self.assertIn("AI_REVIEW_DUMP_SUBSCRIBERS_MATCHED_TOTAL=1", text)
 
+    def test_dump_signals_subscriber_cutoff_ignores_test_send_daily_variant(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+            crm_db_path = tmp / "crm_light.sqlite"
+
+            crm_conn = crm_light.connect(crm_db_path)
+            try:
+                crm_light.init_schema(crm_conn)
+                crm_light.upsert_subscriber(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    email="owner@example.com",
+                    territory_code="TX_TRI",
+                    tz="America/Chicago",
+                    status="trial",
+                )
+                crm_light.upsert_subscriber_entitlement(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    email="owner@example.com",
+                    plan_code="pilot",
+                    max_metros=4,
+                    active=True,
+                    source="test",
+                    recipients=[{"email": "trial-recipient@example.com"}],
+                )
+                crm_light.append_send_event(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    recipient_email="trial-recipient@example.com",
+                    variant="DAILY",
+                    status="SENT",
+                    run_id="run-daily",
+                    meta={},
+                    ts_utc="2026-03-01T12:00:00+00:00",
+                )
+                crm_light.append_send_event(
+                    crm_conn,
+                    subscriber_key="trial_sub",
+                    recipient_email="trial-recipient@example.com",
+                    variant="test_send_daily",
+                    status="SENT",
+                    run_id="run-smoke",
+                    meta={"send_mode": "TEST"},
+                    ts_utc="2026-03-01T12:30:00+00:00",
+                )
+            finally:
+                crm_conn.close()
+
+            leads_for_tx = [
+                {
+                    "activity_nr": "s_cutoff_1",
+                    "establishment_name": "Between Daily and Smoke",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Complaint",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-03-01",
+                    "first_seen_at": "2026-03-01T12:15:00Z",
+                },
+                {
+                    "activity_nr": "s_cutoff_2",
+                    "establishment_name": "After Smoke",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "site_zip": "78701",
+                    "naics": "236220",
+                    "naics_desc": "Commercial Building",
+                    "inspection_type": "Complaint",
+                    "scope": "Partial",
+                    "case_status": "OPEN",
+                    "date_opened": "2026-03-01",
+                    "first_seen_at": "2026-03-01T12:45:00Z",
+                },
+            ]
+
+            def _fake_get_leads_for_period(*, states, **_kwargs):
+                if list(states or []) == ["TX"]:
+                    return (list(leads_for_tx), [], {})
+                return ([], [], {})
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["OUTREACH_STATES"] = "TX"
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(dump_tool, "_local_today_date", return_value=date(2026, 3, 2)),
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value={"TX_TRI": {"states": ["TX"]}}),
+                mock.patch.object(dump_tool.crm_light, "crm_light_db_path", return_value=crm_db_path),
+                mock.patch.object(dump_tool.sde, "get_leads_for_period", side_effect=_fake_get_leads_for_period),
+                mock.patch.object(
+                    dump_tool.triage_overlay,
+                    "triage",
+                    side_effect=lambda selected, *_args, **_kwargs: [
+                        {"activity_nr": str(row.get("activity_nr") or ""), "rules_priority": "HIGH", "reasons": ["rules_default"]}
+                        for row in list(selected or [])
+                    ],
+                ),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--all-outreach",
+                        "--for-ai-review",
+                        "--since",
+                        "2026-02-16",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("---- recipient trial-recipient@example.com since 2026-03-01T12:00:00+00:00 ----", text)
+            self.assertIn("SIGNAL s_cutoff_1", text)
+            self.assertIn("SIGNAL s_cutoff_2", text)
+            self.assertIn("AI_REVIEW_DUMP_SUBSCRIBERS_MATCHED_TOTAL=2", text)
+
     def test_dump_signals_subscriber_section_includes_trial_and_live(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
