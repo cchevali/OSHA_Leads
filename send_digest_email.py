@@ -3787,6 +3787,19 @@ def main() -> None:
     prefs_checked = False
     prefs_ok = True
     prefs_detail = ""
+    crm_send_events_conn: sqlite3.Connection | None = None
+    crm_send_event_run_id = (
+        f"{str(args.mode or '').strip().upper()}:{str(territory_code or '').strip().upper()}:{territory_date}:{digest_hash[:16]}"
+    )
+    if live_allowed and not args.dry_run and not args.no_state_mutation:
+        try:
+            crm_light.ensure_database()
+            crm_send_events_conn = crm_light.connect()
+            crm_light.init_schema(crm_send_events_conn)
+        except Exception as exc:
+            crm_send_events_conn = None
+            logger.warning("CRM send_events logging unavailable: %s", exc)
+
     if args.mode == "daily" and content_filter not in {"all", "low"}:
         low_total = int(low_available_today)
         low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_tier_counts else 0
@@ -4350,6 +4363,34 @@ def main() -> None:
                 "content_filter": content_filter,
             },
         )
+        if crm_send_events_conn is not None:
+            try:
+                event_status = "SENT" if success else "FAILED"
+                crm_light.append_send_event(
+                    crm_send_events_conn,
+                    subscriber_key=subscriber_key or customer_id,
+                    recipient_email=recipient,
+                    variant=str(args.mode or "").strip().upper(),
+                    status=event_status,
+                    run_id=crm_send_event_run_id,
+                    meta={
+                        "customer_id": customer_id,
+                        "mode": str(args.mode or "").strip().lower(),
+                        "territory_code": str(territory_code or "").strip().upper(),
+                        "digest_hash": digest_hash,
+                        "smtp_message_id": str(message_id or ""),
+                        "error": str(error or ""),
+                    },
+                    ts_utc=datetime.now(timezone.utc).isoformat(),
+                )
+            except Exception as exc:
+                logger.warning("send_events append failed for %s: %s", recipient, exc)
+
+    if crm_send_events_conn is not None:
+        try:
+            crm_send_events_conn.close()
+        except Exception:
+            pass
 
     if not args.smoke_cchevali:
         print("\n" + "=" * 72)

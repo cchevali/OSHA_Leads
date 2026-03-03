@@ -226,6 +226,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("action_mismatch", text)
         self.assertIn("WARN_SCHEDTASK_ACTION_MISMATCH", text)
         self.assertIn("ERR_INSTALL_SCHEDULED_TASKS_APPLY_ACTION_STUCK", text)
+        self.assertIn("ERR_SCHED_TASK_TARGET_MISSING=1", text)
+        self.assertIn("Resolve-TaskRunTargetPath", text)
         self.assertIn("function Invoke-SchtasksCommand([string[]]$SchtasksArgs)", text)
         self.assertNotIn("function Invoke-SchtasksCommand([string[]]$Args)", text)
         self.assertIn("last_run_result_hex=0x41303", text)
