@@ -2,8 +2,8 @@
 
 PACK_GIT_SHA=6ef91e4a7e9b03054b9efca6daa81b12c63d96b0
 PACK_BUILD_UTC=2026-03-02T17:09:07Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=b8d0f74d39efc27409758a78ca119a3bcef6a10c605d339301563b5df377b62a docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=2e3275e2445e51eae7510a868d23913ebabf77ae5d61bb72bdfe47acbaf52121
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=8d8518d0222176740086c3a4cf4fd9dbb8558d36a6b37b845d4256eeebbd853b docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=26fa27ae91aa36124a4d0ce2c86a93aea274664c88f903a3e2e4649207c84f50
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1224,6 +1224,11 @@ cd C:\dev\OSHA_Leads
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1
 ```
 
+Evening scheduler note:
+
+- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with explicit states `TX,CA,FL,OR,WA` before dumping AI review signals.
+- WA/OR can still be zero on a given day when upstream data has no in-window records.
+
 Common variants:
 
 ```powershell
@@ -1792,6 +1797,7 @@ Expected markers:
 - `dry_run=YES`
 - `TRIAL_EVENT status=DRY_RUN`
 - `send_events` appended with `status=DRY_RUN` (does not count toward expiry)
+- Live smoke previews (`--test-send-daily` without `--dry-run`) append `status=TEST_SENT` and do not advance "since last successful send" subscriber cutoffs.
 
 ### Expiry QA (Limit=1)
 
