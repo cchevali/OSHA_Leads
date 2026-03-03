@@ -867,6 +867,131 @@ class TestSignalReviewTools(unittest.TestCase):
             self.assertNotIn("SIGNAL 9502", text)
             self.assertIn("SIGNAL 9503", text)
 
+    def test_dump_signals_states_scope_includes_ca_and_excludes_tx(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            conn = sqlite3.connect(str(db_path))
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE inspections(
+                        activity_nr TEXT,
+                        date_opened TEXT,
+                        inspection_type TEXT,
+                        scope TEXT,
+                        case_status TEXT,
+                        establishment_name TEXT,
+                        site_city TEXT,
+                        site_state TEXT,
+                        site_zip TEXT,
+                        naics TEXT,
+                        naics_desc TEXT,
+                        violations_count INTEGER,
+                        emphasis TEXT,
+                        lead_score INTEGER,
+                        first_seen_at TEXT,
+                        last_seen_at TEXT,
+                        source_url TEXT,
+                        parse_invalid INTEGER DEFAULT 0
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO inspections(
+                        activity_nr,date_opened,inspection_type,scope,case_status,establishment_name,
+                        site_city,site_state,site_zip,naics,naics_desc,violations_count,emphasis,lead_score,
+                        first_seen_at,last_seen_at,source_url,parse_invalid
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                    """,
+                    (
+                        "ca1",
+                        "2026-03-02",
+                        "Complaint",
+                        "Partial",
+                        "OPEN",
+                        "California Signal Co",
+                        "Los Angeles",
+                        "CA",
+                        "90001",
+                        "236220",
+                        "Commercial Building",
+                        0,
+                        "",
+                        9,
+                        "2026-03-02T10:00:00Z",
+                        "2026-03-02T10:00:00Z",
+                        "https://example.com/ca1",
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO inspections(
+                        activity_nr,date_opened,inspection_type,scope,case_status,establishment_name,
+                        site_city,site_state,site_zip,naics,naics_desc,violations_count,emphasis,lead_score,
+                        first_seen_at,last_seen_at,source_url,parse_invalid
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                    """,
+                    (
+                        "tx1",
+                        "2026-03-02",
+                        "Complaint",
+                        "Partial",
+                        "OPEN",
+                        "Texas Signal Co",
+                        "Houston",
+                        "TX",
+                        "77001",
+                        "236220",
+                        "Commercial Building",
+                        0,
+                        "",
+                        9,
+                        "2026-03-02T10:00:00Z",
+                        "2026-03-02T10:00:00Z",
+                        "https://example.com/tx1",
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            fake_decisions = [
+                {"activity_nr": "ca1", "rules_priority": "HIGH", "reasons": ["rules_default"]},
+                {"activity_nr": "tx1", "rules_priority": "HIGH", "reasons": ["rules_default"]},
+            ]
+
+            out = io.StringIO()
+            with (
+                mock.patch.object(dump_tool.triage_overlay, "triage", return_value=fake_decisions),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--states",
+                        "CA,OR,WA",
+                        "--for-ai-review",
+                        "--since",
+                        "2026-03-02",
+                        "--until",
+                        "2026-03-02",
+                        "--dry-run",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("AI_REVIEW_DUMP_SCOPE=STATES states=CA,OR,WA", text)
+            self.assertIn("AI_REVIEW_DUMP_FILTER_BASIS=FIRST_SEEN_FALLBACK_OPENED", text)
+            self.assertIn("SIGNAL ca1", text)
+            self.assertNotIn("SIGNAL tx1", text)
+
     def test_dump_signals_print_config_without_scope_defaults_to_all_outreach(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

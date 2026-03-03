@@ -4,6 +4,7 @@ param(
   [string]$Until = '',
   [switch]$AllOutreach,
   [string]$Territory = '',
+  [string[]]$States = @(),
   [switch]$PrintConfig,
   [switch]$DryRun,
   [string]$OutputDir = '',
@@ -32,6 +33,41 @@ if (-not $resolvedSince) {
   $resolvedSince = (Get-Date).Date.AddDays(-1 * $days).ToString('yyyy-MM-dd')
 }
 
+function Normalize-StateScope {
+  param([object[]]$InputStates)
+  $seen = @{}
+  $normalized = New-Object System.Collections.Generic.List[string]
+  foreach ($entry in @($InputStates)) {
+    $text = [string]$entry
+    foreach ($part in $text.Split(',')) {
+      $token = ([string]$part).Trim().ToUpperInvariant()
+      if (-not $token) { continue }
+      if ($token -notmatch '^[A-Z]{2}$') {
+        throw "invalid state code '$token'"
+      }
+      if (-not $seen.ContainsKey($token)) {
+        $seen[$token] = $true
+        [void]$normalized.Add($token)
+      }
+    }
+  }
+  return ,$normalized.ToArray()
+}
+
+$normalizedStates = @()
+if ($PSBoundParameters.ContainsKey('States')) {
+  try {
+    $normalizedStates = Normalize-StateScope -InputStates $States
+  } catch {
+    Write-Output ('ERR_AI_REVIEW_DUMP_STATES_INVALID detail=' + $_.Exception.Message)
+    exit 1
+  }
+  if ($normalizedStates.Count -eq 0) {
+    Write-Output 'ERR_AI_REVIEW_DUMP_STATES_INVALID detail=states_required'
+    exit 1
+  }
+}
+
 $toolArgs = @(
   'tools\dump_signals_for_review.py',
   '--for-ai-review',
@@ -47,6 +83,12 @@ if ($AllOutreach) {
 if (([string]$Territory).Trim()) {
   $toolArgs += @('--territory', ([string]$Territory).Trim())
   $scopeSpecified = $true
+}
+if ($normalizedStates.Count -gt 0) {
+  $statesCsv = ($normalizedStates -join ',')
+  $toolArgs += @('--states', $statesCsv)
+  $scopeSpecified = $true
+  Write-Output ('AI_REVIEW_DUMP_SCOPE=STATES states=' + $statesCsv)
 }
 if (-not $scopeSpecified) {
   $toolArgs += '--all-outreach'

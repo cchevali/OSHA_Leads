@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 import crm_light
 import run_trial_admin
@@ -61,6 +62,54 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
+
+    def test_add_trial_states_creates_state_set_territory_and_references_code(self) -> None:
+        leads_db = self._tmp_path / "osha.sqlite"
+        schema_path = Path(__file__).resolve().parent / "schema.sql"
+        captured: dict[str, object] = {}
+
+        def _fake_add_trial(req, leads_db_path, schema_path, crm_db_path):  # type: ignore[no-untyped-def]
+            captured["req"] = req
+            captured["leads_db_path"] = leads_db_path
+            captured["schema_path"] = schema_path
+            captured["crm_db_path"] = crm_db_path
+
+        with (
+            mock.patch.object(run_trial_admin, "merge_territory_definition") as merge_mock,
+            mock.patch.object(run_trial_admin, "add_trial", side_effect=_fake_add_trial),
+        ):
+            code = run_trial_admin.main(
+                [
+                    "add-trial",
+                    "--subscriber-key",
+                    "facs_trial",
+                    "--email",
+                    "taylor.thomas@facs.com",
+                    "--states",
+                    "ca,or,wa",
+                    "--start-date",
+                    "2026-03-03",
+                    "--sends-limit",
+                    "14",
+                    "--db",
+                    str(leads_db),
+                    "--schema",
+                    str(schema_path),
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        merge_mock.assert_called_once()
+        merge_args = merge_mock.call_args[0]
+        self.assertEqual(merge_args[0], "FACS_TRIAL_STATES")
+        definition = dict(merge_args[1])
+        self.assertEqual(str(definition.get("kind") or ""), "STATE_SET")
+        self.assertEqual(list(definition.get("states") or []), ["CA", "OR", "WA"])
+
+        req = captured.get("req")
+        self.assertIsNotNone(req)
+        self.assertEqual(getattr(req, "territory_code"), "FACS_TRIAL_STATES")
+        self.assertEqual(getattr(req, "subscriber_key"), "facs_trial")
 
     def test_digest_diff_reports_missing_and_unexpected(self) -> None:
         diff = trial_audit.digest_diff(

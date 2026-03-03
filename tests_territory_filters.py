@@ -102,6 +102,54 @@ class TestLeadFilters(unittest.TestCase):
         self.assertFalse(tx_tri.get("office_patterns"))
         self.assertFalse(tx_tri.get("fallback_city_patterns"))
 
+    def test_state_set_territory_match_and_no_match(self):
+        defs = {
+            "WEST_TRIAL": {
+                "description": "West trial states",
+                "kind": "STATE_SET",
+                "states": ["CA", "OR"],
+                "cbsas": [],
+                "office_patterns": [],
+                "fallback_city_patterns": [],
+            }
+        }
+        leads = [
+            {"activity_nr": "1", "site_state": "CA", "site_city": "Los Angeles"},
+            {"activity_nr": "2", "site_state": "TX", "site_city": "Dallas"},
+        ]
+        filtered, stats, debug_rows = filter_by_territory(
+            leads,
+            "WEST_TRIAL",
+            definitions=defs,
+            include_debug=True,
+        )
+        self.assertEqual([row["activity_nr"] for row in filtered], ["1"])
+        self.assertEqual(stats["excluded_state"], 1)
+        self.assertEqual(stats["excluded_territory"], 0)
+        self.assertEqual(debug_rows[0]["match_reason"], "STATE_SET_MATCH")
+        self.assertEqual(debug_rows[1]["match_reason"], "STATE_NO_MATCH")
+
+    def test_state_set_territory_multi_state_match(self):
+        defs = {
+            "FACS_TRIAL_STATES": {
+                "description": "FACS trial states",
+                "kind": "STATE_SET",
+                "states": ["CA", "OR", "WA"],
+                "cbsas": [],
+                "office_patterns": [],
+                "fallback_city_patterns": [],
+            }
+        }
+        leads = [
+            {"activity_nr": "1", "site_state": "CA"},
+            {"activity_nr": "2", "site_state": "OR"},
+            {"activity_nr": "3", "site_state": "WA"},
+            {"activity_nr": "4", "site_state": "TX"},
+        ]
+        filtered, stats = filter_by_territory(leads, "FACS_TRIAL_STATES", definitions=defs)
+        self.assertEqual([row["activity_nr"] for row in filtered], ["1", "2", "3"])
+        self.assertEqual(stats["excluded_state"], 1)
+
     def test_dedupe_by_activity_nr_keeps_best_score(self):
         leads = [
             {"activity_nr": "100", "lead_score": 6, "first_seen_at": "2026-02-01T08:00:00"},

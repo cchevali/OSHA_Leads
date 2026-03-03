@@ -15,6 +15,20 @@ from geo.zip_cbsa import resolve_metro_label
 from lead_filters import load_territory_definitions, resolve_territory_code
 
 
+def _normalize_states(raw_states: list[Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in list(raw_states or []):
+        state = str(item or "").strip().upper()
+        if len(state) != 2 or not state.isalpha():
+            continue
+        if state in seen:
+            continue
+        seen.add(state)
+        out.append(state)
+    return out
+
+
 def _build_payload(code: str) -> dict[str, Any]:
     definitions = load_territory_definitions()
     requested = (code or "").strip().upper()
@@ -42,7 +56,7 @@ def _build_payload(code: str) -> dict[str, Any]:
         "canonical_code": canonical,
         "kind": str(territory.get("kind") or "LEGACY_REGEX"),
         "label": str(territory.get("label") or territory.get("description") or canonical),
-        "states": territory.get("states") or [],
+        "states": _normalize_states(list(territory.get("states") or [])),
         "aliases": aliases,
         "cbsas": cbsas,
         "metros": metros,

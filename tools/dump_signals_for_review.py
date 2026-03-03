@@ -163,8 +163,13 @@ def _parse_timestamp(value: str) -> datetime | None:
         return None
 
 
-def _parse_outreach_states(raw: str) -> list[str]:
-    parts = [str(x or "").strip().upper() for x in str(raw or "").split(",")]
+def _parse_outreach_states(raw: str | list[str]) -> list[str]:
+    parts: list[str] = []
+    if isinstance(raw, list):
+        for token in raw:
+            parts.extend([str(x or "").strip().upper() for x in str(token or "").split(",")])
+    else:
+        parts = [str(x or "").strip().upper() for x in str(raw or "").split(",")]
     states: list[str] = []
     seen: set[str] = set()
     for value in parts:
@@ -437,6 +442,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Dump territory OSHA signals for manual priority review.")
     ap.add_argument("--territory", default="", help="Territory code (for example TX_TRI).")
     ap.add_argument(
+        "--states",
+        nargs="+",
+        default=[],
+        help="Explicit state scope (comma-separated or list form, for example: CA,OR,WA).",
+    )
+    ap.add_argument(
         "--all-outreach",
         action="store_true",
         help="Dump all OUTREACH_STATES plus configured trial territories in one grouped output.",
@@ -476,11 +487,33 @@ def main() -> int:
     territory_code = ""
     states: list[str] = []
     trial_territories: list[str] = []
+    states_arg_present = bool(list(args.states or []))
+    states_scope = _parse_outreach_states(list(args.states or []))
+    territory_arg = str(args.territory or "").strip()
+    if states_arg_present and not states_scope:
+        print("ERR_SIGNAL_REVIEW_STATES_REQUIRED", file=sys.stderr)
+        return 2
+    scope_count = int(bool(args.all_outreach)) + int(bool(territory_arg)) + int(states_arg_present)
+    if scope_count > 1:
+        print("ERR_SIGNAL_REVIEW_SCOPE_CONFLICT", file=sys.stderr)
+        return 2
+
     effective_all_outreach = bool(args.all_outreach)
-    if args.print_config and (not effective_all_outreach) and (not str(args.territory or "").strip()):
+    if args.print_config and scope_count == 0:
         effective_all_outreach = True
 
-    if effective_all_outreach:
+    if states_scope:
+        states = list(states_scope)
+        groups.append(
+            {
+                "kind": "states",
+                "code": ",".join(states),
+                "states": list(states),
+                "territory_code": "",
+                "header": f"===== STATES {','.join(states)} =====",
+            }
+        )
+    elif effective_all_outreach:
         states = _parse_outreach_states(os.getenv("OUTREACH_STATES", ""))
         if not states:
             print("ERR_SIGNAL_REVIEW_OUTREACH_STATES_MISSING", file=sys.stderr)
@@ -494,10 +527,10 @@ def main() -> int:
                 continue
             groups.append(group)
     else:
-        if not str(args.territory or "").strip():
+        if not territory_arg:
             print("ERR_SIGNAL_REVIEW_TERRITORY_REQUIRED", file=sys.stderr)
             return 2
-        territory_code = resolve_territory_code(str(args.territory or ""), definitions)
+        territory_code = resolve_territory_code(territory_arg, definitions)
         if territory_code not in definitions:
             print(f"ERR_SIGNAL_REVIEW_UNKNOWN_TERRITORY code={args.territory}", file=sys.stderr)
             return 2
@@ -522,6 +555,8 @@ def main() -> int:
     territories_csv = ",".join(trial_territories if effective_all_outreach else ([territory_code] if territory_code else []))
     if data_dir_resolution.warning_token:
         print(data_dir_resolution.warning_token)
+    if states_scope:
+        print(f"AI_REVIEW_DUMP_SCOPE=STATES states={states_csv}")
     print(f"AI_REVIEW_DUMP_OUTPUT_DIR={out_dir}")
     print(f"AI_REVIEW_DUMP_OUTPUT_PATH={out_path}")
     print("AI_REVIEW_DUMP_FILTER_BASIS=FIRST_SEEN_FALLBACK_OPENED")
