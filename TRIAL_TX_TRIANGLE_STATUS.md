@@ -32,12 +32,16 @@ What the repo cannot confirm (machine state):
 `run_wally_trial_daily.bat` runs this exact command:
 
 ```bat
-python deliver_daily.py --db "data/osha.sqlite" --customer "%~dp0customers\wally_trial_tx_triangle_v1.json" --mode daily --since-days 14 --admin-email "support@microflowops.com" --send-live
+python run_trial_daily.py --subscriber-key wally_trial --db "data/osha.sqlite" --customer "%~dp0customers\wally_trial_tx_triangle_v1.json" --send-live
 ```
 
 Notes:
 - `--send-live` is present in the scheduled action. This is why clicking "Run" emails recipients.
 - The customer config `customers/wally_trial_tx_triangle_v1.json` is expected to exist locally and is intentionally untracked (real recipient emails).
+
+Split-ledger safety:
+- Live runs can hard-fail with `ERR_TRIAL_LEDGER_SPLIT ...` when `C:\osha_data\crm_light.sqlite` and repo-local `out\crm_light.sqlite` diverge for the same subscriber.
+- Remediation is `run_trial_admin.py reconcile-ledgers` (dry-run then apply) before retrying live send.
 
 ### Scheduler setup/verification (operator tooling)
 
@@ -188,14 +192,14 @@ python onboard_subscriber.py --db data/osha.sqlite --preflight --reply-block-fil
 # Option A: from a file containing the KEY=VALUE block
 python onboard_subscriber.py --db data/osha.sqlite --dry-run --reply-block-file out\\yes_reply.txt
 
-# 2) Delivery preflight (validates gating + SMTP env when --send-live is included)
-python deliver_daily.py --db data/osha.sqlite --customer customers\\<subscriber_key>.json --mode daily --preflight --send-live
+# 2) Trial runtime config preflight (no send)
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key <subscriber_key> --db data/osha.sqlite --customer customers\\<subscriber_key>.json --print-config
 
-# 3) Delivery dry-run (renders digest, prints tier counts/recipients/sample leads; no emails sent)
-python deliver_daily.py --db data/osha.sqlite --customer customers\\<subscriber_key>.json --mode daily --dry-run --skip-ingest
+# 3) Trial daily dry-run (renders trial daily path; no live send)
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key <subscriber_key> --db data/osha.sqlite --customer customers\\<subscriber_key>.json --test-send-daily --dry-run
 
 # 4) Live send (within the configured send window)
-python deliver_daily.py --db data/osha.sqlite --customer customers\\<subscriber_key>.json --mode daily --send-live
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key <subscriber_key> --db data/osha.sqlite --customer customers\\<subscriber_key>.json --send-live
 ```
 
 What it does:

@@ -114,11 +114,11 @@ python onboard_subscriber.py --db data/osha.sqlite --preflight --reply-block-fil
 # B) Onboarding dry-run (writes subscriber + customer config; no confirmation emails)
 python onboard_subscriber.py --db data/osha.sqlite --dry-run --reply-block-file out\\yes_reply.txt
 
-# C) Delivery preflight (validates DB gating + SMTP env when --send-live is included)
-python deliver_daily.py --db data/osha.sqlite --customer customers\\<subscriber_key>.json --mode daily --preflight --send-live
+# C) Trial runtime config preflight (no send)
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key wally_trial --db data/osha.sqlite --customer customers\\wally_trial_tx_triangle_v1.json --print-config
 
-# D) Delivery dry-run (renders digest; prints tier counts/recipients/sample leads; no emails sent)
-python deliver_daily.py --db data/osha.sqlite --customer customers\\<subscriber_key>.json --mode daily --dry-run --skip-ingest
+# D) Trial daily dry-run (renders daily path; no live send)
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key wally_trial --db data/osha.sqlite --customer customers\\wally_trial_tx_triangle_v1.json --test-send-daily --dry-run
 ```
 
 Artifacts:
@@ -205,14 +205,14 @@ Anything beyond the above is optional/post-trial.
 
 ## Preflight (Scheduler Safety)
 
-Run this once before enabling the schedule to ensure DB connectivity and live-send gating:
+Run this once before enabling the schedule to ensure DB connectivity and env readiness:
 
 ```powershell
-python deliver_daily.py --preflight --db "C:\dev\OSHA_Leads\osha_leads.db" --customer "C:\dev\OSHA_Leads\customers\wally_trial_tx_triangle_v1.json" --mode daily --send-live
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py wally_trial_tx_triangle_v1.json --preflight-only
 ```
 
 Expected output:
-- `[PREFLIGHT_OK] DB connectivity, subscriber gating, and recipients validated`
+- `PREFLIGHT_OK`
 - No `PREFLIGHT_ERROR` lines
 
 Latest preflight output: [PREFLIGHT_OK] DB connectivity, subscriber gating, and recipients validated
@@ -235,7 +235,21 @@ Digest hash definition (for idempotent send guard):
 - Suppression actions: `out/suppression_log.csv`
 - Append-only unsubscribe events: `out/unsubscribe_events.csv`
 - Scheduled task log: `out/wally_trial_task.log`
-- Failure alert email: sent by `deliver_daily.py --admin-email ...` on non-zero runs
+- Failure alerts/errors: emitted by `run_trial_daily.py` output in `out/wally_trial_task.log` (it invokes `deliver_daily.py` under the trial runtime)
+
+## Split-Ledger Guard Remediation
+
+If a live run emits `ERR_TRIAL_LEDGER_SPLIT`, reconcile ledgers before retrying live send.
+
+Expected error token:
+- `ERR_TRIAL_LEDGER_SPLIT subscriber_key=<key> primary_db=<path> secondary_db=<path> reason=<...>`
+
+Run dry-run reconcile first, then apply:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers --source-crm-db C:\dev\OSHA_Leads\out\crm_light.sqlite --crm-db C:\osha_data\crm_light.sqlite --scope all --dry-run
+.\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers --source-crm-db C:\dev\OSHA_Leads\out\crm_light.sqlite --crm-db C:\osha_data\crm_light.sqlite --scope all --apply
+```
 
 Batch logging behavior:
 - Task log captures full stdout/stderr for each run.

@@ -1473,6 +1473,92 @@ class TestTrialStatus(unittest.TestCase):
                 else:
                     os.environ["TRIAL_CONVERSION_URL"] = old_conv
 
+    def test_split_ledger_guard_blocks_live_send_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            leads_db = base / "osha.sqlite"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_mfo_data_dir_effective = os.environ.get("MFO_DATA_DIR_EFFECTIVE")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ["MFO_DATA_DIR_EFFECTIVE"] = str(data_dir)
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=14,
+                )
+
+                calls = {"deliver": 0}
+                orig_detect = run_trial_daily._detect_split_ledger_conflict
+                orig_deliver = run_trial_daily._run_deliver_daily
+                orig_mode = run_trial_daily._try_extract_latest_send_start_mode
+
+                def _fake_detect(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                    return {
+                        "checked": True,
+                        "conflict": True,
+                        "primary_db": str(db),
+                        "secondary_db": r"C:\dev\OSHA_Leads\out\crm_light.sqlite",
+                        "reason": "fingerprint_mismatch",
+                    }
+
+                def _fake_deliver(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                    calls["deliver"] += 1
+                    return 0, "ok"
+
+                run_trial_daily._detect_split_ledger_conflict = _fake_detect  # type: ignore[assignment]
+                run_trial_daily._run_deliver_daily = _fake_deliver  # type: ignore[assignment]
+                run_trial_daily._try_extract_latest_send_start_mode = lambda *_a, **_k: "LIVE"  # type: ignore[assignment]
+                try:
+                    live_out = io.StringIO()
+                    with contextlib.redirect_stdout(live_out):
+                        code_live = run_trial_daily.run_trial_daily(
+                            subscriber_key="wally_trial",
+                            leads_db=str(leads_db),
+                            crm_db=db,
+                            customer_arg="",
+                            send_live=True,
+                            dry_run=False,
+                            test_send_daily=False,
+                            print_config=False,
+                            allow_weekend_send=True,
+                        )
+                    non_live_out = io.StringIO()
+                    with contextlib.redirect_stdout(non_live_out):
+                        code_non_live = run_trial_daily.run_trial_daily(
+                            subscriber_key="wally_trial",
+                            leads_db=str(leads_db),
+                            crm_db=db,
+                            customer_arg="",
+                            send_live=False,
+                            dry_run=False,
+                            test_send_daily=False,
+                            print_config=False,
+                            allow_weekend_send=True,
+                        )
+                finally:
+                    run_trial_daily._detect_split_ledger_conflict = orig_detect  # type: ignore[assignment]
+                    run_trial_daily._run_deliver_daily = orig_deliver  # type: ignore[assignment]
+                    run_trial_daily._try_extract_latest_send_start_mode = orig_mode  # type: ignore[assignment]
+
+                self.assertEqual(code_live, 2)
+                self.assertIn("ERR_TRIAL_LEDGER_SPLIT subscriber_key=wally_trial", live_out.getvalue())
+                self.assertEqual(code_non_live, 0)
+                self.assertNotIn("ERR_TRIAL_LEDGER_SPLIT", non_live_out.getvalue())
+                self.assertEqual(calls["deliver"], 1)
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_mfo_data_dir_effective is None:
+                    os.environ.pop("MFO_DATA_DIR_EFFECTIVE", None)
+                else:
+                    os.environ["MFO_DATA_DIR_EFFECTIVE"] = old_mfo_data_dir_effective
+
     def test_conversion_send_path_list_unsubscribe_contract(self) -> None:
         text = Path("run_trial_daily.py").read_text(encoding="utf-8")
         self.assertIn('msg["List-Unsubscribe"]', text)

@@ -647,6 +647,13 @@ def main():
             # Step 1: Ingestion
             if not args.skip_ingest:
                 print("[INFO] Running ingestion...")
+                scope_states: list[str] = []
+                for state in (states or []):
+                    token = str(state or "").strip().upper()
+                    if token and token not in scope_states:
+                        scope_states.append(token)
+                print(f"DELIVER_INGEST_SCOPE_STATES={','.join(scope_states)} source=customer_config")
+                print(f"DELIVER_INGEST_MAX_DETAILS={int(args.max_details)}")
                 ingest_cmd = [
                     sys.executable, "ingest_osha.py",
                     "--db", args.db,
