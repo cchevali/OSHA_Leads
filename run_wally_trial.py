@@ -840,30 +840,6 @@ def run_preview_send(db_path: str, customer_config: str, chase_email: str) -> No
     subprocess.run(cmd, check=True)
 
 
-def _append_wally_trial_sent_event(run_id_prefix: str) -> None:
-    ts_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    run_id = f"{run_id_prefix}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-    try:
-        code = run_trial_admin.append_event(
-            subscriber_key=WALLY_TRIAL_SUBSCRIBER_KEY,
-            ts_utc=ts_utc,
-            status="SENT",
-            variant="DAILY",
-            run_id=run_id,
-            crm_db_path=None,
-        )
-        if code != 0:
-            print(
-                f"WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key={WALLY_TRIAL_SUBSCRIBER_KEY} code={code}",
-                flush=True,
-            )
-    except Exception as exc:
-        print(
-            f"WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key={WALLY_TRIAL_SUBSCRIBER_KEY} detail={exc}",
-            flush=True,
-        )
-
-
 def _wally_local_day_context(customer_config: str) -> dict[str, str | bool]:
     try:
         with open(customer_config, "r", encoding="utf-8") as f:
@@ -901,23 +877,19 @@ def run_live_send(
         return
     cmd = [
         sys.executable,
-        "deliver_daily.py",
+        "run_trial_daily.py",
+        "--subscriber-key",
+        WALLY_TRIAL_SUBSCRIBER_KEY,
         "--db",
         db_path,
         "--customer",
         customer_config,
-        "--mode",
-        "daily",
-        "--since-days",
-        "14",
-        "--admin-email",
-        admin_email,
     ]
     if send_live:
         cmd.append("--send-live")
+    if allow_weekend_send:
+        cmd.append("--allow-weekend-send")
     subprocess.run(cmd, check=True)
-    if send_live:
-        _append_wally_trial_sent_event(run_id_prefix="manual_wally_trial")
 
 
 def _load_subscriber_last_sent_at(db_path: str, subscriber_key: str) -> str | None:
@@ -1041,19 +1013,14 @@ def write_batch_runner(batch_path: Path, project_root: Path, customer_config: st
         (
             "powershell -NoProfile -ExecutionPolicy Bypass "
             f"-File \"%~dp0scripts\\run_with_secrets.ps1\" "
-            f"python deliver_daily.py --db \"{db_path}\" --customer \"%~dp0{customer_rel}\" "
-            f"--mode daily --since-days 14 --admin-email \"{admin_email}\" --send-live "
+            f"python run_trial_daily.py --subscriber-key wally_trial --db \"{db_path}\" "
+            f"--customer \"%~dp0{customer_rel}\" --send-live "
             "> \"%RUN_TMP%\" 2>&1"
         ),
         "set RUN_EXIT=%ERRORLEVEL%",
         "type \"%RUN_TMP%\" >> out\\wally_trial_task.log",
         "findstr /C:\"CONFIG_ERROR\" \"%RUN_TMP%\" >nul",
         "if %ERRORLEVEL%==0 echo [%date% %time%] CONFIG_ERROR detected >> out\\wally_trial_task.log",
-        "if %RUN_EXIT% EQU 0 (",
-        "  for /f \"delims=\" %%r in ('powershell -NoProfile -Command \"(Get-Date).ToUniversalTime().ToString(\\\"yyyyMMddTHHmmssZ\\\")\"') do set TRIAL_RUN_ID=scheduler_wally_trial_%%r",
-        "  powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0scripts\\run_with_secrets.ps1\" python run_trial_admin.py append-event --subscriber-key wally_trial --status SENT --variant DAILY --run-id \"%TRIAL_RUN_ID%\" --send-mode LIVE --meta-source wally_trial_scheduler >> out\\wally_trial_task.log 2>&1",
-        "  if errorlevel 1 echo [%date% %time%] WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key=wally_trial run_id=%TRIAL_RUN_ID% >> out\\wally_trial_task.log",
-        ")",
         "if %RUN_EXIT% NEQ 0 echo [%date% %time%] ERROR: Wally trial run failed >> out\\wally_trial_task.log",
         "if %RUN_EXIT% EQU 0 echo [%date% %time%] SUCCESS: Wally trial run completed >> out\\wally_trial_task.log",
         "exit /b %RUN_EXIT%",
@@ -1481,7 +1448,7 @@ def main() -> None:
             True,
             allow_weekend_send=bool(args.allow_weekend_send),
         )
-        print("First live send triggered via deliver_daily.py")
+        print("First live send triggered via run_trial_daily.py")
 
     write_batch_runner(
         batch_path=batch_path,

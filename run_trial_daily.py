@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import smtplib
 import subprocess
 import sys
@@ -487,6 +488,171 @@ def _resolve_policy(subscriber_key: str, crm_db_path: str | Path | None) -> Tria
         )
 
 
+def _subscriber_ledger_fingerprint(db_path: Path, subscriber_key: str) -> dict[str, Any]:
+    path = Path(db_path).expanduser().resolve(strict=False)
+    sk = _validate_subscriber_key(subscriber_key)
+    payload: dict[str, Any] = {
+        "db_path": str(path),
+        "has_data": False,
+        "subscriber": None,
+        "trial_state": None,
+        "event_summary": {"count": 0, "sent_count": 0, "first_ts_utc": "", "last_ts_utc": ""},
+    }
+    if not path.exists():
+        return payload
+
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = {
+            str(row["name"] or "").strip().lower()
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        sub: dict[str, Any] | None = None
+        trial: dict[str, Any] | None = None
+        event_summary: dict[str, Any] = {"count": 0, "sent_count": 0, "first_ts_utc": "", "last_ts_utc": ""}
+
+        if "subscribers" in tables:
+            row = conn.execute(
+                """
+                SELECT subscriber_key, email, territory_code, tz, status
+                FROM subscribers
+                WHERE subscriber_key = ?
+                LIMIT 1
+                """,
+                (sk,),
+            ).fetchone()
+            if row is not None:
+                sub = {
+                    "subscriber_key": str(row["subscriber_key"] or "").strip().lower(),
+                    "email": str(row["email"] or "").strip().lower(),
+                    "territory_code": str(row["territory_code"] or "").strip().upper(),
+                    "tz": str(row["tz"] or "").strip(),
+                    "status": str(row["status"] or "").strip().lower(),
+                }
+
+        if "trial_state" in tables:
+            row = conn.execute(
+                """
+                SELECT subscriber_key, start_date, sends_limit, notified_at_utc, ended_at_utc
+                FROM trial_state
+                WHERE subscriber_key = ?
+                LIMIT 1
+                """,
+                (sk,),
+            ).fetchone()
+            if row is not None:
+                trial = {
+                    "subscriber_key": str(row["subscriber_key"] or "").strip().lower(),
+                    "start_date": str(row["start_date"] or "").strip(),
+                    "sends_limit": int(row["sends_limit"]) if row["sends_limit"] is not None else None,
+                    "notified_at_utc": str(row["notified_at_utc"] or "").strip(),
+                    "ended_at_utc": str(row["ended_at_utc"] or "").strip(),
+                }
+
+        if "send_events" in tables:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS c,
+                    SUM(CASE WHEN upper(trim(status)) = 'SENT' THEN 1 ELSE 0 END) AS sent_c,
+                    COALESCE(MIN(ts_utc), '') AS first_ts,
+                    COALESCE(MAX(ts_utc), '') AS last_ts
+                FROM send_events
+                WHERE subscriber_key = ?
+                """,
+                (sk,),
+            ).fetchone()
+            if row is not None:
+                event_summary = {
+                    "count": int(row["c"] or 0),
+                    "sent_count": int(row["sent_c"] or 0),
+                    "first_ts_utc": str(row["first_ts"] or "").strip(),
+                    "last_ts_utc": str(row["last_ts"] or "").strip(),
+                }
+
+        payload["subscriber"] = sub
+        payload["trial_state"] = trial
+        payload["event_summary"] = event_summary
+        payload["has_data"] = bool(sub or trial or int(event_summary.get("count") or 0) > 0)
+        return payload
+    finally:
+        conn.close()
+
+
+def _detect_split_ledger_conflict(subscriber_key: str, primary_db_path: Path) -> dict[str, Any]:
+    wrapper_effective = str(os.getenv("MFO_DATA_DIR_EFFECTIVE") or "").strip()
+    primary = Path(primary_db_path).expanduser().resolve(strict=False)
+    secondary = (Path(__file__).resolve().parent / "out" / "crm_light.sqlite").resolve(strict=False)
+    result: dict[str, Any] = {
+        "checked": False,
+        "conflict": False,
+        "primary_db": str(primary),
+        "secondary_db": str(secondary),
+        "reason": "",
+    }
+    if not wrapper_effective:
+        return result
+    result["checked"] = True
+    if secondary == primary or (not secondary.exists()):
+        return result
+
+    primary_fp = _subscriber_ledger_fingerprint(primary, subscriber_key)
+    secondary_fp = _subscriber_ledger_fingerprint(secondary, subscriber_key)
+    result["primary_has_data"] = bool(primary_fp.get("has_data"))
+    result["secondary_has_data"] = bool(secondary_fp.get("has_data"))
+    if not bool(secondary_fp.get("has_data")):
+        return result
+    if not bool(primary_fp.get("has_data")):
+        result["conflict"] = True
+        result["reason"] = "secondary_has_subscriber_data_primary_missing"
+        return result
+
+    primary_cmp = {
+        "subscriber": primary_fp.get("subscriber"),
+        "trial_state": primary_fp.get("trial_state"),
+        "event_summary": primary_fp.get("event_summary"),
+    }
+    secondary_cmp = {
+        "subscriber": secondary_fp.get("subscriber"),
+        "trial_state": secondary_fp.get("trial_state"),
+        "event_summary": secondary_fp.get("event_summary"),
+    }
+    if primary_cmp != secondary_cmp:
+        result["conflict"] = True
+        result["reason"] = "fingerprint_mismatch"
+    return result
+
+
+def _mirror_secondary_trial_ledger(subscriber_key: str, primary_db_path: Path) -> str:
+    wrapper_effective = str(os.getenv("MFO_DATA_DIR_EFFECTIVE") or "").strip()
+    if not wrapper_effective:
+        return "SKIP_NO_WRAPPER_CONTEXT"
+    primary = Path(primary_db_path).expanduser().resolve(strict=False)
+    secondary = (Path(__file__).resolve().parent / "out" / "crm_light.sqlite").resolve(strict=False)
+    if secondary == primary:
+        return "SKIP_PRIMARY_IS_SECONDARY"
+    if not secondary.exists():
+        return "SKIP_SECONDARY_MISSING"
+    try:
+        run_trial_admin.reconcile_ledgers(
+            source_crm_db_path=primary,
+            target_crm_db_path=secondary,
+            scope="explicit",
+            subscriber_keys=[subscriber_key],
+            apply=True,
+            trial_state_merge="source",
+            emit_tokens=False,
+        )
+        return "OK"
+    except Exception as exc:
+        print(
+            "WARN_TRIAL_LEDGER_MIRROR_FAILED "
+            f"subscriber_key={subscriber_key} source_db={primary} target_db={secondary} detail={exc}"
+        )
+        return f"WARN:{type(exc).__name__}"
+
+
 def run_trial_daily(
     subscriber_key: str,
     leads_db: str,
@@ -502,7 +668,20 @@ def run_trial_daily(
     resolved_crm_db = crm_light.resolve_crm_db_path(crm_db)
     policy = _resolve_policy(sk, resolved_crm_db)
     out_root = crm_light.data_dir()
+    secondary_db = (Path(__file__).resolve().parent / "out" / "crm_light.sqlite").resolve(strict=False)
     run_id = f"trial_{sk}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+
+    def _finalize(exit_code: int, *, mirror_after: bool = False) -> int:
+        if mirror_after and send_live and (not dry_run):
+            mirror_status = _mirror_secondary_trial_ledger(policy.subscriber_key, Path(resolved_crm_db))
+            print(
+                "TRIAL_LEDGER_MIRROR "
+                f"subscriber_key={policy.subscriber_key} "
+                f"source_db={resolved_crm_db} "
+                f"target_db={secondary_db} "
+                f"status={mirror_status}"
+            )
+        return int(exit_code)
 
     print(f"subscriber_key={policy.subscriber_key}")
     print(f"crm_db={resolved_crm_db}")
@@ -524,6 +703,31 @@ def run_trial_daily(
 
     if print_config:
         return 0
+
+    if send_live and not dry_run:
+        split = _detect_split_ledger_conflict(policy.subscriber_key, Path(resolved_crm_db))
+        if bool(split.get("conflict")):
+            primary_db = str(split.get("primary_db") or "")
+            secondary_db = str(split.get("secondary_db") or "")
+            reason = str(split.get("reason") or "fingerprint_mismatch")
+            reconcile_hint = (
+                f".\\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers "
+                f"--source-crm-db \"{secondary_db}\" --crm-db \"{primary_db}\" --scope explicit "
+                f"--subscriber-key {policy.subscriber_key} --apply"
+            )
+            sync_secondary_hint = (
+                f".\\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers "
+                f"--source-crm-db \"{primary_db}\" --crm-db \"{secondary_db}\" --scope explicit "
+                f"--subscriber-key {policy.subscriber_key} --trial-state-merge source --apply"
+            )
+            print(
+                "ERR_TRIAL_LEDGER_SPLIT "
+                f"subscriber_key={policy.subscriber_key} "
+                f"primary_db={primary_db} secondary_db={secondary_db} reason={reason}"
+            )
+            print(f"ERR_TRIAL_LEDGER_SPLIT_REMEDIATE command={reconcile_hint}")
+            print(f"ERR_TRIAL_LEDGER_SPLIT_REMEDIATE_SYNC_SECONDARY command={sync_secondary_hint}")
+            return 2
 
     if TRIAL_WEEKDAYS_ONLY and (not allow_weekend_send) and bool(day_ctx["is_weekend"]):
         print(
@@ -586,7 +790,7 @@ def run_trial_daily(
                                 },
                                 ts_utc="",
                             )
-                            return 0
+                            return _finalize(0, mirror_after=True)
                         sent, message_id, error_detail = _send_conversion_email_from_artifact(
                             artifact_path=text_artifact,
                             subscriber_key=policy.subscriber_key,
@@ -620,7 +824,7 @@ def run_trial_daily(
                             print(f"WARN_CONVERSION_EMAIL_SEND_FAILED detail={error_detail}")
                     else:
                         print("CONVERSION_EMAIL_PENDING send_live=NO")
-            return 0
+            return _finalize(0, mirror_after=True)
 
         local_today = str(day_ctx["local_date"])
         if send_live and not dry_run and crm_light.has_trial_delivery_on_local_date(
@@ -641,7 +845,7 @@ def run_trial_daily(
                 ts_utc="",
             )
             print(f"TRIAL_EVENT status=SKIP_ALREADY_SENT_LOCAL_DATE local_date={local_today}")
-            return 0
+            return _finalize(0, mirror_after=True)
 
         customer_path = _resolve_customer_config_path(policy.subscriber_key, customer_arg, out_root)
         customer_runtime = _load_or_build_customer_config(policy, customer_path, out_root)
@@ -668,7 +872,7 @@ def run_trial_daily(
             print(f"TRIAL_EVENT status={status}")
             if out.strip():
                 print(out.rstrip())
-            return 0 if code == 0 else code
+            return _finalize(0 if code == 0 else code, mirror_after=True)
 
         code, out = _run_deliver_daily(leads_db, customer_runtime, send_live=send_live, dry_run=dry_run)
         status = "ERROR"
@@ -716,7 +920,7 @@ def run_trial_daily(
         print(f"TRIAL_EVENT status={status}")
         if out.strip():
             print(out.rstrip())
-        return 0 if code == 0 else code
+        return _finalize(0 if code == 0 else code, mirror_after=True)
 
 
 def main(argv: list[str] | None = None) -> int:

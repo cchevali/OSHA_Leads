@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=db31961ccfbddda0df9d6010af776140e8467f3c
-PACK_BUILD_UTC=2026-03-04T02:03:42Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=7057784172fae36eee9ce597f94c561ab0289959063a7c31cd90f8cd4212fda2 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=8dec841d4faa8771b7d97b2fd710f1eb53243ef22bd4ed88ace9d0cacfd8bba0
+PACK_GIT_SHA=11681634eea6db8ddd6bb21eb9251fb07ab64740
+PACK_BUILD_UTC=2026-03-04T04:01:46Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=6c5a5835c51ddc112056950b26e9ae989380298fcb5f0898c683781a4eabcc05 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=237e17a055a6057800a05615f7d96aab62aa4fc5519ed2ef853c479a314d7039
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1649,7 +1649,7 @@ Important:
 
 - Catch-up is allowed only for the Wally trial daily path and only when the subscriber has not already been sent that local day.
 - Same-day live-send guard token: `TRIAL_SKIP_ALREADY_SENT_TODAY=1 subscriber_key=<key> local_date=<YYYY-MM-DD> guard=ON`
-- Emergency override (manual only): pass `--allow-second-live-send-same-day` through `deliver_daily.py` / `send_digest_email.py`.
+- Emergency override (manual only): pass `--allow-second-live-send-same-day` through `deliver_daily.py` / `send_digest_email.py` (Wally scheduler path remains `run_trial_daily.py`).
 - Recipient fan-out stays unchanged: one trial send run still targets both configured recipients (Wally + Brandon).
 - Do not temporarily widen `send_window_minutes` for missed trial sends; use the trial catch-up keys/workflow above.
 
@@ -1674,7 +1674,15 @@ Source of truth:
 
 - Subscriber registry + trial latches: `out/crm_light.sqlite` (or `${env:DATA_DIR}\crm_light.sqlite` when `DATA_DIR` is set)
 - Send ledger: `send_events` (`TRIAL_SENDS_USED` counts distinct subscriber-local weekday dates for `status=SENT` daily LIVE events to the primary recipient)
-- Wally scheduled live runs now mirror successful sends into `send_events` automatically (best-effort, no send-path change)
+- Wally manual/scheduled live sends run through `run_trial_daily.py --subscriber-key wally_trial --send-live`; no manual `append-event` step is required
+
+Split-ledger safety gate:
+
+- Live trial sends can fail with `ERR_TRIAL_LEDGER_SPLIT` when wrapper-resolved runtime points at a canonical CRM DB while repo-local `out\crm_light.sqlite` contains conflicting rows for the same subscriber.
+- This guard blocks live sends only (`--send-live`, non-dry-run) and avoids post-expiry drift.
+- Reconcile with dry-run then apply:
+  - `.\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers --source-crm-db C:\dev\OSHA_Leads\out\crm_light.sqlite --crm-db C:\osha_data\crm_light.sqlite --scope all --dry-run`
+  - `.\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers --source-crm-db C:\dev\OSHA_Leads\out\crm_light.sqlite --crm-db C:\osha_data\crm_light.sqlite --scope all --apply`
 
 Check trial days-since-start and sends-used (single command, no sends/no writes):
 

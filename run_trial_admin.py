@@ -1147,6 +1147,629 @@ def normalize_trials(*, apply: bool, crm_db_path: str | Path | None) -> dict[str
     }
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
+        (str(table_name or "").strip(),),
+    ).fetchone()
+    return row is not None
+
+
+def _table_has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    except Exception:
+        return False
+    wanted = str(column_name or "").strip().lower()
+    return any(str(row["name"] if isinstance(row, sqlite3.Row) else row[1]).strip().lower() == wanted for row in rows)
+
+
+def _min_non_empty_text(*values: str) -> str:
+    items = [str(v or "").strip() for v in values if str(v or "").strip()]
+    if not items:
+        return ""
+    return min(items)
+
+
+def _max_optional_int(a: int | None, b: int | None) -> int | None:
+    values: list[int] = []
+    if a is not None:
+        values.append(int(a))
+    if b is not None:
+        values.append(int(b))
+    if not values:
+        return None
+    return max(values)
+
+
+def _resolve_reconcile_subscriber_keys(
+    source_conn: sqlite3.Connection,
+    *,
+    scope: str,
+    explicit_keys: list[str],
+) -> list[str]:
+    normalized_scope = str(scope or "").strip().lower() or "all"
+    if normalized_scope not in {"all", "active_prod", "explicit"}:
+        raise ValueError("scope must be one of: all,active_prod,explicit")
+
+    if normalized_scope == "explicit":
+        keys: list[str] = []
+        seen: set[str] = set()
+        for item in list(explicit_keys or []):
+            sk = _validate_subscriber_key(str(item or ""))
+            if sk in seen:
+                continue
+            seen.add(sk)
+            keys.append(sk)
+        if not keys:
+            raise ValueError("subscriber-key required when scope=explicit")
+        return sorted(keys)
+
+    keys_set: set[str] = set()
+
+    if normalized_scope == "active_prod":
+        if _table_exists(source_conn, "subscribers"):
+            rows = source_conn.execute(
+                """
+                SELECT subscriber_key
+                FROM subscribers
+                WHERE lower(trim(status)) NOT IN ('trial', 'inactive', 'disabled', 'cancelled', 'canceled')
+                """
+            ).fetchall()
+            for row in rows:
+                sk = str(row["subscriber_key"] or "").strip().lower()
+                if sk:
+                    keys_set.add(sk)
+        return sorted(keys_set)
+
+    if _table_exists(source_conn, "subscribers"):
+        rows = source_conn.execute("SELECT subscriber_key FROM subscribers").fetchall()
+        for row in rows:
+            sk = str(row["subscriber_key"] or "").strip().lower()
+            if sk:
+                keys_set.add(sk)
+    if _table_exists(source_conn, "trial_state"):
+        rows = source_conn.execute("SELECT subscriber_key FROM trial_state").fetchall()
+        for row in rows:
+            sk = str(row["subscriber_key"] or "").strip().lower()
+            if sk:
+                keys_set.add(sk)
+    if _table_exists(source_conn, "send_events"):
+        rows = source_conn.execute("SELECT DISTINCT subscriber_key FROM send_events").fetchall()
+        for row in rows:
+            sk = str(row["subscriber_key"] or "").strip().lower()
+            if sk:
+                keys_set.add(sk)
+    if _table_exists(source_conn, "trial_adjustments"):
+        rows = source_conn.execute("SELECT DISTINCT subscriber_key FROM trial_adjustments").fetchall()
+        for row in rows:
+            sk = str(row["subscriber_key"] or "").strip().lower()
+            if sk:
+                keys_set.add(sk)
+    if _table_exists(source_conn, "trial_latches"):
+        rows = source_conn.execute("SELECT DISTINCT subscriber_key FROM trial_latches").fetchall()
+        for row in rows:
+            sk = str(row["subscriber_key"] or "").strip().lower()
+            if sk:
+                keys_set.add(sk)
+    return sorted(keys_set)
+
+
+def reconcile_ledgers(
+    *,
+    source_crm_db_path: str | Path,
+    target_crm_db_path: str | Path,
+    scope: str,
+    subscriber_keys: list[str],
+    apply: bool,
+    trial_state_merge: str = "max",
+    emit_tokens: bool = True,
+) -> int:
+    source_path = Path(str(source_crm_db_path)).expanduser().resolve(strict=False)
+    target_path = crm_light.resolve_crm_db_path(str(target_crm_db_path or "").strip() or None)
+    if not source_path.exists():
+        raise ValueError(f"source crm db missing path={source_path}")
+    merge_mode = str(trial_state_merge or "max").strip().lower() or "max"
+    if merge_mode not in {"max", "source"}:
+        raise ValueError("trial_state_merge must be one of: max,source")
+
+    crm_light.ensure_database(target_path)
+
+    source_conn = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
+    source_conn.row_factory = sqlite3.Row
+    try:
+        target_conn = sqlite3.connect(str(target_path))
+        target_conn.row_factory = sqlite3.Row
+        try:
+            target_conn.execute("PRAGMA foreign_keys = ON")
+            crm_light.init_schema(target_conn)
+
+            keys = _resolve_reconcile_subscriber_keys(
+                source_conn,
+                scope=scope,
+                explicit_keys=list(subscriber_keys or []),
+            )
+            source_sub_cache: dict[str, sqlite3.Row | None] = {}
+
+            counts: dict[str, dict[str, int]] = {
+                "subscribers": {"inserted": 0, "skipped": 0},
+                "trial_state": {"inserted": 0, "skipped": 0},
+                "send_events": {"inserted": 0, "skipped": 0},
+                "trial_adjustments": {"inserted": 0, "skipped": 0},
+                "trial_latches": {"inserted": 0, "skipped": 0},
+            }
+
+            def _source_subscriber(sk: str) -> sqlite3.Row | None:
+                if sk in source_sub_cache:
+                    return source_sub_cache[sk]
+                row = None
+                if _table_exists(source_conn, "subscribers"):
+                    row = source_conn.execute(
+                        """
+                        SELECT subscriber_key, email, territory_code, tz, created_at_utc, status
+                        FROM subscribers
+                        WHERE subscriber_key = ?
+                        LIMIT 1
+                        """,
+                        (sk,),
+                    ).fetchone()
+                source_sub_cache[sk] = row
+                return row
+
+            def _target_has_subscriber(sk: str) -> bool:
+                row = target_conn.execute(
+                    "SELECT 1 FROM subscribers WHERE subscriber_key = ? LIMIT 1",
+                    (sk,),
+                ).fetchone()
+                return row is not None
+
+            def _ensure_target_subscriber(sk: str) -> bool:
+                if _target_has_subscriber(sk):
+                    return True
+                row = _source_subscriber(sk)
+                if row is None:
+                    return False
+                if apply:
+                    target_conn.execute(
+                        """
+                        INSERT OR IGNORE INTO subscribers
+                            (subscriber_key, email, territory_code, tz, created_at_utc, status)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(row["subscriber_key"] or "").strip().lower(),
+                            str(row["email"] or "").strip().lower(),
+                            str(row["territory_code"] or "").strip().upper(),
+                            str(row["tz"] or "").strip(),
+                            str(row["created_at_utc"] or "").strip() or datetime.now(timezone.utc).isoformat(),
+                            str(row["status"] or "").strip() or "trial",
+                        ),
+                    )
+                return True
+
+            # subscribers: insert missing only
+            for sk in keys:
+                src = _source_subscriber(sk)
+                if src is None:
+                    counts["subscribers"]["skipped"] += 1
+                    continue
+                exists = _target_has_subscriber(sk)
+                if exists:
+                    counts["subscribers"]["skipped"] += 1
+                    continue
+                counts["subscribers"]["inserted"] += 1
+                if apply:
+                    target_conn.execute(
+                        """
+                        INSERT INTO subscribers
+                            (subscriber_key, email, territory_code, tz, created_at_utc, status)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(src["subscriber_key"] or "").strip().lower(),
+                            str(src["email"] or "").strip().lower(),
+                            str(src["territory_code"] or "").strip().upper(),
+                            str(src["tz"] or "").strip(),
+                            str(src["created_at_utc"] or "").strip() or datetime.now(timezone.utc).isoformat(),
+                            str(src["status"] or "").strip() or "trial",
+                        ),
+                    )
+
+            # trial_state: deterministic merge
+            if _table_exists(source_conn, "trial_state"):
+                for sk in keys:
+                    src = source_conn.execute(
+                        """
+                        SELECT subscriber_key, start_date, sends_limit, notified_at_utc, ended_at_utc
+                        FROM trial_state
+                        WHERE subscriber_key = ?
+                        LIMIT 1
+                        """,
+                        (sk,),
+                    ).fetchone()
+                    if src is None:
+                        counts["trial_state"]["skipped"] += 1
+                        continue
+                    if not _ensure_target_subscriber(sk):
+                        counts["trial_state"]["skipped"] += 1
+                        continue
+
+                    dst = target_conn.execute(
+                        """
+                        SELECT subscriber_key, start_date, sends_limit, notified_at_utc, ended_at_utc
+                        FROM trial_state
+                        WHERE subscriber_key = ?
+                        LIMIT 1
+                        """,
+                        (sk,),
+                    ).fetchone()
+                    src_start = str(src["start_date"] or "").strip()
+                    src_limit = int(src["sends_limit"]) if src["sends_limit"] is not None else None
+                    src_notified = str(src["notified_at_utc"] or "").strip()
+                    src_ended = str(src["ended_at_utc"] or "").strip()
+
+                    dst_start = str(dst["start_date"] or "").strip() if dst is not None else ""
+                    dst_limit = int(dst["sends_limit"]) if (dst is not None and dst["sends_limit"] is not None) else None
+                    dst_notified = str(dst["notified_at_utc"] or "").strip() if dst is not None else ""
+                    dst_ended = str(dst["ended_at_utc"] or "").strip() if dst is not None else ""
+
+                    if merge_mode == "source":
+                        merged_start = src_start
+                        merged_limit = src_limit
+                        merged_notified = src_notified
+                        merged_ended = src_ended
+                    else:
+                        merged_start = dst_start or src_start
+                        merged_limit = _max_optional_int(dst_limit, src_limit)
+                        merged_notified = _min_non_empty_text(dst_notified, src_notified)
+                        merged_ended = _min_non_empty_text(dst_ended, src_ended)
+
+                    unchanged = (
+                        dst is not None
+                        and dst_start == merged_start
+                        and dst_limit == merged_limit
+                        and dst_notified == merged_notified
+                        and dst_ended == merged_ended
+                    )
+                    if unchanged:
+                        counts["trial_state"]["skipped"] += 1
+                        continue
+
+                    counts["trial_state"]["inserted"] += 1
+                    if apply:
+                        target_conn.execute(
+                            """
+                            INSERT INTO trial_state
+                                (subscriber_key, start_date, sends_limit, notified_at_utc, ended_at_utc)
+                            VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT(subscriber_key) DO UPDATE SET
+                                start_date=excluded.start_date,
+                                sends_limit=excluded.sends_limit,
+                                notified_at_utc=excluded.notified_at_utc,
+                                ended_at_utc=excluded.ended_at_utc
+                            """,
+                            (sk, merged_start, merged_limit, merged_notified or None, merged_ended or None),
+                        )
+
+            # send_events: insert-if-missing by natural dedupe tuple
+            if _table_exists(source_conn, "send_events"):
+                src_has_recipient = _table_has_column(source_conn, "send_events", "recipient_email")
+                dst_has_recipient = _table_has_column(target_conn, "send_events", "recipient_email")
+                for sk in keys:
+                    select_cols = "id, subscriber_key, ts_utc, variant, status, run_id, meta_json"
+                    if src_has_recipient:
+                        select_cols = "id, subscriber_key, recipient_email, ts_utc, variant, status, run_id, meta_json"
+                    rows = source_conn.execute(
+                        f"""
+                        SELECT {select_cols}
+                        FROM send_events
+                        WHERE subscriber_key = ?
+                        ORDER BY id ASC
+                        """,
+                        (sk,),
+                    ).fetchall()
+                    if not rows:
+                        continue
+                    if not _ensure_target_subscriber(sk):
+                        counts["send_events"]["skipped"] += len(rows)
+                        continue
+                    for row in rows:
+                        recipient = str(row["recipient_email"] or "").strip().lower() if src_has_recipient else ""
+                        if dst_has_recipient:
+                            existing = target_conn.execute(
+                                """
+                                SELECT 1
+                                FROM send_events
+                                WHERE subscriber_key = ?
+                                  AND recipient_email = ?
+                                  AND ts_utc = ?
+                                  AND variant = ?
+                                  AND status = ?
+                                  AND run_id = ?
+                                LIMIT 1
+                                """,
+                                (
+                                    sk,
+                                    recipient,
+                                    str(row["ts_utc"] or "").strip(),
+                                    str(row["variant"] or "").strip(),
+                                    str(row["status"] or "").strip(),
+                                    str(row["run_id"] or "").strip(),
+                                ),
+                            ).fetchone()
+                        else:
+                            existing = target_conn.execute(
+                                """
+                                SELECT 1
+                                FROM send_events
+                                WHERE subscriber_key = ?
+                                  AND ts_utc = ?
+                                  AND variant = ?
+                                  AND status = ?
+                                  AND run_id = ?
+                                LIMIT 1
+                                """,
+                                (
+                                    sk,
+                                    str(row["ts_utc"] or "").strip(),
+                                    str(row["variant"] or "").strip(),
+                                    str(row["status"] or "").strip(),
+                                    str(row["run_id"] or "").strip(),
+                                ),
+                            ).fetchone()
+                        if existing is not None:
+                            counts["send_events"]["skipped"] += 1
+                            continue
+                        counts["send_events"]["inserted"] += 1
+                        if apply:
+                            if dst_has_recipient:
+                                target_conn.execute(
+                                    """
+                                    INSERT INTO send_events
+                                        (subscriber_key, recipient_email, ts_utc, variant, status, run_id, meta_json)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        sk,
+                                        recipient,
+                                        str(row["ts_utc"] or "").strip(),
+                                        str(row["variant"] or "").strip(),
+                                        str(row["status"] or "").strip(),
+                                        str(row["run_id"] or "").strip(),
+                                        str(row["meta_json"] or "").strip() or "{}",
+                                    ),
+                                )
+                            else:
+                                target_conn.execute(
+                                    """
+                                    INSERT INTO send_events
+                                        (subscriber_key, ts_utc, variant, status, run_id, meta_json)
+                                    VALUES (?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        sk,
+                                        str(row["ts_utc"] or "").strip(),
+                                        str(row["variant"] or "").strip(),
+                                        str(row["status"] or "").strip(),
+                                        str(row["run_id"] or "").strip(),
+                                        str(row["meta_json"] or "").strip() or "{}",
+                                    ),
+                                )
+
+            # trial_adjustments: insert-if-missing by (subscriber_key, adjustment_key)
+            if _table_exists(source_conn, "trial_adjustments"):
+                for sk in keys:
+                    rows = source_conn.execute(
+                        """
+                        SELECT subscriber_key, adjustment_key, adjustment_type, delta_sends, reason, meta_json, created_at_utc
+                        FROM trial_adjustments
+                        WHERE subscriber_key = ?
+                        ORDER BY id ASC
+                        """,
+                        (sk,),
+                    ).fetchall()
+                    if not rows:
+                        continue
+                    if not _ensure_target_subscriber(sk):
+                        counts["trial_adjustments"]["skipped"] += len(rows)
+                        continue
+                    for row in rows:
+                        key = str(row["adjustment_key"] or "").strip()
+                        existing = target_conn.execute(
+                            """
+                            SELECT 1
+                            FROM trial_adjustments
+                            WHERE subscriber_key = ? AND adjustment_key = ?
+                            LIMIT 1
+                            """,
+                            (sk, key),
+                        ).fetchone()
+                        if existing is not None:
+                            counts["trial_adjustments"]["skipped"] += 1
+                            continue
+                        counts["trial_adjustments"]["inserted"] += 1
+                        if apply:
+                            target_conn.execute(
+                                """
+                                INSERT INTO trial_adjustments
+                                    (subscriber_key, adjustment_key, adjustment_type, delta_sends, reason, meta_json, created_at_utc)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    sk,
+                                    key,
+                                    str(row["adjustment_type"] or "").strip(),
+                                    int(row["delta_sends"] or 0),
+                                    str(row["reason"] or "").strip(),
+                                    str(row["meta_json"] or "").strip() or "{}",
+                                    str(row["created_at_utc"] or "").strip() or datetime.now(timezone.utc).isoformat(),
+                                ),
+                            )
+
+            # trial_latches: insert-if-missing by latch_key
+            if _table_exists(source_conn, "trial_latches"):
+                for sk in keys:
+                    rows = source_conn.execute(
+                        """
+                        SELECT latch_key, subscriber_key, action, meta_json, created_at_utc
+                        FROM trial_latches
+                        WHERE subscriber_key = ?
+                        ORDER BY latch_key ASC
+                        """,
+                        (sk,),
+                    ).fetchall()
+                    if not rows:
+                        continue
+                    if not _ensure_target_subscriber(sk):
+                        counts["trial_latches"]["skipped"] += len(rows)
+                        continue
+                    for row in rows:
+                        latch_key = str(row["latch_key"] or "").strip()
+                        existing = target_conn.execute(
+                            "SELECT 1 FROM trial_latches WHERE latch_key = ? LIMIT 1",
+                            (latch_key,),
+                        ).fetchone()
+                        if existing is not None:
+                            counts["trial_latches"]["skipped"] += 1
+                            continue
+                        counts["trial_latches"]["inserted"] += 1
+                        if apply:
+                            target_conn.execute(
+                                """
+                                INSERT INTO trial_latches
+                                    (latch_key, subscriber_key, action, meta_json, created_at_utc)
+                                VALUES (?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    latch_key,
+                                    sk,
+                                    str(row["action"] or "").strip(),
+                                    str(row["meta_json"] or "").strip() or "{}",
+                                    str(row["created_at_utc"] or "").strip() or datetime.now(timezone.utc).isoformat(),
+                                ),
+                            )
+
+            if apply:
+                target_conn.commit()
+
+            if emit_tokens:
+                print(f"RECONCILE_LEDGERS_SOURCE_DB={source_path}")
+                print(f"RECONCILE_LEDGERS_TARGET_DB={target_path}")
+                print(f"RECONCILE_LEDGERS_SCOPE={str(scope or '').strip().lower() or 'all'}")
+                print(f"RECONCILE_LEDGERS_TRIAL_STATE_MERGE={merge_mode}")
+                print(f"RECONCILE_LEDGERS_SUBSCRIBERS_SCANNED={len(keys)}")
+                print(f"RECONCILE_LEDGERS_SUBSCRIBERS inserted={counts['subscribers']['inserted']} skipped={counts['subscribers']['skipped']}")
+                print(f"RECONCILE_LEDGERS_TRIAL_STATE inserted={counts['trial_state']['inserted']} skipped={counts['trial_state']['skipped']}")
+                print(f"RECONCILE_LEDGERS_SEND_EVENTS inserted={counts['send_events']['inserted']} skipped={counts['send_events']['skipped']}")
+                print(
+                    "RECONCILE_LEDGERS_TRIAL_ADJUSTMENTS "
+                    f"inserted={counts['trial_adjustments']['inserted']} skipped={counts['trial_adjustments']['skipped']}"
+                )
+                print(
+                    "RECONCILE_LEDGERS_TRIAL_LATCHES "
+                    f"inserted={counts['trial_latches']['inserted']} skipped={counts['trial_latches']['skipped']}"
+                )
+                print(f"RECONCILE_LEDGERS_MODE={'APPLY' if apply else 'DRY_RUN'}")
+            return 0
+        finally:
+            target_conn.close()
+    finally:
+        source_conn.close()
+
+
+def set_trial_limit(
+    *,
+    subscriber_key: str,
+    sends_limit: int,
+    reason: str,
+    crm_db_path: str | Path | None,
+    apply: bool,
+) -> int:
+    sk = _validate_subscriber_key(subscriber_key)
+    new_limit = int(sends_limit)
+    if new_limit < 1:
+        raise ValueError("sends_limit must be >= 1")
+    normalized_reason = str(reason or "").strip()
+    if not normalized_reason:
+        raise ValueError("reason required")
+    adjustment_key = f"set_trial_limit|reason={normalized_reason}"
+
+    resolved_db = crm_light.ensure_database(crm_db_path)
+    with crm_light.open_conn(resolved_db) as conn:
+        crm_light.init_schema(conn)
+        sub = crm_light.get_subscriber(conn, sk)
+        if not sub:
+            raise ValueError(f"subscriber not found subscriber_key={sk}")
+        trial = crm_light.get_trial_state(conn, sk)
+        if not trial:
+            raise ValueError(f"trial_state not found subscriber_key={sk}")
+        current_limit = _resolve_sends_limit_from_state(trial)
+        idempotent = crm_light.has_trial_adjustment(
+            conn,
+            subscriber_key=sk,
+            adjustment_key=adjustment_key,
+        )
+        would_apply = (not idempotent) and (current_limit != new_limit)
+        if apply and (not idempotent):
+            crm_light.record_trial_adjustment_once(
+                conn,
+                subscriber_key=sk,
+                adjustment_key=adjustment_key,
+                adjustment_type="SET_TRIAL_LIMIT",
+                delta_sends=int(new_limit - current_limit),
+                reason=normalized_reason,
+                meta={
+                    "old_sends_limit": int(current_limit),
+                    "new_sends_limit": int(new_limit),
+                    "reason": normalized_reason,
+                },
+                commit=False,
+            )
+            conn.execute(
+                "UPDATE trial_state SET sends_limit = ? WHERE subscriber_key = ?",
+                (int(new_limit), sk),
+            )
+            conn.commit()
+
+    mirror_status = "SKIP"
+    mirror_secondary = (Path(__file__).resolve().parent / "out" / "crm_light.sqlite").resolve(strict=False)
+    if apply and str(os.getenv("MFO_DATA_DIR_EFFECTIVE") or "").strip():
+        if mirror_secondary.exists() and mirror_secondary != Path(resolved_db).resolve(strict=False):
+            try:
+                reconcile_ledgers(
+                    source_crm_db_path=resolved_db,
+                    target_crm_db_path=mirror_secondary,
+                    scope="explicit",
+                    subscriber_keys=[sk],
+                    apply=True,
+                    trial_state_merge="source",
+                    emit_tokens=False,
+                )
+                mirror_status = "OK"
+            except Exception as exc:
+                mirror_status = f"WARN:{type(exc).__name__}"
+                print(
+                    f"WARN_SET_TRIAL_LIMIT_MIRROR_FAILED subscriber_key={sk} "
+                    f"secondary_db={mirror_secondary} detail={exc}"
+                )
+        else:
+            mirror_status = "SKIP"
+
+    print("SET_TRIAL_LIMIT")
+    print(f"subscriber_key={sk}")
+    print(f"crm_db={resolved_db}")
+    print(f"adjustment_key={adjustment_key}")
+    print(f"reason={normalized_reason}")
+    print(f"previous_sends_limit={int(current_limit)}")
+    print(f"sends_limit={int(new_limit)}")
+    print(f"idempotent={'YES' if idempotent else 'NO'}")
+    print(f"applied={'YES' if (apply and not idempotent) else 'NO'}")
+    print(f"dry_run={'YES' if not apply else 'NO'}")
+    print(f"changed={'YES' if would_apply else 'NO'}")
+    print(f"mirror_status={mirror_status}")
+    return 0
+
+
 def _render_scope_enhancement_text(*, rows: list[dict[str, Any]], extend_days: int) -> str:
     subject = _scope_enhancement_subject()
     filtered_rows = _scope_rows_for_email(rows)
@@ -1533,6 +2156,50 @@ def main(argv: list[str] | None = None) -> int:
     normalize_mode.add_argument("--dry-run", action="store_true")
     normalize.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
 
+    reconcile = sub.add_parser(
+        "reconcile-ledgers",
+        help="Reconcile trial ledgers from a source CRM DB into a target CRM DB.",
+    )
+    reconcile.add_argument("--source-crm-db", required=True, help="Source crm_light sqlite path (read-only source).")
+    reconcile.add_argument(
+        "--target-crm-db",
+        default="",
+        help="Target crm_light sqlite path (alias of --crm-db).",
+    )
+    reconcile.add_argument(
+        "--crm-db",
+        default="",
+        help="Target crm_light sqlite path (canonical target).",
+    )
+    reconcile.add_argument("--scope", default="all", choices=["all", "active_prod", "explicit"])
+    reconcile.add_argument(
+        "--trial-state-merge",
+        default="max",
+        choices=["max", "source"],
+        help="Merge policy for trial_state fields (default: max; source for source-preferred sync).",
+    )
+    reconcile.add_argument(
+        "--subscriber-key",
+        action="append",
+        default=[],
+        help="Repeatable subscriber key (required when --scope explicit).",
+    )
+    reconcile_mode = reconcile.add_mutually_exclusive_group(required=True)
+    reconcile_mode.add_argument("--dry-run", action="store_true")
+    reconcile_mode.add_argument("--apply", action="store_true")
+
+    set_limit = sub.add_parser(
+        "set-trial-limit",
+        help="Set a subscriber trial sends_limit with idempotent adjustment audit.",
+    )
+    set_limit.add_argument("--subscriber-key", required=True)
+    set_limit.add_argument("--sends-limit", type=int, required=True)
+    set_limit.add_argument("--reason", required=True)
+    set_limit.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
+    set_limit_mode = set_limit.add_mutually_exclusive_group(required=True)
+    set_limit_mode.add_argument("--dry-run", action="store_true")
+    set_limit_mode.add_argument("--apply", action="store_true")
+
     scope = sub.add_parser(
         "scope-enhancement",
         help="Generate and optionally send one-time scope-enhancement email with missed signals.",
@@ -1687,6 +2354,44 @@ def main(argv: list[str] | None = None) -> int:
                     f"skipped={result['skipped']}"
                 )
             return 0
+        except Exception as exc:
+            print(f"CONFIG_ERROR {exc}", file=sys.stderr)
+            return 1
+
+    if args.cmd == "reconcile-ledgers":
+        try:
+            source_db = Path(str(args.source_crm_db or "").strip()).expanduser().resolve(strict=False)
+            target_crm_db_arg = str(args.crm_db or "").strip()
+            target_crm_db_alt = str(args.target_crm_db or "").strip()
+            if target_crm_db_arg and target_crm_db_alt:
+                arg_path = crm_light.resolve_crm_db_path(target_crm_db_arg)
+                alt_path = crm_light.resolve_crm_db_path(target_crm_db_alt)
+                if arg_path != alt_path:
+                    raise ValueError("--target-crm-db and --crm-db must match when both are provided")
+            target_db_text = target_crm_db_alt or target_crm_db_arg
+            target_db = crm_light.resolve_crm_db_path(target_db_text or None)
+            return reconcile_ledgers(
+                source_crm_db_path=source_db,
+                target_crm_db_path=target_db,
+                scope=str(args.scope or "all"),
+                subscriber_keys=[str(item or "") for item in list(args.subscriber_key or [])],
+                apply=bool(args.apply),
+                trial_state_merge=str(args.trial_state_merge or "max"),
+                emit_tokens=True,
+            )
+        except Exception as exc:
+            print(f"CONFIG_ERROR {exc}", file=sys.stderr)
+            return 1
+
+    if args.cmd == "set-trial-limit":
+        try:
+            return set_trial_limit(
+                subscriber_key=str(args.subscriber_key),
+                sends_limit=int(args.sends_limit),
+                reason=str(args.reason),
+                crm_db_path=crm_db,
+                apply=bool(args.apply),
+            )
         except Exception as exc:
             print(f"CONFIG_ERROR {exc}", file=sys.stderr)
             return 1

@@ -1158,7 +1158,7 @@ Important:
 
 - Catch-up is allowed only for the Wally trial daily path and only when the subscriber has not already been sent that local day.
 - Same-day live-send guard token: `TRIAL_SKIP_ALREADY_SENT_TODAY=1 subscriber_key=<key> local_date=<YYYY-MM-DD> guard=ON`
-- Emergency override (manual only): pass `--allow-second-live-send-same-day` through `deliver_daily.py` / `send_digest_email.py`.
+- Emergency override (manual only): pass `--allow-second-live-send-same-day` through `deliver_daily.py` / `send_digest_email.py` (Wally scheduler path remains `run_trial_daily.py`).
 - Recipient fan-out stays unchanged: one trial send run still targets both configured recipients (Wally + Brandon).
 - Do not temporarily widen `send_window_minutes` for missed trial sends; use the trial catch-up keys/workflow above.
 
@@ -1183,7 +1183,15 @@ Source of truth:
 
 - Subscriber registry + trial latches: `out/crm_light.sqlite` (or `${env:DATA_DIR}\crm_light.sqlite` when `DATA_DIR` is set)
 - Send ledger: `send_events` (`TRIAL_SENDS_USED` counts distinct subscriber-local weekday dates for `status=SENT` daily LIVE events to the primary recipient)
-- Wally scheduled live runs now mirror successful sends into `send_events` automatically (best-effort, no send-path change)
+- Wally manual/scheduled live sends run through `run_trial_daily.py --subscriber-key wally_trial --send-live`; no manual `append-event` step is required
+
+Split-ledger safety gate:
+
+- Live trial sends can fail with `ERR_TRIAL_LEDGER_SPLIT` when wrapper-resolved runtime points at a canonical CRM DB while repo-local `out\crm_light.sqlite` contains conflicting rows for the same subscriber.
+- This guard blocks live sends only (`--send-live`, non-dry-run) and avoids post-expiry drift.
+- Reconcile with dry-run then apply:
+  - `.\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers --source-crm-db C:\dev\OSHA_Leads\out\crm_light.sqlite --crm-db C:\osha_data\crm_light.sqlite --scope all --dry-run`
+  - `.\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers --source-crm-db C:\dev\OSHA_Leads\out\crm_light.sqlite --crm-db C:\osha_data\crm_light.sqlite --scope all --apply`
 
 Check trial days-since-start and sends-used (single command, no sends/no writes):
 

@@ -299,7 +299,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
             else:
                 os.environ["MFO_CONTEXT_PACK_SOFT_CHECK_DONE"] = old_val
 
-    def test_write_batch_runner_contains_deliver_tokens_and_ledger_mirror(self) -> None:
+    def test_write_batch_runner_contains_trial_daily_tokens_and_no_manual_append(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             batch_path = root / "run_wally_trial_daily.bat"
@@ -313,22 +313,15 @@ class TestWallyTrialDoctor(unittest.TestCase):
             text = batch_path.read_text(encoding="utf-8")
 
             self.assertIn(
-                "python deliver_daily.py --db \"data/osha.sqlite\" --customer \"%~dp0customers\\wally_trial_tx_triangle_v1.json\" --mode daily --since-days 14 --admin-email \"support@microflowops.com\" --send-live",
+                "python run_trial_daily.py --subscriber-key wally_trial --db \"data/osha.sqlite\" --customer \"%~dp0customers\\wally_trial_tx_triangle_v1.json\" --send-live",
                 text,
             )
-            self.assertIn("if %RUN_EXIT% EQU 0 (", text)
-            self.assertIn(
-                "powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0scripts\\run_with_secrets.ps1\" python run_trial_admin.py append-event --subscriber-key wally_trial --status SENT --variant DAILY --run-id \"%TRIAL_RUN_ID%\" --send-mode LIVE --meta-source wally_trial_scheduler",
-                text,
-            )
-            self.assertNotIn("TRIAL_TS_UTC", text)
-            self.assertIn("WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key=wally_trial", text)
+            self.assertNotIn("run_trial_admin.py append-event --subscriber-key wally_trial", text)
+            self.assertNotIn("WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key=wally_trial", text)
 
-    def test_run_live_send_appends_trial_event_once_on_success(self) -> None:
+    def test_run_live_send_invokes_trial_daily_runner(self) -> None:
         captured: dict[str, object] = {}
-        calls = {"append": 0}
         orig_run = run_wally_trial.subprocess.run
-        orig_append = run_wally_trial.run_trial_admin.append_event
 
         def _fake_run(cmd, check=True):  # type: ignore[no-untyped-def]
             captured["cmd"] = list(cmd)
@@ -336,13 +329,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 returncode = 0
             return _Done()
 
-        def _fake_append(**kwargs):  # type: ignore[no-untyped-def]
-            calls["append"] += 1
-            captured["append_kwargs"] = dict(kwargs)
-            return 0
-
         run_wally_trial.subprocess.run = _fake_run  # type: ignore[assignment]
-        run_wally_trial.run_trial_admin.append_event = _fake_append  # type: ignore[assignment]
         try:
             run_wally_trial.run_live_send(
                 db_path="data/osha.sqlite",
@@ -353,23 +340,16 @@ class TestWallyTrialDoctor(unittest.TestCase):
             )
         finally:
             run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]
-            run_wally_trial.run_trial_admin.append_event = orig_append  # type: ignore[assignment]
 
         cmd = captured.get("cmd", [])
-        self.assertIn("deliver_daily.py", cmd)
+        self.assertIn("run_trial_daily.py", cmd)
+        self.assertIn("--subscriber-key", cmd)
+        self.assertIn("wally_trial", cmd)
         self.assertIn("--send-live", cmd)
-        self.assertEqual(calls["append"], 1)
-        kwargs = captured.get("append_kwargs", {})
-        self.assertEqual(kwargs.get("subscriber_key"), "wally_trial")
-        self.assertEqual(kwargs.get("status"), "SENT")
-        self.assertEqual(kwargs.get("variant"), "DAILY")
-        self.assertTrue(str(kwargs.get("run_id", "")).startswith("manual_wally_trial_"))
-        self.assertIn("+00:00", str(kwargs.get("ts_utc", "")))
 
     def test_run_live_send_skips_on_weekend_without_override(self) -> None:
-        calls = {"run": 0, "append": 0}
+        calls = {"run": 0}
         orig_run = run_wally_trial.subprocess.run
-        orig_append = run_wally_trial.run_trial_admin.append_event
         orig_day = run_wally_trial._wally_local_day_context
 
         def _fake_run(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -378,12 +358,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 returncode = 0
             return _Done()
 
-        def _fake_append(**_kwargs):  # type: ignore[no-untyped-def]
-            calls["append"] += 1
-            return 0
-
         run_wally_trial.subprocess.run = _fake_run  # type: ignore[assignment]
-        run_wally_trial.run_trial_admin.append_event = _fake_append  # type: ignore[assignment]
         run_wally_trial._wally_local_day_context = lambda _cfg: {  # type: ignore[assignment]
             "subscriber_key": "wally_trial",
             "timezone": "America/Chicago",
@@ -402,7 +377,6 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 )
         finally:
             run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]
-            run_wally_trial.run_trial_admin.append_event = orig_append  # type: ignore[assignment]
             run_wally_trial._wally_local_day_context = orig_day  # type: ignore[assignment]
 
         self.assertIn(
@@ -410,7 +384,6 @@ class TestWallyTrialDoctor(unittest.TestCase):
             buf.getvalue(),
         )
         self.assertEqual(calls["run"], 0)
-        self.assertEqual(calls["append"], 0)
 
     def test_enable_schedule_uses_weekly_weekday_trigger(self) -> None:
         captured: dict[str, object] = {}
@@ -472,19 +445,12 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 os.environ["TASK_SCHED_PASSWORD"] = old_password
 
     def test_run_live_send_does_not_append_event_on_failure(self) -> None:
-        calls = {"append": 0}
         orig_run = run_wally_trial.subprocess.run
-        orig_append = run_wally_trial.run_trial_admin.append_event
 
         def _fake_run(_cmd, check=True):  # type: ignore[no-untyped-def]
-            raise run_wally_trial.subprocess.CalledProcessError(returncode=1, cmd=["deliver_daily.py"])
-
-        def _fake_append(**_kwargs):  # type: ignore[no-untyped-def]
-            calls["append"] += 1
-            return 0
+            raise run_wally_trial.subprocess.CalledProcessError(returncode=1, cmd=["run_trial_daily.py"])
 
         run_wally_trial.subprocess.run = _fake_run  # type: ignore[assignment]
-        run_wally_trial.run_trial_admin.append_event = _fake_append  # type: ignore[assignment]
         try:
             with self.assertRaises(run_wally_trial.subprocess.CalledProcessError):
                 run_wally_trial.run_live_send(
@@ -496,6 +462,3 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 )
         finally:
             run_wally_trial.subprocess.run = orig_run  # type: ignore[assignment]
-            run_wally_trial.run_trial_admin.append_event = orig_append  # type: ignore[assignment]
-
-        self.assertEqual(calls["append"], 0)
