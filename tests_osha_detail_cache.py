@@ -210,6 +210,47 @@ class TestOshaDetailCache(unittest.TestCase):
             selected = odc.select_candidates_from_leads_db(leads_db, since_days=14, limit=2)
             self.assertEqual(len(selected), 2)
 
+    def test_non_federal_activity_is_skipped_with_token(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            leads_db = tmp / "osha.sqlite"
+            _seed_leads_db(
+                leads_db,
+                [
+                    {
+                        "activity_nr": "stateplan:WA:CASE-1001",
+                        "source_url": "https://example.com/dosh/case/1001",
+                        "first_seen_at": "2026-03-02T00:00:00Z",
+                        "changed_at": "2026-03-02T00:00:00Z",
+                        "last_seen_at": "2026-03-02T00:00:00Z",
+                        "date_opened": "2026-03-01",
+                    }
+                ],
+            )
+            cache_db = tmp / "scoring" / "osha_detail_cache.sqlite"
+            out = io.StringIO()
+            with mock.patch.object(odc.ingest_osha, "get_session", return_value=_FakeSession("<html></html>")):
+                with redirect_stdout(out):
+                    result = odc.run_cache(
+                        odc.CacheRunConfig(
+                            leads_db_path=leads_db,
+                            cache_db_path=cache_db,
+                            since_days=14,
+                            limit=10,
+                            sleep_ms=0,
+                            ttl_days=30,
+                            dry_run=False,
+                        )
+                    )
+            text = out.getvalue()
+            self.assertIn(
+                "SKIP_DETAIL_CACHE_NON_FEDERAL activity_nr=stateplan:WA:CASE-1001 source=stateplan",
+                text,
+            )
+            self.assertEqual(result.get("fetched"), 0)
+            self.assertEqual(result.get("failed"), 0)
+            self.assertEqual(result.get("skipped_non_federal"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

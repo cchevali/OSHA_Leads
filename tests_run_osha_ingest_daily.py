@@ -25,6 +25,9 @@ class TestRunOshaIngestDaily(unittest.TestCase):
         rc, out = self._run(["--print-config"], {"OUTREACH_STATES": "TX,CA,FL"})
         self.assertEqual(rc, 0, msg=out)
         self.assertIn("INGEST_DB_PATH=", out)
+        self.assertIn("INGEST_SCOPE_MODE=outreach", out)
+        self.assertIn("INGEST_SCOPE_STATES=TX,CA,FL", out)
+        self.assertIn("INGEST_SCOPE_SOURCE=outreach", out)
         self.assertIn("INGEST_STATES=TX,CA,FL", out)
         self.assertIn("INGEST_SINCE_DAYS=3", out)
         self.assertIn("INGEST_MAX_DETAILS=200", out)
@@ -60,6 +63,19 @@ class TestRunOshaIngestDaily(unittest.TestCase):
         rc, out = self._run(["--print-config", "--states", "TX,F1"], {"OUTREACH_STATES": "TX"})
         self.assertNotEqual(rc, 0, msg=out)
         self.assertIn("ERR_INGEST_DAILY_CONFIG", out)
+
+    def test_scope_mode_resolver_unions_outreach_and_trial_live_states(self):
+        with mock.patch.object(ingest_daily, "_trial_live_states_from_crm", return_value=["OR", "WA", "FL"]):
+            rc, out = self._run(
+                ["--print-config", "--scope-mode", "outreach_plus_trial_live"],
+                {"OUTREACH_STATES": "TX,CA,FL"},
+            )
+        self.assertEqual(rc, 0, msg=out)
+        self.assertIn("INGEST_SCOPE_MODE=outreach_plus_trial_live", out)
+        self.assertIn("INGEST_SCOPE_SOURCE=resolver", out)
+        self.assertIn("INGEST_SCOPE_STATES=TX,CA,FL,OR,WA", out)
+        self.assertIn("INGEST_STATES=TX,CA,FL,OR,WA", out)
+        self.assertIn("INGEST_STATES_SOURCE=resolver", out)
 
 
 if __name__ == "__main__":

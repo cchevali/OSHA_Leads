@@ -988,6 +988,40 @@ def ensure_inspection_columns(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _build_round_robin_fetch_plan(
+    inspections_by_state: dict[str, list[dict]],
+    states: list[str],
+    max_details: int,
+) -> tuple[list[dict], dict[str, int]]:
+    """Plan capped detail fetches fairly across states while preserving per-state order."""
+    limit = max(0, int(max_details))
+    planned_by_state: dict[str, int] = {str(state): 0 for state in states}
+    if limit == 0:
+        return [], planned_by_state
+
+    next_index: dict[str, int] = {str(state): 0 for state in states}
+    details_to_fetch: list[dict] = []
+
+    while len(details_to_fetch) < limit:
+        progressed = False
+        for state in states:
+            key = str(state)
+            bucket = inspections_by_state.get(key, [])
+            idx = next_index.get(key, 0)
+            if idx >= len(bucket):
+                continue
+            details_to_fetch.append(bucket[idx])
+            next_index[key] = idx + 1
+            planned_by_state[key] = int(planned_by_state.get(key, 0)) + 1
+            progressed = True
+            if len(details_to_fetch) >= limit:
+                break
+        if not progressed:
+            break
+
+    return details_to_fetch, planned_by_state
+
+
 def run_ingestion(
     db_path: str,
     since_days: int,
@@ -1024,34 +1058,43 @@ def run_ingestion(
     conn.commit()
     
     session = get_session()
-    all_inspections = []
+    inspections_by_state: dict[str, list[dict]] = {}
+    seen_activity_nrs: set[str] = set()
     
     try:
         # Search each state
         for state in states:
             try:
                 results = search_osha_inspections(session, state, since_date)
-                all_inspections.extend(results)
                 stats["results_found"] += len(results)
+                unique_for_state: list[dict] = []
+                for insp in results:
+                    activity_nr = str(insp.get("activity_nr") or "").strip()
+                    if not activity_nr or activity_nr in seen_activity_nrs:
+                        continue
+                    seen_activity_nrs.add(activity_nr)
+                    unique_for_state.append(insp)
+                inspections_by_state[str(state)] = unique_for_state
+                logger.info(f"INGEST_CANDIDATES_BY_STATE state={state} count={len(unique_for_state)}")
             except Exception as e:
                 logger.error(f"Error searching state {state}: {e}")
                 stats["errors_count"] += 1
-        
-        # Dedupe by activity_nr (may appear in multiple states)
-        seen_activity_nrs = set()
-        unique_inspections = []
-        
-        for insp in all_inspections:
-            activity_nr = insp.get("activity_nr")
-            if activity_nr and activity_nr not in seen_activity_nrs:
-                seen_activity_nrs.add(activity_nr)
-                unique_inspections.append(insp)
-        
-        logger.info(f"Found {len(unique_inspections)} unique inspections to process")
-        
-        # Fetch detail pages (up to max)
-        details_to_fetch = unique_inspections[:max_details]
-        
+                inspections_by_state[str(state)] = []
+
+        total_unique = sum(len(inspections_by_state.get(str(state), [])) for state in states)
+        logger.info(f"Found {total_unique} unique inspections to process")
+
+        # Fetch detail pages (up to max) with deterministic state-fair round-robin planning.
+        details_to_fetch, fetch_plan_by_state = _build_round_robin_fetch_plan(
+            inspections_by_state=inspections_by_state,
+            states=states,
+            max_details=max_details,
+        )
+        for state in states:
+            logger.info(
+                f"INGEST_FETCH_PLAN_BY_STATE state={state} planned={int(fetch_plan_by_state.get(str(state), 0))}"
+            )
+
         for i, insp in enumerate(details_to_fetch):
             detail_url = insp.get("detail_url")
             if not detail_url:
