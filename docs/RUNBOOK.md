@@ -637,13 +637,18 @@ Triage behavior contract:
 - Trial path gate: `TRIAL_TRIAGE_OVERLAY_ENABLED=1`
 - Outreach path gate: `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
 - AI never lowers rules priority and never unsuppresses a rules-suppressed signal.
-- If AI is enabled but unavailable (missing key/network/API error), execution degrades to rules-only and emits `WARN_AI_TRIAGE_UNAVAILABLE` plus `AI_TRIAGE_UNAVAILABLE=1`.
+- AI cache lookup is attempted before OpenAI API access; cached/manual-reviewed priorities can apply even when `OPENAI_API_KEY` is missing.
+- Trial/outreach send paths auto-import the newest `ai_review_*.csv` once per process from `C:\osha_data\imports` (fallback `${DATA_DIR}\imports`) unless overridden.
+- If AI is enabled but unavailable for uncached signals (missing key/network/API error), execution degrades to rules-only and emits `WARN_AI_TRIAGE_UNAVAILABLE` plus `AI_TRIAGE_UNAVAILABLE=1`.
 
 Triage env keys:
 
 - `SIGNAL_FRESHNESS_MAX_DAYS` (default `30`)
 - `AI_TRIAGE_ENABLED` (default `0`)
 - `AI_TRIAGE_OPENAI_MODEL` (default `gpt-4.1-mini`)
+- `AI_REVIEW_AUTO_IMPORT_ENABLED` (default `1`)
+- `AI_REVIEW_IMPORT_MAX_AGE_HOURS` (default `24`)
+- `AI_REVIEW_IMPORT_DIR` (optional absolute override for `ai_review_*.csv`)
 
 Rules-only trial dry run (no secrets required):
 
@@ -723,6 +728,12 @@ py -3 tools\import_ai_triage.py --print-config
 py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv --dry-run
 py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv
 ```
+
+Auto-import notes:
+
+- Runtime auto-import emits one of: `AI_REVIEW_AUTO_IMPORT_APPLIED`, `WARN_AI_REVIEW_AUTO_IMPORT_MISSING`, `WARN_AI_REVIEW_AUTO_IMPORT_STALE`, or `WARN_AI_REVIEW_AUTO_IMPORT_INVALID`.
+- With defaults, only files modified within the last 24 hours are auto-imported.
+- Manual `tools\import_ai_triage.py` remains supported for deterministic operator backfills/re-runs.
 
 ### Nightly AI triage dump (manual)
 
