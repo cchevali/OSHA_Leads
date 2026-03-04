@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=6ef91e4a7e9b03054b9efca6daa81b12c63d96b0
-PACK_BUILD_UTC=2026-03-02T17:09:07Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=8d8518d0222176740086c3a4cf4fd9dbb8558d36a6b37b845d4256eeebbd853b docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=26fa27ae91aa36124a4d0ce2c86a93aea274664c88f903a3e2e4649207c84f50
+PACK_GIT_SHA=db31961ccfbddda0df9d6010af776140e8467f3c
+PACK_BUILD_UTC=2026-03-04T02:03:42Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=7057784172fae36eee9ce597f94c561ab0289959063a7c31cd90f8cd4212fda2 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=8dec841d4faa8771b7d97b2fd710f1eb53243ef22bd4ed88ace9d0cacfd8bba0
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1015,6 +1015,35 @@ Canonical daily sequence:
 3. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
 4. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
 
+### OSHA Ingest Scope Modes (Operator Truth)
+
+- `run_osha_ingest_daily.py` defaults to `--scope-mode outreach`.
+- `--scope-mode outreach` resolves states from `OUTREACH_STATES` (existing default behavior).
+- `--scope-mode outreach_plus_trial_live` resolves the deterministic union:
+  - outreach states from `OUTREACH_STATES`, plus
+  - states from active subscriber territories (`trial/live/paid/active`) in CRM.
+- Statement of truth:
+  - Evening scheduler uses `outreach_plus_trial_live`.
+  - Direct daily ingest invocations default to `outreach` unless explicitly overridden.
+  - Trial send path (`run_trial_daily.py` -> `deliver_daily.py`) ingests from the trial customer config `states`.
+
+Scope inspection commands:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --print-config
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --scope-mode outreach_plus_trial_live --print-config
+```
+
+Machine-readable ingest scope + planning tokens:
+
+- `INGEST_SCOPE_MODE=<outreach|outreach_plus_trial_live>`
+- `INGEST_SCOPE_STATES=<CSV>`
+- `INGEST_SCOPE_SOURCE=<outreach|resolver>`
+- `INGEST_CANDIDATES_BY_STATE state=<ST> count=<n>`
+- `INGEST_FETCH_PLAN_BY_STATE state=<ST> planned=<n>`
+- `DELIVER_INGEST_SCOPE_STATES=<CSV> source=customer_config`
+- `DELIVER_INGEST_MAX_DETAILS=<n>`
+
 Context pack hygiene (when docs/contracts changed or `WARN_CONTEXT_PACK_SOURCE_HASH_MISMATCH` appears):
 
 1. `py -3 tools/project_context_pack.py --build`
@@ -1128,13 +1157,18 @@ Triage behavior contract:
 - Trial path gate: `TRIAL_TRIAGE_OVERLAY_ENABLED=1`
 - Outreach path gate: `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
 - AI never lowers rules priority and never unsuppresses a rules-suppressed signal.
-- If AI is enabled but unavailable (missing key/network/API error), execution degrades to rules-only and emits `WARN_AI_TRIAGE_UNAVAILABLE` plus `AI_TRIAGE_UNAVAILABLE=1`.
+- AI cache lookup is attempted before OpenAI API access; cached/manual-reviewed priorities can apply even when `OPENAI_API_KEY` is missing.
+- Trial/outreach send paths auto-import the newest `ai_review_*.csv` once per process from `C:\osha_data\imports` (fallback `${DATA_DIR}\imports`) unless overridden.
+- If AI is enabled but unavailable for uncached signals (missing key/network/API error), execution degrades to rules-only and emits `WARN_AI_TRIAGE_UNAVAILABLE` plus `AI_TRIAGE_UNAVAILABLE=1`.
 
 Triage env keys:
 
 - `SIGNAL_FRESHNESS_MAX_DAYS` (default `30`)
 - `AI_TRIAGE_ENABLED` (default `0`)
 - `AI_TRIAGE_OPENAI_MODEL` (default `gpt-4.1-mini`)
+- `AI_REVIEW_AUTO_IMPORT_ENABLED` (default `1`)
+- `AI_REVIEW_IMPORT_MAX_AGE_HOURS` (default `24`)
+- `AI_REVIEW_IMPORT_DIR` (optional absolute override for `ai_review_*.csv`)
 
 Rules-only trial dry run (no secrets required):
 
@@ -1215,6 +1249,12 @@ py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv --dry-
 py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv
 ```
 
+Auto-import notes:
+
+- Runtime auto-import emits one of: `AI_REVIEW_AUTO_IMPORT_APPLIED`, `WARN_AI_REVIEW_AUTO_IMPORT_MISSING`, `WARN_AI_REVIEW_AUTO_IMPORT_STALE`, or `WARN_AI_REVIEW_AUTO_IMPORT_INVALID`.
+- With defaults, only files modified within the last 24 hours are auto-imported.
+- Manual `tools\import_ai_triage.py` remains supported for deterministic operator backfills/re-runs.
+
 ### Nightly AI triage dump (manual)
 
 Canonical manual command path (always loads secrets/DATA_DIR via wrapper):
@@ -1226,7 +1266,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_a
 
 Evening scheduler note:
 
-- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with explicit states `TX,CA,FL,OR,WA` before dumping AI review signals.
+- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with `--scope-mode outreach_plus_trial_live` before dumping AI review signals.
 - WA/OR can still be zero on a given day when upstream data has no in-window records.
 
 Common variants:

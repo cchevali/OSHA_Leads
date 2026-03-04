@@ -1,10 +1,13 @@
 import argparse
 import os
 import re
+import sqlite3
 import sys
 from pathlib import Path
 
+import crm_light
 import ingest_osha
+from lead_filters import load_territory_definitions, resolve_territory_code
 
 
 ERR_INGEST_DAILY_CONFIG = "ERR_INGEST_DAILY_CONFIG"
@@ -34,10 +37,7 @@ def _parse_states(raw: str) -> list[str]:
     return states
 
 
-def _resolve_states(cli_states: str) -> tuple[list[str], str]:
-    if (cli_states or "").strip():
-        return _parse_states(cli_states), "cli"
-
+def _resolve_outreach_states() -> tuple[list[str], str]:
     env_states_raw = (os.getenv("OUTREACH_STATES") or "").strip()
     env_states = _parse_states(env_states_raw)
     if env_states:
@@ -45,8 +45,126 @@ def _resolve_states(cli_states: str) -> tuple[list[str], str]:
     return ["TX"], "fallback"
 
 
-def _emit_common_tokens(db_path: Path, states: list[str], since_days: int, max_details: int, source: str) -> None:
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (str(table_name or "").strip(),),
+    ).fetchone()
+    return row is not None
+
+
+def _table_has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    for row in rows:
+        if len(row) > 1 and str(row[1] or "").strip().lower() == str(column_name or "").strip().lower():
+            return True
+    return False
+
+
+def _territory_states_for_scope(territory_code: str, definitions: dict[str, dict]) -> list[str]:
+    raw = str(territory_code or "").strip()
+    if not raw:
+        return []
+    canonical = resolve_territory_code(raw, definitions)
+    if canonical in definitions:
+        states = [str(s).strip().upper() for s in (definitions[canonical].get("states") or []) if str(s).strip()]
+        return states
+    fallback = raw.strip().upper()
+    if len(fallback) == 2 and fallback.isalpha():
+        return [fallback]
+    return []
+
+
+def _trial_live_states_from_crm() -> list[str]:
+    try:
+        db_path = crm_light.crm_light_db_path()
+    except Exception:
+        return []
+    if not Path(db_path).exists():
+        return []
+    try:
+        definitions = load_territory_definitions()
+    except Exception:
+        return []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return []
+    try:
+        if not _table_exists(conn, "subscribers"):
+            return []
+        if not _table_has_column(conn, "subscribers", "status"):
+            return []
+        if not _table_has_column(conn, "subscribers", "territory_code"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT DISTINCT trim(territory_code) AS territory_code
+            FROM subscribers
+            WHERE territory_code IS NOT NULL
+              AND trim(territory_code) <> ''
+              AND lower(trim(status)) IN ('trial', 'live', 'paid', 'active')
+            ORDER BY upper(trim(territory_code))
+            """
+        ).fetchall()
+        out: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            for state in _territory_states_for_scope(str(row["territory_code"] or ""), definitions):
+                if state not in seen:
+                    seen.add(state)
+                    out.append(state)
+        return out
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _merge_scope_states(outreach_states: list[str], trial_live_states: list[str]) -> list[str]:
+    base: list[str] = []
+    seen: set[str] = set()
+    for state in outreach_states:
+        if state not in seen:
+            seen.add(state)
+            base.append(state)
+    extra = sorted([state for state in trial_live_states if state not in seen])
+    return base + extra
+
+
+def _resolve_states(cli_states: str, scope_mode: str) -> tuple[list[str], str, list[str], str]:
+    scope_source = "resolver" if scope_mode == "outreach_plus_trial_live" else "outreach"
+    if (cli_states or "").strip():
+        states = _parse_states(cli_states)
+        return states, "cli", states, scope_source
+
+    outreach_states, outreach_source = _resolve_outreach_states()
+    if scope_mode == "outreach":
+        return outreach_states, outreach_source, outreach_states, "outreach"
+
+    trial_live_states = _trial_live_states_from_crm()
+    merged_states = _merge_scope_states(outreach_states, trial_live_states)
+    return merged_states, "resolver", merged_states, "resolver"
+
+
+def _emit_common_tokens(
+    db_path: Path,
+    states: list[str],
+    since_days: int,
+    max_details: int,
+    source: str,
+    scope_mode: str,
+    scope_states: list[str],
+    scope_source: str,
+) -> None:
     _emit("INGEST_DB_PATH", str(db_path))
+    _emit("INGEST_SCOPE_MODE", scope_mode)
+    _emit("INGEST_SCOPE_STATES", ",".join(scope_states))
+    _emit("INGEST_SCOPE_SOURCE", scope_source)
     _emit("INGEST_STATES", ",".join(states))
     _emit("INGEST_SINCE_DAYS", str(since_days))
     _emit("INGEST_MAX_DETAILS", str(max_details))
@@ -61,6 +179,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--print-config", action="store_true", help="Print resolved config and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Print resolved config and skip ingest.")
     ap.add_argument("--states", default="", help="Optional comma-separated state override (e.g., TX,CA,FL).")
+    ap.add_argument(
+        "--scope-mode",
+        choices=["outreach", "outreach_plus_trial_live"],
+        default="outreach",
+        help="State scope resolver mode (default: outreach).",
+    )
     ap.add_argument("--since-days", type=int, default=3, help="Lookback days for ingest search (default: 3).")
     ap.add_argument("--max-details", type=int, default=200, help="Max detail pages to fetch (default: 200).")
     return ap
@@ -74,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         return _error(ERR_INGEST_DAILY_CONFIG, f"invalid_max_details={args.max_details}")
 
     try:
-        states, source = _resolve_states(args.states)
+        states, source, scope_states, scope_source = _resolve_states(args.states, args.scope_mode)
     except ValueError as exc:
         return _error(ERR_INGEST_DAILY_CONFIG, str(exc))
     if not states:
@@ -88,6 +212,9 @@ def main(argv: list[str] | None = None) -> int:
         since_days=args.since_days,
         max_details=args.max_details,
         source=source,
+        scope_mode=str(args.scope_mode),
+        scope_states=scope_states,
+        scope_source=scope_source,
     )
 
     if args.print_config:

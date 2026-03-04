@@ -31,7 +31,7 @@ function Invoke-And-Log([scriptblock]$Invocation) {
 try {
   Push-Location $repoRoot
   try {
-    Invoke-And-Log { & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_osha_ingest_daily.py" --states "TX,CA,FL,OR,WA" }
+    Invoke-And-Log { & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_osha_ingest_daily.py" --scope-mode "outreach_plus_trial_live" }
     $ingestExitCode = [int]$LASTEXITCODE
   }
   catch {

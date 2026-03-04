@@ -524,6 +524,35 @@ Canonical daily sequence:
 3. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
 4. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
 
+### OSHA Ingest Scope Modes (Operator Truth)
+
+- `run_osha_ingest_daily.py` defaults to `--scope-mode outreach`.
+- `--scope-mode outreach` resolves states from `OUTREACH_STATES` (existing default behavior).
+- `--scope-mode outreach_plus_trial_live` resolves the deterministic union:
+  - outreach states from `OUTREACH_STATES`, plus
+  - states from active subscriber territories (`trial/live/paid/active`) in CRM.
+- Statement of truth:
+  - Evening scheduler uses `outreach_plus_trial_live`.
+  - Direct daily ingest invocations default to `outreach` unless explicitly overridden.
+  - Trial send path (`run_trial_daily.py` -> `deliver_daily.py`) ingests from the trial customer config `states`.
+
+Scope inspection commands:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --print-config
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --scope-mode outreach_plus_trial_live --print-config
+```
+
+Machine-readable ingest scope + planning tokens:
+
+- `INGEST_SCOPE_MODE=<outreach|outreach_plus_trial_live>`
+- `INGEST_SCOPE_STATES=<CSV>`
+- `INGEST_SCOPE_SOURCE=<outreach|resolver>`
+- `INGEST_CANDIDATES_BY_STATE state=<ST> count=<n>`
+- `INGEST_FETCH_PLAN_BY_STATE state=<ST> planned=<n>`
+- `DELIVER_INGEST_SCOPE_STATES=<CSV> source=customer_config`
+- `DELIVER_INGEST_MAX_DETAILS=<n>`
+
 Context pack hygiene (when docs/contracts changed or `WARN_CONTEXT_PACK_SOURCE_HASH_MISMATCH` appears):
 
 1. `py -3 tools/project_context_pack.py --build`
@@ -746,7 +775,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_a
 
 Evening scheduler note:
 
-- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with explicit states `TX,CA,FL,OR,WA` before dumping AI review signals.
+- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with `--scope-mode outreach_plus_trial_live` before dumping AI review signals.
 - WA/OR can still be zero on a given day when upstream data has no in-window records.
 
 Common variants:
