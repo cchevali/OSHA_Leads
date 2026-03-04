@@ -277,6 +277,24 @@ class TestOutreachDiscovery(unittest.TestCase):
             self._assert_discovery_block(out, "DRY_RUN")
             self.assertFalse((data_dir / "crm.sqlite").exists(), msg="dry-run should not create crm.sqlite")
 
+    def test_missing_bare_filename_prints_data_dir_and_suggested_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            p = self._run(["--input", "prospects_apollo.csv"], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(p.returncode, 2, msg=p.stderr + "\n" + p.stdout)
+            err = p.stderr or ""
+            self.assertIn("ERR_DISCOVERY_INPUT_NOT_FOUND", err)
+            self.assertIn(f"DISCOVERY_DATA_DIR_RESOLVED={data_dir.resolve()}", err)
+            self.assertIn("DISCOVERY_CANDIDATE_IMPORT_PATHS=", err)
+            suggested = (data_dir / "imports" / "prospects_apollo.csv").resolve()
+            self.assertIn(f"DISCOVERY_EXPECTED_INPUT_PATH={suggested}", err)
+            self.assertIn(f"DISCOVERY_SUGGESTED_INPUT={suggested}", err)
+            self.assertIn(
+                f"DISCOVERY_REMEDIATION_COMMAND=.\\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input {suggested}",
+                err,
+            )
+            self.assertIn(f"REMEDIATION: use --input {suggested}", err)
+
     def test_live_run_seeds_crm_and_emits_legacy_plus_discovery_block(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -351,6 +369,59 @@ class TestOutreachDiscovery(unittest.TestCase):
             try:
                 count = int(conn.execute("SELECT COUNT(*) FROM prospects").fetchone()[0])
                 self.assertGreaterEqual(count, 1)
+            finally:
+                conn.close()
+
+    def test_live_upsert_does_not_overwrite_existing_email_with_blank_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            first_csv = tmp / "first.csv"
+            second_csv = tmp / "second.csv"
+
+            _write_rows(
+                first_csv,
+                [
+                    {
+                        "prospect_id": "same_1",
+                        "email": "keep@example.com",
+                        "state": "TX",
+                        "firm": "Keep Firm",
+                        "title": "Owner",
+                    }
+                ],
+            )
+            _write_rows(
+                second_csv,
+                [
+                    {
+                        "prospect_id": "same_1",
+                        "email": "",
+                        "state": "TX",
+                        "firm": "Keep Firm Updated",
+                        "title": "Owner",
+                    }
+                ],
+            )
+
+            first = self._run(["--input", str(first_csv)], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(first.returncode, 0, msg=first.stderr + "\n" + first.stdout)
+
+            second = self._run(["--input", str(second_csv)], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(second.returncode, 0, msg=second.stderr + "\n" + second.stdout)
+            block = self._assert_discovery_block(second.stdout or "", "OK")
+            self.assertEqual(block[2], "DISCOVERY_ROWS_READ=1")
+            self.assertEqual(block[3], "DISCOVERY_PROSPECTS_UPSERTED=0")
+            self.assertEqual(block[4], "DISCOVERY_SKIPPED_INVALID_EMAIL=1")
+            self.assertEqual(block[5], "DISCOVERY_SKIPPED_DUPLICATE_EMAIL=0")
+
+            conn = sqlite3.connect(str(data_dir / "crm.sqlite"))
+            try:
+                email = conn.execute(
+                    "SELECT email FROM prospects WHERE prospect_id = ?",
+                    ("same_1",),
+                ).fetchone()[0]
+                self.assertEqual(email, "keep@example.com")
             finally:
                 conn.close()
 

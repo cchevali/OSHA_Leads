@@ -27,5 +27,20 @@
   },
   "TX_TRI_V1": {
     "canonical_code": "TX_TRI"
+  },
+  "FACS_TRIAL_STATES": {
+    "display_name": "FACS_TRIAL_STATES Trial States",
+    "label": "Trial states CA,OR,WA",
+    "description": "Trial-only full-state territory for CA,OR,WA.",
+    "kind": "STATE_SET",
+    "states": [
+      "CA",
+      "OR",
+      "WA"
+    ],
+    "cbsas": [],
+    "aliases": [],
+    "office_patterns": [],
+    "fallback_city_patterns": []
   }
 }

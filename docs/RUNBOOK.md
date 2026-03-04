@@ -269,12 +269,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachStates TX,CA,FL `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
+  -SignalFreshnessMaxDays 30 `
+  -AiTriageEnabled 0 `
+  -AiTriageOpenAiModel gpt-4.1-mini `
+  -OutreachFallbackOnEmptyState 0 `
+  -OutreachSkipRoleInboxes 1 `
   -ProspectAutoGrowEnabled 1 `
   -ProspectAutoGrowSafetyNetEnabled 1 `
   -ProspectAutoGrowSources AIHA,OHS_BG,APOLLO `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
+  -ProspectEnrichDomainEnabled 1 `
+  -ProspectEnrichAllowRoleInbox 0 `
   -ApolloApiKey <your_apollo_api_key> `
   -ApolloEnrichEnabled 1 `
   -ApolloEnrichMaxPerRun 50 `
@@ -287,6 +294,10 @@ This script:
 
 - Ensures `DATA_DIR`, `OSHA_SMOKE_TO`, `OUTREACH_STATES`, and `OUTREACH_DAILY_LIMIT` exist in `.env.sops`
 - Ensures `OUTREACH_SUPPRESSION_MAX_AGE_HOURS` is set to `240` when missing (or to your explicit parameter value)
+- Ensures `SIGNAL_FRESHNESS_MAX_DAYS` is set to `30` when missing (or to your explicit parameter value)
+- Ensures triage model defaults `AI_TRIAGE_ENABLED=0` and `AI_TRIAGE_OPENAI_MODEL=gpt-4.1-mini`
+- Ensures `OUTREACH_FALLBACK_ON_EMPTY_STATE` default `0` and `OUTREACH_SKIP_ROLE_INBOXES` default `1`
+- Ensures prospect enrichment defaults include `PROSPECT_ENRICH_DOMAIN_ENABLED=0`, `PROSPECT_ENRICH_HUNTER_ENABLED=0`, and `PROSPECT_ENRICH_ALLOW_ROLE_INBOX=0`
 - Ensures trial defaults `TRIAL_SENDS_LIMIT_DEFAULT`, `TRIAL_EXPIRED_BEHAVIOR_DEFAULT`, and optional `TRIAL_CONVERSION_URL` are managed in the same no-editor flow
 - Re-encrypts `.env.sops` on save
 - Refuses to run when `.env.sops` is staged (`ERR_ENV_SOPS_STAGED`)
@@ -305,6 +316,16 @@ cd C:\dev\OSHA_Leads
 ```
 
 CSV seed is optional bootstrap/debug only. Ongoing intake should run discovery, not CSV imports.
+
+### CRM Diagnostics (read-only)
+
+Use these commands instead of inline `py -3 -c "..."` one-liners. PowerShell quoting/escaping around embedded SQL/Python and `<`/`>` is brittle and can fail silently.
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py stats
+
+.\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py verify-import --csv .\apollo_export.csv
+```
 
 ### Prospect Generation (Scheduled First)
 
@@ -326,6 +347,7 @@ Auto-growth (env-gated, optional):
 - Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_STATES`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
 - Crawl4AI runtime keys (optional, default zero-cost): `PROSPECT_AUTOGROW_LLM_ENABLED` (default `0`), `PROSPECT_AUTOGROW_BCSP_CREDENTIALS`, `PROSPECT_AUTOGROW_BCSP_INDUSTRY`, `PROSPECT_AUTOGROW_STATE_LIC_TX_LICENSE_TYPES`.
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
+- Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_ALLOW_ROLE_INBOX` (default `0`), `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_MAX_PAGES_PER_SITE` (default `5`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (default `750`; when unset, falls back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`).
 - Source scope: `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG,BCSP,STATE_LIC`).
 - Cache paths:
   - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
@@ -334,6 +356,7 @@ Auto-growth (env-gated, optional):
   - BCSP: `${DATA_DIR}\prospect_generation\cache\bcsp\state_<STATE>.json`
   - OSHA_NEWS: `${DATA_DIR}\prospect_generation\cache\osha_news\state_<STATE>.json`
   - STATE_LIC: `${DATA_DIR}\prospect_generation\cache\state_lic\state_<STATE>.json`
+  - Website enrichment: `${DATA_DIR}\prospect_generation\cache\website_email\<domain>.json` (TTL 14 days)
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
 - Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
@@ -374,9 +397,9 @@ Generator emits machine-readable lines:
 - `GENERATOR_ROWS_READ`
 - `GENERATOR_ROWS_WRITTEN`
 - `GENERATOR_AUTOGROW_*`
-- `GENERATOR_AUTOGROW_SAFETY_NET_FORCED`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
+- `GENERATOR_AUTOGROW_SAFETY_NET_FORCED=1 reason=SENDABLE_BELOW_FLOOR states=<STATE:sendable,...>`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
 - `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
-- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
+- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> backlog_sendable_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
 - `GENERATOR_AUTOGROW_STATES`
 - `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG|APOLLO|BCSP|OSHA_NEWS|STATE_LIC> state=<STATE> ...`
 - `GENERATOR_AIHA_*`
@@ -385,6 +408,7 @@ Generator emits machine-readable lines:
 - `GENERATOR_BCSP_*`, `GENERATOR_OSHA_NEWS_*`, `GENERATOR_STATE_LIC_*`
 - `crawl4ai_installed`, `playwright_browsers_installed`, `<SOURCE>_available` (via `--print-config`)
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
+- `GENERATOR_WEBSITE_ENRICH_*`, `GENERATOR_WEBSITE_ENRICH_NEEDS_REVIEW_PATH`
 - `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
 
 APOLLO telemetry highlights:
@@ -402,9 +426,15 @@ APOLLO telemetry highlights:
 Optional empty-state planner fallback:
 - `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default) preserves weekday rotation-selected state.
 - Set `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` to auto-switch plan/send to the configured state with the highest sendable estimate when the rotation-selected state is empty (or below floor).
+- `OUTREACH_SKIP_ROLE_INBOXES=1` (default) skips role inbox local-parts (`info`, `contact`, `admin`, `office`, `support`, `sales`, `hello`, `help`, `billing`, `accounts`, `careers`, `jobs`, `hr`).
 - Stable state-selection tokens: `OUTREACH_STATE_ROTATION_SELECTED=<STATE>` and `OUTREACH_STATE_EFFECTIVE_SEND=<STATE>`
 - Fallback token: `OUTREACH_FALLBACK_TRIGGERED=1 from=<STATE> to=<STATE> reason=<SENDABLE_BELOW_FLOOR>`
+- No-signal token: `OUTREACH_SKIP_NO_SIGNALS state=<STATE> window_days=<N>`
+- Empty-state no-send token: `OUTREACH_EMPTY_STATE_NO_SEND=1 state=<STATE>`
+- Pre-send duplicate token: `OUTREACH_DUPLICATE_GUARD_DROPPED=<n>`
+- Same-day live-run guard token: `OUTREACH_SKIP_ALREADY_SENT_TODAY=1 date=<YYYY-MM-DD> existing_batches=<csv|none> guard=ON`
 - Floor readiness token (manual ramp remains operator-controlled): `OUTREACH_RAMP_READY=<0|1> desired_daily_limit=<N> states_ready=<k> states_total=<m> ready_states=<csv|none>`
+- Emergency override (manual only): `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --allow-second-live-run-same-day`
 
 Artifact separation (do not mix these):
 
@@ -432,6 +462,21 @@ No-arg discovery input resolution order:
 
 When `DATA_DIR` is unset, discovery resolves these fallback paths under repo `.\out\...`.
 
+### Apollo export workflow
+
+- Export Apollo contacts CSV from Apollo.
+- Save the export locally (for example `apollo_export.csv`; filename is operator convenience only).
+- From repo root, run:
+  `.\run_with_secrets.ps1 -- py -3 tools\apollo_to_prospects_csv.py --input C:\path\to\apollo_export.csv`
+- Converter default target (overwrite enabled, atomic replace): `${DATA_DIR}\imports\prospects_apollo.csv` (or `.\out\imports\prospects_apollo.csv` when `DATA_DIR` is unset).
+- If you explicitly set `--output` to `prospects_latest.csv`, you are overwriting the canonical generator artifact.
+- Optional overrides: `--output <path>` and `--diagnostics-out <path>`.
+- Run discovery using the converter’s printed `output_path` value (recommended): `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input <output_path_from_converter>`.
+- If you are following `DATA_DIR` convention, use: `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input "$env:DATA_DIR\imports\prospects_apollo.csv"`.
+- Mismatch note: running discovery from repo root with a bare filename can target the wrong location (`C:\dev\OSHA_Leads\...`) instead of the converter output path.
+- If `DATA_DIR` is set or defaults to `C:\osha_data`, discovery must be pointed at that location.
+- Discovery no-arg still honors input overrides first: `PROSPECT_DISCOVERY_INPUT`, then `DISCOVERY_INPUT_CSV`.
+
 Set preferred discovery input via the canonical no-editor env helper:
 
 ```powershell
@@ -440,6 +485,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachStates TX,CA,FL `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
+  -SignalFreshnessMaxDays 30 `
+  -AiTriageEnabled 0 `
+  -AiTriageOpenAiModel gpt-4.1-mini `
   -TrialSendsLimitDefault 14 `
   -TrialExpiredBehaviorDefault notify_once `
   -ProspectDiscoveryInput C:\path\to\prospects.csv
@@ -475,6 +523,35 @@ Canonical daily sequence:
 2. `.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py`
 3. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
 4. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
+
+### OSHA Ingest Scope Modes (Operator Truth)
+
+- `run_osha_ingest_daily.py` defaults to `--scope-mode outreach`.
+- `--scope-mode outreach` resolves states from `OUTREACH_STATES` (existing default behavior).
+- `--scope-mode outreach_plus_trial_live` resolves the deterministic union:
+  - outreach states from `OUTREACH_STATES`, plus
+  - states from active subscriber territories (`trial/live/paid/active`) in CRM.
+- Statement of truth:
+  - Evening scheduler uses `outreach_plus_trial_live`.
+  - Direct daily ingest invocations default to `outreach` unless explicitly overridden.
+  - Trial send path (`run_trial_daily.py` -> `deliver_daily.py`) ingests from the trial customer config `states`.
+
+Scope inspection commands:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --print-config
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --scope-mode outreach_plus_trial_live --print-config
+```
+
+Machine-readable ingest scope + planning tokens:
+
+- `INGEST_SCOPE_MODE=<outreach|outreach_plus_trial_live>`
+- `INGEST_SCOPE_STATES=<CSV>`
+- `INGEST_SCOPE_SOURCE=<outreach|resolver>`
+- `INGEST_CANDIDATES_BY_STATE state=<ST> count=<n>`
+- `INGEST_FETCH_PLAN_BY_STATE state=<ST> planned=<n>`
+- `DELIVER_INGEST_SCOPE_STATES=<CSV> source=customer_config`
+- `DELIVER_INGEST_MAX_DETAILS=<n>`
 
 Context pack hygiene (when docs/contracts changed or `WARN_CONTEXT_PACK_SOURCE_HASH_MISMATCH` appears):
 
@@ -522,6 +599,7 @@ When `OUTREACH_PLAN_WILL_SEND=0`, root-cause must be interpreted from `OUTREACH_
 - Optional zero-send-day guard: set `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` to allow auto-switching to the configured state with the highest sendable estimate; verify activation via `OUTREACH_FALLBACK_TRIGGERED=1 from=<STATE> to=<STATE> reason=<...>`.
 - Recommended default remains `0` unless you explicitly want to prevent zero-send days by allowing state fallback.
 - Track rotation vs effective send and floor readiness in stdout tokens: `OUTREACH_STATE_ROTATION_SELECTED`, `OUTREACH_STATE_EFFECTIVE_SEND`, and `OUTREACH_RAMP_READY`.
+- Signal/selection guard tokens: `OUTREACH_SKIP_NO_SIGNALS`, `OUTREACH_EMPTY_STATE_NO_SEND`, and `OUTREACH_DUPLICATE_GUARD_DROPPED`.
 
 Dry-run (no sends, writes outbox + manifest artifacts):
 
@@ -547,6 +625,8 @@ Required outreach env keys (managed by `scripts\set_outreach_env.ps1`):
 - `OUTREACH_DAILY_LIMIT=10`
 - `OSHA_SMOKE_TO=cchevali+oshasmoke@gmail.com`
 - `OUTREACH_SUPPRESSION_MAX_AGE_HOURS=240`
+- `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default)
+- `OUTREACH_SKIP_ROLE_INBOXES=1` (default)
 - `DATA_DIR=out` (or your runtime path)
 
 `run_outreach_auto.py` deterministically picks today's rotation state from `OUTREACH_STATES` by weekday index, may optionally fallback to a different effective send state, and always uses the effective send-state batch id `<YYYY-MM-DD>_<STATE>`.
@@ -579,47 +659,230 @@ cd C:\dev\OSHA_Leads
 py -3 tools\cache_osha_inspection_detail.py --since-days 14
 ```
 
-Trial preview (triage overlay OFF vs ON):
+Triage behavior contract:
 
-- Requires `.\run_with_secrets.ps1` (trial preview entrypoints load operational env/secrets).
-- Rules-only overlay does not require AI keys. If enabling AI triage separately, set keys via `scripts\set_outreach_env.ps1` and run through the secrets wrapper.
+- Rules layer is always on for trial digest signal selection and outreach signal examples.
+- AI layer is optional and raise-only. It is evaluated only when `AI_TRIAGE_ENABLED=1` and the path gate is on:
+- Trial path gate: `TRIAL_TRIAGE_OVERLAY_ENABLED=1`
+- Outreach path gate: `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
+- AI never lowers rules priority and never unsuppresses a rules-suppressed signal.
+- AI cache lookup is attempted before OpenAI API access; cached/manual-reviewed priorities can apply even when `OPENAI_API_KEY` is missing.
+- Trial/outreach send paths auto-import the newest `ai_review_*.csv` once per process from `C:\osha_data\imports` (fallback `${DATA_DIR}\imports`) unless overridden.
+- If AI is enabled but unavailable for uncached signals (missing key/network/API error), execution degrades to rules-only and emits `WARN_AI_TRIAGE_UNAVAILABLE` plus `AI_TRIAGE_UNAVAILABLE=1`.
+
+Triage env keys:
+
+- `SIGNAL_FRESHNESS_MAX_DAYS` (default `30`)
+- `AI_TRIAGE_ENABLED` (default `0`)
+- `AI_TRIAGE_OPENAI_MODEL` (default `gpt-4.1-mini`)
+- `AI_REVIEW_AUTO_IMPORT_ENABLED` (default `1`)
+- `AI_REVIEW_IMPORT_MAX_AGE_HOURS` (default `24`)
+- `AI_REVIEW_IMPORT_DIR` (optional absolute override for `ai_review_*.csv`)
+
+Rules-only trial dry run (no secrets required):
 
 ```powershell
 cd C:\dev\OSHA_Leads
-$env:TRIAL_TRIAGE_OVERLAY_ENABLED='0'; .\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --dry-run
+$env:TRIAL_TRIAGE_OVERLAY_ENABLED='1'
+py -3 run_wally_trial.py --test-send-daily --dry-run
 ```
+
+Rules + AI trial dry run (secrets required):
 
 ```powershell
 cd C:\dev\OSHA_Leads
-$env:TRIAL_TRIAGE_OVERLAY_ENABLED='1'; .\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --dry-run
+$env:TRIAL_TRIAGE_OVERLAY_ENABLED='1'
+$env:AI_TRIAGE_ENABLED='1'
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --dry-run
 ```
 
-Trial triage artifacts (only when overlay is enabled):
+Outreach dry run with rules always-on and optional AI gate:
+
+```powershell
+cd C:\dev\OSHA_Leads
+$env:OUTREACH_TRIAGE_OVERLAY_ENABLED='1'
+$env:AI_TRIAGE_ENABLED='1'
+.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
+```
+
+Render preview behavior:
+
+- Rules execute in render-preview.
+- AI executes only when `AI_TRIAGE_ENABLED=1` and OpenAI key is available via secrets wrapper.
+- Otherwise render-preview stays rules-only and emits warning telemetry.
+
+Scoring config files (committed, operator-editable):
+
+- `data/scoring/naics_emphasis_boost.csv` columns: `naics_prefix,label,boost_points`
+- `data/scoring/naics_suppress.csv` columns: `naics_prefix,label,reason`
+- `data/scoring/enterprise_names.csv` columns: `pattern,match_type,reason`
+
+Config update procedure:
+
+1. Edit CSV files in `data/scoring/`.
+2. Keep header row and valid column names unchanged.
+3. Use prefixes (`722*`), ranges (`44-45*`), and allow-overrides (`!561621`) as needed.
+4. Run `py -3 -m unittest -q`.
+5. Validate behavior with trial/outreach dry-run commands above before live sends.
+
+Trial triage artifacts:
 
 - `${DATA_DIR}\trials\<subscriber_key>\scoring\triage_<YYYY-MM-DD>.json`
 - `${DATA_DIR}\trials\<subscriber_key>\scoring\triage_report_<YYYY-MM-DD>.txt`
 - Fallback when `DATA_DIR` is unset: `.\out\trials\<subscriber_key>\scoring\...`
 
-Outreach preview (triage overlay OFF vs ON):
-
-- Requires `.\run_with_secrets.ps1` (normal outreach env/secrets workflow).
-- Overlay only affects example-signal selection/preview annotations; it does not change prospect ranking/cadence/order.
-
-```powershell
-cd C:\dev\OSHA_Leads
-$env:OUTREACH_TRIAGE_OVERLAY_ENABLED='0'; .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
-```
-
-```powershell
-cd C:\dev\OSHA_Leads
-$env:OUTREACH_TRIAGE_OVERLAY_ENABLED='1'; .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
-```
-
-Outreach triage artifacts (when overlay is enabled):
+Outreach triage artifacts (only when `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`):
 
 - Dry-run outbox/manifest still write under `out\outreach\<batch>\...`
 - Per-example triage JSON writes to `${DATA_DIR}\outreach\<batch>\signals_triage_<batch>_dry_run.json`
 - Fallback when `DATA_DIR` is unset: `.\out\outreach\<batch>\signals_triage_<batch>_dry_run.json`
+
+Weekly manual signal QA loop:
+
+1. Dump rules-classified signals for external review:
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -PrintConfig
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1
+```
+
+2. Review exported signals (for example in Claude) and produce CSV with `activity_nr,ai_priority,ai_reason`.
+3. Validate and import reviewed raises into AI cache:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 tools\import_ai_triage.py --print-config
+py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv --dry-run
+py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv
+```
+
+Auto-import notes:
+
+- Runtime auto-import emits one of: `AI_REVIEW_AUTO_IMPORT_APPLIED`, `WARN_AI_REVIEW_AUTO_IMPORT_MISSING`, `WARN_AI_REVIEW_AUTO_IMPORT_STALE`, or `WARN_AI_REVIEW_AUTO_IMPORT_INVALID`.
+- With defaults, only files modified within the last 24 hours are auto-imported.
+- Manual `tools\import_ai_triage.py` remains supported for deterministic operator backfills/re-runs.
+
+### Nightly AI triage dump (manual)
+
+Canonical manual command path (always loads secrets/DATA_DIR via wrapper):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1
+```
+
+Evening scheduler note:
+
+- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with `--scope-mode outreach_plus_trial_live` before dumping AI review signals.
+- WA/OR can still be zero on a given day when upstream data has no in-window records.
+
+Common variants:
+
+```powershell
+# side-effect free resolved config
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -PrintConfig
+
+# inspect output only (no file write)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -DryRun
+
+# explicit window / scope override
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -Since 2026-03-01 -Until 2026-03-01 -AllOutreach
+
+# explicit state-scope override (manual/nightly include set)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_ai_review.ps1 -Since 2026-03-03 -Until 2026-03-03 -States CA,OR,WA
+```
+
+Output location is DATA_DIR-aware:
+
+- Effective precedence for wrapped commands (`.\run_with_secrets.ps1 -- ...`):
+- Inherited process `DATA_DIR` (non-empty) wins.
+- Else `.env.sops` `DATA_DIR` is used.
+- Else fallback is repo `.\out`.
+- Invalid values (`""`, `out`, non-rooted relative path) fall back to repo `.\out`.
+
+AI review dump date-window basis:
+
+- `--since/--until` are matched primarily on `first_seen_at` local date (when the signal first entered our DB).
+- Fallback to `date_opened` is used only when `first_seen_at` is missing/unparseable.
+- This keeps manual AI review aligned with what can actually be newly selected for daily sends.
+- Late-posted OSHA rows are expected: `date_opened` may be older than `first_seen_at`.
+
+Machine-readable path tokens:
+
+- `MFO_DATA_DIR_EFFECTIVE=<abs_path|empty>`
+- `MFO_DATA_DIR_SOURCE=inherited|dotenv|default`
+- `WARN_ENV_CONFLICT=1 key=DATA_DIR inherited=<...> dotenv=<...> using=<...>`
+- `WARN_DATA_DIR_NOT_ABSOLUTE=1 value=<...> behavior=UNSET_FOR_CHILD`
+- `AI_REVIEW_DUMP_OUTPUT_DIR=<abs_path>`
+- `AI_REVIEW_DUMP_OUTPUT_PATH=<abs_path>`
+- `AI_REVIEW_DUMP_DATA_DIR=<effective_abs_path|empty>`
+- `AI_REVIEW_DUMP_DATA_DIR_SOURCE=<inherited|dotenv|default>`
+- `AI_REVIEW_DUMP_SCOPE=STATES states=<CSV>` (emitted when `-States` / `--states` scope override is used)
+- `AI_REVIEW_DUMP_FILTER_BASIS=FIRST_SEEN_FALLBACK_OPENED`
+- `AI_REVIEW_DUMP_MATCHED_BY_FIRST_SEEN=<n>`
+- `AI_REVIEW_DUMP_MATCHED_BY_OPENED_FALLBACK=<n>`
+
+Empty dump interpretation (file may contain only headers/section markers):
+
+- `AI_REVIEW_DUMP_MATCHED_TOTAL=0`
+- `WARN_AI_REVIEW_DUMP_EMPTY=1 reason=NO_MATCHES since=<...> until=<...>`
+- `AI_REVIEW_DUMP_MAX_FIRST_SEEN=<iso|empty>`
+- `AI_REVIEW_DUMP_MAX_DATE_OPENED=<iso|empty>`
+
+Manual review timing note (Sun-Thu nights):
+
+- Signals first seen Monday morning can still send in Monday 8:00 AM digest before manual review.
+- This is expected with the current manual-only schedule and is not by itself evidence of ingest failure.
+
+DATA_DIR persistence and edits:
+
+- Use `scripts\set_outreach_env.ps1` as the only supported way to persist `.env.sops` keys.
+- Do not manually edit `.env.sops`.
+- Canonical persist command:
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -DataDir "C:\osha_data" -OshaSmokeTo cchevali+oshasmoke@gmail.com
+```
+
+- Expected token: `PASS_SET_OUTREACH_ENV_DATA_DIR value=<...> source=<param|inherited|unchanged>`
+
+### Tomorrow AI Prep (Non-Send)
+
+Use one command to run the full readiness pipeline now (manual AI import + ingest + generation + discovery + doctor + outreach/trial dry-runs):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -Apply
+```
+
+Dry-run and config variants:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -PrintConfig
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_ai_pipeline.ps1 -DryRun
+```
+
+Notes:
+
+- The prep script auto-selects the newest `ai_review_*.csv` from `C:\osha_data\imports` (fallback: `${DATA_DIR}\imports`) unless `-AiReviewCsv` is passed.
+- It auto-creates `${DATA_DIR}\suppression.csv` (or `.\out\suppression.csv`) with header `email` in `-Apply` mode when missing.
+- Required AI gates for overlay behavior:
+- `AI_TRIAGE_ENABLED=1`
+- `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
+- `TRIAL_TRIAGE_OVERLAY_ENABLED=1`
+- Persist gates only through `scripts\set_outreach_env.ps1` (no manual `.env.sops` edits):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -AiTriageEnabled 1 -OutreachTriageOverlayEnabled 1 -TrialTriageOverlayEnabled 1 -OshaSmokeTo cchevali+oshasmoke@gmail.com
+```
+
+Readiness tokens:
+
+- `PIPELINE_READY_FOR_TOMORROW=1|0`
+- `PIPELINE_BLOCKERS=<csv|none>`
 
 ### Outreach Ops Report (7/30-Day KPI Snapshot)
 
@@ -664,6 +927,9 @@ Metric scope:
 # Dry-run candidate preview
 .\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --dry-run
 
+# Rendered copy preview (no sends/no outbox artifacts)
+.\run_with_secrets.ps1 -- py -3 outreach\generate_mailmerge.py --render-preview --state TX --limit 1
+
 # Verify dry-run artifacts exist and no-send marker was printed
 Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run.csv
 Test-Path -LiteralPath .\out\outreach\*\outbox_*_dry_run_manifest.csv
@@ -680,6 +946,16 @@ Test-Path -LiteralPath .\out\outreach_export_ledger.jsonl
   --out outreach\outbox_TX_DEBUG.csv `
   --allow-mailto-fallback
 ```
+
+### State Of World (2026-02-27)
+
+- PR #18 deployed outreach copy framing updates plus deterministic `--render-preview`; scope was copy/template/test/doc only.
+- PR #19 added test-only hardening: export-writes-artifacts regression coverage + preview no-write guard.
+- Canonical copy QA command: `py -3 -m outreach.generate_mailmerge --render-preview --state CA --limit 1`
+- Canonical dry-run QA command: `$env:DATA_DIR='out'; py -3 -m outreach.run_outreach_auto --dry-run`
+- Invariant: outreach dry-run remains candidate-only (outbox/manifest/diagnostics), not rendered-body output.
+- Invariant: render-preview is side-effect free (no outbox/manifest/ledger/run-log writes).
+- Invariant: compliance markers are regression-tested (single footer opt-out links; no pre-footer duplicate unsubscribe links).
 
 ### Doctor Failure Tokens (Troubleshooting)
 
@@ -792,6 +1068,33 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_
 
 Rerun `.\scripts\install_scheduled_tasks.ps1 --apply` to update existing tasks to weekday-only schedules.
 
+### Logged-Off Execution Enforcement (All `OSHA*` Tasks)
+
+Set scheduler credentials in secrets-managed env (password is never printed by `--print-config`):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -TaskSchedUser "DESKTOP-Q8QM4N9\lever" -TaskSchedPassword "<TASK_SCHED_PASSWORD>"
+```
+
+Apply installers via secrets wrapper so `TASK_SCHED_USER` / `TASK_SCHED_PASSWORD` are loaded:
+
+```powershell
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_wip_autosave_task.ps1 --apply
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enforce_osha_task_logon_mode.ps1 --apply
+```
+
+Verification commands:
+
+```powershell
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --verify
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py --check-schedule
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enforce_osha_task_logon_mode.ps1 --verify
+```
+
+Intentional exception:
+- `OSHA_WIP_Autosave_Logon` uses an `ONLOGON` trigger by design and cannot run while logged off.
+
 ### Recent Signals Troubleshooting
 
 If cold outreach renders `(no recent signals found)`, outreach is working but `data\osha.sqlite` has no records in the state/last-14-day window used by `outreach\generate_mailmerge.py`.
@@ -854,6 +1157,9 @@ Operator workflow:
 Important:
 
 - Catch-up is allowed only for the Wally trial daily path and only when the subscriber has not already been sent that local day.
+- Same-day live-send guard token: `TRIAL_SKIP_ALREADY_SENT_TODAY=1 subscriber_key=<key> local_date=<YYYY-MM-DD> guard=ON`
+- Emergency override (manual only): pass `--allow-second-live-send-same-day` through `deliver_daily.py` / `send_digest_email.py`.
+- Recipient fan-out stays unchanged: one trial send run still targets both configured recipients (Wally + Brandon).
 - Do not temporarily widen `send_window_minutes` for missed trial sends; use the trial catch-up keys/workflow above.
 
 ## Trial Framework (Subscriber-Keyed)
@@ -1040,6 +1346,7 @@ Expected markers:
 - `dry_run=YES`
 - `TRIAL_EVENT status=DRY_RUN`
 - `send_events` appended with `status=DRY_RUN` (does not count toward expiry)
+- Live smoke previews (`--test-send-daily` without `--dry-run`) append `status=TEST_SENT` and do not advance "since last successful send" subscriber cutoffs.
 
 ### Expiry QA (Limit=1)
 
@@ -1156,4 +1463,3 @@ Operator checks:
 - Confirm each run prints a `RUN_DIAGNOSTICS` line.
 - Confirm dry-run output indicates no live send.
 - On the second run, previously observed leads should not be counted as newly observed.
-

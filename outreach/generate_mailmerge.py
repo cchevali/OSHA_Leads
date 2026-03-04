@@ -5,6 +5,7 @@ import html as _html
 import json
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -268,6 +269,135 @@ def _state_metro_examples(state: str) -> str:
     return STATE_METRO_EXAMPLES.get(s, "your target metros")
 
 
+def _segment_descriptor(segment: str, role_or_title: str) -> str:
+    text = " ".join([str(segment or "").strip().lower(), str(role_or_title or "").strip().lower()]).strip()
+    if not text:
+        return ""
+    if any(token in text for token in ["attorney", "law", "lawyer", "counsel", "defense", "partner"]):
+        return "defense team"
+    if any(token in text for token in ["safety consultant", "consulting"]):
+        return "safety consulting team"
+    if any(token in text for token in ["ehs", "hse", "safety"]):
+        return "safety team"
+    if "compliance" in text:
+        return "compliance team"
+    return ""
+
+
+def _clean_company_name(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = " ".join(text.lower().split())
+    if normalized in {"your firm", "your company", "company", "unknown", "n/a", "na", "none", "-", "--"}:
+        return ""
+    suffix_only = {
+        "inc",
+        "llc",
+        "co",
+        "company",
+        "corp",
+        "ltd",
+        "lp",
+    }
+    normalized_token = "".join(ch for ch in normalized if ch.isalnum())
+    if normalized_token in suffix_only:
+        return ""
+    return text
+
+
+def _build_copy_tokens(
+    *,
+    state_full_name: str,
+    state_metro_examples: str,
+    first_name: str,
+    firm_name: str,
+    segment: str,
+    role_or_title: str,
+    recent_leads: list[dict] | None = None,
+) -> dict[str, str]:
+    signal_count = len(list(recent_leads or []))
+    segment_desc = _segment_descriptor(segment=segment, role_or_title=role_or_title)
+    clean_first = str(first_name or "").strip()
+    clean_firm = _clean_company_name(firm_name)
+    low_signal = signal_count == 1
+
+    if clean_first:
+        greeting_text = f"Hi {clean_first},"
+        count_phrase = "a new OSHA inspection" if low_signal else "a few new OSHA inspections"
+        opened_phrase = "opened recently" if low_signal else "most opened in the last two weeks"
+        team_phrase = f"your team at {clean_firm}" if clean_firm else "your team"
+        intro_text = (
+            f"I spotted {count_phrase} in {state_full_name} that {team_phrase} might want to know about — "
+            f"{opened_phrase} and none have citations yet:"
+        )
+        post_cards_text = ""
+        trial_text = (
+            "I track these daily across every state using public OSHA data. "
+            "Happy to set up a short trial feed for whatever metros matter to you — just reply with the cities."
+        )
+    elif clean_firm:
+        greeting_text = f"Hi - saw a few things {clean_firm} should probably have on their radar:"
+        intro_text = ""
+        post_cards_text = (
+            f"These are new OSHA inspections opened in {state_full_name} in the last two weeks — "
+            "none have citations yet."
+        )
+        trial_text = (
+            "I track these daily across every state using public OSHA data. "
+            "Happy to set up a trial feed for whatever metros matter to you — just reply with the cities."
+        )
+    else:
+        greeting_text = (
+            f"Hi - saw a new OSHA inspection in {state_full_name} that might be relevant to your team:"
+            if low_signal
+            else f"Hi - saw a few new OSHA inspections in {state_full_name} that might be relevant to your team:"
+        )
+        intro_text = ""
+        post_cards_text = (
+            "Opened recently and none have citations yet."
+            if low_signal
+            else "Most opened in the last two weeks and none have citations yet."
+        )
+        trial_text = (
+            "I track these daily across every state using public OSHA data. "
+            "Happy to set up a trial feed for whatever metros matter to you — just reply with the cities."
+        )
+
+    return {
+        "SIGNAL_COUNT": str(max(0, signal_count)),
+        "SEGMENT_DESCRIPTOR": segment_desc,
+        "GREETING_LINE_TEXT": greeting_text,
+        "GREETING_LINE_HTML": _html_escape(greeting_text),
+        "INTRO_LINE_TEXT": intro_text,
+        "INTRO_LINE_HTML": _html_escape(intro_text),
+        "POST_CARDS_LINE_TEXT": post_cards_text,
+        "POST_CARDS_LINE_HTML": _html_escape(post_cards_text),
+        "TRIAL_LINE_TEXT": trial_text,
+        "TRIAL_LINE_HTML": _html_escape(trial_text),
+        # Legacy keys retained to avoid breaking custom templates.
+        "OPENING_LINE_TEXT": intro_text,
+        "OPENING_LINE_HTML": _html_escape(intro_text),
+        "RELEVANCE_LINE_TEXT": "",
+        "RELEVANCE_LINE_HTML": "",
+        "CTA_LINE_TEXT": trial_text,
+        "CTA_LINE_HTML": _html_escape(trial_text),
+        "TRUST_LINE_TEXT": "",
+        "TRUST_LINE_HTML": "",
+        "COMPANY_INTRO_TEXT": "",
+        "COMPANY_INTRO_HTML": "",
+        "STATE_METRO_EXAMPLES_TEXT": state_metro_examples,
+    }
+
+
+def _row_text_value(row: dict, keys: list[str]) -> str:
+    for key in keys:
+        value = str((row or {}).get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _date_str(value: object) -> str:
     text = str(value or "").strip()
     if not text:
@@ -369,22 +499,21 @@ def _best_effort_recent_leads_and_refresh(db_path: str, state: str, limit: int =
             try:
                 import send_digest_email as sde
 
-                leads, low_fallback, _stats = sde.get_leads_for_period(
+                leads, _low_fallback, _stats = sde.get_leads_for_period(
                     conn=conn,
                     states=[state],
                     since_days=14,
                     new_only_days=36500,
                     skip_first_seen_filter=True,
                     territory_code=None,
-                    content_filter="high_medium",
-                    include_low_fallback=True,
+                    content_filter="all",
+                    include_low_fallback=False,
                     window_start=None,
                     new_only_cutoff=None,
                     include_changed=True,
                     use_opened_window=False,
                 )
-                selected = leads if leads else low_fallback
-                recent = list(selected[: max(0, int(limit))])
+                recent = list((leads or [])[: max(0, int(limit))])
             except Exception:
                 recent = []
 
@@ -495,6 +624,7 @@ def _history_rows_for_state(db_path: str, state: str, limit: int = 3) -> tuple[l
                 "establishment_name",
                 "site_city",
                 "site_state",
+                "mail_state",
                 "inspection_type",
                 "date_opened",
                 "first_seen_at",
@@ -547,17 +677,103 @@ def _subject_source_rows(db_path: str | None, state: str, recent_leads: list[dic
         historical_rows, _max_opened = _history_rows_for_state(db_path=db_path, state=state, limit=3)
         if historical_rows:
             return list(historical_rows)
-    return _sample_rows()
+    return []
 
 
-def build_outreach_subject(state_or_label: str, recent_leads: list[dict] | None = None, db_path: str | None = None) -> str:
-    label = (_norm_state(state_or_label) or str(state_or_label or "").strip() or "OSHA").strip()
+def _normalized_inspection_type(value: object) -> str:
+    text = " ".join(str(value or "").strip().split()).lower()
+    if not text:
+        return ""
+    return text
+
+
+def _subject_primary_inspection_type(leads: list[dict] | None) -> str:
+    labels = [_normalized_inspection_type((lead or {}).get("inspection_type")) for lead in (leads or [])]
+    labels = [label for label in labels if label]
+    if not labels:
+        return ""
+    counts = Counter(labels)
+    if len(counts) == 1:
+        return next(iter(counts))
+    top_count = max(counts.values())
+    winners = [label for label, count in counts.items() if count == top_count]
+    if len(winners) != 1:
+        return ""
+    return winners[0]
+
+
+def _truncate_subject(subject: str, max_len: int = 64) -> str:
+    text = str(subject or "").strip()
+    if len(text) <= max_len:
+        return text
+    return _truncate_text(text, max_len)
+
+
+def _subject_for_multi_signal(*, signal_count: int, state_abbrev: str, primary_type: str) -> str:
+    type_part = f" {primary_type}" if primary_type else ""
+    candidates = [
+        f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections opened this month",
+        f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections opened",
+        f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections",
+    ]
+    if primary_type:
+        candidates.extend(
+            [
+                f"Quick heads up — {signal_count} new {state_abbrev} inspections opened this month",
+                f"Quick heads up — {signal_count} new {state_abbrev} inspections opened",
+                f"Quick heads up — {signal_count} new {state_abbrev} inspections",
+            ]
+        )
+    candidates.append(f"Heads up — {signal_count} new {state_abbrev} inspections")
+    for candidate in candidates:
+        if len(candidate) <= 64:
+            return candidate
+    return _truncate_subject(candidates[-1], max_len=64)
+
+
+def _subject_for_single_signal(*, state_abbrev: str, opened_label: str) -> str:
+    candidates = [
+        f"Quick heads up — new {state_abbrev} inspection opened {opened_label}",
+        f"Quick heads up — new {state_abbrev} inspection opened recently",
+        f"Heads up — new {state_abbrev} inspection opened recently",
+    ]
+    for candidate in candidates:
+        if len(candidate) <= 64:
+            return candidate
+    return _truncate_subject(candidates[-1], max_len=64)
+
+
+def build_outreach_subject(
+    state_or_label: str,
+    recent_leads: list[dict] | None = None,
+    db_path: str | None = None,
+    segment_descriptor: str = "",
+    state_full_name: str | None = None,
+    signal_count: int | None = None,
+) -> str:
+    del segment_descriptor, state_full_name
+    label = (_norm_state(state_or_label) or str(state_or_label or "").strip().upper() or "OSHA").strip()
+    try:
+        subject_signal_count = int(signal_count) if signal_count is not None else len(list(recent_leads or []))
+    except Exception:
+        subject_signal_count = len(list(recent_leads or []))
+    subject_signal_count = max(0, int(subject_signal_count))
     source_rows = _subject_source_rows(db_path=db_path, state=label, recent_leads=recent_leads)
-    opened_label = _subject_opened_or_observed_date(source_rows[0]) if source_rows else "recently"
-    return f"New OSHA inspection in {label} — opened {opened_label}"
+    subject_rows = list(recent_leads or []) or source_rows
+    if subject_signal_count >= 2:
+        primary_type = _subject_primary_inspection_type(subject_rows)
+        return _subject_for_multi_signal(
+            signal_count=subject_signal_count,
+            state_abbrev=label,
+            primary_type=primary_type,
+        )
+    row_for_date = subject_rows[0] if subject_rows else {}
+    opened_label = _subject_opened_or_observed_date(row_for_date) if row_for_date else "recently"
+    return _subject_for_single_signal(state_abbrev=label, opened_label=opened_label)
 
 
 def _build_signal_template_tokens(db_path: str, state: str, recent_leads: list[dict], lookback_days: int = 14) -> dict[str, str]:
+    del db_path, lookback_days
     state_code = _norm_state(state)
     state_name = _state_full_name(state_code)
 
@@ -569,69 +785,11 @@ def _build_signal_template_tokens(db_path: str, state: str, recent_leads: list[d
         "STATE_METRO_EXAMPLES": _state_metro_examples(state_code),
         "RECENT_SIGNALS_LINES": recent_text,
         "RECENT_SIGNALS_HTML": recent_html,
-        "SIGNALS_WINDOW_NOTE_TEXT": "Opened = inspection opened date; Observed = first day it appeared in our feed.",
-        "SIGNALS_WINDOW_NOTE_HTML": (
-            "<span>Opened = inspection opened date; Observed = first day it appeared in our feed.</span>"
-        ),
+        "SIGNALS_WINDOW_NOTE_TEXT": "",
+        "SIGNALS_WINDOW_NOTE_HTML": "",
         "SIGNALS_FALLBACK_TEXT": "",
         "SIGNALS_FALLBACK_HTML": "",
     }
-    if recent_leads:
-        return tokens
-
-    historical_rows, max_opened = _history_rows_for_state(db_path=db_path, state=state_code, limit=3)
-    if historical_rows:
-        historical_text = _recent_signals_text_lines_from_leads(historical_rows)
-        historical_html = _recent_signals_html_from_leads(historical_rows)
-        tokens["RECENT_SIGNALS_LINES"] = f"- No recent signals in the last {lookback_days} days for {state_name}."
-        tokens["RECENT_SIGNALS_HTML"] = (
-            f"<div style=\"font-size: 13px; color: #555;\">No recent signals in the last {lookback_days} days for "
-            f"{_html_escape(state_name)}.</div>"
-        )
-        latest_line = f" Latest opened date in our data: {max_opened}." if max_opened and max_opened != "NONE" else ""
-        tokens["SIGNALS_WINDOW_NOTE_TEXT"] = (
-            f"14-day window is currently empty for {state_name}.{latest_line}".strip()
-        )
-        tokens["SIGNALS_WINDOW_NOTE_HTML"] = (
-            f"<span>14-day window is currently empty for {_html_escape(state_name)}.{_html_escape(latest_line)}</span>"
-        )
-        tokens["SIGNALS_FALLBACK_TEXT"] = (
-            f"Most recent signals we have for {state_name} (outside the {lookback_days}-day window):\n"
-            f"{historical_text}"
-        ).strip()
-        tokens["SIGNALS_FALLBACK_HTML"] = (
-            f"<p style=\"font-size: 13px; line-height: 1.6; margin: 12px 0 8px 0; color: #444;\">"
-            f"Most recent signals we have for {_html_escape(state_name)} (outside the {lookback_days}-day window):"
-            f"</p><div>{historical_html}</div>"
-        )
-        return tokens
-
-    sample_rows = _sample_rows()[:3]
-    sample_text = _recent_signals_text_lines_from_leads(sample_rows)
-    sample_html = _recent_signals_html_from_leads(sample_rows)
-    tokens["RECENT_SIGNALS_LINES"] = f"- No recent signals in the last {lookback_days} days for {state_name}."
-    tokens["RECENT_SIGNALS_HTML"] = (
-        f"<div style=\"font-size: 13px; color: #555;\">No recent signals in the last {lookback_days} days for "
-        f"{_html_escape(state_name)}.</div>"
-    )
-    tokens["SIGNALS_WINDOW_NOTE_TEXT"] = (
-        f"14-day window is currently empty for {state_name}. We can backfill the last 45 days during trial."
-    )
-    tokens["SIGNALS_WINDOW_NOTE_HTML"] = (
-        f"<span>14-day window is currently empty for {_html_escape(state_name)}. "
-        "We can backfill the last 45 days during trial.</span>"
-    )
-    tokens["SIGNALS_FALLBACK_TEXT"] = (
-        "Example signals (sample, not state-specific):\n"
-        f"{sample_text}"
-    ).strip()
-    tokens["SIGNALS_FALLBACK_HTML"] = (
-        "<p style=\"font-size: 13px; line-height: 1.6; margin: 12px 0 8px 0; color: #444;\">"
-        "Example signals (sample, not state-specific):"
-        "</p><div>"
-        + sample_html
-        + "</div>"
-    )
     return tokens
 
 
@@ -642,63 +800,93 @@ def _triage_recent_signals_for_outreach(
     dry_run_suffix: str = "export",
 ) -> tuple[list[dict], dict]:
     overlay_enabled = _bool_env_enabled("OUTREACH_TRIAGE_OVERLAY_ENABLED", default=False)
-    if not overlay_enabled:
-        return list(recent_leads or []), {
-            "enabled": False,
-            "ai_triage_action": "AI_DISABLED",
-            "ai_triage_conf": "",
-            "ai_triage_reasons": "",
-            "ai_triage_details_relpath": "",
-            "decisions": [],
-            "artifact_path": None,
-        }
-
     items = [
         {"activity_nr": str(r.get("activity_nr") or "").strip(), "url": str(r.get("source_url") or "").strip()}
         for r in (recent_leads or [])
         if str(r.get("activity_nr") or "").strip()
     ]
+    cache_result = {"fetched": 0, "skipped_cached": 0, "failed": 0}
     try:
-        cache_result = scoring_osha_detail_cache.ensure_cached_for_activities(
-            activity_items=items,
-            sleep_ms=800,
-            ttl_days=30,
-            dry_run=False,
+        cache_rows = scoring_osha_detail_cache.load_detail_cache_rows(None, [str(r.get("activity_nr") or "") for r in (recent_leads or [])])
+        decisions = scoring_triage_overlay.triage(
+            list(recent_leads or []),
+            cache_rows,
+            mode="outreach_examples",
+            allow_ai=bool(overlay_enabled),
         )
-        cache_rows = scoring_osha_detail_cache.load_detail_cache_rows(
-            None,
-            [str(r.get("activity_nr") or "") for r in (recent_leads or [])],
-        )
-        decisions = scoring_triage_overlay.triage(list(recent_leads or []), cache_rows, mode="outreach_examples")
     except Exception:
         decisions = []
-        cache_result = {"fetched": 0, "skipped_cached": 0, "failed": 0}
+    by_key = scoring_triage_overlay.decisions_by_activity(decisions)
+    high_rows: list[dict] = []
+    medium_rows: list[dict] = []
+    low_rows: list[dict] = []
+    suppressed = 0
+    for row in list(recent_leads or []):
+        key = str(row.get("activity_nr") or row.get("lead_key") or "").strip()
+        d = by_key.get(key, {})
+        final_priority = str(d.get("final_priority") or "").strip().upper()
+        if not final_priority:
+            action_hint = str(d.get("action") or "").strip().lower()
+            if action_hint == "remove_from_customer_email":
+                final_priority = "SUPPRESS"
+            elif action_hint == "downgrade_to_medium":
+                final_priority = "MEDIUM"
+            elif action_hint == "downgrade_to_low":
+                final_priority = "LOW"
+            elif action_hint == "promote_candidate":
+                final_priority = "HIGH"
+            else:
+                current_hint = str(d.get("current_priority") or "").strip().upper()
+                if current_hint in {"HIGH", "MEDIUM", "LOW"}:
+                    final_priority = current_hint
+        if final_priority == "SUPPRESS":
+            suppressed += 1
+            continue
+        if final_priority == "HIGH":
+            high_rows.append(row)
+        elif final_priority == "MEDIUM":
+            medium_rows.append(row)
+        elif final_priority == "LOW":
+            low_rows.append(row)
+        else:
+            # Fallback to score tier when decision missing.
+            try:
+                score = int(row.get("lead_score") or 0)
+            except Exception:
+                score = 0
+            if score >= 10:
+                high_rows.append(row)
+            elif score >= 6:
+                medium_rows.append(row)
+            else:
+                low_rows.append(row)
 
-    remove_keys = {
-        str(d.get("activity_nr") or d.get("lead_key") or "").strip()
-        for d in (decisions or [])
-        if str(d.get("action") or "") == "remove_from_customer_email"
-    }
-    filtered = [r for r in (recent_leads or []) if str(r.get("activity_nr") or r.get("lead_key") or "").strip() not in remove_keys]
+    # Outreach examples are HIGH-first with MEDIUM backfill; LOW never shown.
+    filtered = list(high_rows) + list(medium_rows)
     action, conf, reasons = scoring_triage_overlay.summarize_outreach_example_triage(decisions)
+    if not overlay_enabled:
+        action = "AI_DISABLED"
+        conf = ""
+        reasons = ""
     artifact_path = _outreach_triage_artifact_path(batch=batch, dry_run_suffix=dry_run_suffix)
     relpath = _relpath_to_data_root(artifact_path)
     print(
         "OUTREACH_TRIAGE_OVERLAY "
-        f"enabled=1 recent_before={len(recent_leads or [])} recent_after={len(filtered)} "
-        f"removed={max(0, len(recent_leads or []) - len(filtered))} "
+        f"enabled={1 if overlay_enabled else 0} recent_before={len(recent_leads or [])} recent_after={len(filtered)} "
+        f"suppressed={suppressed} high={len(high_rows)} medium={len(medium_rows)} low_hidden={len(low_rows)} "
         f"cache_fetched={int(cache_result.get('fetched', 0))} "
         f"cache_skipped={int(cache_result.get('skipped_cached', 0))} "
         f"cache_failed={int(cache_result.get('failed', 0))}"
     )
+    print(f"OUTREACH_CARD_EXAMPLES high={len(high_rows)} medium_backfill={len(medium_rows)} total={len(filtered)}")
     return filtered, {
-        "enabled": True,
+        "enabled": bool(overlay_enabled),
         "ai_triage_action": action,
         "ai_triage_conf": conf,
         "ai_triage_reasons": reasons,
-        "ai_triage_details_relpath": relpath,
+        "ai_triage_details_relpath": relpath if overlay_enabled else "",
         "decisions": decisions,
-        "artifact_path": artifact_path,
+        "artifact_path": artifact_path if overlay_enabled else None,
     }
 
 
@@ -901,12 +1089,189 @@ def _write_manifest_csv(path: str, rows: list[dict]) -> None:
             w.writerow(r)
 
 
+def _preview_text(text: str, max_lines: int = 14) -> str:
+    lines = [ln.rstrip() for ln in str(text or "").splitlines()]
+    clipped = lines[: max(1, int(max_lines))]
+    return "\\n".join(clipped)
+
+
+def _render_preview(args: argparse.Namespace) -> int:
+    state_filter = _norm_state(args.state)
+    limit = max(1, int(args.limit or 1))
+    template_text = _read_template_text(Path(args.template))
+    html_template_text = ""
+    try:
+        html_template_text = _read_template_text(Path(args.html_template))
+    except Exception:
+        html_template_text = ""
+
+    recent_leads, last_refresh_et = _best_effort_recent_leads_and_refresh(
+        db_path=str(args.db),
+        state=state_filter,
+        limit=12,
+    )
+    preview_batch = f"PREVIEW_{state_filter}"
+    recent_leads, _preview_triage_ctx = _triage_recent_signals_for_outreach(
+        batch=preview_batch,
+        recent_leads=list(recent_leads or []),
+        dry_run_suffix="preview",
+    )
+    recent_leads = list(recent_leads[:5])
+    signal_tokens = _build_signal_template_tokens(
+        db_path=str(args.db),
+        state=state_filter,
+        recent_leads=recent_leads,
+        lookback_days=14,
+    )
+
+    rows: list[dict] = []
+    if args.input:
+        try:
+            input_rows = _load_csv_rows(args.input)
+        except Exception:
+            input_rows = []
+        for row in input_rows:
+            if _norm_state(str(row.get("state") or "")) != state_filter:
+                continue
+            rows.append(dict(row))
+            if len(rows) >= limit:
+                break
+
+    if not rows:
+        rows = [
+            {
+                "prospect_id": "preview",
+                "first_name": "",
+                "firm": "",
+                "title": "",
+                "email": "preview@example.com",
+                "state": state_filter,
+            }
+        ]
+
+    unsub_url = "https://unsubscribe.example.internal/unsubscribe?token=preview"
+    prefs_url = "https://unsubscribe.example.internal/prefs?token=preview"
+    prefs_link = prefs_url
+    mailing_address = _resolve_outreach_mailing_address()
+    microflowops_url = (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
+
+    for idx, row in enumerate(rows, start=1):
+        first_name = _row_text_value(row, ["first_name", "contact_name"])
+        firm_name_raw = _row_text_value(row, ["firm"])
+        segment = _row_text_value(row, ["segment", "buyer_segment"])
+        role_or_title = _row_text_value(row, ["role_or_title", "role", "contact_role", "title"])
+        copy_tokens = _build_copy_tokens(
+            state_full_name=signal_tokens["STATE_FULL_NAME"],
+            state_metro_examples=signal_tokens["STATE_METRO_EXAMPLES"],
+            first_name=first_name,
+            firm_name=firm_name_raw,
+            segment=segment,
+            role_or_title=role_or_title,
+            recent_leads=recent_leads,
+        )
+        subject = build_outreach_subject(
+            state_filter,
+            recent_leads=recent_leads,
+            db_path=str(args.db),
+            segment_descriptor=copy_tokens.get("SEGMENT_DESCRIPTOR", ""),
+            state_full_name=signal_tokens["STATE_FULL_NAME"],
+            signal_count=int(copy_tokens.get("SIGNAL_COUNT") or "0"),
+        )
+        text_body = _render_template(
+            template_text,
+            {
+                "FIRST_NAME": first_name,
+                "FIRM": firm_name_raw or "your firm",
+                "STATE": state_filter,
+                "STATE_FULL_NAME": signal_tokens["STATE_FULL_NAME"],
+                "STATE_METRO_EXAMPLES": signal_tokens["STATE_METRO_EXAMPLES"],
+                "TERRITORY_CODE": "PREVIEW",
+                "RECENT_SIGNALS_LINES": signal_tokens["RECENT_SIGNALS_LINES"],
+                "SIGNALS_WINDOW_NOTE_TEXT": signal_tokens["SIGNALS_WINDOW_NOTE_TEXT"],
+                "SIGNALS_FALLBACK_TEXT": signal_tokens["SIGNALS_FALLBACK_TEXT"],
+                "LAST_REFRESH_ET": last_refresh_et,
+                "UNSUBSCRIBE_URL": unsub_url,
+                "PREFS_URL": prefs_link,
+                "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
+                "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
+                "GREETING_LINE_TEXT": copy_tokens["GREETING_LINE_TEXT"],
+                "INTRO_LINE_TEXT": copy_tokens["INTRO_LINE_TEXT"],
+                "POST_CARDS_LINE_TEXT": copy_tokens["POST_CARDS_LINE_TEXT"],
+                "TRIAL_LINE_TEXT": copy_tokens["TRIAL_LINE_TEXT"],
+                "OPENING_LINE_TEXT": copy_tokens["OPENING_LINE_TEXT"],
+                "RELEVANCE_LINE_TEXT": copy_tokens["RELEVANCE_LINE_TEXT"],
+                "CTA_LINE_TEXT": copy_tokens["CTA_LINE_TEXT"],
+                "TRUST_LINE_TEXT": copy_tokens["TRUST_LINE_TEXT"],
+                "COMPANY_INTRO_TEXT": copy_tokens["COMPANY_INTRO_TEXT"],
+            },
+        ).strip() + "\n"
+
+        if html_template_text.strip():
+            html_body = _render_template(
+                html_template_text,
+                {
+                    "{{FIRST_NAME}}": _html_escape(first_name),
+                    "{{FIRM}}": _html_escape(firm_name_raw or "your firm"),
+                    "{{STATE}}": _html_escape(state_filter),
+                    "{{STATE_FULL_NAME}}": _html_escape(signal_tokens["STATE_FULL_NAME"]),
+                    "{{STATE_METRO_EXAMPLES}}": _html_escape(signal_tokens["STATE_METRO_EXAMPLES"]),
+                    "{{RECENT_SIGNALS_HTML}}": signal_tokens["RECENT_SIGNALS_HTML"],
+                    "{{SIGNALS_WINDOW_NOTE_HTML}}": signal_tokens["SIGNALS_WINDOW_NOTE_HTML"],
+                    "{{SIGNALS_FALLBACK_HTML}}": signal_tokens["SIGNALS_FALLBACK_HTML"],
+                    "{{LAST_REFRESH_ET}}": _html_escape(last_refresh_et),
+                    "{{UNSUBSCRIBE_URL}}": _html_escape(unsub_url),
+                    "{{PREFS_URL}}": _html_escape(prefs_link),
+                    "{{MAILING_ADDRESS}}": _html_escape(mailing_address),
+                    "{{MICROFLOWOPS_URL}}": _html_escape(microflowops_url),
+                    "{{GREETING_LINE_HTML}}": copy_tokens["GREETING_LINE_HTML"],
+                    "{{INTRO_LINE_HTML}}": copy_tokens["INTRO_LINE_HTML"],
+                    "{{POST_CARDS_LINE_HTML}}": copy_tokens["POST_CARDS_LINE_HTML"],
+                    "{{TRIAL_LINE_HTML}}": copy_tokens["TRIAL_LINE_HTML"],
+                    "{{OPENING_LINE_HTML}}": copy_tokens["OPENING_LINE_HTML"],
+                    "{{RELEVANCE_LINE_HTML}}": copy_tokens["RELEVANCE_LINE_HTML"],
+                    "{{CTA_LINE_HTML}}": copy_tokens["CTA_LINE_HTML"],
+                    "{{TRUST_LINE_HTML}}": copy_tokens["TRUST_LINE_HTML"],
+                    "{{COMPANY_INTRO_HTML}}": copy_tokens["COMPANY_INTRO_HTML"],
+                },
+            ).strip()
+        else:
+            html_body = (
+                "<div style=\"font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;\">"
+                "<pre style=\"white-space: pre-wrap; font-size: 13px; line-height: 1.4;\">"
+                + _html_escape(text_body)
+                + "</pre></div>"
+            )
+
+        unsub_anchor_count = html_body.count(">Unsubscribe</a>")
+        unsub_url_count = html_body.count("unsubscribe.example.internal/unsubscribe?token=preview")
+        address_idx = html_body.find(mailing_address)
+        pre_footer = html_body[:address_idx] if address_idx > 0 else html_body
+        pre_footer_unsub_count = pre_footer.count("unsubscribe.example.internal/unsubscribe?token=preview")
+        footer_unsub_present = unsub_anchor_count > 0
+        unsubscribe_count_exactly_one = unsub_url_count == 1
+        no_duplicate_unsub_pre_footer = pre_footer_unsub_count == 0
+
+        print(f"PREVIEW_ROW={idx}")
+        print(f"SUBJECT: {subject}")
+        print(f"BODY_TEXT_PREVIEW: {_preview_text(text_body, max_lines=60)}")
+        print(f"BODY_HTML_PREVIEW: {_preview_text(html_body, max_lines=80)}")
+        print(
+            "COMPLIANCE_CHECKS "
+            f"footer_unsubscribe_present={str(footer_unsub_present).lower()} "
+            f"unsubscribe_link_count_exactly_one={str(unsubscribe_count_exactly_one).lower()} "
+            f"unsubscribe_link_count={unsub_url_count} "
+            f"pre_footer_unsubscribe_link_count={pre_footer_unsub_count} "
+            f"no_duplicate_unsubscribe_pre_footer={str(no_duplicate_unsub_pre_footer).lower()}"
+        )
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Generate a mail-merge outbox CSV with dedupe + suppression enforcement.")
-    ap.add_argument("--input", required=True, help="Input prospects CSV (see outreach/prospects_schema.md).")
-    ap.add_argument("--batch", required=True, help="Batch id (e.g., TX_W2). Used in output and logs.")
-    ap.add_argument("--state", required=True, help="2-letter state filter (e.g., TX).")
-    ap.add_argument("--out", required=True, help="Output outbox CSV path.")
+    ap.add_argument("--input", help="Input prospects CSV (see outreach/prospects_schema.md).")
+    ap.add_argument("--batch", help="Batch id (e.g., TX_W2). Used in output and logs.")
+    ap.add_argument("--state", help="2-letter state filter (e.g., TX).")
+    ap.add_argument("--out", help="Output outbox CSV path.")
     ap.add_argument(
         "--db",
         default=str(Path("data") / "osha.sqlite"),
@@ -932,7 +1297,27 @@ def main() -> int:
         action="store_true",
         help="Allow re-exporting prospect_ids already present in the outreach export ledger.",
     )
+    ap.add_argument(
+        "--render-preview",
+        action="store_true",
+        help="Render deterministic preview output to stdout using template + signal context without writing artifacts.",
+    )
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=1,
+        help="Preview row limit when --render-preview is set.",
+    )
     args = ap.parse_args()
+
+    if args.render_preview:
+        if not str(args.state or "").strip():
+            ap.error("--state is required with --render-preview")
+        return _render_preview(args)
+
+    missing_required = [name for name, value in [("--input", args.input), ("--batch", args.batch), ("--state", args.state), ("--out", args.out)] if not str(value or "").strip()]
+    if missing_required:
+        ap.error(f"missing required arguments for export mode: {', '.join(missing_required)}")
 
     rows = _load_csv_rows(args.input)
     _validate_required_columns(rows, args.input)
@@ -948,8 +1333,7 @@ def main() -> int:
     except Exception:
         html_template_text = ""
 
-    overlay_enabled = _bool_env_enabled("OUTREACH_TRIAGE_OVERLAY_ENABLED", default=False)
-    signal_fetch_limit = 12 if overlay_enabled else 5
+    signal_fetch_limit = 12
 
     # Precompute state-level snippets for template rendering.
     recent_leads, last_refresh_et = _best_effort_recent_leads_and_refresh(
@@ -1103,19 +1487,33 @@ def main() -> int:
             raise
 
         first_name = (r.get("first_name") or "").strip()
-        firm = (r.get("firm") or "").strip() or "your firm"
+        firm_name_raw = _row_text_value(r, ["firm"])
+        firm = firm_name_raw or "your firm"
+        segment = _row_text_value(r, ["segment", "buyer_segment"])
+        role_or_title = _row_text_value(r, ["role_or_title", "role", "contact_role", "title"])
         prefs_link = prefs_url or unsub_url or ""
-        sample_feed_url = (os.getenv("MICROFLOWOPS_SAMPLE_FEED_URL") or DEFAULT_SAMPLE_FEED_URL).strip() or DEFAULT_SAMPLE_FEED_URL
+        copy_tokens = _build_copy_tokens(
+            state_full_name=signal_tokens["STATE_FULL_NAME"],
+            state_metro_examples=signal_tokens["STATE_METRO_EXAMPLES"],
+            first_name=first_name,
+            firm_name=firm_name_raw,
+            segment=segment,
+            role_or_title=role_or_title,
+            recent_leads=recent_leads,
+        )
 
         subject = build_outreach_subject(
             state_filter,
             recent_leads=recent_leads,
             db_path=str(args.db),
+            segment_descriptor=copy_tokens.get("SEGMENT_DESCRIPTOR", ""),
+            state_full_name=signal_tokens["STATE_FULL_NAME"],
+            signal_count=int(copy_tokens.get("SIGNAL_COUNT") or "0"),
         )
         text_body = _render_template(
             template_text,
             {
-                "FIRST_NAME": first_name or "there",
+                "FIRST_NAME": first_name,
                 "FIRM": firm,
                 "STATE": state_filter,
                 "STATE_FULL_NAME": signal_tokens["STATE_FULL_NAME"],
@@ -1125,9 +1523,19 @@ def main() -> int:
                 "SIGNALS_WINDOW_NOTE_TEXT": signal_tokens["SIGNALS_WINDOW_NOTE_TEXT"],
                 "SIGNALS_FALLBACK_TEXT": signal_tokens["SIGNALS_FALLBACK_TEXT"],
                 "LAST_REFRESH_ET": last_refresh_et,
-                "SAMPLE_FEED_URL": sample_feed_url,
                 "UNSUBSCRIBE_URL": unsub_url or "",
                 "PREFS_URL": prefs_url or prefs_link,
+                "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
+                "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
+                "GREETING_LINE_TEXT": copy_tokens["GREETING_LINE_TEXT"],
+                "INTRO_LINE_TEXT": copy_tokens["INTRO_LINE_TEXT"],
+                "POST_CARDS_LINE_TEXT": copy_tokens["POST_CARDS_LINE_TEXT"],
+                "TRIAL_LINE_TEXT": copy_tokens["TRIAL_LINE_TEXT"],
+                "OPENING_LINE_TEXT": copy_tokens["OPENING_LINE_TEXT"],
+                "RELEVANCE_LINE_TEXT": copy_tokens["RELEVANCE_LINE_TEXT"],
+                "CTA_LINE_TEXT": copy_tokens["CTA_LINE_TEXT"],
+                "TRUST_LINE_TEXT": copy_tokens["TRUST_LINE_TEXT"],
+                "COMPANY_INTRO_TEXT": copy_tokens["COMPANY_INTRO_TEXT"],
             },
         ).strip() + "\n"
 
@@ -1139,7 +1547,7 @@ def main() -> int:
             html_body = _render_template(
                 html_template_text,
                 {
-                    "{{FIRST_NAME}}": _html_escape(first_name or "there"),
+                    "{{FIRST_NAME}}": _html_escape(first_name),
                     "{{FIRM}}": _html_escape(firm),
                     "{{STATE}}": _html_escape(state_filter),
                     "{{STATE_FULL_NAME}}": _html_escape(signal_tokens["STATE_FULL_NAME"]),
@@ -1148,11 +1556,19 @@ def main() -> int:
                     "{{SIGNALS_WINDOW_NOTE_HTML}}": signal_tokens["SIGNALS_WINDOW_NOTE_HTML"],
                     "{{SIGNALS_FALLBACK_HTML}}": signal_tokens["SIGNALS_FALLBACK_HTML"],
                     "{{LAST_REFRESH_ET}}": _html_escape(last_refresh_et),
-                    "{{SAMPLE_FEED_URL}}": _html_escape(sample_feed_url),
                     "{{UNSUBSCRIBE_URL}}": _html_escape(unsub_url or prefs_link),
                     "{{PREFS_URL}}": _html_escape(prefs_url or prefs_link),
                     "{{MAILING_ADDRESS}}": _html_escape(mailing_address),
                     "{{MICROFLOWOPS_URL}}": _html_escape(microflowops_url),
+                    "{{GREETING_LINE_HTML}}": copy_tokens["GREETING_LINE_HTML"],
+                    "{{INTRO_LINE_HTML}}": copy_tokens["INTRO_LINE_HTML"],
+                    "{{POST_CARDS_LINE_HTML}}": copy_tokens["POST_CARDS_LINE_HTML"],
+                    "{{TRIAL_LINE_HTML}}": copy_tokens["TRIAL_LINE_HTML"],
+                    "{{OPENING_LINE_HTML}}": copy_tokens["OPENING_LINE_HTML"],
+                    "{{RELEVANCE_LINE_HTML}}": copy_tokens["RELEVANCE_LINE_HTML"],
+                    "{{CTA_LINE_HTML}}": copy_tokens["CTA_LINE_HTML"],
+                    "{{TRUST_LINE_HTML}}": copy_tokens["TRUST_LINE_HTML"],
+                    "{{COMPANY_INTRO_HTML}}": copy_tokens["COMPANY_INTRO_HTML"],
                 },
             ).strip()
         else:

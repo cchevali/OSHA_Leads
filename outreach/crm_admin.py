@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import re
 import shutil
 import sqlite3
 import sys
@@ -23,8 +24,16 @@ from outreach import crm_store
 
 ERR_CRM_INPUT_MISSING = "ERR_CRM_INPUT_MISSING"
 ERR_CRM_MARK_MISSING = "ERR_CRM_MARK_MISSING"
+ERR_CRM_STATS_DB_UNREADABLE = "ERR_CRM_STATS_DB_UNREADABLE"
+ERR_CRM_VERIFY_INPUT_MISSING = "ERR_CRM_VERIFY_INPUT_MISSING"
+ERR_CRM_VERIFY_INPUT_UNREADABLE = "ERR_CRM_VERIFY_INPUT_UNREADABLE"
+ERR_CRM_VERIFY_DB_UNREADABLE = "ERR_CRM_VERIFY_DB_UNREADABLE"
 PASS_CRM_SEED = "PASS_CRM_SEED"
 PASS_CRM_MARK = "PASS_CRM_MARK"
+
+VERIFY_IMPORT_SAMPLE_SIZE = 25
+BLANK_SOURCE_LABEL = "(blank)"
+EMAIL_SCAN_RE = re.compile(r"[^\s,;<>\"']+@[^\s,;<>\"']+")
 
 
 def _norm_email(value: str) -> str:
@@ -78,6 +87,177 @@ def _archive_input(input_path: Path, archive_dir: Path) -> Path:
     dest = archive_dir / f"{input_path.stem}_{ts}{input_path.suffix}"
     shutil.move(str(input_path), str(dest))
     return dest
+
+
+def _open_read_only_connection(db_path: Path) -> sqlite3.Connection | None:
+    if not db_path.exists():
+        return None
+    uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _prospects_table_exists(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='prospects' LIMIT 1"
+    ).fetchone()
+    return bool(row)
+
+
+def _stats() -> int:
+    db_path = crm_store.crm_db_path()
+    print(f"CRM_DB_PATH={db_path.resolve()}")
+
+    if not db_path.exists():
+        print("CRM_PROSPECTS_TOTAL=0")
+        print("CRM_PROSPECTS_HAS_EMAIL=0")
+        return 0
+
+    try:
+        conn = _open_read_only_connection(db_path)
+    except sqlite3.Error as exc:
+        print(f"{ERR_CRM_STATS_DB_UNREADABLE} path={db_path.resolve()} err={exc}", file=sys.stderr)
+        return 2
+
+    if conn is None:
+        print("CRM_PROSPECTS_TOTAL=0")
+        print("CRM_PROSPECTS_HAS_EMAIL=0")
+        return 0
+
+    try:
+        if not _prospects_table_exists(conn):
+            print("CRM_PROSPECTS_TOTAL=0")
+            print("CRM_PROSPECTS_HAS_EMAIL=0")
+            return 0
+
+        total = int(conn.execute("SELECT COUNT(*) FROM prospects").fetchone()[0] or 0)
+        has_email = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM prospects WHERE email IS NOT NULL AND trim(email) <> ''"
+            ).fetchone()[0]
+            or 0
+        )
+        print(f"CRM_PROSPECTS_TOTAL={total}")
+        print(f"CRM_PROSPECTS_HAS_EMAIL={has_email}")
+
+        by_source_rows = conn.execute(
+            """
+            SELECT
+                CASE
+                    WHEN source IS NULL OR trim(source) = '' THEN ?
+                    ELSE trim(source)
+                END AS source_norm,
+                COUNT(*) AS total,
+                SUM(CASE WHEN email IS NOT NULL AND trim(email) <> '' THEN 1 ELSE 0 END) AS has_email,
+                SUM(CASE WHEN website IS NOT NULL AND trim(website) <> '' THEN 1 ELSE 0 END) AS has_website
+            FROM prospects
+            GROUP BY source_norm
+            ORDER BY lower(source_norm) ASC, source_norm ASC
+            """,
+            (BLANK_SOURCE_LABEL,),
+        ).fetchall()
+        for row in by_source_rows:
+            print(
+                f"CRM_BY_SOURCE source={row['source_norm']} total={int(row['total'] or 0)} "
+                f"has_email={int(row['has_email'] or 0)} has_website={int(row['has_website'] or 0)}"
+            )
+
+        empty_by_source_rows = conn.execute(
+            """
+            SELECT
+                CASE
+                    WHEN source IS NULL OR trim(source) = '' THEN ?
+                    ELSE trim(source)
+                END AS source_norm,
+                COUNT(*) AS total
+            FROM prospects
+            WHERE email IS NULL OR trim(email) = ''
+            GROUP BY source_norm
+            ORDER BY lower(source_norm) ASC, source_norm ASC
+            """,
+            (BLANK_SOURCE_LABEL,),
+        ).fetchall()
+        for row in empty_by_source_rows:
+            print(f"CRM_EMPTY_EMAIL_BY_SOURCE source={row['source_norm']} total={int(row['total'] or 0)}")
+    except sqlite3.Error as exc:
+        print(f"{ERR_CRM_STATS_DB_UNREADABLE} path={db_path.resolve()} err={exc}", file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+
+    return 0
+
+
+def _extract_csv_email_samples(csv_path: Path, sample_size: int) -> list[str]:
+    samples: list[str] = []
+    seen: set[str] = set()
+    with open(csv_path, "r", newline="", encoding="utf-8-sig", errors="replace") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if len(samples) >= sample_size:
+                break
+            for value in row.values():
+                text = str(value or "")
+                if not text:
+                    continue
+                match = EMAIL_SCAN_RE.search(text)
+                if not match:
+                    continue
+                email = _norm_email(match.group(0).strip().strip(".,;:"))
+                if not email or "@" not in email:
+                    continue
+                if email in seen:
+                    continue
+                seen.add(email)
+                samples.append(email)
+                break
+    return samples
+
+
+def _verify_import(csv_path: Path) -> int:
+    if not csv_path.exists():
+        print(f"{ERR_CRM_VERIFY_INPUT_MISSING} path={csv_path.resolve()}", file=sys.stderr)
+        return 2
+
+    try:
+        samples = _extract_csv_email_samples(csv_path, sample_size=VERIFY_IMPORT_SAMPLE_SIZE)
+    except Exception as exc:
+        print(f"{ERR_CRM_VERIFY_INPUT_UNREADABLE} path={csv_path.resolve()} err={exc}", file=sys.stderr)
+        return 2
+
+    db_path = crm_store.crm_db_path()
+    matches = 0
+
+    if db_path.exists():
+        try:
+            conn = _open_read_only_connection(db_path)
+        except sqlite3.Error as exc:
+            print(f"{ERR_CRM_VERIFY_DB_UNREADABLE} path={db_path.resolve()} err={exc}", file=sys.stderr)
+            return 2
+
+        if conn is not None:
+            try:
+                if _prospects_table_exists(conn):
+                    cur = conn.cursor()
+                    for email in samples:
+                        row = cur.execute(
+                            "SELECT COUNT(*) FROM prospects WHERE lower(email) = ?",
+                            (email,),
+                        ).fetchone()
+                        matches += 1 if int((row[0] if row else 0) or 0) > 0 else 0
+            except sqlite3.Error as exc:
+                print(f"{ERR_CRM_VERIFY_DB_UNREADABLE} path={db_path.resolve()} err={exc}", file=sys.stderr)
+                return 2
+            finally:
+                conn.close()
+
+    sample_size = len(samples)
+    match_rate = 0.0 if sample_size < 1 else (float(matches) * 100.0 / float(sample_size))
+    print(f"CRM_VERIFY_IMPORT_SAMPLE_SIZE={sample_size}")
+    print(f"CRM_VERIFY_IMPORT_MATCHES={matches}")
+    print(f"CRM_VERIFY_IMPORT_MATCH_RATE={match_rate:.2f}")
+    return 0
 
 
 def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool) -> int:
@@ -291,6 +471,11 @@ def main(argv: list[str] | None = None) -> int:
     ap_mark.add_argument("--territory-code", default="OUTREACH_AUTO", help="Territory code for event/trial rows.")
     ap_mark.add_argument("--note", default="", help="Optional operator note.")
 
+    sub.add_parser("stats", help="Read-only CRM counts and per-source summaries.")
+
+    ap_verify = sub.add_parser("verify-import", help="Read-only sample check that import CSV emails exist in CRM.")
+    ap_verify.add_argument("--csv", required=True, help="Path to CSV to sample for email/import verification.")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "seed":
@@ -303,6 +488,10 @@ def main(argv: list[str] | None = None) -> int:
             territory_code=str(args.territory_code),
             note=str(args.note),
         )
+    if args.cmd == "stats":
+        return _stats()
+    if args.cmd == "verify-import":
+        return _verify_import(Path(str(args.csv)))
     return 2
 
 

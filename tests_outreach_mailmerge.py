@@ -112,6 +112,45 @@ class TestOutreachMailmerge(unittest.TestCase):
 
         return subprocess.run(args, cwd=str(tmp), env=env, capture_output=True, text=True)
 
+    def _run_preview(
+        self,
+        tmp: Path,
+        *,
+        state: str = "TX",
+        input_csv: Path | None = None,
+        db_path: Path | None = None,
+        env_overrides: dict[str, str] | None = None,
+        limit: int = 1,
+    ) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(REPO_ROOT)
+        env["DATA_DIR"] = str(tmp)
+        if env_overrides:
+            for k, v in env_overrides.items():
+                if v is None:
+                    env.pop(k, None)
+                else:
+                    env[k] = v
+
+        args = [
+            sys.executable,
+            str(SCRIPT),
+            "--render-preview",
+            "--state",
+            state,
+            "--limit",
+            str(limit),
+            "--template",
+            str(REPO_ROOT / "outreach" / "outreach_plain.txt"),
+            "--html-template",
+            str(REPO_ROOT / "outreach" / "outreach_card.html"),
+            "--db",
+            str(db_path or (tmp / "no_db.sqlite")),
+        ]
+        if input_csv is not None:
+            args.extend(["--input", str(input_csv)])
+        return subprocess.run(args, cwd=str(tmp), env=env, capture_output=True, text=True)
+
     def test_dedupe_case_insensitive_and_manifest_reason(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -292,6 +331,51 @@ class TestOutreachMailmerge(unittest.TestCase):
         self.assertLessEqual(len(k1), 80)
         self.assertRegex(k1, r"^[A-Za-z0-9_.-]{1,80}$")
 
+    def test_build_outreach_subject_prefers_primary_type_when_not_mixed(self):
+        from outreach import generate_mailmerge as gm
+
+        subject = gm.build_outreach_subject(
+            "CA",
+            recent_leads=[
+                {"date_opened": "2026-02-19", "inspection_type": "Complaint"},
+                {"date_opened": "2026-02-18", "inspection_type": "Complaint"},
+                {"date_opened": "2026-02-17", "inspection_type": "Accident"},
+            ],
+            segment_descriptor="defense team",
+            state_full_name="California",
+            signal_count=3,
+        )
+        self.assertIn("Quick heads up — 3 new CA complaint inspections", subject)
+        self.assertLess(len(subject), 65)
+
+    def test_build_outreach_subject_omits_type_when_mixed(self):
+        from outreach import generate_mailmerge as gm
+
+        subject = gm.build_outreach_subject(
+            "CA",
+            recent_leads=[
+                {"date_opened": "2026-02-19", "inspection_type": "Complaint"},
+                {"date_opened": "2026-02-18", "inspection_type": "Accident"},
+            ],
+            segment_descriptor="",
+            state_full_name="California",
+            signal_count=2,
+        )
+        self.assertIn("Quick heads up — 2 new CA inspections", subject)
+        self.assertNotIn("complaint", subject.lower())
+        self.assertNotIn("accident", subject.lower())
+        self.assertLess(len(subject), 65)
+
+    def test_build_outreach_subject_single_signal_uses_opened_date(self):
+        from outreach import generate_mailmerge as gm
+
+        subject = gm.build_outreach_subject(
+            "CA",
+            recent_leads=[{"date_opened": "2026-02-19"}],
+            signal_count=1,
+        )
+        self.assertEqual(subject, "Quick heads up — new CA inspection opened Feb 19")
+
     def test_missing_one_click_config_exits_nonzero_with_token(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -373,6 +457,66 @@ class TestOutreachMailmerge(unittest.TestCase):
             man_rows = _read_csv(manifest)
             self.assertEqual(len(man_rows), 1)
             self.assertEqual(man_rows[0]["status"], "exported")
+
+    def test_export_writes_expected_artifacts(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            _write_suppression(tmp / "suppression.csv", [])
+            tpl = tmp / "tpl.txt"
+            _write_template(tpl)
+
+            in_csv = tmp / "in.csv"
+            out_csv = tmp / "outbox.csv"
+            _write_csv(
+                in_csv,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "first_name": "A",
+                        "last_name": "One",
+                        "firm": "Co",
+                        "title": "Ops",
+                        "email": "a@example.com",
+                        "state": "TX",
+                        "city": "Austin",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    }
+                ],
+            )
+
+            env = {"UNSUB_ENDPOINT_BASE": "https://unsub.example.internal/unsubscribe", "UNSUB_SECRET": "test_secret"}
+            p = self._run_export(tmp, input_csv=in_csv, out_csv=out_csv, template=tpl, env_overrides=env)
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+
+            stdout = p.stdout or ""
+            outbox_line = next((ln.strip() for ln in stdout.splitlines() if ln.strip().startswith("outbox=")), "")
+            manifest_line = next((ln.strip() for ln in stdout.splitlines() if ln.strip().startswith("manifest=")), "")
+            ledger_line = next((ln.strip() for ln in stdout.splitlines() if ln.strip().startswith("ledger=")), "")
+            run_log_line = next((ln.strip() for ln in stdout.splitlines() if ln.strip().startswith("run_log=")), "")
+            self.assertTrue(outbox_line, msg=stdout)
+            self.assertTrue(manifest_line, msg=stdout)
+            self.assertTrue(ledger_line, msg=stdout)
+            self.assertTrue(run_log_line, msg=stdout)
+
+            outbox_path = Path(outbox_line.split("=", 1)[1].strip())
+            manifest_path = Path(manifest_line.split("=", 1)[1].strip())
+            ledger_path = Path(ledger_line.split("=", 1)[1].strip())
+            run_log_path = Path(run_log_line.split("=", 1)[1].strip())
+            if not outbox_path.is_absolute():
+                outbox_path = (tmp / outbox_path).resolve()
+            if not manifest_path.is_absolute():
+                manifest_path = (tmp / manifest_path).resolve()
+            if not ledger_path.is_absolute():
+                ledger_path = (tmp / ledger_path).resolve()
+            if not run_log_path.is_absolute():
+                run_log_path = (tmp / run_log_path).resolve()
+
+            self.assertTrue(outbox_path.exists(), msg=f"missing outbox: {outbox_path}")
+            self.assertTrue(manifest_path.exists(), msg=f"missing manifest: {manifest_path}")
+            self.assertTrue(ledger_path.exists(), msg=f"missing ledger: {ledger_path}")
+            self.assertTrue(run_log_path.exists(), msg=f"missing run log: {run_log_path}")
 
     def test_missing_suppression_file_exits_nonzero_and_no_outputs(self):
         with tempfile.TemporaryDirectory() as d:
@@ -513,37 +657,33 @@ class TestOutreachMailmerge(unittest.TestCase):
             html_body = out_rows[0].get("html_body") or ""
             subject = (out_rows[0].get("subject") or "").strip()
             self.assertIn("Recent signals:", body)
-            self.assertRegex(body, r"\n- ")
             self.assertIn("Last refresh:", body)
             self.assertIn(" ET", body)
             self.assertTrue(text_body.strip())
             self.assertEqual(body, text_body)
             self.assertTrue(html_body.strip())
-            self.assertIn("Recent OSHA inspections opened in TX", html_body)
-            self.assertIn("&middot; Observed ", html_body)
+            self.assertIn("I spotted a few new OSHA inspections in Texas", html_body)
 
             # Wally-style markers.
             self.assertIn("Chase", html_body)
             self.assertIn("11539 Links Dr, Reston, VA 20190", html_body)
-            self.assertIn("High &middot;", html_body)
-            self.assertIn('href="https://www.osha.gov/', html_body)
             self.assertIn('href="https://microflowops.com"', html_body)
 
             # Single opt-out block in the footer (not duplicated elsewhere).
             self.assertEqual(html_body.count(">Unsubscribe</a>"), 1)
-            self.assertEqual(html_body.count(">Manage preferences</a>"), 1)
+            self.assertEqual(html_body.count(">Manage preferences</a>"), 0)
             self.assertEqual(html_body.count("unsub.example.internal/unsubscribe?token="), 1)
-            self.assertEqual(html_body.count("unsub.example.internal/prefs?token="), 1)
+            self.assertEqual(html_body.count("unsub.example.internal/prefs?token="), 0)
 
             # Ensure one-click links are only in the footer area (after the address line).
             addr_idx = html_body.find("11539 Links Dr, Reston, VA 20190")
             self.assertGreater(addr_idx, 0)
             pre_footer = html_body[:addr_idx]
             self.assertNotIn("unsub.example.internal/unsubscribe?token=", pre_footer)
-            self.assertNotIn("unsub.example.internal/prefs?token=", pre_footer)
-            self.assertEqual(subject, "New OSHA inspection in TX — opened Feb 1")
+            self.assertEqual(subject, "Quick heads up — new TX inspection opened Feb 1")
+            self.assertLess(len(subject), 65)
 
-    def test_fallback_uses_older_state_rows_when_recent_window_empty(self):
+    def test_recent_window_empty_has_no_backfill_or_sample_copy(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             _write_suppression(tmp / "suppression.csv", [])
@@ -645,20 +785,17 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertEqual(len(out_rows), 1)
             body = out_rows[0].get("body") or ""
             html_body = out_rows[0].get("html_body") or ""
-            self.assertIn("No recent signals in the last 14 days for Florida.", body)
-            self.assertIn("Most recent signals we have for Florida", body)
-            self.assertIn("Legacy FL Co", body)
-            self.assertIn("See a live sample feed (real public data)", body)
-            self.assertIn("https://microflowops.com/sample", body)
-            self.assertLess(
-                body.find("See a live sample feed (real public data)"),
-                body.find("reply with the cities you care about"),
-            )
-            self.assertIn("outside the 14-day window", html_body)
-            self.assertIn("Legacy FL Co", html_body)
-            self.assertEqual((out_rows[0].get("subject") or "").strip(), "New OSHA inspection in FL — opened Dec 15")
+            self.assertNotIn("No recent signals in the last 14 days", body)
+            self.assertNotIn("Most recent signals we have", body)
+            self.assertNotIn("outside the 14-day window", body)
+            self.assertNotIn("Example signals (sample, not state-specific)", body)
+            self.assertNotIn("Sample Industrial Services", body)
+            self.assertNotIn("Example signals (sample, not state-specific)", html_body)
+            self.assertNotIn("Sample Industrial Services", html_body)
+            self.assertEqual((out_rows[0].get("subject") or "").strip(), "Quick heads up — new FL inspection opened Dec 15")
+            self.assertLess(len((out_rows[0].get("subject") or "").strip()), 65)
 
-    def test_fallback_uses_deterministic_sample_when_state_has_no_history(self):
+    def test_state_with_no_history_has_no_sample_signals(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             _write_suppression(tmp / "suppression.csv", [])
@@ -718,12 +855,19 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertEqual(len(out_rows), 1)
             body = out_rows[0].get("body") or ""
             html_body = out_rows[0].get("html_body") or ""
-            self.assertIn("No recent signals in the last 14 days for Florida.", body)
-            self.assertIn("Example signals (sample, not state-specific):", body)
-            self.assertIn("Sample Industrial Services", body)
-            self.assertIn("Example signals (sample, not state-specific):", html_body)
-            self.assertIn("Sample Industrial Services", html_body)
-            self.assertEqual((out_rows[0].get("subject") or "").strip(), "New OSHA inspection in FL — opened Feb 1")
+            self.assertNotIn("No recent signals in the last 14 days", body)
+            self.assertNotIn("Example signals (sample, not state-specific)", body)
+            self.assertNotIn("Sample Industrial Services", body)
+            self.assertNotIn("Example signals (sample, not state-specific)", html_body)
+            self.assertNotIn("Sample Industrial Services", html_body)
+            self.assertEqual((out_rows[0].get("subject") or "").strip(), "Quick heads up — new FL inspection opened recently")
+            self.assertLess(len((out_rows[0].get("subject") or "").strip()), 65)
+
+    def test_clean_company_name_treats_suffix_only_values_as_missing(self):
+        from outreach import generate_mailmerge as gm
+
+        self.assertEqual(gm._clean_company_name("Inc."), "")
+        self.assertEqual(gm._clean_company_name("Precision Environmental Inc."), "Precision Environmental Inc.")
 
     def test_outreach_overlay_flag_off_keeps_mailmerge_schema_without_ai_columns(self):
         with tempfile.TemporaryDirectory() as d:
@@ -900,6 +1044,178 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertGreaterEqual(len(data), 2)
             self.assertTrue(any(int(r.get("final_included", 0)) == 0 for r in data))
             self.assertIn("outreach_triage_details=", out.getvalue())
+
+    def test_render_preview_outputs_updated_copy_and_no_artifacts(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "db.sqlite"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                """
+                CREATE TABLE inspections (
+                    activity_nr TEXT,
+                    date_opened TEXT,
+                    inspection_type TEXT,
+                    establishment_name TEXT,
+                    site_city TEXT,
+                    site_state TEXT,
+                    lead_score INTEGER,
+                    first_seen_at TEXT,
+                    last_seen_at TEXT,
+                    source_url TEXT,
+                    parse_invalid INTEGER
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO inspections (
+                    activity_nr, date_opened, inspection_type, establishment_name,
+                    site_city, site_state, lead_score, first_seen_at, last_seen_at, source_url, parse_invalid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    "3001",
+                    "2099-02-19",
+                    "Complaint",
+                    "Preview Safety Co",
+                    "Los Angeles",
+                    "CA",
+                    8,
+                    "2099-02-19T12:00:00Z",
+                    "2099-02-19T12:00:00Z",
+                    "https://www.osha.gov/ords/imis/establishment.inspection_detail?id=3001",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            preview_input = tmp / "preview.csv"
+            _write_csv(
+                preview_input,
+                [
+                    {
+                        "prospect_id": "p_preview_1",
+                        "first_name": "Casey",
+                        "last_name": "Preview",
+                        "firm": "Northwind Safety",
+                        "title": "Managing Partner",
+                        "email": "preview@example.com",
+                        "state": "CA",
+                        "city": "Los Angeles",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    },
+                    {
+                        "prospect_id": "p_preview_2",
+                        "first_name": "",
+                        "last_name": "Preview",
+                        "firm": "Acme Industrial",
+                        "title": "Managing Partner",
+                        "email": "preview2@example.com",
+                        "state": "CA",
+                        "city": "Los Angeles",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    },
+                    {
+                        "prospect_id": "p_preview_3",
+                        "first_name": "",
+                        "last_name": "Preview",
+                        "firm": "",
+                        "title": "Managing Partner",
+                        "email": "preview3@example.com",
+                        "state": "CA",
+                        "city": "Los Angeles",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    },
+                    {
+                        "prospect_id": "p_preview_4",
+                        "first_name": "Riley",
+                        "last_name": "Preview",
+                        "firm": "Inc.",
+                        "title": "Managing Partner",
+                        "email": "preview4@example.com",
+                        "state": "CA",
+                        "city": "Los Angeles",
+                        "territory_code": "X",
+                        "source": "s",
+                        "notes": "",
+                    },
+                ],
+            )
+            snapshot_before = sorted(
+                str(path.relative_to(tmp)) for path in tmp.rglob("*") if path.is_file()
+            )
+
+            p = self._run_preview(
+                tmp,
+                state="CA",
+                input_csv=preview_input,
+                db_path=db_path,
+                limit=4,
+            )
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            stdout = p.stdout or ""
+            subject_lines = [
+                ln.split("SUBJECT:", 1)[1].strip()
+                for ln in stdout.splitlines()
+                if ln.strip().startswith("SUBJECT:")
+            ]
+            self.assertGreaterEqual(len(subject_lines), 3, msg=stdout)
+            self.assertTrue(all(len(s) < 65 for s in subject_lines), msg=subject_lines)
+            self.assertIn("BODY_TEXT_PREVIEW:", stdout)
+            self.assertIn("BODY_HTML_PREVIEW:", stdout)
+            self.assertIn("COMPLIANCE_CHECKS ", stdout)
+            self.assertIn("Hi Casey,", stdout)
+            self.assertIn("Hi Riley,", stdout)
+            self.assertIn("Hi - saw a few things Acme Industrial should probably have on their radar:", stdout)
+            self.assertIn(
+                "Hi - saw a few new OSHA inspections in California that might be relevant to your team:",
+                stdout,
+            )
+            self.assertIn(
+                "I spotted a few new OSHA inspections in California that your team at Northwind Safety might want to know about",
+                stdout,
+            )
+            self.assertIn(
+                "I spotted a few new OSHA inspections in California that your team might want to know about",
+                stdout,
+            )
+            self.assertNotIn("that your team at Inc. might want to know about", stdout)
+            self.assertNotIn("You're getting this because", stdout)
+            self.assertNotIn("Opened = inspection opened date; Observed =", stdout)
+            self.assertNotIn("no commitment, no login required", stdout)
+            self.assertNotIn("Every item links to the public OSHA record", stdout)
+            self.assertIn("unsubscribe_link_count_exactly_one=true", stdout)
+            self.assertIn("no_duplicate_unsubscribe_pre_footer=true", stdout)
+            self.assertNotIn("Example signals (sample, not state-specific)", stdout)
+            self.assertNotIn("Sample Industrial Services", stdout)
+
+            p_missing = self._run_preview(
+                tmp,
+                state="CA",
+                input_csv=None,
+                db_path=db_path,
+                limit=1,
+            )
+            self.assertEqual(p_missing.returncode, 0, msg=p_missing.stderr + "\n" + p_missing.stdout)
+            self.assertIn(
+                "Hi - saw a few new OSHA inspections in California that might be relevant to your team:",
+                p_missing.stdout or "",
+            )
+
+            snapshot_after = sorted(
+                str(path.relative_to(tmp)) for path in tmp.rglob("*") if path.is_file()
+            )
+            self.assertEqual(snapshot_after, snapshot_before)
+            self.assertFalse((tmp / "outreach_export_ledger.jsonl").exists())
+            self.assertFalse((tmp / "outbox.csv").exists())
+            self.assertFalse((tmp / "outreach" / "outreach_runs").exists())
 
 
 if __name__ == "__main__":

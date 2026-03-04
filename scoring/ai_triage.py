@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import hashlib
 import json
 import os
 import sqlite3
@@ -12,8 +14,10 @@ import requests
 from scoring import paths as scoring_paths
 
 
-AI_PROMPT_VERSION = "ai_triage_v1"
+AI_PROMPT_VERSION = "ai_triage_v2_raise_only"
 _DISABLED_EMITTED = False
+_UNAVAILABLE_EMITTED = False
+_AUTO_IMPORT_DONE = False
 
 
 def _utc_now_iso() -> str:
@@ -33,11 +37,234 @@ def _emit_disabled(reason: str = "", missing: str = "") -> None:
     _DISABLED_EMITTED = True
 
 
+def _emit_unavailable(detail: str = "") -> None:
+    global _UNAVAILABLE_EMITTED
+    if _UNAVAILABLE_EMITTED:
+        return
+    msg = "WARN_AI_TRIAGE_UNAVAILABLE"
+    if detail:
+        msg += f" detail={detail}"
+    print(msg)
+    _UNAVAILABLE_EMITTED = True
+
+
 def _bool_env(name: str, default: bool = False) -> bool:
     raw = (os.getenv(name) or "").strip().lower()
     if not raw:
         return bool(default)
     return raw in {"1", "true", "yes", "on"}
+
+
+def _compact_detail(value: Any, max_len: int = 180) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return "unknown"
+    if len(text) > int(max_len):
+        text = text[: int(max_len)].rstrip() + "..."
+    return text.replace(" ", "_")
+
+
+def _strict_priority(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"HIGH", "MEDIUM", "LOW"}:
+        return text
+    return ""
+
+
+def _auto_import_enabled() -> bool:
+    return _bool_env("AI_REVIEW_AUTO_IMPORT_ENABLED", default=True)
+
+
+def _auto_import_max_age_hours() -> float:
+    raw = (os.getenv("AI_REVIEW_IMPORT_MAX_AGE_HOURS") or "").strip()
+    if not raw:
+        return 24.0
+    try:
+        n = float(raw)
+    except Exception:
+        return 24.0
+    if n <= 0:
+        return 24.0
+    return n
+
+
+def _candidate_import_dirs() -> list[Path]:
+    data_dir_imports = scoring_paths.data_root() / "imports"
+    raw_candidates = [
+        (os.getenv("AI_REVIEW_IMPORT_DIR") or "").strip(),
+        r"C:\osha_data\imports",
+        str(data_dir_imports),
+    ]
+    out: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        if not raw:
+            continue
+        path = Path(raw).expanduser().resolve(strict=False)
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _find_newest_ai_review_csv(dirs: list[Path]) -> Path | None:
+    for directory in dirs:
+        try:
+            if not directory.exists() or (not directory.is_dir()):
+                continue
+        except Exception:
+            continue
+        newest: Path | None = None
+        newest_mtime = -1.0
+        for candidate in directory.glob("ai_review_*.csv"):
+            try:
+                if not candidate.is_file():
+                    continue
+                mtime = float(candidate.stat().st_mtime)
+            except Exception:
+                continue
+            if mtime > newest_mtime or (mtime == newest_mtime and str(candidate) > str(newest)):
+                newest = candidate.resolve(strict=False)
+                newest_mtime = mtime
+        if newest is not None:
+            return newest
+    return None
+
+
+def _file_age_hours(path: Path) -> float:
+    now_ts = datetime.now(timezone.utc).timestamp()
+    mtime = float(path.stat().st_mtime)
+    delta = max(0.0, now_ts - mtime)
+    return delta / 3600.0
+
+
+def _import_ai_review_csv_into_cache(
+    *,
+    csv_path: Path,
+    prompt_hash: str,
+    cache_db_path: str | Path | None = None,
+) -> tuple[int, int, int]:
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = [str(name or "").strip() for name in (reader.fieldnames or [])]
+        required = {"activity_nr", "ai_priority", "ai_reason"}
+        if not required.issubset(set(fieldnames)):
+            missing = ",".join(sorted(required.difference(set(fieldnames))))
+            raise ValueError(f"missing_required_columns={missing}")
+
+        total = 0
+        rejected_invalid = 0
+        upserts: list[tuple[str, str, str]] = []
+        for row in reader:
+            total += 1
+            activity_nr = str((row or {}).get("activity_nr") or "").strip()
+            priority = _strict_priority((row or {}).get("ai_priority"))
+            reason = _normalize_reason((row or {}).get("ai_reason"))
+            if not activity_nr or not priority:
+                rejected_invalid += 1
+                continue
+            payload = {
+                "priority": priority,
+                "reason": reason,
+                "prompt_hash": prompt_hash,
+                "prompt_version": AI_PROMPT_VERSION,
+                "model": "manual_import_auto",
+                "cached": 1,
+            }
+            upserts.append(
+                (
+                    activity_nr,
+                    json.dumps(payload, separators=(",", ":"), sort_keys=True),
+                    _utc_now_iso(),
+                )
+            )
+
+    imported = 0
+    conn = connect_ai_cache(cache_db_path)
+    try:
+        for item_key, payload_json, created_at in upserts:
+            conn.execute(
+                """
+                INSERT INTO ai_triage_cache(item_key, prompt_hash, model, response_json, created_at_utc)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(item_key, prompt_hash) DO UPDATE SET
+                    model=excluded.model,
+                    response_json=excluded.response_json,
+                    created_at_utc=excluded.created_at_utc
+                """,
+                (
+                    str(item_key),
+                    str(prompt_hash),
+                    "manual_import_auto",
+                    str(payload_json),
+                    str(created_at),
+                ),
+            )
+            imported += 1
+        conn.commit()
+    finally:
+        conn.close()
+
+    return total, imported, rejected_invalid
+
+
+def _maybe_auto_import_ai_review_csv_once(
+    *,
+    prompt_hash: str,
+    cache_db_path: str | Path | None = None,
+) -> None:
+    global _AUTO_IMPORT_DONE
+    if _AUTO_IMPORT_DONE:
+        return
+    _AUTO_IMPORT_DONE = True
+
+    if not _auto_import_enabled():
+        return
+
+    dirs = _candidate_import_dirs()
+    dirs_token = ";".join([str(path) for path in dirs]) or "none"
+    newest = _find_newest_ai_review_csv(dirs)
+    if newest is None:
+        print(f"WARN_AI_REVIEW_AUTO_IMPORT_MISSING dirs={dirs_token} pattern=ai_review_*.csv")
+        return
+
+    try:
+        age_hours = _file_age_hours(newest)
+    except Exception as exc:
+        print(
+            "WARN_AI_REVIEW_AUTO_IMPORT_INVALID "
+            f"path={newest} detail={_compact_detail(exc)}"
+        )
+        return
+
+    max_age_hours = _auto_import_max_age_hours()
+    if age_hours > max_age_hours:
+        print(
+            "WARN_AI_REVIEW_AUTO_IMPORT_STALE "
+            f"path={newest} age_hours={age_hours:.2f} max_age_hours={max_age_hours:g}"
+        )
+        return
+
+    try:
+        total, imported, rejected_invalid = _import_ai_review_csv_into_cache(
+            csv_path=newest,
+            prompt_hash=prompt_hash,
+            cache_db_path=cache_db_path,
+        )
+    except Exception as exc:
+        print(
+            "WARN_AI_REVIEW_AUTO_IMPORT_INVALID "
+            f"path={newest} detail={_compact_detail(exc)}"
+        )
+        return
+
+    print(
+        "AI_REVIEW_AUTO_IMPORT_APPLIED "
+        f"path={newest} total={total} imported={imported} "
+        f"rejected_invalid={rejected_invalid} age_hours={age_hours:.2f}"
+    )
 
 
 def enabled() -> bool:
@@ -70,12 +297,11 @@ def connect_ai_cache(db_path: str | Path | None = None) -> sqlite3.Connection:
         """
         CREATE TABLE IF NOT EXISTS ai_triage_cache (
             item_key TEXT NOT NULL,
-            prompt_version TEXT NOT NULL,
-            content_sha256 TEXT NOT NULL,
+            prompt_hash TEXT NOT NULL,
             model TEXT NOT NULL,
             response_json TEXT NOT NULL,
             created_at_utc TEXT NOT NULL,
-            PRIMARY KEY (item_key, prompt_version, content_sha256)
+            PRIMARY KEY (item_key, prompt_hash)
         )
         """
     )
@@ -83,52 +309,48 @@ def connect_ai_cache(db_path: str | Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def get_cached(
-    conn: sqlite3.Connection,
-    *,
-    item_key: str,
-    prompt_version: str,
-    content_sha256: str,
-) -> dict[str, Any] | None:
+def get_cached(conn: sqlite3.Connection, *, item_key: str, prompt_hash: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
         SELECT response_json
         FROM ai_triage_cache
-        WHERE item_key = ? AND prompt_version = ? AND content_sha256 = ?
+        WHERE item_key = ? AND prompt_hash = ?
         LIMIT 1
         """,
-        (str(item_key or ""), str(prompt_version or ""), str(content_sha256 or "")),
+        (str(item_key or ""), str(prompt_hash or "")),
     ).fetchone()
     if not row:
         return None
     try:
-        return json.loads(str(row["response_json"] or "{}"))
+        payload = json.loads(str(row["response_json"] or "{}"))
     except Exception:
         return None
+    if isinstance(payload, dict):
+        payload["cached"] = 1
+        return payload
+    return None
 
 
 def put_cached(
     conn: sqlite3.Connection,
     *,
     item_key: str,
-    prompt_version: str,
-    content_sha256: str,
+    prompt_hash: str,
     model: str,
     payload: dict[str, Any],
 ) -> None:
     conn.execute(
         """
-        INSERT INTO ai_triage_cache(item_key, prompt_version, content_sha256, model, response_json, created_at_utc)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(item_key, prompt_version, content_sha256) DO UPDATE SET
+        INSERT INTO ai_triage_cache(item_key, prompt_hash, model, response_json, created_at_utc)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(item_key, prompt_hash) DO UPDATE SET
             model=excluded.model,
             response_json=excluded.response_json,
             created_at_utc=excluded.created_at_utc
         """,
         (
             str(item_key or ""),
-            str(prompt_version or ""),
-            str(content_sha256 or ""),
+            str(prompt_hash or ""),
             str(model or ""),
             json.dumps(payload, separators=(",", ":"), sort_keys=True),
             _utc_now_iso(),
@@ -139,62 +361,73 @@ def put_cached(
 
 def _strict_schema() -> dict[str, Any]:
     return {
-        "name": "triage_decision",
+        "name": "signal_priority",
         "schema": {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "key": {"type": "string"},
-                "decision": {
+                "priority": {
                     "type": "string",
-                    "enum": ["keep", "downgrade", "remove", "promote_candidate"],
+                    "enum": ["HIGH", "MEDIUM", "LOW"],
                 },
-                "suggested_tier": {
-                    "type": "string",
-                    "enum": ["high", "medium", "low", "none"],
-                },
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                "reasons": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 4,
-                    "items": {"type": "string"},
-                },
+                "reason": {"type": "string", "minLength": 1, "maxLength": 280},
             },
-            "required": ["key", "decision", "suggested_tier", "confidence", "reasons"],
+            "required": ["priority", "reason"],
         },
         "strict": True,
     }
 
 
-def _build_prompt(item: dict[str, Any], detail_row: dict[str, Any], mode: str) -> tuple[str, str]:
-    system = (
-        "You are classifying OSHA inspection signals for email triage. "
-        "Return only the structured decision. Be conservative. Prefer keep unless strong reasons."
+def _system_prompt() -> str:
+    return (
+        "You are classifying OSHA inspection signals for relevance to independent safety "
+        "consultants and OSHA defense attorneys who serve small to mid-size employers in "
+        "construction, manufacturing, and industrial trades. "
+        "Classify with these criteria: HIGH = active construction/industrial high-hazard signal, "
+        "referral/complaint trigger, emphasis program NAICS, multi-employer site, or likely external safety-help need. "
+        "MEDIUM = active inspection with moderate hazard profile, non-emphasis construction/industrial, "
+        "or ambiguous company profile. "
+        "LOW = routine planned inspection of low-hazard employer, large enterprise with in-house EHS, "
+        "or minimal information content. "
+        "Return strict JSON only."
     )
+
+
+def prompt_hash() -> str:
+    material = {
+        "version": AI_PROMPT_VERSION,
+        "system": _system_prompt(),
+        "schema": _strict_schema()["schema"],
+    }
+    blob = json.dumps(material, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _build_prompt(item: dict[str, Any], detail_row: dict[str, Any], mode: str) -> tuple[str, str]:
+    system = _system_prompt()
     user_payload = {
-        "mode": mode,
-        "item": {
+        "mode": str(mode or ""),
+        "signal": {
             "activity_nr": str(item.get("activity_nr") or ""),
-            "lead_key": str(item.get("lead_key") or ""),
-            "current_priority": str(item.get("current_priority") or ""),
-            "lead_score": item.get("lead_score"),
-            "date_opened": item.get("date_opened"),
-            "first_seen_at": item.get("first_seen_at"),
-            "last_seen_at": item.get("last_seen_at"),
-            "changed_at": item.get("changed_at"),
+            "establishment_name": item.get("establishment_name"),
+            "site_city": item.get("site_city"),
+            "site_state": item.get("site_state"),
+            "naics": item.get("naics"),
+            "naics_desc": item.get("naics_desc"),
+            "sic": item.get("sic"),
             "inspection_type": item.get("inspection_type"),
+            "scope": item.get("scope"),
             "case_status": item.get("case_status"),
             "emphasis": item.get("emphasis"),
+            "violations_count": item.get("violations_count"),
+            "serious_violations": item.get("serious_violations"),
+            "willful_violations": item.get("willful_violations"),
+            "repeat_violations": item.get("repeat_violations"),
         },
         "detail_cache": {
             "inspection_type": detail_row.get("inspection_type"),
             "case_status": detail_row.get("case_status"),
             "scope": detail_row.get("scope"),
-            "advanced_notice": detail_row.get("advanced_notice"),
-            "ownership": detail_row.get("ownership"),
-            "safety_health": detail_row.get("safety_health"),
-            "union_status": detail_row.get("union_status"),
             "naics": detail_row.get("naics"),
             "sic": detail_row.get("sic"),
             "office": detail_row.get("office"),
@@ -209,17 +442,24 @@ def _build_prompt(item: dict[str, Any], detail_row: dict[str, Any], mode: str) -
 def _responses_api_call(*, system_text: str, user_text: str) -> dict[str, Any] | None:
     key = _api_key()
     if not key:
-        _emit_disabled(missing="OPENAI_API_KEY")
+        _emit_unavailable("missing_openai_api_key")
         return None
     payload = {
         "model": model_name(),
         "temperature": 0,
-        "max_output_tokens": 200,
+        "max_output_tokens": 180,
         "input": [
             {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
             {"role": "user", "content": [{"type": "input_text", "text": user_text}]},
         ],
-        "text": {"format": {"type": "json_schema", "name": "triage_decision", "schema": _strict_schema()["schema"], "strict": True}},
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "signal_priority",
+                "schema": _strict_schema()["schema"],
+                "strict": True,
+            }
+        },
     }
     url = _base_url().rstrip("/") + "/responses"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -227,9 +467,9 @@ def _responses_api_call(*, system_text: str, user_text: str) -> dict[str, Any] |
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=30)
             if resp.status_code >= 300:
+                _emit_unavailable(f"http_{resp.status_code}")
                 return None
             data = resp.json()
-            # Best-effort parse across response variants.
             text = ""
             if isinstance(data, dict):
                 text = str(data.get("output_text") or "")
@@ -247,21 +487,39 @@ def _responses_api_call(*, system_text: str, user_text: str) -> dict[str, Any] |
                             if text:
                                 break
             if not text:
+                _emit_unavailable("empty_response_text")
                 return None
             parsed = json.loads(text)
             if not isinstance(parsed, dict):
+                _emit_unavailable("invalid_json_object")
                 return None
             return parsed
-        except Exception:
+        except Exception as exc:
+            _emit_unavailable(f"request_error_{exc.__class__.__name__}")
             continue
     return None
+
+
+def _normalize_priority(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"HIGH", "MEDIUM", "LOW"}:
+        return text
+    return "LOW"
+
+
+def _normalize_reason(value: Any) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return "No additional reasoning provided."
+    if len(text) > 280:
+        return text[:280].rstrip()
+    return text
 
 
 def get_or_compute(
     *,
     item_key: str,
     mode: str,
-    content_sha256: str,
     item: dict[str, Any],
     detail_row: dict[str, Any],
     cache_db_path: str | Path | None = None,
@@ -269,48 +527,42 @@ def get_or_compute(
     if not enabled():
         _emit_disabled(reason="disabled")
         return None
-    if not _api_key():
-        _emit_disabled(missing="OPENAI_API_KEY")
-        return None
-    if not str(item_key or "").strip() or not str(content_sha256 or "").strip():
+    norm_key = str(item_key or "").strip()
+    if not norm_key:
         return None
 
+    p_hash = prompt_hash()
+    _maybe_auto_import_ai_review_csv_once(
+        prompt_hash=p_hash,
+        cache_db_path=cache_db_path,
+    )
     conn = connect_ai_cache(cache_db_path)
     try:
-        cached = get_cached(
-            conn,
-            item_key=item_key,
-            prompt_version=AI_PROMPT_VERSION,
-            content_sha256=content_sha256,
-        )
+        cached = get_cached(conn, item_key=norm_key, prompt_hash=p_hash)
         if cached:
             return cached
+        if not _api_key():
+            _emit_unavailable("missing_openai_api_key")
+            return None
         system_text, user_text = _build_prompt(item=item, detail_row=detail_row, mode=mode)
         parsed = _responses_api_call(system_text=system_text, user_text=user_text)
         if not parsed:
             return None
         normalized = {
-            "key": str(parsed.get("key") or item_key),
-            "decision": str(parsed.get("decision") or "keep"),
-            "suggested_tier": str(parsed.get("suggested_tier") or "none"),
-            "confidence": float(parsed.get("confidence") or 0.0),
-            "reasons": [str(x).strip().lower() for x in (parsed.get("reasons") or []) if str(x).strip()][:4],
-            "provenance": "ai_cached",
+            "priority": _normalize_priority(parsed.get("priority")),
+            "reason": _normalize_reason(parsed.get("reason")),
+            "prompt_hash": p_hash,
             "prompt_version": AI_PROMPT_VERSION,
-            "content_sha256": str(content_sha256),
             "model": model_name(),
+            "cached": 0,
         }
-        if not normalized["reasons"]:
-            normalized["reasons"] = ["ai_unspecified"]
         put_cached(
             conn,
-            item_key=item_key,
-            prompt_version=AI_PROMPT_VERSION,
-            content_sha256=content_sha256,
+            item_key=norm_key,
+            prompt_hash=p_hash,
             model=model_name(),
             payload=normalized,
         )
         return normalized
     finally:
         conn.close()
-

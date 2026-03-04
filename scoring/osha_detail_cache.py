@@ -25,6 +25,7 @@ MAX_FETCH_ATTEMPTS = 3
 REQUEST_TIMEOUT_SECONDS = 30
 
 _BOOL_TRUE = {"1", "true", "yes", "on"}
+_FEDERAL_ACTIVITY_NR_RE = re.compile(r"^\d+(?:\.\d+)?$")
 
 
 @dataclass
@@ -69,8 +70,20 @@ def _parse_dt(value: Any) -> datetime | None:
 
 def _normalize_activity_nr(value: Any) -> str:
     text = str(value or "").strip()
-    m = re.search(r"(\d+)", text)
-    return (m.group(1) if m else "").strip()
+    if not text:
+        return ""
+    if not _FEDERAL_ACTIVITY_NR_RE.fullmatch(text):
+        return ""
+    if "." in text:
+        text = text.split(".", 1)[0]
+    return text.strip()
+
+
+def _activity_source(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text.startswith("stateplan:"):
+        return "stateplan"
+    return "non_federal"
 
 
 def _detail_url_for_activity(activity_nr: str) -> str:
@@ -493,8 +506,12 @@ def select_candidates_from_leads_db(
         out: list[dict[str, str]] = []
         seen: set[str] = set()
         for row in rows:
-            activity_nr = _normalize_activity_nr(row["activity_nr"])
-            if not activity_nr or activity_nr in seen:
+            raw_activity = str(row["activity_nr"] or "").strip()
+            if not raw_activity:
+                continue
+            activity_nr = _normalize_activity_nr(raw_activity)
+            dedupe_key = activity_nr if activity_nr else raw_activity.lower()
+            if dedupe_key in seen:
                 continue
             ts = (
                 _parse_dt(row["changed_at"])
@@ -504,11 +521,14 @@ def select_candidates_from_leads_db(
             )
             if ts and ts < cutoff:
                 continue
-            seen.add(activity_nr)
+            seen.add(dedupe_key)
+            candidate_url = str(row["source_url"] or "").strip()
+            if activity_nr:
+                candidate_url = _prefer_detail_url(candidate_url, activity_nr)
             out.append(
                 {
-                    "activity_nr": activity_nr,
-                    "url": _prefer_detail_url(row["source_url"], activity_nr),
+                    "activity_nr": activity_nr or raw_activity,
+                    "url": candidate_url,
                 }
             )
             if len(out) >= max(1, int(limit)):
@@ -555,18 +575,30 @@ def _run_fetch_loop(
     sleep_ms: int,
     ttl_days: int,
 ) -> dict[str, Any]:
-    stats = {"candidates": len(candidates), "fetched": 0, "skipped_cached": 0, "failed": 0}
+    stats = {
+        "candidates": len(candidates),
+        "fetched": 0,
+        "skipped_cached": 0,
+        "skipped_non_federal": 0,
+        "failed": 0,
+    }
     failure_reasons: Counter[str] = Counter()
     now = utc_now()
     session = ingest_osha.get_session()
 
     for cand in candidates:
-        activity_nr = _normalize_activity_nr(cand.get("activity_nr"))
-        url = _prefer_detail_url(cand.get("url"), activity_nr)
-        if not activity_nr:
+        raw_activity_nr = str(cand.get("activity_nr") or "").strip()
+        if not raw_activity_nr:
             stats["failed"] += 1
             failure_reasons["missing_activity_nr"] += 1
             continue
+        activity_nr = _normalize_activity_nr(raw_activity_nr)
+        if not activity_nr:
+            source = _activity_source(raw_activity_nr)
+            print(f"SKIP_DETAIL_CACHE_NON_FEDERAL activity_nr={raw_activity_nr} source={source}")
+            stats["skipped_non_federal"] += 1
+            continue
+        url = _prefer_detail_url(cand.get("url"), activity_nr)
         cached = get_cached_detail_row(conn, activity_nr)
         if _is_within_ttl(cached, ttl_days=ttl_days, now_utc=now):
             stats["skipped_cached"] += 1

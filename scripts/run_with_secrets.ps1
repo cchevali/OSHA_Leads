@@ -1,6 +1,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 . (Join-Path $PSScriptRoot 'secrets_tooling.ps1')
 
@@ -8,6 +11,131 @@ function Fail([string]$Message) {
   # Single-line error only (no secrets).
   Write-Output ("FAIL: " + $Message)
   exit 1
+}
+
+function Set-PythonWarningsFilter {
+  $filter = "ignore:urllib3"
+  $existing = [string]$env:PYTHONWARNINGS
+  if ($existing -and ($existing -split ',' | Where-Object { $_.Trim() -eq $filter })) {
+    return
+  }
+  if ($existing -and $existing.Trim().Length -gt 0) {
+    $env:PYTHONWARNINGS = ($existing.TrimEnd(',') + ',' + $filter)
+  } else {
+    $env:PYTHONWARNINGS = $filter
+  }
+}
+
+function Invoke-NativeAllowStderr {
+  param(
+    [string]$FilePath,
+    [string[]]$ArgumentList = @()
+  )
+
+  $stdoutPath = [System.IO.Path]::GetTempFileName()
+  $stderrPath = [System.IO.Path]::GetTempFileName()
+  try {
+    $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $stdoutLines = @()
+    $stderrLines = @()
+    if (Test-Path -LiteralPath $stdoutPath) {
+      $stdoutLines = @(Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue)
+    }
+    if (Test-Path -LiteralPath $stderrPath) {
+      $stderrLines = @(Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue)
+    }
+    return @{
+      Output = @($stdoutLines + $stderrLines)
+      ExitCode = [int]$proc.ExitCode
+    }
+  } finally {
+    if (Test-Path -LiteralPath $stdoutPath) {
+      Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $stderrPath) {
+      Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Resolve-PythonExePath {
+  $pythonCmd = Get-Command -Name 'python' -ErrorAction SilentlyContinue
+  if ($pythonCmd -and $pythonCmd.Source -and (Test-Path -LiteralPath $pythonCmd.Source)) {
+    try { return (Resolve-Path -LiteralPath $pythonCmd.Source).Path } catch { return $pythonCmd.Source }
+  }
+
+  $candidates = New-Object System.Collections.Generic.List[string]
+  $localAppData = ([string]$env:LOCALAPPDATA).Trim()
+  if ($localAppData) {
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python313\python.exe'))
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python312\python.exe'))
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python311\python.exe'))
+  }
+  [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python313\python.exe'))
+  [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python312\python.exe'))
+  [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python311\python.exe'))
+  [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python310\python.exe'))
+  [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python\python.exe'))
+  [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python313\python.exe'))
+  [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python312\python.exe'))
+  [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python311\python.exe'))
+
+  foreach ($candidate in @($candidates)) {
+    if (-not $candidate) { continue }
+    if (Test-Path -LiteralPath $candidate) {
+      try { return (Resolve-Path -LiteralPath $candidate).Path } catch { return $candidate }
+    }
+  }
+
+  $userRoots = @('C:\Users\lever', 'C:\Users\Public')
+  foreach ($root in $userRoots) {
+    $candidate = Join-Path $root 'AppData\Local\Programs\Python\Python313\python.exe'
+    if (Test-Path -LiteralPath $candidate) {
+      try { return (Resolve-Path -LiteralPath $candidate).Path } catch { return $candidate }
+    }
+  }
+
+  return $null
+}
+
+function Normalize-CommandForExecution {
+  param(
+    [string]$Exe,
+    [string[]]$CommandArgs
+  )
+
+  $resolvedExe = [string]$Exe
+  $resolvedArgs = @($CommandArgs)
+  $requested = ([string]$Exe).Trim().ToLowerInvariant()
+
+  if ($requested -eq 'py') {
+    $pythonExe = Resolve-PythonExePath
+    if ($pythonExe) {
+      $resolvedExe = $pythonExe
+      if ($resolvedArgs.Count -ge 1) {
+        $versionArg = ([string]$resolvedArgs[0]).Trim().ToLowerInvariant()
+        if ($versionArg -match '^-3(\.\d+)?$') {
+          if ($resolvedArgs.Count -ge 2) {
+            $resolvedArgs = $resolvedArgs[1..($resolvedArgs.Count - 1)]
+          } else {
+            $resolvedArgs = @()
+          }
+        }
+      }
+    }
+  } elseif ($requested -eq 'python') {
+    if (-not (Get-Command -Name 'python' -ErrorAction SilentlyContinue)) {
+      $pythonExe = Resolve-PythonExePath
+      if ($pythonExe) {
+        $resolvedExe = $pythonExe
+      }
+    }
+  }
+
+  return @{
+    Exe = $resolvedExe
+    Args = @($resolvedArgs)
+  }
 }
 
 try {
@@ -58,11 +186,9 @@ try {
     if ($CheckDecrypt) {
       # Sanity check: ensure this machine can decrypt .env.sops (discard plaintext; no temp files).
       $cmdLine = '"' + $sopsExe + '" --decrypt --input-type dotenv --output-type dotenv "' + $envSopsPath + '" 1>nul'
-      $prevEap = $ErrorActionPreference
-      $ErrorActionPreference = 'Continue'
-      $err = & cmd /c $cmdLine 2>&1
-      $code = $LASTEXITCODE
-      $ErrorActionPreference = $prevEap
+      $decryptResult = Invoke-NativeAllowStderr -FilePath 'cmd' -ArgumentList @('/c', $cmdLine)
+      $err = @($decryptResult.Output)
+      $code = [int]$decryptResult.ExitCode
       if ($code -ne 0) {
         $errText = ''
         if ($err -is [string]) {
@@ -108,17 +234,71 @@ try {
     Fail "Decrypted env appears to contain an age key (refusing)"
   }
 
-  # Load into process env for the child command. Never print values.
-  Set-EnvFromDotenvText -DotenvText $plain
+  $inheritedDataDir = ''
+  if (Test-Path -LiteralPath 'Env:DATA_DIR') {
+    $inheritedDataDir = [string]$env:DATA_DIR
+  }
+  $dotenvMap = ConvertFrom-DotenvTextToMap -DotenvText $plain
+  $dotenvDataDir = ''
+  if ($dotenvMap.ContainsKey('DATA_DIR')) {
+    $dotenvDataDir = [string]$dotenvMap['DATA_DIR']
+  }
+  $dataDirPolicy = Resolve-MfoDataDirPolicy `
+    -RepoRoot $repoRoot `
+    -InheritedDataDir $inheritedDataDir `
+    -DotenvDataDir $dotenvDataDir
 
-  $exe = $Command[0]
-  $args = @()
-  if ($Command.Count -gt 1) {
-    $args = $Command[1..($Command.Count - 1)]
+  if ([string]$dataDirPolicy.ConflictWarnToken) {
+    Write-Output ([string]$dataDirPolicy.ConflictWarnToken)
+  }
+  if ([string]$dataDirPolicy.NotAbsoluteWarnToken) {
+    Write-Output ([string]$dataDirPolicy.NotAbsoluteWarnToken)
   }
 
-  & $exe @args
-  exit $LASTEXITCODE
+  # Load decrypted keys for the child command; DATA_DIR is policy-managed below.
+  Set-EnvFromDotenvText -DotenvText $plain -SkipKeys @('DATA_DIR')
+  Set-PythonWarningsFilter
+
+  $effectiveDataDir = [string]$dataDirPolicy.EffectivePath
+  $effectiveDataDirSource = [string]$dataDirPolicy.Source
+  $env:MFO_DATA_DIR_EFFECTIVE = $effectiveDataDir
+  $env:MFO_DATA_DIR_SOURCE = $effectiveDataDirSource
+  if ([bool]$dataDirPolicy.UseDefaultFallback) {
+    Remove-Item -Path 'Env:DATA_DIR' -ErrorAction SilentlyContinue
+  } else {
+    Set-Item -Path 'Env:DATA_DIR' -Value $effectiveDataDir
+  }
+  if ($Diagnostics) {
+    Write-Output ("DIAG: mfo_data_dir_effective=" + $effectiveDataDir)
+    Write-Output ("DIAG: mfo_data_dir_source=" + $effectiveDataDirSource)
+  }
+
+  $exe = $Command[0]
+  $childArgs = @()
+  if ($Command.Count -gt 1) {
+    $childArgs = $Command[1..($Command.Count - 1)]
+  }
+
+  $normalized = Normalize-CommandForExecution -Exe $exe -CommandArgs $childArgs
+  $exe = [string]$normalized.Exe
+  $childArgs = @()
+  foreach ($arg in @($normalized['Args'])) {
+    if ($null -eq $arg) {
+      continue
+    }
+    $childArgs += [string]$arg
+  }
+
+  if (-not (Get-Command -Name $exe -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $exe)) {
+    Fail ("Command not found: " + $exe)
+  }
+
+  $runResult = Invoke-NativeAllowStderr -FilePath $exe -ArgumentList $childArgs
+  foreach ($line in @($runResult.Output)) {
+    Write-Output $line
+  }
+  $exitCode = [int]$runResult.ExitCode
+  exit $exitCode
 } catch {
   Fail $_.Exception.Message
 } finally {

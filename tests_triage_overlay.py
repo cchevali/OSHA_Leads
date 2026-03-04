@@ -2,139 +2,357 @@ import io
 import os
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
+from scoring import rules_config
 from scoring import triage_overlay as to
 
 
 class TestTriageOverlay(unittest.TestCase):
-    def test_rules_promote_accident(self):
-        items = [
+    def _fixture_rows(self):
+        return [
             {
-                "activity_nr": "1001",
+                "activity_nr": "1876272",
+                "lead_score": 3,
+                "date_opened": "2026-02-20",
+                "inspection_type": "Inspection",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "237110",
+                "establishment_name": "Ps Underground Llc",
+                "site_address1": "1200 Hicks St.",
+                "site_city": "Conroe",
+                "site_state": "TX",
+                "mail_state": "TX",
+            },
+            {
+                "activity_nr": "1876218",
+                "lead_score": 3,
+                "date_opened": "2026-02-20",
+                "inspection_type": "Inspection",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "237110",
+                "establishment_name": "Jss Construction Llc",
+                "site_address1": "1200 Hicks St.",
+                "site_city": "Conroe",
+                "site_state": "TX",
+                "mail_state": "TX",
+            },
+            {
+                "activity_nr": "1876221",
+                "lead_score": 3,
+                "date_opened": "2026-02-20",
+                "inspection_type": "Inspection",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "236220",
+                "establishment_name": "Cheyenne Construction Group Llc",
+                "site_address1": "1200 Hicks St.",
+                "site_city": "Conroe",
+                "site_state": "TX",
+                "mail_state": "TX",
+            },
+            {
+                "activity_nr": "1876394",
                 "lead_score": 6,
+                "date_opened": "2026-02-20",
+                "inspection_type": "Referral",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "238160",
+                "establishment_name": "Jeff Eubank Roofing Company, Inc.",
+                "site_city": "Fort Worth",
+                "site_state": "TX",
+                "mail_state": "TX",
+            },
+            {
+                "activity_nr": "1876545",
+                "lead_score": 3,
                 "date_opened": "2026-02-24",
-                "inspection_type": "Complaint",
-            }
-        ]
-        detail_rows = {
-            "1001": {
+                "inspection_type": "Referral",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "811310",
+                "establishment_name": "Whaley Steel Corp.",
+                "site_city": "Houston",
+                "site_state": "TX",
+                "mail_state": "TX",
+            },
+            {
+                "activity_nr": "1876463",
+                "lead_score": 4,
+                "date_opened": "2026-02-23",
+                "inspection_type": "Planned",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "238120",
+                "establishment_name": "Oscar Metal Building Inc.",
+                "site_city": "San Antonio",
+                "site_state": "TX",
+                "mail_state": "TX",
+            },
+            {
+                "activity_nr": "1876197",
+                "lead_score": 1,
+                "date_opened": "2026-02-20",
+                "inspection_type": "Planned",
+                "scope": "No Insp/10 or Fewer Empe",
+                "case_status": "CLOSED",
+                "naics": "311999",
+                "establishment_name": "Lulu Distributors Inc.",
+                "site_city": "Houston",
+                "site_state": "TX",
+                "mail_state": "TX",
+            },
+            {
+                "activity_nr": "1876259",
+                "lead_score": 0,
+                "date_opened": "2026-02-20",
+                "inspection_type": "Inspection",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "561720",
+                "establishment_name": "Gdi Services, Inc.",
+                "site_city": "Rosenberg",
+                "site_state": "TX",
+                "mail_state": "MI",
+            },
+            {
+                "activity_nr": "1875646",
+                "lead_score": 8,
+                "date_opened": "2026-02-19",
                 "inspection_type": "Accident",
-                "content_sha256": "abc",
-                "emphasis_markers_json": "[]",
-                "related_activity_markers_json": "[]",
-            }
-        }
-        with mock.patch("scoring.ai_triage.enabled", return_value=False):
-            decisions = to.triage(items, detail_rows, mode="trial_render")
-        self.assertEqual(len(decisions), 1)
-        self.assertEqual(decisions[0]["action"], "promote_candidate")
-        self.assertIn("accident", decisions[0]["reasons"])
-
-    def test_rules_demote_referral_without_emphasis(self):
-        items = [
-            {
-                "activity_nr": "1002",
-                "lead_score": 10,
-                "date_opened": "2026-01-01",
-            }
-        ]
-        detail_rows = {
-            "1002": {
-                "inspection_type": "Referral",
-                "content_sha256": "def",
-                "emphasis_markers_json": "[]",
-                "related_activity_markers_json": "[]",
-            }
-        }
-        with mock.patch("scoring.ai_triage.enabled", return_value=False):
-            decisions = to.triage(items, detail_rows, mode="trial_render")
-        self.assertIn(decisions[0]["action"], {"downgrade_to_medium", "downgrade_to_low"})
-        self.assertIn("referral", decisions[0]["reasons"])
-
-    def test_apply_trial_overlay_removes_and_downgrades(self):
-        leads = [
-            {"activity_nr": "a1", "lead_score": 11},
-            {"activity_nr": "a2", "lead_score": 8},
-            {"activity_nr": "a3", "lead_score": 7},
-        ]
-        decisions = [
-            {"activity_nr": "a1", "current_priority": "high", "action": "downgrade_to_medium", "confidence": 0.8, "reasons": ["referral"], "provenance": {"source": "rules_cached_detail"}},
-            {"activity_nr": "a2", "current_priority": "medium", "action": "remove_from_customer_email", "confidence": 0.9, "reasons": ["stale"], "provenance": {"source": "rules_cached_detail"}},
-            {"activity_nr": "a3", "current_priority": "medium", "action": "promote_candidate", "confidence": 0.95, "reasons": ["accident"], "provenance": {"source": "rules_cached_detail"}},
-        ]
-        out, stats, promoted = to.apply_trial_overlay_to_leads(leads, decisions)
-        self.assertEqual(len(out), 2)
-        self.assertEqual(int(out[0]["lead_score"]), 6)
-        self.assertEqual(stats["removed"], 1)
-        self.assertEqual(len(promoted), 1)
-
-    def test_ai_missing_key_prints_disabled_marker_and_falls_back(self):
-        items = [{"activity_nr": "1003", "lead_score": 8, "date_opened": "2026-02-20"}]
-        detail_rows = {
-            "1003": {
-                "inspection_type": "Referral",
-                "content_sha256": "xyz",
-                "emphasis_markers_json": "[]",
-                "related_activity_markers_json": "[]",
-            }
-        }
-        buf = io.StringIO()
-        with mock.patch.dict(os.environ, {"AI_TRIAGE_ENABLED": "1", "OPENAI_API_KEY": ""}, clear=False):
-            # reset module-level one-time emitter
-            import scoring.ai_triage as ai_triage_mod
-
-            ai_triage_mod._DISABLED_EMITTED = False
-            with redirect_stdout(buf):
-                decisions = to.triage(items, detail_rows, mode="outreach_examples")
-        self.assertEqual(len(decisions), 1)
-        self.assertIn("AI_FEATURES_DISABLED=1", buf.getvalue())
-        self.assertIn("missing=OPENAI_API_KEY", buf.getvalue())
-
-    def test_ai_high_remove_cap_requires_strict_confidence(self):
-        rule_decision = {
-            "activity_nr": "k",
-            "lead_key": "",
-            "current_priority": "high",
-            "action": "keep",
-            "confidence": 0.6,
-            "reasons": ["keep_default"],
-            "provenance": {"source": "rules_cached_detail"},
-            "_rules_type": "referral",
-            "_markers": [],
-            "_item_key": "k",
-        }
-        ai_payload = {
-            "decision": "remove",
-            "confidence": 0.80,
-            "reasons": ["stale"],
-            "prompt_version": "x",
-            "content_sha256": "y",
-        }
-        capped = to._apply_ai_caps(rule_decision, ai_payload, {})
-        self.assertEqual(capped["action"], "keep")
-
-    def test_outreach_summary_rules_only_returns_action_not_ai_disabled(self):
-        decisions = [
-            {
-                "activity_nr": "1",
-                "action": "remove_from_customer_email",
-                "confidence": 0.92,
-                "reasons": ["referral", "stale"],
-                "provenance": {"source": "rules_cached_detail"},
+                "scope": "Complete",
+                "case_status": "OPEN",
+                "naics": "713110",
+                "establishment_name": "Delaware North Companies Parks & Resorts, Inc.",
+                "site_city": "Merritt Island",
+                "site_state": "FL",
+                "mail_state": "NY",
             },
             {
-                "activity_nr": "2",
-                "action": "keep",
-                "confidence": 0.61,
-                "reasons": ["complaint"],
-                "provenance": {"source": "rules_cached_detail"},
+                "activity_nr": "1867716",
+                "lead_score": 8,
+                "date_opened": "2026-01-08",
+                "inspection_type": "Accident",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "236220",
+                "establishment_name": "Luna Development Corp.",
+                "site_city": "Coconut Creek",
+                "site_state": "FL",
+                "mail_state": "FL",
             },
         ]
-        action, conf, reasons = to.summarize_outreach_example_triage(decisions)
-        self.assertEqual(action, "REPLACED_SOME")
-        self.assertEqual(conf, "0.92")
-        self.assertIn("referral", reasons)
+
+    def test_rules_fixture_expected_priorities(self):
+        with mock.patch.dict(os.environ, {"SIGNAL_FRESHNESS_MAX_DAYS": "30", "AI_TRIAGE_ENABLED": "0"}, clear=False):
+            decisions = to.triage(self._fixture_rows(), {}, mode="trial_render", allow_ai=False)
+        by_id = {str(d.get("activity_nr")): d for d in decisions}
+
+        self.assertEqual(by_id["1876272"]["rules_priority"], "HIGH")
+        self.assertEqual(by_id["1876218"]["rules_priority"], "HIGH")
+        self.assertEqual(by_id["1876394"]["rules_priority"], "HIGH")
+        self.assertEqual(by_id["1876221"]["rules_priority"], "MEDIUM")
+        self.assertEqual(by_id["1876545"]["rules_priority"], "MEDIUM")
+        self.assertEqual(by_id["1876463"]["rules_priority"], "MEDIUM")
+        self.assertEqual(by_id["1876197"]["rules_priority"], "SUPPRESS")
+        self.assertEqual(by_id["1876259"]["rules_priority"], "SUPPRESS")
+        self.assertEqual(by_id["1875646"]["rules_priority"], "SUPPRESS")
+        self.assertEqual(by_id["1867716"]["rules_priority"], "SUPPRESS")
+
+    def test_multi_employer_detection_three_signals(self):
+        rows = [r for r in self._fixture_rows() if str(r.get("activity_nr")) in {"1876272", "1876218", "1876221"}]
+        with mock.patch.dict(os.environ, {"AI_TRIAGE_ENABLED": "0"}, clear=False):
+            decisions = to.triage(rows, {}, mode="trial_render", allow_ai=False)
+        for d in decisions:
+            if str(d.get("activity_nr")) in {"1876272", "1876218", "1876221"}:
+                self.assertIn("multi_employer_site", [str(x) for x in d.get("reasons") or []])
+
+    def test_freshness_boundary_30_kept_31_suppressed(self):
+        today_utc = datetime.now(timezone.utc).date()
+        opened_30 = (today_utc - timedelta(days=30)).isoformat()
+        opened_31 = (today_utc - timedelta(days=31)).isoformat()
+        rows = [
+            {
+                "activity_nr": "k30",
+                "lead_score": 7,
+                "date_opened": opened_30,
+                "inspection_type": "Inspection",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "236220",
+            },
+            {
+                "activity_nr": "k31",
+                "lead_score": 7,
+                "date_opened": opened_31,
+                "inspection_type": "Inspection",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "236220",
+            },
+        ]
+        with mock.patch.dict(os.environ, {"SIGNAL_FRESHNESS_MAX_DAYS": "30", "AI_TRIAGE_ENABLED": "0"}, clear=False):
+            decisions = to.triage(rows, {}, mode="trial_render", allow_ai=False)
+        by_id = {str(d.get("activity_nr")): d for d in decisions}
+        self.assertNotEqual(by_id["k30"]["rules_priority"], "SUPPRESS")
+        self.assertEqual(by_id["k31"]["rules_priority"], "SUPPRESS")
+
+    def test_naics_suppress_allow_override(self):
+        rule = rules_config.match_naics_suppress("561720")
+        self.assertIsNotNone(rule)
+        self.assertEqual((rule.reason or "").strip(), "NAICS_JANITORIAL")
+        allow_rule = rules_config.match_naics_suppress("561621")
+        self.assertIsNone(allow_rule)
+
+    def test_ai_raise_only_and_cannot_unsuppress(self):
+        rows = [
+            {
+                "activity_nr": "m1",
+                "lead_score": 6,
+                "date_opened": "2026-02-20",
+                "inspection_type": "Inspection",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "236220",
+                "establishment_name": "Alpha",
+                "site_city": "Houston",
+                "site_state": "TX",
+                "mail_state": "TX",
+            },
+            {
+                "activity_nr": "s1",
+                "lead_score": 8,
+                "date_opened": "2026-02-20",
+                "inspection_type": "Planned",
+                "scope": "No Insp/10 or Fewer Empe",
+                "case_status": "CLOSED",
+                "naics": "236220",
+                "establishment_name": "Beta",
+                "site_city": "Houston",
+                "site_state": "TX",
+                "mail_state": "TX",
+            },
+        ]
+
+        def _fake_ai(**kwargs):  # noqa: ANN001
+            if kwargs.get("item_key") == "m1":
+                return {
+                    "priority": "LOW",
+                    "reason": "try lower",
+                    "prompt_hash": "x",
+                    "prompt_version": "v",
+                    "model": "m",
+                    "cached": 0,
+                }
+            return {
+                "priority": "HIGH",
+                "reason": "try unsuppress",
+                "prompt_hash": "x",
+                "prompt_version": "v",
+                "model": "m",
+                "cached": 0,
+            }
+
+        with mock.patch("scoring.ai_triage.enabled", return_value=True), mock.patch(
+            "scoring.ai_triage.get_or_compute", side_effect=_fake_ai
+        ) as mocked:
+            decisions = to.triage(rows, {}, mode="trial_render", allow_ai=True)
+
+        by_id = {str(d.get("activity_nr")): d for d in decisions}
+        self.assertEqual(by_id["m1"]["rules_priority"], "MEDIUM")
+        self.assertEqual(by_id["m1"]["final_priority"], "MEDIUM")
+        self.assertEqual(by_id["s1"]["rules_priority"], "SUPPRESS")
+        self.assertEqual(by_id["s1"]["final_priority"], "SUPPRESS")
+        self.assertEqual(mocked.call_count, 1)
+
+    def test_ai_unavailable_emits_warning_and_counter(self):
+        rows = [
+            {
+                "activity_nr": "x1",
+                "lead_score": 7,
+                "date_opened": "2026-02-20",
+                "inspection_type": "Inspection",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "236220",
+                "establishment_name": "Gamma",
+                "site_city": "Austin",
+                "site_state": "TX",
+                "mail_state": "TX",
+            }
+        ]
+        out = io.StringIO()
+        with mock.patch("scoring.ai_triage.enabled", return_value=True), mock.patch(
+            "scoring.ai_triage.get_or_compute", return_value=None
+        ):
+            with redirect_stdout(out):
+                to.triage(rows, {}, mode="trial_render", allow_ai=True)
+        text = out.getvalue()
+        self.assertIn("WARN_AI_TRIAGE_UNAVAILABLE", text)
+        self.assertIn("AI_TRIAGE_UNAVAILABLE=1", text)
+
+    def test_ai_telemetry_reconciliation(self):
+        rows = [
+            {
+                "activity_nr": "t1",
+                "lead_score": 6,
+                "date_opened": "2026-02-20",
+                "inspection_type": "Inspection",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "236220",
+                "establishment_name": "Delta",
+                "site_city": "Austin",
+                "site_state": "TX",
+                "mail_state": "TX",
+            },
+            {
+                "activity_nr": "t2",
+                "lead_score": 6,
+                "date_opened": "2026-02-20",
+                "inspection_type": "Inspection",
+                "scope": "Partial",
+                "case_status": "OPEN",
+                "naics": "236220",
+                "establishment_name": "Epsilon",
+                "site_city": "Austin",
+                "site_state": "TX",
+                "mail_state": "TX",
+            },
+        ]
+
+        def _fake_ai(**kwargs):  # noqa: ANN001
+            if kwargs.get("item_key") == "t1":
+                return {
+                    "priority": "HIGH",
+                    "reason": "raise",
+                    "prompt_hash": "x",
+                    "prompt_version": "v",
+                    "model": "m",
+                    "cached": 1,
+                }
+            return {
+                "priority": "LOW",
+                "reason": "lower",
+                "prompt_hash": "x",
+                "prompt_version": "v",
+                "model": "m",
+                "cached": 0,
+            }
+
+        out = io.StringIO()
+        with mock.patch("scoring.ai_triage.enabled", return_value=True), mock.patch(
+            "scoring.ai_triage.get_or_compute", side_effect=_fake_ai
+        ):
+            with redirect_stdout(out):
+                to.triage(rows, {}, mode="trial_render", allow_ai=True)
+        text = out.getvalue()
+        self.assertIn("AI_TRIAGE_EVALUATED=2", text)
+        self.assertIn("AI_TRIAGE_RAISED=1 UNCHANGED=1", text)
 
 
 if __name__ == "__main__":

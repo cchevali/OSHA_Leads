@@ -1,20 +1,14 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+from runtime_data_dir import resolve_data_dir
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def data_root() -> Path:
-    raw = (os.getenv("DATA_DIR") or "").strip()
-    if raw:
-        p = Path(raw).expanduser()
-        if not p.is_absolute():
-            p = (REPO_ROOT / p)
-        return p.resolve(strict=False)
-    return (REPO_ROOT / "out").resolve(strict=False)
+    return resolve_data_dir(REPO_ROOT).effective_path
 
 
 def scoring_root() -> Path:

@@ -36,6 +36,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "OshaSmokeTo",
             "OutreachSuppressionMaxAgeHours",
             "OutreachFallbackOnEmptyState",
+            "OutreachSkipRoleInboxes",
             "ProspectAutoGrowEnabled",
             "ProspectAutoGrowSources",
             "ProspectAutoGrowBacklogTarget",
@@ -51,10 +52,13 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "TrialConversionUrl",
             "AiTriageEnabled",
             "AiTriageOpenAiModel",
+            "SignalFreshnessMaxDays",
             "StripePriceIdCore",
             "StripePriceIdMulti",
             "StripePriceIdPilot",
             "WebStripeWebhookSecret",
+            "TaskSchedUser",
+            "TaskSchedPassword",
             "PrintConfig",
         ]
         required_tokens = [
@@ -70,6 +74,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "PASS_SET_OUTREACH_ENV_APPLY",
             "PASS_SET_OUTREACH_ENV_VERIFY",
             "PASS_SET_OUTREACH_ENV_PRINT_CONFIG",
+            "PASS_SET_OUTREACH_ENV_DATA_DIR",
             "PASS_SET_OUTREACH_ENV_COMPLETE",
         ]
 
@@ -84,6 +89,8 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("PROSPECT_AUTOGROW_STATES", text)
         self.assertIn("PROSPECT_AUTOGROW_SOURCES", text)
         self.assertIn("OUTREACH_FALLBACK_ON_EMPTY_STATE", text)
+        self.assertIn("OUTREACH_SKIP_ROLE_INBOXES", text)
+        self.assertIn("outreach_skip_role_inboxes=", text)
         self.assertIn("OHS_BG", text)
         self.assertIn("APOLLO", text)
         self.assertIn("APOLLO_API_KEY", text)
@@ -108,16 +115,29 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("web_stripe_webhook_secret_present", text)
         self.assertIn("AI_TRIAGE_ENABLED", text)
         self.assertIn("AI_TRIAGE_OPENAI_MODEL", text)
+        self.assertIn("SIGNAL_FRESHNESS_MAX_DAYS", text)
         self.assertIn("OPENAI_API_KEY", text)
         self.assertIn("missing_shell_OPENAI_API_KEY", text)
         self.assertIn("ai_triage_enabled=", text)
         self.assertIn("ai_triage_openai_model=", text)
+        self.assertIn("signal_freshness_max_days=", text)
         self.assertIn("openai_api_key_present=", text)
         self.assertIn("apollo_api_key_present=", text)
         self.assertIn("apollo_enrich_enabled=", text)
         self.assertIn("apollo_enrich_max_per_run=", text)
         self.assertIn("apollo_person_locations_mode=", text)
+        self.assertIn("task_sched_user=", text)
+        self.assertIn("task_sched_password_present=", text)
+        self.assertIn("TASK_SCHED_USER", text)
+        self.assertIn("TASK_SCHED_PASSWORD", text)
+        self.assertIn("Test-ValidAbsoluteDataDir", text)
+        self.assertIn("invalid_DataDir_absolute_required", text)
+        self.assertIn("$dataDirSource = 'param'", text)
+        self.assertIn("$dataDirSource = 'inherited'", text)
+        self.assertIn("$dataDirSource = 'unchanged'", text)
+        self.assertIn("Pass-Token $PASS_SET_OUTREACH_ENV_DATA_DIR", text)
         self.assertNotIn("Write-Output ('OPENAI_API_KEY='", text)
+        self.assertNotIn("Write-Output ('TASK_SCHED_PASSWORD='", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_ENABLED", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_SOURCES", text)
         self.assertNotIn("CSV_IMPORT", text)

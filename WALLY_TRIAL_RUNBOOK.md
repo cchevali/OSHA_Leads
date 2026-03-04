@@ -154,17 +154,23 @@ Operator verification (after first live send):
 ## 7) Enable 9:00 AM Schedule (ET)
 
 ```powershell
-python run_wally_trial.py wally_trial_tx_triangle_v1.json --enable-schedule
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py wally_trial_tx_triangle_v1.json --enable-schedule
 ```
 
 Task name: `OSHA Wally Trial Daily`
 
-Use `--enable-schedule` as the canonical setup method. It creates/updates the task and verifies the exact `/TR` action string, failing fast if Task Scheduler drifted.
+Use `--enable-schedule` as the canonical setup method. It creates/updates the task using `TASK_SCHED_USER` + `TASK_SCHED_PASSWORD` and verifies both exact `/TR` and non-interactive logon mode (`Password`), failing fast on Task Scheduler drift.
+
+Set scheduler credentials once via secrets helper:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -TaskSchedUser "DESKTOP-Q8QM4N9\lever" -TaskSchedPassword "<TASK_SCHED_PASSWORD>"
+```
 
 Verify an existing task without changing it:
 
 ```powershell
-python run_wally_trial.py wally_trial_tx_triangle_v1.json --check-schedule
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py wally_trial_tx_triangle_v1.json --check-schedule
 ```
 
 Note: Windows Task Scheduler runs in host timezone. For an 8:00 AM CT delivery on a PC set to Eastern Time, schedule the task for 9:00 AM ET.
@@ -180,6 +186,9 @@ Use this exact action to avoid trailing-quote regressions:
 
 Expected `/TR` string (what `--check-schedule` verifies):
 - `cmd /c ""C:\dev\OSHA_Leads\run_wally_trial_daily.bat""`
+
+Expected logon mode (what `--check-schedule` verifies):
+- `Password` (must not be `Interactive only`)
 
 
 

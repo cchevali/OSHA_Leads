@@ -4,6 +4,7 @@ param(
   [string] $OshaSmokeTo = '',
   [Nullable[int]] $OutreachSuppressionMaxAgeHours = $null,
   [Nullable[int]] $OutreachFallbackOnEmptyState = $null,
+  [Nullable[int]] $OutreachSkipRoleInboxes = $null,
   [Nullable[int]] $ProspectAutoGrowEnabled = $null,
   [string] $ProspectAutoGrowStates = '',
   [string] $ProspectAutoGrowSources = '',
@@ -24,6 +25,7 @@ param(
   [string] $TrialConversionUrl = '',
   [Nullable[int]] $AiTriageEnabled = $null,
   [string] $AiTriageOpenAiModel = '',
+  [Nullable[int]] $SignalFreshnessMaxDays = $null,
   [string] $HudApiToken = '',
   [string] $StripePriceIdCore = '',
   [string] $StripePriceIdMulti = '',
@@ -38,6 +40,8 @@ param(
   [string] $BounceImapFolder = '',
   [Nullable[int]] $BounceImapSinceHours = $null,
   [Nullable[int]] $BounceImapMaxMessages = $null,
+  [string] $TaskSchedUser = '',
+  [string] $TaskSchedPassword = '',
   [switch] $PrintConfig
 )
 
@@ -60,6 +64,7 @@ $ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS = 'ERR_SET_OUTREACH_ENV_PRINT_CO
 $PASS_SET_OUTREACH_ENV_APPLY = 'PASS_SET_OUTREACH_ENV_APPLY'
 $PASS_SET_OUTREACH_ENV_VERIFY = 'PASS_SET_OUTREACH_ENV_VERIFY'
 $PASS_SET_OUTREACH_ENV_PRINT_CONFIG = 'PASS_SET_OUTREACH_ENV_PRINT_CONFIG'
+$PASS_SET_OUTREACH_ENV_DATA_DIR = 'PASS_SET_OUTREACH_ENV_DATA_DIR'
 $PASS_SET_OUTREACH_ENV_COMPLETE = 'PASS_SET_OUTREACH_ENV_COMPLETE'
 
 function Fail-Token([string]$Token, [string]$Detail = '') {
@@ -126,6 +131,15 @@ function Normalize-CommaList([string]$Raw) {
     }
   }
   return ($tokens -join ',')
+}
+
+function Test-ValidAbsoluteDataDir([string]$Value) {
+  $text = (($Value -as [string]))
+  if ($null -eq $text) { $text = '' }
+  $text = $text.Trim()
+  if (-not $text) { return $false }
+  if ($text -ieq 'out') { return $false }
+  return [System.IO.Path]::IsPathRooted($text)
 }
 
 function Parse-DotenvMap([string]$DotenvText) {
@@ -302,6 +316,7 @@ try {
     'OshaSmokeTo',
     'OutreachSuppressionMaxAgeHours',
     'OutreachFallbackOnEmptyState',
+    'OutreachSkipRoleInboxes',
     'ProspectAutoGrowEnabled',
     'ProspectAutoGrowStates',
     'ProspectAutoGrowSources',
@@ -322,6 +337,7 @@ try {
     'TrialConversionUrl',
     'AiTriageEnabled',
     'AiTriageOpenAiModel',
+    'SignalFreshnessMaxDays',
     'HudApiToken',
     'StripePriceIdCore',
     'StripePriceIdMulti',
@@ -335,7 +351,9 @@ try {
     'BounceImapPass',
     'BounceImapFolder',
     'BounceImapSinceHours',
-    'BounceImapMaxMessages'
+    'BounceImapMaxMessages',
+    'TaskSchedUser',
+    'TaskSchedPassword'
   )
   $hasMutatingArgs = $false
   foreach ($name in $mutatingArgs) {
@@ -357,6 +375,11 @@ try {
   if ($PSBoundParameters.ContainsKey('OutreachFallbackOnEmptyState')) {
     if (($OutreachFallbackOnEmptyState -ne 0) -and ($OutreachFallbackOnEmptyState -ne 1)) {
       Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachFallbackOnEmptyState'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('OutreachSkipRoleInboxes')) {
+    if (($OutreachSkipRoleInboxes -ne 0) -and ($OutreachSkipRoleInboxes -ne 1)) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachSkipRoleInboxes'
     }
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowEnabled') -and $ProspectAutoGrowEnabled -notin @(0, 1)) {
@@ -383,6 +406,9 @@ try {
   if ($PSBoundParameters.ContainsKey('AiTriageEnabled') -and $AiTriageEnabled -notin @(0, 1)) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_AiTriageEnabled'
   }
+  if ($PSBoundParameters.ContainsKey('SignalFreshnessMaxDays') -and $SignalFreshnessMaxDays -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_SignalFreshnessMaxDays'
+  }
   if ($PSBoundParameters.ContainsKey('BounceImapPort') -and $BounceImapPort -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapPort'
   }
@@ -391,6 +417,16 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('BounceImapMaxMessages') -and $BounceImapMaxMessages -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapMaxMessages'
+  }
+  if ($PSBoundParameters.ContainsKey('TaskSchedUser')) {
+    if (-not (($TaskSchedUser -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TaskSchedUser'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('TaskSchedPassword')) {
+    if (-not (($TaskSchedPassword -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TaskSchedPassword'
+    }
   }
 
   if ($PSBoundParameters.ContainsKey('OutreachStates')) {
@@ -544,6 +580,8 @@ try {
         Fail-Token $ERR_SET_OUTREACH_ENV_PRINT_CONFIG ('decrypt_failed detail=' + (Compact-Detail $_.Exception.Message))
       }
       $printMap = Parse-DotenvMap $printPlain
+      $outreachSkipRoleInboxesValue = if (Map-HasValue $printMap 'OUTREACH_SKIP_ROLE_INBOXES') { ([string]$printMap['OUTREACH_SKIP_ROLE_INBOXES']).Trim() } else { '1' }
+      Write-Output ('outreach_skip_role_inboxes=' + $outreachSkipRoleInboxesValue)
       $aiTriageEnabledValue = '0'
       if (Map-HasValue $printMap 'AI_TRIAGE_ENABLED') {
         $rawAiEnabled = ([string]$printMap['AI_TRIAGE_ENABLED']).Trim().ToLowerInvariant()
@@ -557,6 +595,10 @@ try {
       if (Map-HasValue $printMap 'AI_TRIAGE_OPENAI_MODEL') {
         $aiTriageModelValue = ([string]$printMap['AI_TRIAGE_OPENAI_MODEL']).Trim()
       }
+      $signalFreshnessMaxDaysValue = '30'
+      if (Map-HasValue $printMap 'SIGNAL_FRESHNESS_MAX_DAYS') {
+        $signalFreshnessMaxDaysValue = ([string]$printMap['SIGNAL_FRESHNESS_MAX_DAYS']).Trim()
+      }
       $openAiKeyPresent = if (Map-HasValue $printMap 'OPENAI_API_KEY') { 'YES' } else { 'NO' }
       $apolloApiKeyPresent = if (Map-HasValue $printMap 'APOLLO_API_KEY') { 'YES' } else { 'NO' }
       $hunterApiKeyPresent = if (Map-HasValue $printMap 'HUNTER_API_KEY') { 'YES' } else { 'NO' }
@@ -567,6 +609,7 @@ try {
       $prospectEnrichHunterEnabledValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_HUNTER_ENABLED') { ([string]$printMap['PROSPECT_ENRICH_HUNTER_ENABLED']).Trim() } else { '0' }
       Write-Output ('ai_triage_enabled=' + $aiTriageEnabledValue)
       Write-Output ('ai_triage_openai_model=' + $aiTriageModelValue)
+      Write-Output ('signal_freshness_max_days=' + $signalFreshnessMaxDaysValue)
       Write-Output ('openai_api_key_present=' + $openAiKeyPresent)
       Write-Output ('apollo_api_key_present=' + $apolloApiKeyPresent)
       Write-Output ('hunter_api_key_present=' + $hunterApiKeyPresent)
@@ -575,6 +618,12 @@ try {
       Write-Output ('apollo_person_locations_mode=' + $apolloLocationsModeValue)
       Write-Output ('prospect_enrich_domain_enabled=' + $prospectEnrichDomainEnabledValue)
       Write-Output ('prospect_enrich_hunter_enabled=' + $prospectEnrichHunterEnabledValue)
+      $taskSchedUserValue = if (Map-HasValue $printMap 'TASK_SCHED_USER') { ([string]$printMap['TASK_SCHED_USER']).Trim() } else { '' }
+      $taskSchedPasswordPresent = if (Map-HasValue $printMap 'TASK_SCHED_PASSWORD') { 'YES' } else { 'NO' }
+      Write-Output ('task_sched_user=' + $taskSchedUserValue)
+      Write-Output ('task_sched_password_present=' + $taskSchedPasswordPresent)
+      $printDataDir = if (Map-HasValue $printMap 'DATA_DIR') { ([string]$printMap['DATA_DIR']).Trim() } else { 'out' }
+      Pass-Token $PASS_SET_OUTREACH_ENV_DATA_DIR ('value=' + $printDataDir + ' source=unchanged')
       Pass-Token $PASS_SET_OUTREACH_ENV_COMPLETE 'mode=print_config'
       exit 0
     }
@@ -616,6 +665,12 @@ try {
       Set-MapValue -Map $map -Key 'OUTREACH_FALLBACK_ON_EMPTY_STATE' -Value ([string]$OutreachFallbackOnEmptyState) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'OUTREACH_FALLBACK_ON_EMPTY_STATE')) {
       Set-MapValue -Map $map -Key 'OUTREACH_FALLBACK_ON_EMPTY_STATE' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('OutreachSkipRoleInboxes')) {
+      Set-MapValue -Map $map -Key 'OUTREACH_SKIP_ROLE_INBOXES' -Value ([string]$OutreachSkipRoleInboxes) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'OUTREACH_SKIP_ROLE_INBOXES')) {
+      Set-MapValue -Map $map -Key 'OUTREACH_SKIP_ROLE_INBOXES' -Value '1' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('BounceImapHost')) {
@@ -783,6 +838,12 @@ try {
       Set-MapValue -Map $map -Key 'AI_TRIAGE_OPENAI_MODEL' -Value 'gpt-4.1-mini' -TouchedList $touched
     }
 
+    if ($PSBoundParameters.ContainsKey('SignalFreshnessMaxDays')) {
+      Set-MapValue -Map $map -Key 'SIGNAL_FRESHNESS_MAX_DAYS' -Value ([string]$SignalFreshnessMaxDays) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'SIGNAL_FRESHNESS_MAX_DAYS')) {
+      Set-MapValue -Map $map -Key 'SIGNAL_FRESHNESS_MAX_DAYS' -Value '30' -TouchedList $touched
+    }
+
     if ($PSBoundParameters.ContainsKey('HudApiToken')) {
       Set-MapValue -Map $map -Key 'HUD_API_TOKEN' -Value (($HudApiToken -as [string]).Trim()) -TouchedList $touched
     }
@@ -805,15 +866,31 @@ try {
       Set-MapValue -Map $map -Key 'STRIPE_WEBHOOK_SECRET' -Value $secret -TouchedList $touched
     }
 
+    $dataDirSource = 'unchanged'
+    $dataDirValue = ''
+    $existingDataDir = if (Map-HasValue $map 'DATA_DIR') { ([string]$map['DATA_DIR']).Trim() } else { '' }
+    $inheritedDataDir = (($env:DATA_DIR -as [string]))
+    if ($null -eq $inheritedDataDir) { $inheritedDataDir = '' }
+    $inheritedDataDir = $inheritedDataDir.Trim()
+
     if ($PSBoundParameters.ContainsKey('DataDir')) {
-      $dir = ($DataDir -as [string]).Trim()
-      if (-not $dir) {
-        Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_DataDir'
+      $dataDirValue = ($DataDir -as [string]).Trim()
+      if (-not (Test-ValidAbsoluteDataDir $dataDirValue)) {
+        Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_DataDir_absolute_required'
       }
-      Set-MapValue -Map $map -Key 'DATA_DIR' -Value $dir -TouchedList $touched
-    } elseif (-not (Map-HasValue $map 'DATA_DIR')) {
-      Set-MapValue -Map $map -Key 'DATA_DIR' -Value 'out' -TouchedList $touched
+      $dataDirSource = 'param'
+    } elseif ((-not (Test-ValidAbsoluteDataDir $existingDataDir)) -and (Test-ValidAbsoluteDataDir $inheritedDataDir)) {
+      $dataDirValue = $inheritedDataDir
+      $dataDirSource = 'inherited'
+    } elseif ($existingDataDir) {
+      $dataDirValue = $existingDataDir
+      $dataDirSource = 'unchanged'
+    } else {
+      $dataDirValue = 'out'
+      $dataDirSource = 'unchanged'
     }
+    Set-MapValue -Map $map -Key 'DATA_DIR' -Value $dataDirValue -TouchedList $touched
+    Pass-Token $PASS_SET_OUTREACH_ENV_DATA_DIR ('value=' + $dataDirValue + ' source=' + $dataDirSource)
 
     if ($PSBoundParameters.ContainsKey('ProspectDiscoveryInput')) {
       $discoveryInput = ($ProspectDiscoveryInput -as [string]).Trim()
@@ -821,6 +898,14 @@ try {
         Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectDiscoveryInput'
       }
       Set-MapValue -Map $map -Key 'PROSPECT_DISCOVERY_INPUT' -Value $discoveryInput -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('TaskSchedUser')) {
+      Set-MapValue -Map $map -Key 'TASK_SCHED_USER' -Value (($TaskSchedUser -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('TaskSchedPassword')) {
+      Set-MapValue -Map $map -Key 'TASK_SCHED_PASSWORD' -Value (($TaskSchedPassword -as [string]).Trim()) -TouchedList $touched
     }
 
     $rendered = Render-DotenvMap $map

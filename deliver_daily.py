@@ -518,6 +518,11 @@ def main():
                         help="Skip ingestion step")
     parser.add_argument("--send-live", action="store_true",
                         help="Allow live send to customer recipients (requires config allow_live_send and send_enabled)")
+    parser.add_argument(
+        "--allow-second-live-send-same-day",
+        action="store_true",
+        help="Emergency/manual override: allow a second same-day live digest send.",
+    )
     parser.add_argument("--preflight", action="store_true",
                         help="Validate DB + subscriber gating + recipients, then exit 0/1")
     parser.add_argument("--admin-email", default=ADMIN_EMAIL,
@@ -642,6 +647,13 @@ def main():
             # Step 1: Ingestion
             if not args.skip_ingest:
                 print("[INFO] Running ingestion...")
+                scope_states: list[str] = []
+                for state in (states or []):
+                    token = str(state or "").strip().upper()
+                    if token and token not in scope_states:
+                        scope_states.append(token)
+                print(f"DELIVER_INGEST_SCOPE_STATES={','.join(scope_states)} source=customer_config")
+                print(f"DELIVER_INGEST_MAX_DETAILS={int(args.max_details)}")
                 ingest_cmd = [
                     sys.executable, "ingest_osha.py",
                     "--db", args.db,
@@ -673,6 +685,8 @@ def main():
                 email_cmd.append("--dry-run")
             if args.send_live:
                 email_cmd.append("--send-live")
+            if args.allow_second_live_send_same_day:
+                email_cmd.append("--allow-second-live-send-same-day")
             
             email_env = os.environ.copy()
             email_env["RUN_LOG_PATH"] = log_path

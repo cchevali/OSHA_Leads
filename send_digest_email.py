@@ -65,6 +65,7 @@ PILOT_WHITELIST_DEFAULT = ["cchevali+oshasmoke@gmail.com"]
 DEFAULT_REPLY_TO = "support@microflowops.com"
 DEFAULT_FROM_LOCAL_PART = "alerts"
 LOW_FALLBACK_LIMIT = 5
+TRIAL_STATE_SET_CAP = 25
 HEALTH_MIN_SHARE_DEFAULT = 0.1
 HEALTH_MIN_TOTAL_DEFAULT = 20
 SEND_WINDOW_MINUTES_DEFAULT = 20
@@ -357,6 +358,20 @@ def _tier_counts(leads: list[dict]) -> dict[str, int]:
         else:
             counts["low"] += 1
     return counts
+
+
+def _normalize_state_codes(raw_states: list[Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in list(raw_states or []):
+        state = str(item or "").strip().upper()
+        if len(state) != 2 or not state.isalpha():
+            continue
+        if state in seen:
+            continue
+        seen.add(state)
+        out.append(state)
+    return out
 
 
 def _select_snapshot_rows(
@@ -1566,6 +1581,7 @@ def get_leads_for_period(
         else "('osha:activity:' || activity_nr) AS lead_key"
     )
     mail_zip_expr = "mail_zip" if _has_column(conn, "inspections", "mail_zip") else "NULL AS mail_zip"
+    mail_state_expr = "mail_state" if _has_column(conn, "inspections", "mail_state") else "NULL AS mail_state"
     site_county_expr = "site_county" if _has_column(conn, "inspections", "site_county") else "NULL AS site_county"
     area_office_expr = "area_office" if _has_column(conn, "inspections", "area_office") else "NULL AS area_office"
     changed_at_expr = "changed_at" if _has_column(conn, "inspections", "changed_at") else "NULL AS changed_at"
@@ -1585,6 +1601,7 @@ def get_leads_for_period(
             site_state,
             site_zip,
             {mail_zip_expr},
+            {mail_state_expr},
             {site_county_expr},
             {area_office_expr},
             naics,
@@ -2134,6 +2151,8 @@ def _write_trial_triage_artifacts(
             "before": int(before_count),
             "after": int(after_count),
             "removed": int(overlay_stats.get("removed", 0)),
+            "suppressed": int(overlay_stats.get("suppressed", 0)),
+            "raised": int(overlay_stats.get("raised", 0)),
             "downgraded_to_medium": int(overlay_stats.get("downgraded_to_medium", 0)),
             "downgraded_to_low": int(overlay_stats.get("downgraded_to_low", 0)),
             "promote_candidates": int(overlay_stats.get("promote_candidates", 0)),
@@ -2167,7 +2186,9 @@ def _write_trial_triage_artifacts(
         f"- Date: `{gen_date}`",
         f"- Before count: `{int(before_count)}`",
         f"- After count: `{int(after_count)}`",
-        f"- Removed highs/mediums: `{int(overlay_stats.get('removed', 0))}`",
+        f"- Suppressed signals: `{int(overlay_stats.get('suppressed', 0))}`",
+        f"- Raised priority: `{int(overlay_stats.get('raised', 0))}`",
+        f"- Removed signals: `{int(overlay_stats.get('removed', 0))}`",
         f"- Downgraded to medium: `{int(overlay_stats.get('downgraded_to_medium', 0))}`",
         f"- Downgraded to low: `{int(overlay_stats.get('downgraded_to_low', 0))}`",
         f"- Promote candidates: `{int(overlay_stats.get('promote_candidates', 0))}`",
@@ -2202,36 +2223,28 @@ def _apply_trial_triage_overlay_if_enabled(
     leads: list[dict[str, Any]],
     dry_run: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, int], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    if not _bool_env_enabled("TRIAL_TRIAGE_OVERLAY_ENABLED", default=False):
-        return leads, {}, [], [], []
     if not _is_trial_subscriber(subscriber_key):
         return leads, {}, [], [], []
+    ai_gate_enabled = _bool_env_enabled("TRIAL_TRIAGE_OVERLAY_ENABLED", default=False)
     if not leads:
-        print("TRIAL_TRIAGE_OVERLAY enabled=1 before=0 after=0")
+        print(f"TRIAL_TRIAGE_OVERLAY rules_enabled=1 ai_enabled={1 if ai_gate_enabled else 0} before=0 after=0")
         return leads, {"kept": 0}, [], [], []
 
-    activity_items = [
-        {
-            "activity_nr": str(row.get("activity_nr") or "").strip(),
-            "url": str(row.get("source_url") or "").strip(),
-        }
-        for row in leads
-        if str(row.get("activity_nr") or "").strip()
-    ]
     try:
-        cache_result = scoring_osha_detail_cache.ensure_cached_for_activities(
-            activity_items=activity_items,
-            sleep_ms=800,
-            ttl_days=30,
-            dry_run=bool(dry_run),
-        )
+        del dry_run
+        cache_result = {"fetched": 0, "skipped_cached": 0, "failed": 0}
         cache_rows = scoring_osha_detail_cache.load_detail_cache_rows(
             None,
             [str(r.get("activity_nr") or "") for r in leads],
         )
-        decisions = scoring_triage_overlay.triage(leads, cache_rows, mode="trial_render")
+        decisions = scoring_triage_overlay.triage(
+            leads,
+            cache_rows,
+            mode="trial_render",
+            allow_ai=bool(ai_gate_enabled),
+        )
     except Exception as exc:
-        logger.warning("Trial triage overlay failed; using original leads: %s", exc)
+        logger.warning("Trial triage rules failed; using original leads: %s", exc)
         print(f"TRIAL_TRIAGE_OVERLAY_ERROR detail={exc.__class__.__name__}")
         return leads, {}, [], [], []
 
@@ -2248,10 +2261,12 @@ def _apply_trial_triage_overlay_if_enabled(
     after_count = len(adjusted_leads)
     print(
         "TRIAL_TRIAGE_OVERLAY "
-        f"enabled=1 before={before_count} after={after_count} "
+        f"rules_enabled=1 ai_enabled={1 if ai_gate_enabled else 0} before={before_count} after={after_count} "
         f"removed={int(overlay_stats.get('removed', 0))} "
+        f"suppressed={int(overlay_stats.get('suppressed', 0))} "
         f"downgraded_medium={int(overlay_stats.get('downgraded_to_medium', 0))} "
         f"downgraded_low={int(overlay_stats.get('downgraded_to_low', 0))} "
+        f"raised={int(overlay_stats.get('raised', 0))} "
         f"promote_candidates={int(overlay_stats.get('promote_candidates', 0))} "
         f"cache_fetched={int(cache_result.get('fetched', 0))} "
         f"cache_skipped={int(cache_result.get('skipped_cached', 0))} "
@@ -2357,6 +2372,7 @@ def generate_digest_html(
     snapshot_label: str | None = None,
     snapshot_days: int | None = None,
     snapshot_tier_counts: dict[str, int] | None = None,
+    low_available_today: int | None = None,
     snapshot_enable_lows_url: str | None = None,
     snapshot_disable_lows_url: str | None = None,
     snapshot_rows: list[dict] | None = None,
@@ -2440,7 +2456,7 @@ def generate_digest_html(
         )
     html.append("</div>")
     if mode == "daily" and tier_counts is not None:
-        low_today = int(tier_counts.get("low", 0))
+        low_today = int(low_available_today) if low_available_today is not None else int(tier_counts.get("low", 0))
         try:
             low_snapshot = (
                 int(snapshot_tier_counts.get("low", 0))
@@ -2630,6 +2646,7 @@ def generate_digest_text(
     snapshot_label: str | None = None,
     snapshot_days: int | None = None,
     snapshot_tier_counts: dict[str, int] | None = None,
+    low_available_today: int | None = None,
     snapshot_enable_lows_url: str | None = None,
     snapshot_disable_lows_url: str | None = None,
     snapshot_rows: list[dict] | None = None,
@@ -2674,7 +2691,8 @@ def generate_digest_text(
     if mode == "daily" and tier_counts is not None:
         high = int(tier_counts.get("high", 0))
         medium = int(tier_counts.get("medium", 0))
-        low_today = int(tier_counts.get("low", 0))
+        low_summary = int(tier_counts.get("low", 0))
+        low_today = int(low_available_today) if low_available_today is not None else int(tier_counts.get("low", 0))
         try:
             low_snapshot = (
                 int(snapshot_tier_counts.get("low", 0))
@@ -2684,13 +2702,12 @@ def generate_digest_text(
         except Exception:
             low_snapshot = 0
 
-        low = low_today
-        lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low}")
+        lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low_summary}")
         low_note = f"({low_today} available today)" if low_today > 0 else "(none observed today)"
         if include_lows:
             shown = len(low_priority or [])
-            if low > 0 and shown > 0 and shown < low:
-                low_note = f"(showing {shown} of {low} available today)"
+            if low_today > 0 and shown > 0 and shown < low_today:
+                low_note = f"(showing {shown} of {low_today} available today)"
             if disable_lows_url:
                 lines.append(f"Low signals: ON {low_note}. Disable lows: {disable_lows_url}")
             else:
@@ -3039,6 +3056,11 @@ def main() -> None:
         help="Allow live sends to customer recipients (requires allow_live_send and send_enabled)",
     )
     parser.add_argument(
+        "--allow-second-live-send-same-day",
+        action="store_true",
+        help="Emergency/manual override: allow a second live send on the same local day.",
+    )
+    parser.add_argument(
         "--debug-area-offices",
         action="store_true",
         help="Print distinct TX area_office values seen in last 30 days and exit",
@@ -3086,14 +3108,19 @@ def main() -> None:
     config = load_customer_config(args.customer)
     customer_id = config["customer_id"]
     states = [state.upper() for state in config.get("states", [])]
+    subscriber_key = str(config.get("subscriber_key") or "").strip().lower()
 
     subscriber_profile = _load_subscriber_profile(args.db, config.get("subscriber_key"))
     if subscriber_profile and not subscriber_profile.get("active", 0):
         print("CONFIG_ERROR subscriber inactive", file=sys.stderr)
         raise SystemExit(1)
 
+    territory_definitions = load_territory_definitions()
     territory_code_raw = subscriber_profile.get("territory_code") or config.get("territory_code")
-    territory_code = resolve_territory_code(territory_code_raw, load_territory_definitions())
+    territory_code = resolve_territory_code(territory_code_raw, territory_definitions)
+    territory = territory_definitions.get(territory_code) or {}
+    territory_kind = str(territory.get("kind") or "LEGACY_REGEX").strip().upper()
+    territory_states = _normalize_state_codes(list(territory.get("states") or []))
     tz = resolve_timezone(config, territory_code)
     now_local = datetime.now(tz)
     gen_date = now_local.strftime("%Y-%m-%d")
@@ -3108,7 +3135,6 @@ def main() -> None:
     baseline_on_first_send = bool(config.get("baseline_on_first_send", True))
     last_sent_at = subscriber_profile.get("last_sent_at") if subscriber_profile else None
     allow_live_send = bool(config.get("allow_live_send", False))
-    subscriber_key = config.get("subscriber_key") or ""
     config_recipients = config.get("email_recipients") if isinstance(config.get("email_recipients"), list) else []
     first_config_recipient = config_recipients[0] if config_recipients else ""
     subscriber_email = subscriber_profile.get("email") or first_config_recipient or ""
@@ -3126,6 +3152,19 @@ def main() -> None:
     send_enabled_ok = True
     if subscriber_key:
         send_enabled_ok = bool(subscriber_profile.get("send_enabled"))
+
+    trial_subscriber = _is_trial_subscriber(subscriber_key)
+    trial_state_set_selection = bool(args.mode == "daily" and trial_subscriber and territory_kind == "STATE_SET")
+    if trial_state_set_selection:
+        normalized_selection_states = _normalize_state_codes(states)
+        if territory_states:
+            normalized_selection_states = territory_states
+        if normalized_selection_states:
+            states = list(normalized_selection_states)
+        print(
+            "TRIAL_STATE_SET_SELECTION "
+            f"territory_code={territory_code} states={','.join(states)}"
+        )
 
     missing = preflight_missing_vars(config, args.dry_run)
     if missing:
@@ -3246,6 +3285,35 @@ def main() -> None:
         print(f"CONFIG_ERROR --smoke-cchevali recipient_mismatch recipients={recipients}", file=sys.stderr)
         raise SystemExit(1)
 
+    if (
+        live_allowed
+        and (not args.dry_run)
+        and _is_wally_trial_daily_mode(config, args.mode)
+        and (not bool(args.allow_second_live_send_same_day))
+        and _already_sent_today_local(last_sent_at, now_local, tz)
+    ):
+        local_date = now_local.date().isoformat()
+        print(
+            f"TRIAL_SKIP_ALREADY_SENT_TODAY=1 subscriber_key={subscriber_key or WALLY_TRIAL_SUBSCRIBER_KEY} "
+            f"local_date={local_date} guard=ON"
+        )
+        email_log_path = os.path.join(args.output_dir, "email_log.csv")
+        for recipient in recipients:
+            log_email_attempt(
+                email_log_path,
+                {
+                    "timestamp": timestamp,
+                    "customer_id": customer_id,
+                    "mode": args.mode,
+                    "recipient": recipient,
+                    "subject": f"OSHA Signals - {gen_date}",
+                    "status": "skipped_sent_today",
+                    "territory_code": territory_code or "",
+                    "content_filter": content_filter,
+                },
+            )
+        raise SystemExit(0)
+
     branding = resolve_branding(config)
 
     logger.info(
@@ -3288,7 +3356,11 @@ def main() -> None:
     elif args.mode == "daily":
         include_changed = False
     # summary_label set after leads computed
-    trial_territory_debug_enabled = _is_trial_subscriber(config.get("subscriber_key"))
+    trial_territory_debug_enabled = bool(trial_subscriber)
+    selection_content_filter = content_filter
+    if args.mode == "daily" and trial_territory_debug_enabled:
+        # Always run deterministic signal rules on the full territory-eligible pool first.
+        selection_content_filter = "all"
     territory_debug_rows: list[dict] = []
     if trial_territory_debug_enabled:
         leads, low_fallback, filter_stats, territory_debug_rows, _exclude_rows = get_leads_for_period(
@@ -3298,7 +3370,7 @@ def main() -> None:
             new_only_days=int(config["new_only_days"]),
             skip_first_seen_filter=skip_first_seen_filter,
             territory_code=territory_code,
-            content_filter=content_filter,
+            content_filter=selection_content_filter,
             include_low_fallback=include_low_fallback,
             window_start=window_start,
             new_only_cutoff=new_only_cutoff,
@@ -3316,7 +3388,7 @@ def main() -> None:
             new_only_days=int(config["new_only_days"]),
             skip_first_seen_filter=skip_first_seen_filter,
             territory_code=territory_code,
-            content_filter=content_filter,
+            content_filter=selection_content_filter,
             include_low_fallback=include_low_fallback,
             window_start=window_start,
             new_only_cutoff=new_only_cutoff,
@@ -3328,6 +3400,7 @@ def main() -> None:
 
     # Tier counts must include low signals even when the default content filter hides them.
     tier_counts = None
+    render_tier_counts = None
     low_priority_all: list[dict] = []
     all_leads_deduped: list[dict] = []
     snapshot_label = None
@@ -3440,6 +3513,34 @@ def main() -> None:
                 dry_run=bool(args.dry_run),
             )
         )
+        if trial_territory_debug_enabled and selection_content_filter == "all":
+            post_triage_pool = list(leads or [])
+            # Apply the subscriber content filter after rules/AI priority classification.
+            filtered_leads, _excluded = apply_content_filter(leads, content_filter)
+            filtered_leads, _dedupe_removed = dedupe_by_activity_nr(filtered_leads)
+            leads = list(filtered_leads)
+            if content_filter == "high_medium" and len(leads) == 0 and include_low_fallback:
+                fallback_base, _ = dedupe_by_activity_nr(post_triage_pool)
+                low_candidates = [lead for lead in fallback_base if int(lead.get("lead_score") or 0) < 6]
+                low_candidates.sort(
+                    key=lambda lead: (int(lead.get("lead_score") or 0), lead.get("date_opened") or ""),
+                    reverse=True,
+                )
+                low_fallback = low_candidates[:LOW_FALLBACK_LIMIT]
+            filter_stats["after_content_filter"] = len(leads)
+            filter_stats["after_dedupe"] = len(leads)
+            filter_stats["final_leads"] = len(leads)
+        if trial_state_set_selection:
+            total_pre_cap = len(leads)
+            if total_pre_cap > TRIAL_STATE_SET_CAP:
+                leads = list(leads[:TRIAL_STATE_SET_CAP])
+                filter_stats["after_dedupe"] = len(leads)
+                filter_stats["final_leads"] = len(leads)
+                filter_stats["shown_priority_counts"] = _tier_counts(leads)
+                print(
+                    "TRIAL_STATE_SET_CAPPED=1 "
+                    f"cap={TRIAL_STATE_SET_CAP} total_pre_cap={total_pre_cap}"
+                )
         if triage_overlay_stats:
             shown_counts = {"high": 0, "medium": 0, "low": 0}
             for lead in leads:
@@ -3451,6 +3552,7 @@ def main() -> None:
                 else:
                     shown_counts["low"] += 1
             filter_stats["shown_priority_counts"] = shown_counts
+        render_tier_counts = _tier_counts(leads)
 
     logger.info("Leads after filters: %d", len(leads))
     logger.info(
@@ -3479,6 +3581,8 @@ def main() -> None:
         summary_label = f"Newly observed today: {len(leads)} signals"
     else:
         summary_label = f"{len(leads)} signals"
+
+    low_available_today = int(tier_counts.get("low", 0)) if isinstance(tier_counts, dict) else 0
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     run_diagnostics_path = os.path.join(args.output_dir, "run_diagnostics.jsonl")
@@ -3685,8 +3789,21 @@ def main() -> None:
     prefs_checked = False
     prefs_ok = True
     prefs_detail = ""
+    crm_send_events_conn: sqlite3.Connection | None = None
+    crm_send_event_run_id = (
+        f"{str(args.mode or '').strip().upper()}:{str(territory_code or '').strip().upper()}:{territory_date}:{digest_hash[:16]}"
+    )
+    if live_allowed and not args.dry_run and not args.no_state_mutation:
+        try:
+            crm_light.ensure_database()
+            crm_send_events_conn = crm_light.connect()
+            crm_light.init_schema(crm_send_events_conn)
+        except Exception as exc:
+            crm_send_events_conn = None
+            logger.warning("CRM send_events logging unavailable: %s", exc)
+
     if args.mode == "daily" and content_filter not in {"all", "low"}:
-        low_total = int(tier_counts.get("low", 0)) if tier_counts else 0
+        low_total = int(low_available_today)
         low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_tier_counts else 0
         if (low_total > 0 or low_snapshot > 0) and os.getenv("PREFS_LINKS_DISABLED", "").strip().lower() not in {"1", "true", "yes"}:
             prefs_checked = True
@@ -3778,7 +3895,7 @@ def main() -> None:
             and subscriber_key
             and content_filter not in {"all", "low"}
         ):
-            low_total = int(tier_counts.get("low", 0)) if tier_counts else 0
+            low_total = int(low_available_today)
             low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_tier_counts else 0
             # Render a prefs toggle link when it matters:
             # - lows are available and currently hidden (enable)
@@ -3828,7 +3945,7 @@ def main() -> None:
             )
 
         if args.mode == "daily" and tier_counts is not None and content_filter not in {"all", "low"}:
-            low_today = int(tier_counts.get("low", 0))
+            low_today = int(low_available_today)
             print(
                 "LOW_SIGNALS_PREF "
                 f"lows_enabled={'YES' if include_lows_pref else 'NO'} "
@@ -3887,7 +4004,8 @@ def main() -> None:
             content_filter=content_filter,
             include_low_fallback=include_low_fallback,
             branding=branding,
-            tier_counts=tier_counts if args.mode == "daily" else None,
+            tier_counts=render_tier_counts if args.mode == "daily" else None,
+            low_available_today=low_available_today if args.mode == "daily" else None,
             enable_lows_url=enable_lows_url,
             disable_lows_url=disable_lows_url,
             include_lows=include_lows_pref,
@@ -3929,7 +4047,8 @@ def main() -> None:
                     content_filter=content_filter,
                     include_low_fallback=include_low_fallback,
                     branding=branding,
-                    tier_counts=tier_counts if args.mode == "daily" else None,
+                    tier_counts=render_tier_counts if args.mode == "daily" else None,
+                    low_available_today=low_available_today if args.mode == "daily" else None,
                     enable_lows_url=enable_lows_url,
                     disable_lows_url=disable_lows_url,
                     include_lows=include_lows_pref,
@@ -3970,7 +4089,8 @@ def main() -> None:
                     content_filter=content_filter,
                     include_low_fallback=include_low_fallback,
                     branding=branding,
-                    tier_counts=tier_counts if args.mode == "daily" else None,
+                    tier_counts=render_tier_counts if args.mode == "daily" else None,
+                    low_available_today=low_available_today if args.mode == "daily" else None,
                     enable_lows_url=enable_lows_url,
                     disable_lows_url=disable_lows_url,
                     include_lows=include_lows_pref,
@@ -4016,7 +4136,8 @@ def main() -> None:
                     content_filter=content_filter,
                     include_low_fallback=include_low_fallback,
                     branding=branding,
-                    tier_counts=tier_counts if args.mode == "daily" else None,
+                    tier_counts=render_tier_counts if args.mode == "daily" else None,
+                    low_available_today=low_available_today if args.mode == "daily" else None,
                     enable_lows_url=enable_lows_url,
                     disable_lows_url=disable_lows_url,
                     include_lows=include_lows_pref,
@@ -4050,7 +4171,8 @@ def main() -> None:
             content_filter=content_filter,
             include_low_fallback=include_low_fallback,
             branding=branding,
-            tier_counts=tier_counts if args.mode == "daily" else None,
+            tier_counts=render_tier_counts if args.mode == "daily" else None,
+            low_available_today=low_available_today if args.mode == "daily" else None,
             enable_lows_url=enable_lows_url,
             disable_lows_url=disable_lows_url,
             include_lows=include_lows_pref,
@@ -4081,11 +4203,11 @@ def main() -> None:
 
         if persist_trial_payload and trial_payload_path is not None and not trial_payload_written:
             payload_tiers = {"high": 0, "medium": 0, "low": 0}
-            if isinstance(tier_counts, dict):
+            if isinstance(render_tier_counts, dict):
                 payload_tiers = {
-                    "high": int(tier_counts.get("high", 0)),
-                    "medium": int(tier_counts.get("medium", 0)),
-                    "low": int(tier_counts.get("low", 0)),
+                    "high": int(render_tier_counts.get("high", 0)),
+                    "medium": int(render_tier_counts.get("medium", 0)),
+                    "low": int(render_tier_counts.get("low", 0)),
                 }
             selected_keys = _selected_lead_keys_for_payload(
                 leads=leads,
@@ -4138,7 +4260,7 @@ def main() -> None:
             if args.mode == "daily" and content_filter not in {"all", "low"}:
                 if include_lows_pref and (not disable_lows_url) and (not snapshot_disable_lows_url):
                     print("SMOKE_NOTE prefs_cta=missing_disable_lows_url")
-                if (not include_lows_pref) and (tier_counts and int(tier_counts.get("low", 0)) > 0) and (not enable_lows_url):
+                if (not include_lows_pref) and (int(low_available_today) > 0) and (not enable_lows_url):
                     print("SMOKE_NOTE prefs_cta=missing_enable_lows_url")
                 if snapshot_label and snapshot_tier_counts and int(snapshot_tier_counts.get("low", 0)) > 0:
                     if include_lows_pref and (not snapshot_disable_lows_url):
@@ -4148,9 +4270,9 @@ def main() -> None:
 
             # Print compact quality summary.
             terr_label = territory_display_name(territory_code) or (territory_code or "")
-            tier_high = int(tier_counts.get("high", 0)) if tier_counts else 0
-            tier_med = int(tier_counts.get("medium", 0)) if tier_counts else 0
-            tier_low = int(tier_counts.get("low", 0)) if tier_counts else 0
+            tier_high = int(render_tier_counts.get("high", 0)) if render_tier_counts else 0
+            tier_med = int(render_tier_counts.get("medium", 0)) if render_tier_counts else 0
+            tier_low = int(render_tier_counts.get("low", 0)) if render_tier_counts else 0
             html_bytes_now = _html_bytes(html_body)
             variant = "baseline" if args.mode == "baseline" else ("starter_snapshot" if snapshot_mode else "daily_new_since_last_send")
             new_count = int(len(leads))
@@ -4243,6 +4365,34 @@ def main() -> None:
                 "content_filter": content_filter,
             },
         )
+        if crm_send_events_conn is not None:
+            try:
+                event_status = "SENT" if success else "FAILED"
+                crm_light.append_send_event(
+                    crm_send_events_conn,
+                    subscriber_key=subscriber_key or customer_id,
+                    recipient_email=recipient,
+                    variant=str(args.mode or "").strip().upper(),
+                    status=event_status,
+                    run_id=crm_send_event_run_id,
+                    meta={
+                        "customer_id": customer_id,
+                        "mode": str(args.mode or "").strip().lower(),
+                        "territory_code": str(territory_code or "").strip().upper(),
+                        "digest_hash": digest_hash,
+                        "smtp_message_id": str(message_id or ""),
+                        "error": str(error or ""),
+                    },
+                    ts_utc=datetime.now(timezone.utc).isoformat(),
+                )
+            except Exception as exc:
+                logger.warning("send_events append failed for %s: %s", recipient, exc)
+
+    if crm_send_events_conn is not None:
+        try:
+            crm_send_events_conn.close()
+        except Exception:
+            pass
 
     if not args.smoke_cchevali:
         print("\n" + "=" * 72)

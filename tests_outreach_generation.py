@@ -1,6 +1,7 @@
 import csv
 import io
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -17,10 +18,26 @@ SCRIPT = REPO_ROOT / "run_prospect_generation.py"
 
 
 class TestProspectGeneration(unittest.TestCase):
+    _STRIP_ENV_PREFIXES = (
+        "PROSPECT_AUTOGROW_",
+        "PROSPECT_ENRICH_",
+        "OUTREACH_",
+        "APOLLO_",
+        "HUNTER_",
+        "AI_TRIAGE_",
+        "TRIAL_",
+    )
+    _STRIP_ENV_KEYS = (
+        "DATA_DIR",
+        "SIGNAL_FRESHNESS_MAX_DAYS",
+        "UNSUB_ENDPOINT_BASE",
+        "UNSUB_SECRET",
+    )
+
     def _test_env(self, env_overrides: dict[str, str | None]) -> dict[str, str]:
         env = os.environ.copy()
         for key in list(env.keys()):
-            if key.startswith("PROSPECT_AUTOGROW_") or key.startswith("APOLLO_"):
+            if key in self._STRIP_ENV_KEYS or any(key.startswith(prefix) for prefix in self._STRIP_ENV_PREFIXES):
                 env.pop(key, None)
         env["PYTHONPATH"] = str(REPO_ROOT)
         for k, v in env_overrides.items():
@@ -49,6 +66,28 @@ class TestProspectGeneration(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def _extract_token_int(self, output: str, token: str) -> int:
+        match = re.search(rf"{re.escape(token)}=(\d+)", output or "")
+        if not match:
+            self.fail(f"missing_token={token}")
+        return int(match.group(1))
+
+    def _parse_input_cohort_counts(self, output: str) -> tuple[int, int, int]:
+        for line in (output or "").splitlines():
+            if not line.startswith("GENERATOR_INPUT_COHORT "):
+                continue
+            parts = {}
+            for item in line.split():
+                if "=" not in item:
+                    continue
+                key, _, value = item.partition("=")
+                parts[key] = value
+            try:
+                return int(parts.get("crm_total", "0")), int(parts.get("eligible", "0")), int(parts.get("excluded", "0"))
+            except Exception as exc:  # pragma: no cover
+                self.fail(f"bad_cohort_line={line} err={exc}")
+        self.fail("missing_token=GENERATOR_INPUT_COHORT")
 
     def test_module_importable_and_main_callable(self):
         from outreach import run_prospect_generation as generator
@@ -94,6 +133,223 @@ class TestProspectGeneration(unittest.TestCase):
             )
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", p.stdout or "")
+
+    def test_states_flag_supports_csv_and_all_scope(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            explicit_scope = self._run(
+                ["--print-config", "--for-date", "2026-02-18", "--states", "TX,CA,FL"],
+                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"},
+            )
+            self.assertEqual(explicit_scope.returncode, 0, msg=explicit_scope.stderr + "\n" + explicit_scope.stdout)
+            out_explicit = explicit_scope.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out_explicit)
+            self.assertIn("GENERATOR_STATE_SCOPE=TX,CA,FL", out_explicit)
+
+            csv_scope = self._run(
+                ["--print-config", "--for-date", "2026-02-19", "--states", "CA,FL"],
+                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"},
+            )
+            self.assertEqual(csv_scope.returncode, 0, msg=csv_scope.stderr + "\n" + csv_scope.stdout)
+            out_csv = csv_scope.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=CA,FL", out_csv)
+            self.assertIn("GENERATOR_STATE_SCOPE=CA,FL", out_csv)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out_csv)
+
+            all_scope = self._run(
+                ["--print-config", "--for-date", "2026-02-18", "--states", "all"],
+                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"},
+            )
+            self.assertEqual(all_scope.returncode, 0, msg=all_scope.stderr + "\n" + all_scope.stdout)
+            out_all = all_scope.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=all", out_all)
+            self.assertIn("GENERATOR_STATE_SCOPE=all", out_all)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out_all)
+
+    def test_input_cohort_reports_exclusion_breakdown_tokens(self):
+        from outreach import crm_store
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\nsuppressed@exampletx.com\n", encoding="utf-8")
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                rows = [
+                    ("eligible_tx", "eligible@exampletx.com", "TX", "new", None),
+                    ("missing_state", "nostate@example.com", "", "new", None),
+                    ("state_mismatch", "ca@exampleca.com", "CA", "new", None),
+                    ("missing_email", "", "TX", "new", None),
+                    ("free_domain", "freedomain@gmail.com", "TX", "new", None),
+                    ("suppressed", "suppressed@exampletx.com", "TX", "new", None),
+                    ("ineligible_status", "ineligible@exampletx.com", "TX", "converted", None),
+                    ("other_invalid", "bad-email", "TX", "new", None),
+                ]
+                for prospect_id, email, state, status, last_contacted_at in rows:
+                    conn.execute(
+                        """
+                        INSERT INTO prospects(
+                          prospect_id, firm, contact_name, email, title, city, state, website, source,
+                          score, status, created_at, last_contacted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            prospect_id,
+                            "Firm",
+                            "",
+                            email,
+                            "Owner",
+                            "City",
+                            state,
+                            "",
+                            "seed",
+                            0,
+                            status,
+                            now,
+                            last_contacted_at,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            p = self._run(["--print-config"], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("GENERATOR_FILTERED_MISSING_STATE=1", out)
+            self.assertIn("GENERATOR_FILTERED_STATE_MISMATCH=1", out)
+            self.assertIn("GENERATOR_FILTERED_MISSING_EMAIL=1", out)
+            self.assertIn("GENERATOR_FILTERED_SUPPRESSED=1", out)
+            self.assertIn("GENERATOR_FILTERED_FREE_DOMAIN=1", out)
+            self.assertIn("GENERATOR_FILTERED_ALREADY_SENT_OR_INELIGIBLE=1", out)
+            self.assertIn("GENERATOR_FILTERED_OTHER=1", out)
+            self.assertIn("GENERATOR_INPUT_COHORT crm_total=8 eligible=1 excluded=7", out)
+            crm_total, eligible, excluded = self._parse_input_cohort_counts(out)
+            self.assertEqual(eligible + excluded, crm_total)
+            self.assertEqual(self._extract_token_int(out, "GENERATOR_ROWS_READ"), eligible)
+
+    def test_states_cli_scope_applies_to_cohort_and_rows_read_consistently(self):
+        from outreach import crm_store
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                states = ("TX", "CA", "FL")
+                for idx in range(98):
+                    state = states[idx % len(states)]
+                    conn.execute(
+                        """
+                        INSERT INTO prospects(
+                          prospect_id, firm, contact_name, email, title, city, state, website, source,
+                          score, status, created_at, last_contacted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"eligible_{idx}",
+                            f"Firm {idx}",
+                            "",
+                            f"eligible{idx}@example.com",
+                            "Owner",
+                            "City",
+                            state,
+                            "",
+                            "seed",
+                            0,
+                            "new",
+                            now,
+                            None,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            p = self._run(
+                ["--print-config", "--states", "TX,CA,FL"],
+                {
+                    "DATA_DIR": str(data_dir),
+                    "OUTREACH_STATES": "TX",
+                    "PROSPECT_AUTOGROW_STATES": "TX",
+                },
+            )
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out)
+            self.assertIn("GENERATOR_STATE_SCOPE=TX,CA,FL", out)
+            self.assertIn("GENERATOR_FILTERED_STATE_MISMATCH=0", out)
+            crm_total, eligible, excluded = self._parse_input_cohort_counts(out)
+            self.assertEqual(crm_total, 98)
+            self.assertEqual(eligible, 98)
+            self.assertEqual(excluded, 0)
+            self.assertEqual(eligible + excluded, crm_total)
+            self.assertEqual(self._extract_token_int(out, "GENERATOR_ROWS_READ"), eligible)
+
+    def test_states_all_disables_state_mismatch_filtering(self):
+        from outreach import crm_store
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                rows = [
+                    ("tx_1", "tx1@example.com", "TX"),
+                    ("ca_1", "ca1@example.com", "CA"),
+                    ("fl_1", "fl1@example.com", "FL"),
+                    ("ny_1", "ny1@example.com", "NY"),
+                    ("missing_state", "nostate@example.com", ""),
+                ]
+                for prospect_id, email, state in rows:
+                    conn.execute(
+                        """
+                        INSERT INTO prospects(
+                          prospect_id, firm, contact_name, email, title, city, state, website, source,
+                          score, status, created_at, last_contacted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            prospect_id,
+                            "Firm",
+                            "",
+                            email,
+                            "Owner",
+                            "City",
+                            state,
+                            "",
+                            "seed",
+                            0,
+                            "new",
+                            now,
+                            None,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            p = self._run(["--print-config", "--states", "all"], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=all", out)
+            self.assertIn("GENERATOR_STATE_SCOPE=all", out)
+            self.assertIn("GENERATOR_FILTERED_STATE_MISMATCH=0", out)
+            crm_total, eligible, excluded = self._parse_input_cohort_counts(out)
+            self.assertEqual(crm_total, 5)
+            self.assertEqual(eligible, 4)
+            self.assertEqual(excluded, 1)
+            self.assertEqual(eligible + excluded, crm_total)
+            self.assertEqual(self._extract_token_int(out, "GENERATOR_ROWS_READ"), eligible)
 
     def test_autogrow_enabled_backlog_targeted_and_deterministic_slice(self):
         from outreach import crm_store
@@ -177,7 +433,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows", return_value=mocked_fetch_result) as mocked_fetch:
                     with redirect_stdout(buf):
                         rc = generator.main(["--for-date", "2026-02-18"])
@@ -283,7 +539,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
                     return_value=mocked_fetch_result,
@@ -299,11 +555,83 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
             self.assertIn("GENERATOR_AUTOGROW_BACKLOG_CURRENT=3", out)
             self.assertIn("GENERATOR_AUTOGROW_NEW_NEEDED=57", out)
-            self.assertIn("GENERATOR_AUTOGROW_STATE=CA backlog_current=3 new_needed=57", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATE=CA backlog_current=3 backlog_sendable_current=3 new_needed=57", out)
             self.assertIn("GENERATOR_STATE_BACKLOG_BELOW_TARGET state=CA backlog_current=3 target=60 gap=57", out)
             self.assertIn("GENERATOR_AIHA_ROWS_ACCEPTED=57", out)
             self.assertIn("GENERATOR_AUTOGROW_TOTAL_ACCEPTED=57", out)
             self.assertIn("GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=0 states=none", out)
+
+    def test_safety_net_forces_when_sendable_below_floor_even_with_large_pool(self):
+        from outreach import crm_store
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                for i in range(27):
+                    conn.execute(
+                        """
+                        INSERT INTO prospects(
+                          prospect_id, firm, contact_name, email, title, city, state, website, source,
+                          score, status, created_at, last_contacted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"tx_pool_{i}",
+                            "Firm",
+                            "",
+                            f"info+{i}@exampletx.com",
+                            "Owner",
+                            "Austin",
+                            "TX",
+                            "",
+                            "seed",
+                            0,
+                            "new",
+                            now,
+                            None,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "0",
+                "PROSPECT_AUTOGROW_SAFETY_NET_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA",
+                "OUTREACH_SKIP_ROLE_INBOXES": "1",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
+                    return_value={
+                        "rows": [],
+                        "cache_used": False,
+                        "cache_age_days": 0,
+                        "cache_path": data_dir / "prospect_generation" / "cache" / "aiha" / "state_TX.json",
+                        "pages_fetched": 0,
+                        "parse_mode": "TEXT_CONTAINER",
+                        "diagnostics_path": None,
+                    },
+                ):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_BACKLOG_CURRENT=0", out)
+            self.assertIn("GENERATOR_AUTOGROW_SAFETY_NET_FORCED=1 reason=SENDABLE_BELOW_FLOOR states=TX:0", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATE=TX backlog_current=0 backlog_sendable_current=0", out)
 
     def test_autogrow_enabled_with_empty_sources_emits_explicit_skip_token(self):
         from outreach import run_prospect_generation as generator
@@ -322,7 +650,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows") as mocked_fetch:
                     with redirect_stdout(buf):
                         rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
@@ -417,7 +745,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
                     return_value=aiha_result,
@@ -493,7 +821,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
                     side_effect=_aiha_fetch,
@@ -504,7 +832,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual([c.kwargs.get("state") for c in mocked_aiha.call_args_list], ["TX", "FL"])
             out = buf.getvalue()
-            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
             self.assertIn("GENERATOR_AUTOGROW_STATES=TX,FL", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=TX rows_candidate=1 rows_accepted=1", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=FL rows_candidate=1 rows_accepted=1", out)
@@ -593,7 +921,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
                     return_value=aiha_result,
@@ -612,7 +940,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(mocked_ohs.call_args.kwargs["state"], "FL")
 
             out = buf.getvalue()
-            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
             self.assertIn("GENERATOR_AUTOGROW_STATES=FL", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=FL rows_candidate=3 rows_accepted=0", out)
             self.assertIn("rejected_invalid_email=1", out)
@@ -671,7 +999,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows",
                     return_value=apollo_result,
@@ -716,7 +1044,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows",
                     return_value={"rows": [], "cache_path": data_dir / "apollo.json", "error": "rate_limited", "diagnostics_path": None},
@@ -773,7 +1101,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
 
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows",
                     return_value=apollo_result,
@@ -800,7 +1128,7 @@ class TestProspectGeneration(unittest.TestCase):
             }
             buf = io.StringIO()
             err_buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
                     return_value={
@@ -829,7 +1157,7 @@ class TestProspectGeneration(unittest.TestCase):
             "APOLLO_ENRICH_ENABLED": "1",
         }
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, env, clear=False):
+        with mock.patch.dict(os.environ, self._test_env(env), clear=True):
             with mock.patch(
                 "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
                 return_value={"ok": True, "forbidden": False, "status": 200, "endpoint": "api/v1/usage_stats/api_usage_stats"},
@@ -848,7 +1176,7 @@ class TestProspectGeneration(unittest.TestCase):
         }
         out_buf = io.StringIO()
         err_buf = io.StringIO()
-        with mock.patch.dict(os.environ, env, clear=False):
+        with mock.patch.dict(os.environ, self._test_env(env), clear=True):
             with mock.patch(
                 "outreach.run_prospect_generation.prospect_sources_apollo.doctor_apollo_api",
                 return_value={
@@ -926,7 +1254,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "APOLLO_ENRICH_ENABLED": "1",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows", return_value=aiha_result):
                     with mock.patch("outreach.run_prospect_generation.prospect_sources_ohs_bg.fetch_ohs_bg_state_rows", return_value=ohs_result):
                         with mock.patch("outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows", return_value=apollo_result):
@@ -987,14 +1315,14 @@ class TestProspectGeneration(unittest.TestCase):
                 "APOLLO_ENRICH_MAX_PER_RUN": "5",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows", side_effect=_apollo_fetch):
                     with redirect_stdout(buf):
                         rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
             self.assertEqual(rc, 0)
             self.assertEqual(calls, ["TX", "FL"])
             out = buf.getvalue()
-            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
             self.assertIn("GENERATOR_AUTOGROW_STATES=TX,FL", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=TX rows_candidate=1 rows_accepted=1", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=FL rows_candidate=1 rows_accepted=1", out)
@@ -1121,7 +1449,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "PROSPECT_AUTOGROW_SOURCES": "BCSP,OSHA_NEWS,STATE_LIC",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_crawl4ai_runtime", return_value={"crawl4ai_installed": False, "playwright_browsers_installed": False, "error_reason": "missing"}):
                     with mock.patch(
                         "outreach.run_prospect_generation.scraper_engine.probe_source_availability",
@@ -1181,7 +1509,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "PROSPECT_ENRICH_DOMAIN_ENABLED": "1",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows",
                     return_value=state_lic_result,
@@ -1234,7 +1562,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "PROSPECT_AUTOGROW_SOURCES": "STATE_LIC",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch(
                     "outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows",
                     return_value=state_lic_result,
@@ -1274,7 +1602,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "PROSPECT_AUTOGROW_SOURCES": "BCSP",
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.fetch_bcsp_state_rows", return_value=bcsp_result):
                     with redirect_stdout(buf):
                         rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
@@ -1319,7 +1647,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "diagnostics_path": None,
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.fetch_bcsp_state_rows", return_value=bcsp_fail):
                     with mock.patch("outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows", return_value=state_lic_ok):
                         with redirect_stdout(buf):
@@ -1365,7 +1693,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "diagnostics_path": None,
             }
             buf = io.StringIO()
-            with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch("outreach.run_prospect_generation.prospect_sources_apollo.fetch_apollo_state_rows", return_value=apollo_result):
                     with redirect_stdout(buf):
                         rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
@@ -1380,7 +1708,7 @@ class TestProspectGeneration(unittest.TestCase):
             "PROSPECT_AUTOGROW_SOURCES": "BCSP,STATE_LIC",
         }
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, env, clear=False):
+        with mock.patch.dict(os.environ, self._test_env(env), clear=True):
             with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_crawl4ai_runtime", return_value={"crawl4ai_installed": False, "playwright_browsers_installed": False, "error_reason": "missing"}):
                 with mock.patch("outreach.run_prospect_generation.scraper_engine.probe_source_availability", side_effect=[{"available": True, "reason": "http_html"}, {"available": True, "reason": "http_api"}]):
                     with mock.patch("outreach.run_prospect_generation.prospect_sources_bcsp.doctor_probe_bcsp", return_value={"ok": True, "status": 200, "url": "https://directory.bcsp.org/"}):
@@ -1396,3 +1724,4 @@ class TestProspectGeneration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

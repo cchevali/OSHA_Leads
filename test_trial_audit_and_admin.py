@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 import crm_light
 import run_trial_admin
@@ -61,6 +62,54 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
+
+    def test_add_trial_states_creates_state_set_territory_and_references_code(self) -> None:
+        leads_db = self._tmp_path / "osha.sqlite"
+        schema_path = Path(__file__).resolve().parent / "schema.sql"
+        captured: dict[str, object] = {}
+
+        def _fake_add_trial(req, leads_db_path, schema_path, crm_db_path):  # type: ignore[no-untyped-def]
+            captured["req"] = req
+            captured["leads_db_path"] = leads_db_path
+            captured["schema_path"] = schema_path
+            captured["crm_db_path"] = crm_db_path
+
+        with (
+            mock.patch.object(run_trial_admin, "merge_territory_definition") as merge_mock,
+            mock.patch.object(run_trial_admin, "add_trial", side_effect=_fake_add_trial),
+        ):
+            code = run_trial_admin.main(
+                [
+                    "add-trial",
+                    "--subscriber-key",
+                    "facs_trial",
+                    "--email",
+                    "taylor.thomas@facs.com",
+                    "--states",
+                    "ca,or,wa",
+                    "--start-date",
+                    "2026-03-03",
+                    "--sends-limit",
+                    "14",
+                    "--db",
+                    str(leads_db),
+                    "--schema",
+                    str(schema_path),
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        merge_mock.assert_called_once()
+        merge_args = merge_mock.call_args[0]
+        self.assertEqual(merge_args[0], "FACS_TRIAL_STATES")
+        definition = dict(merge_args[1])
+        self.assertEqual(str(definition.get("kind") or ""), "STATE_SET")
+        self.assertEqual(list(definition.get("states") or []), ["CA", "OR", "WA"])
+
+        req = captured.get("req")
+        self.assertIsNotNone(req)
+        self.assertEqual(getattr(req, "territory_code"), "FACS_TRIAL_STATES")
+        self.assertEqual(getattr(req, "subscriber_key"), "facs_trial")
 
     def test_digest_diff_reports_missing_and_unexpected(self) -> None:
         diff = trial_audit.digest_diff(
@@ -350,6 +399,61 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
         statuses = [str(row["status"]) for row in rows]
         self.assertIn("SCOPE_ENHANCEMENT_SENT", statuses)
         self.assertIn("SKIP_SCOPE_ENHANCEMENT_ALREADY_SENT", statuses)
+
+    def test_append_event_defaults_ts_utc_when_missing(self) -> None:
+        crm_db = crm_light.ensure_database(None)
+        with crm_light.open_conn(crm_db) as conn:
+            crm_light.init_schema(conn)
+            crm_light.upsert_subscriber(
+                conn,
+                subscriber_key="wally_trial",
+                email="wgs@indigocompliance.com",
+                territory_code="TX_TRI",
+                tz="America/Chicago",
+                status="trial",
+            )
+            crm_light.upsert_trial_state(
+                conn,
+                subscriber_key="wally_trial",
+                start_date="2026-02-04",
+                sends_limit=14,
+            )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run_trial_admin.append_event(
+                subscriber_key="wally_trial",
+                ts_utc="",
+                status="SENT",
+                variant="DAILY",
+                run_id="scheduler_wally_trial_20260302T131400Z",
+                primary_recipient="wgs@indigocompliance.com",
+                send_mode="LIVE",
+                local_date="2026-03-02",
+                meta_source="wally_trial_scheduler",
+                crm_db_path=crm_db,
+            )
+        self.assertEqual(code, 0)
+        text = buf.getvalue()
+        self.assertIn("OK append-event", text)
+        self.assertRegex(text, r"ts_utc=\d{4}-\d{2}-\d{2}T")
+        self.assertIn("+00:00", text)
+
+        with crm_light.open_conn(crm_db) as conn:
+            row = conn.execute(
+                """
+                SELECT ts_utc, status, variant, run_id, meta_json
+                FROM send_events
+                WHERE subscriber_key = 'wally_trial'
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertIn("+00:00", str(row["ts_utc"] or ""))
+        self.assertEqual(str(row["status"] or ""), "SENT")
+        self.assertEqual(str(row["variant"] or ""), "DAILY")
+        self.assertEqual(str(row["run_id"] or ""), "scheduler_wally_trial_20260302T131400Z")
 
     def test_extend_all_trials_idempotent_and_math(self) -> None:
         crm_db = crm_light.ensure_database(None)
