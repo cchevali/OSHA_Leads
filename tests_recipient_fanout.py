@@ -370,6 +370,45 @@ class TestRecipientFanout(unittest.TestCase):
             self.assertNotIn("config1@example.com", {row["recipient"] for row in email_log})
             self.assertNotIn("profile1@example.com", {row["recipient"] for row in email_log})
 
+    def test_config_recipients_override_single_profile_email_when_entitlement_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "fanout.sqlite"
+            config_path = tmp_path / "customer.json"
+            out_dir = tmp_path / "out"
+            data_dir = tmp_path / "data"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            config_recipients = ["wgs@indigocompliance.com", "brandon@indigoenergyservices.com"]
+            init_db(db_path)
+            write_config(
+                config_path,
+                config_recipients,
+                subscriber_key="fanout_sub",
+                customer_id="fanout_test",
+                allow_live_send=True,
+                pilot_mode=False,
+            )
+            insert_subscriber(
+                db_path,
+                subscriber_key="fanout_sub",
+                email="wgs@indigocompliance.com",
+                recipients=[],
+                send_enabled=1,
+                active=1,
+                customer_id="fanout_test",
+            )
+
+            result = run_send(db_path, config_path, out_dir, data_dir, send_live=True)
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertIn("SEND_START mode=LIVE intended_recipient_count=2", result.stdout)
+
+            with (out_dir / "email_log.csv").open("r", encoding="utf-8") as f:
+                email_log = list(csv.DictReader(f))
+            self.assertEqual(len(email_log), 2)
+            self.assertEqual({row["recipient"] for row in email_log}, set(config_recipients))
+
     def test_safe_mode_forces_admin_recipient(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

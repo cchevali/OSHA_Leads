@@ -3004,12 +3004,14 @@ def collect_recipients(
 
     if subscriber_profile.get("recipients"):
         return _dedupe_recipient_emails(list(subscriber_profile["recipients"]))
-    if subscriber_profile.get("email"):
-        return _dedupe_recipient_emails([str(subscriber_profile["email"])])
 
     config_recipients = config.get("recipients") or config.get("email_recipients") or []
     if isinstance(config_recipients, list):
-        return _dedupe_recipient_emails([str(email) for email in config_recipients])
+        deduped_config = _dedupe_recipient_emails([str(email) for email in config_recipients])
+        if deduped_config:
+            return deduped_config
+    if subscriber_profile.get("email"):
+        return _dedupe_recipient_emails([str(subscriber_profile["email"])])
     return []
 
 

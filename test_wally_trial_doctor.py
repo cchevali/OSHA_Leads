@@ -296,7 +296,16 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 text,
             )
             self.assertIn("if %RUN_EXIT% EQU 0 (", text)
+            self.assertIn(
+                "for /f \"delims=\" %%t in ('py -3 -c \"from datetime import datetime,timezone;print(datetime.now(timezone.utc).strftime(\\\"%%Y-%%m-%%dT%%H:%%M:%%SZ\\\"))\"') do set TRIAL_TS_UTC=%%t",
+                text,
+            )
+            self.assertIn(
+                "for /f \"delims=\" %%r in ('py -3 -c \"from datetime import datetime,timezone;print(\\\"scheduler_wally_trial_\\\" + datetime.now(timezone.utc).strftime(\\\"%%Y%%m%%dT%%H%%M%%SZ\\\"))\"') do set TRIAL_RUN_ID=%%r",
+                text,
+            )
             self.assertIn("py -3 run_trial_admin.py append-event --subscriber-key wally_trial --status SENT --variant DAILY --ts-utc \"%TRIAL_TS_UTC%\" --run-id \"%TRIAL_RUN_ID%\"", text)
+            self.assertIn("WARN_TRIAL_TS_CAPTURE_FAILED subscriber_key=wally_trial", text)
             self.assertIn("WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key=wally_trial", text)
 
     def test_run_live_send_appends_trial_event_once_on_success(self) -> None:
