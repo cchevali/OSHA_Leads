@@ -889,6 +889,9 @@ def run_trial_daily(
             event_mode = "DRY_RUN" if code == 0 else "ERROR"
         else:
             mode = _try_extract_latest_send_start_mode(customer_id=customer_id)
+            if mode is None:
+                # Fallback to subprocess output when latest.json/send_result is unavailable.
+                mode = _try_extract_last_send_start_mode_from_log_text(out)
             if code == 0 and mode == "LIVE":
                 status = "SENT"
                 event_mode = "LIVE"
