@@ -347,15 +347,207 @@ def _priority_label(score: int) -> str:
     return "Low"
 
 
+_PRIORITY_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "SUPPRESS": -1}
+
+
+def _priority_label_from_value(value: str) -> str:
+    token = str(value or "").strip().upper()
+    if token == "HIGH":
+        return "High"
+    if token == "MEDIUM":
+        return "Medium"
+    if token == "LOW":
+        return "Low"
+    return "Low"
+
+
+def _priority_from_score_value(score: int) -> str:
+    if int(score) >= 10:
+        return "HIGH"
+    if int(score) >= 6:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _priority_rank_value(value: str) -> int:
+    return int(_PRIORITY_RANK.get(str(value or "").strip().upper(), -1))
+
+
+def _lead_rules_priority(lead: dict[str, Any]) -> str:
+    value = str(lead.get("rules_priority") or lead.get("triage_rules_priority") or "").strip().upper()
+    if value in {"HIGH", "MEDIUM", "LOW", "SUPPRESS"}:
+        return value
+    return _priority_from_score_value(int(lead.get("lead_score") or 0))
+
+
+def _lead_effective_priority(lead: dict[str, Any]) -> str:
+    value = str(lead.get("effective_priority") or lead.get("triage_final_priority") or "").strip().upper()
+    if value in {"HIGH", "MEDIUM", "LOW", "SUPPRESS"}:
+        return value
+    return _lead_rules_priority(lead)
+
+
+def _lead_decision_source(lead: dict[str, Any]) -> str:
+    source = str(lead.get("decision_source") or "").strip().lower()
+    if source in {"rules_only", "ai_overlay"}:
+        return source
+    ai_priority = str(lead.get("ai_priority") or "").strip().upper()
+    return "ai_overlay" if ai_priority in {"HIGH", "MEDIUM", "LOW"} else "rules_only"
+
+
+def _lead_delta_direction(lead: dict[str, Any]) -> str:
+    direction = str(lead.get("delta_direction") or "").strip().lower()
+    if direction in {"raised", "lowered", "unchanged", "no_ai"}:
+        return direction
+    ai_priority = str(lead.get("ai_priority") or "").strip().upper()
+    if ai_priority not in {"HIGH", "MEDIUM", "LOW"}:
+        return "no_ai"
+    rules_priority = _lead_rules_priority(lead)
+    effective_priority = _lead_effective_priority(lead)
+    if _priority_rank_value(effective_priority) > _priority_rank_value(rules_priority):
+        return "raised"
+    if _priority_rank_value(effective_priority) < _priority_rank_value(rules_priority):
+        return "lowered"
+    return "unchanged"
+
+
+def _inspection_type_token(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if "referral" in text:
+        return "referral"
+    if "complaint" in text:
+        return "complaint"
+    if "accident" in text:
+        return "accident"
+    return text
+
+
+def _event_type_weight(lead: dict[str, Any]) -> int:
+    token = _inspection_type_token(lead.get("inspection_type"))
+    if token in {"referral", "complaint"}:
+        return 3
+    if token == "accident":
+        return 2
+    return 1
+
+
+def _naics_fit_weight(lead: dict[str, Any]) -> int:
+    reasons = [str(x or "").strip().lower() for x in (lead.get("triage_overlay_reasons") or [])]
+    if "naics_emphasis" in reasons:
+        return 2
+    naics = "".join(ch for ch in str(lead.get("naics") or "") if ch.isdigit())
+    if naics.startswith("23") or naics.startswith("31") or naics.startswith("32") or naics.startswith("33"):
+        return 1
+    return 0
+
+
+def _lead_recency_value(lead: dict[str, Any]) -> float:
+    for field in ("first_seen_at", "changed_at", "last_seen_at", "date_opened"):
+        parsed = _parse_timestamp(str(lead.get(field) or ""))
+        if not parsed:
+            continue
+        aware = _coerce_datetime_aware_utc(parsed)
+        return aware.timestamp()
+    return 0.0
+
+
+def _sort_leads_for_digest(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered = list(rows or [])
+    ordered.sort(
+        key=lambda lead: (
+            _priority_rank_value(_lead_effective_priority(lead)),
+            _event_type_weight(lead),
+            _naics_fit_weight(lead),
+            _lead_recency_value(lead),
+            str(lead.get("activity_nr") or lead.get("lead_key") or lead.get("lead_id") or ""),
+        ),
+        reverse=True,
+    )
+    return ordered
+
+
+def _filter_by_effective_priority(rows: list[dict[str, Any]], content_filter: str) -> tuple[list[dict[str, Any]], int]:
+    mode = normalize_content_filter(content_filter)
+    if mode == "all":
+        return list(rows), 0
+    out: list[dict[str, Any]] = []
+    for lead in list(rows or []):
+        token = _lead_effective_priority(lead)
+        if mode == "high_only" and token == "HIGH":
+            out.append(lead)
+        elif mode == "high_medium" and token in {"HIGH", "MEDIUM"}:
+            out.append(lead)
+    excluded = max(0, len(list(rows or [])) - len(out))
+    return out, excluded
+
+
+def _state_counts_for_rows(rows: list[dict[str, Any]], configured_states: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {str(s).strip().upper(): 0 for s in list(configured_states or []) if str(s).strip()}
+    for lead in list(rows or []):
+        st = str(lead.get("site_state") or "").strip().upper()
+        if not st:
+            continue
+        if st not in counts:
+            counts[st] = 0
+        counts[st] += 1
+    return counts
+
+
+def _build_state_coverage_lines(configured_states: list[str], state_counts: dict[str, int]) -> tuple[str, str, str, str]:
+    ordered = [str(s).strip().upper() for s in list(configured_states or []) if str(s).strip()]
+    if not ordered:
+        ordered = sorted([str(s).strip().upper() for s in state_counts.keys() if str(s).strip()])
+    configured_line = ", ".join(ordered) if ordered else "-"
+    by_state_line = " | ".join([f"{state} {int(state_counts.get(state, 0))}" for state in ordered]) if ordered else "-"
+    zero_states = [state for state in ordered if int(state_counts.get(state, 0)) == 0]
+    zero_line = ", ".join(zero_states)
+    coverage_line = f"configured states ({configured_line}) \u2022 newly observed since last send"
+    return configured_line, by_state_line, zero_line, coverage_line
+
+
+def _sanitize_reason_label(reason: str, max_words: int = 8) -> str:
+    text = " ".join(str(reason or "").strip().split())
+    if not text:
+        return ""
+    words = text.split(" ")
+    return " ".join(words[: max(3, int(max_words))])
+
+
+def _naics_family_label(lead: dict[str, Any]) -> str:
+    digits = "".join(ch for ch in str(lead.get("naics") or "") if ch.isdigit())
+    if digits.startswith("23"):
+        return "contractor"
+    if digits.startswith("31") or digits.startswith("32") or digits.startswith("33"):
+        return "manufacturing"
+    if digits.startswith("54"):
+        return "consulting"
+    if digits.startswith("48") or digits.startswith("49"):
+        return "transport"
+    return "employer"
+
+
+def _reason_chip_label(lead: dict[str, Any]) -> str:
+    if _lead_decision_source(lead) == "ai_overlay" and _lead_delta_direction(lead) in {"raised", "lowered"}:
+        label = _sanitize_reason_label(str(lead.get("ai_reason") or ""))
+        if label:
+            return label
+    event = _inspection_type_token(lead.get("inspection_type")) or "signal"
+    if event in {"referral", "complaint", "accident"}:
+        event_label = event.title()
+    else:
+        event_label = "Signal"
+    return f"{event_label} + {_naics_family_label(lead)}"
+
+
 def _tier_counts(leads: list[dict]) -> dict[str, int]:
     counts = {"high": 0, "medium": 0, "low": 0}
     for lead in leads:
-        score = int(lead.get("lead_score") or 0)
-        if score >= 10:
+        priority = _lead_effective_priority(lead)
+        if priority == "HIGH":
             counts["high"] += 1
-        elif score >= 6:
+        elif priority == "MEDIUM":
             counts["medium"] += 1
-        else:
+        elif priority == "LOW":
             counts["low"] += 1
     return counts
 
@@ -642,6 +834,88 @@ def _selected_lead_keys_for_payload(
         _append(row)
 
     return selected
+
+
+def _lead_key(lead: dict[str, Any]) -> str:
+    return str(lead.get("lead_key") or lead.get("activity_nr") or lead.get("lead_id") or "").strip()
+
+
+def _digest_audit_artifact_dir(
+    *,
+    subscriber_key: str,
+    customer_id: str,
+    trial_subscriber: bool,
+) -> Path:
+    root = crm_light.data_dir()
+    sk = str(subscriber_key or "").strip().lower()
+    cid = str(customer_id or "").strip().lower()
+    if trial_subscriber and sk:
+        out_dir = root / "trials" / sk / "audit"
+    else:
+        bucket = sk or cid or "unknown"
+        out_dir = root / "digests" / bucket / "audit"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _write_digest_audit_artifact(
+    *,
+    subscriber_key: str,
+    customer_id: str,
+    recipient_email: str,
+    territory_code: str,
+    run_id: str,
+    gen_date: str,
+    trial_subscriber: bool,
+    candidates: list[dict[str, Any]],
+    shown_keys: set[str],
+    include_lows_pref: bool,
+    content_filter: str,
+) -> tuple[str, int, int, int]:
+    out_dir = _digest_audit_artifact_dir(
+        subscriber_key=subscriber_key,
+        customer_id=customer_id,
+        trial_subscriber=trial_subscriber,
+    )
+    safe_run = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(run_id or "").strip()) or "run"
+    safe_email = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(recipient_email or "").strip().lower()) or "recipient"
+    out_path = out_dir / f"digest_priority_{gen_date}_{safe_run}_{safe_email}.jsonl"
+
+    candidate_rows = list(candidates or [])
+    mode = normalize_content_filter(content_filter)
+    hidden_low_total = 0
+    shown_total = 0
+    with open(out_path, "w", encoding="utf-8", newline="") as fh:
+        for lead in candidate_rows:
+            key = _lead_key(lead)
+            shown = bool(key and key in shown_keys)
+            if shown:
+                shown_total += 1
+            hidden_reason = "empty"
+            if (not shown) and _lead_effective_priority(lead) == "LOW" and (not include_lows_pref) and mode != "all":
+                hidden_reason = "low_hidden_pref_off"
+                hidden_low_total += 1
+            ai_priority = str(lead.get("ai_priority") or "").strip().upper()
+            row = {
+                "subscriber_key": str(subscriber_key or customer_id or "").strip().lower(),
+                "recipient_email": str(recipient_email or "").strip().lower(),
+                "territory_code": str(territory_code or "").strip().upper(),
+                "run_id": str(run_id or "").strip(),
+                "activity_nr": str(lead.get("activity_nr") or "").strip(),
+                "site_state": str(lead.get("site_state") or "").strip().upper(),
+                "signal_type": str(lead.get("inspection_type") or "").strip(),
+                "rules_priority": _lead_rules_priority(lead),
+                "ai_priority": ai_priority if ai_priority in {"HIGH", "MEDIUM", "LOW"} else None,
+                "effective_priority": _lead_effective_priority(lead),
+                "delta_direction": _lead_delta_direction(lead),
+                "decision_source": _lead_decision_source(lead),
+                "shown_in_email": bool(shown),
+                "hidden_reason": hidden_reason,
+                "ai_reason": str(lead.get("ai_reason") or "").strip() or None,
+            }
+            fh.write(json.dumps(row, separators=(",", ":"), sort_keys=True) + "\n")
+    resolved = str(out_path.resolve(strict=False))
+    return resolved, len(candidate_rows), shown_total, hidden_low_total
 
 
 def ensure_send_log_table(conn: sqlite3.Connection) -> None:
@@ -1390,6 +1664,30 @@ def _load_subscriber_profile(db_path: str, subscriber_key: str | None) -> dict:
     }
 
 
+def _resolve_ai_profile_key(
+    *,
+    config: dict[str, Any],
+    subscriber_key: str | None,
+    territory_code: str | None,
+) -> str:
+    by_subscriber = config.get("ai_triage_profile_by_subscriber")
+    if isinstance(by_subscriber, dict):
+        sk = str(subscriber_key or "").strip().lower()
+        direct_sk = by_subscriber.get(sk)
+        if isinstance(direct_sk, str) and direct_sk.strip():
+            return direct_sk.strip().lower()
+    per_territory = config.get("ai_triage_profile_by_territory")
+    if isinstance(per_territory, dict):
+        terr = str(territory_code or "").strip().upper()
+        direct = per_territory.get(terr)
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip().lower()
+    explicit = str(config.get("ai_triage_profile_key") or "").strip().lower()
+    if explicit:
+        return explicit
+    return "default"
+
+
 def _load_subscriber_entitlement_and_allowlist(
     subscriber_key: str | None,
     email: str | None,
@@ -2061,8 +2359,7 @@ def write_tier_audit_artifact(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     def _tier_for(lead: dict) -> str:
-        score = int(lead.get("lead_score") or 0)
-        return _priority_label(score).lower()
+        return _lead_effective_priority(lead).strip().lower()
 
     def _sample_for(tier: str, limit: int = 5) -> list[dict]:
         samples: list[dict] = []
@@ -2075,8 +2372,11 @@ def write_tier_audit_artifact(
                     "company": (lead.get("establishment_name") or "Unknown").strip(),
                     "signal_type": (lead.get("inspection_type") or "-").strip(),
                     "lead_score": score,
+                    "lead_score_tier": _priority_from_score_value(score).lower(),
+                    "rules_priority": _lead_rules_priority(lead).lower(),
+                    "effective_priority": _lead_effective_priority(lead).lower(),
                     "activity_nr": (lead.get("activity_nr") or "").strip(),
-                    "why": f"lead_score={score} (high>=10, medium>=6, else low)",
+                    "why": _reason_chip_label(lead),
                 }
             )
             if len(samples) >= limit:
@@ -2222,10 +2522,11 @@ def _apply_trial_triage_overlay_if_enabled(
     gen_date: str,
     leads: list[dict[str, Any]],
     dry_run: bool,
+    ai_profile_key: str = "default",
 ) -> tuple[list[dict[str, Any]], dict[str, int], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    if not _is_trial_subscriber(subscriber_key):
-        return leads, {}, [], [], []
-    ai_gate_enabled = _bool_env_enabled("TRIAL_TRIAGE_OVERLAY_ENABLED", default=False)
+    trial_gate_raw = (os.getenv("TRIAL_TRIAGE_OVERLAY_ENABLED") or "").strip()
+    trial_gate_default = _bool_env_enabled("TRIAL_TRIAGE_OVERLAY_ENABLED", default=True) if trial_gate_raw else True
+    ai_gate_enabled = _bool_env_enabled("DIGEST_AI_OVERLAY_ENABLED", default=trial_gate_default)
     if not leads:
         print(f"TRIAL_TRIAGE_OVERLAY rules_enabled=1 ai_enabled={1 if ai_gate_enabled else 0} before=0 after=0")
         return leads, {"kept": 0}, [], [], []
@@ -2242,6 +2543,7 @@ def _apply_trial_triage_overlay_if_enabled(
             cache_rows,
             mode="trial_render",
             allow_ai=bool(ai_gate_enabled),
+            profile_key=str(ai_profile_key or "default"),
         )
     except Exception as exc:
         logger.warning("Trial triage rules failed; using original leads: %s", exc)
@@ -2295,9 +2597,9 @@ def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, 
     parts = ['<table class="signals-table" border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%;">']
     parts.append("<thead>")
     if include_area_office:
-        parts.append("<tr><th>Priority</th><th>Company</th><th>City</th><th>Area Office</th><th>Signal</th><th>Observed</th><th>Event date</th></tr>")
+        parts.append("<tr><th>Priority</th><th>Why</th><th>Company</th><th>City</th><th>Area Office</th><th>Signal</th><th>Observed</th><th>Event date</th></tr>")
     else:
-        parts.append("<tr><th>Priority</th><th>Company</th><th>City</th><th>Signal</th><th>Observed</th><th>Event date</th></tr>")
+        parts.append("<tr><th>Priority</th><th>Why</th><th>Company</th><th>City</th><th>Signal</th><th>Observed</th><th>Event date</th></tr>")
     parts.append("</thead>")
     parts.append("<tbody>")
     for lead in rows[:max_rows]:
@@ -2307,8 +2609,8 @@ def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, 
         itype = lead.get("inspection_type") or "-"
         event_date = lead.get("date_opened") or "-"
         observed = _observed_timestamp(lead, tz)
-        score = int(lead.get("lead_score") or 0)
-        priority = _priority_label(score)
+        priority = _priority_label_from_value(_lead_effective_priority(lead))
+        reason_chip = _reason_chip_label(lead)
         url = lead.get("source_url") or "#"
         company_html = f'<a href="{url}">{company}</a>' if url and url != "#" else company
         if include_area_office:
@@ -2316,6 +2618,7 @@ def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, 
             parts.append(
                 "<tr>"
                 f"<td data-label=\"Priority\">{priority}</td>"
+                f"<td data-label=\"Why\">{reason_chip}</td>"
                 f"<td data-label=\"Company\">{company_html}</td>"
                 f"<td data-label=\"City\">{city}, {state}</td>"
                 f"<td data-label=\"Area office\">{area_office}</td>"
@@ -2328,6 +2631,7 @@ def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, 
             parts.append(
                 "<tr>"
                 f"<td data-label=\"Priority\">{priority}</td>"
+                f"<td data-label=\"Why\">{reason_chip}</td>"
                 f"<td data-label=\"Company\">{company_html}</td>"
                 f"<td data-label=\"City\">{city}, {state}</td>"
                 f"<td data-label=\"Signal\">{itype}</td>"
@@ -2377,6 +2681,10 @@ def generate_digest_html(
     snapshot_disable_lows_url: str | None = None,
     snapshot_rows: list[dict] | None = None,
     snapshot_total: int | None = None,
+    state_summary_states: list[str] | None = None,
+    state_summary_counts: dict[str, int] | None = None,
+    hidden_low_state_counts: dict[str, int] | None = None,
+    priority_methodology_line: str | None = None,
     tz: ZoneInfo | None = None,
 ) -> str:
     states = config["states"]
@@ -2385,11 +2693,12 @@ def generate_digest_html(
     territory_label = territory_display_name(territory_code)
 
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
-    state_counts: dict[str, int] = {}
-    for lead in leads:
-        st = (lead.get("site_state") or "UNK").upper()
-        state_counts[st] = state_counts.get(st, 0) + 1
-    unique_states = [state for state in state_counts.keys() if state]
+    summary_states = [str(s).strip().upper() for s in list(state_summary_states or states) if str(s).strip()]
+    state_counts = state_summary_counts or _state_counts_for_rows(leads, summary_states)
+    configured_line, by_state_line, zero_states_line, coverage_basis_line = _build_state_coverage_lines(
+        summary_states,
+        state_counts,
+    )
     main_limit = min(10, top_k_overall)
     main_rows = leads[:main_limit]
     include_area_office_main = any((lead.get("area_office") or "").strip() for lead in main_rows)
@@ -2454,6 +2763,13 @@ def generate_digest_html(
         html.append(
             f"<p style=\"margin: 6px 0 0 0; color: #555; font-size: 12px;\">Tier summary: High {high}, Medium {medium}, Low {low}</p>"
         )
+        methodology = (
+            priority_methodology_line
+            or "Priority tiers use OSHA signal rules plus AI review for customer-fit ranking (AI may raise or lower tiers; no signals are suppressed by AI)."
+        )
+        html.append(
+            f"<p style=\"margin: 6px 0 0 0; color: #555; font-size: 12px;\">{methodology}</p>"
+        )
     html.append("</div>")
     if mode == "daily" and tier_counts is not None:
         low_today = int(low_available_today) if low_available_today is not None else int(tier_counts.get("low", 0))
@@ -2507,12 +2823,32 @@ def generate_digest_html(
                       "</p>"
                   )
             else:
-                  html.append(
+                html.append(
                      "<p style=\"color: #555; margin: 6px 0 0 0;\">"
                     f"Low signals: <strong>OFF</strong> {low_note} (not shown). Enable lows. "
                     "<span style=\"color:#6b7280; font-size:12px;\">Starts next digest; preview on prefs page (if available).</span>"
                     "</p>"
                   )
+    if mode == "daily":
+        html.append('<div style="background-color: #f8fafc; padding: 12px; border-radius: 6px; margin: 12px 0;">')
+        html.append(f"<p style=\"margin:0;\"><strong>Configured states:</strong> {configured_line}</p>")
+        html.append(f"<p style=\"margin:6px 0 0 0;\"><strong>New signals today by state:</strong> {by_state_line}</p>")
+        if zero_states_line:
+            html.append(f"<p style=\"margin:6px 0 0 0; color:#374151;\">No new signals in {zero_states_line} today</p>")
+        html.append(
+            f"<p style=\"margin:6px 0 0 0; color:#555; font-size:12px;\">Coverage: {coverage_basis_line}</p>"
+        )
+        if hidden_low_state_counts:
+            hidden_total = sum(int(v or 0) for v in hidden_low_state_counts.values())
+            if hidden_total > 0:
+                ordered_hidden = []
+                for state in summary_states:
+                    ordered_hidden.append(f"{state} {int(hidden_low_state_counts.get(state, 0))}")
+                hidden_line = " | ".join(ordered_hidden)
+                html.append(
+                    f"<p style=\"margin:6px 0 0 0; color:#555; font-size:12px;\">Low signals hidden ({hidden_total}): {hidden_line}</p>"
+                )
+        html.append("</div>")
     if coverage_line:
         cov = (coverage_line or "").strip()
         if cov.lower() == "sample format (dummy data)":
@@ -2544,11 +2880,10 @@ def generate_digest_html(
             html.append(f"<h2>Low priority ({len(low_priority)})</h2>")
             html.append(_lead_rows_html(low_priority, len(low_priority), include_area_office_low, tz))
     else:
-        if len(unique_states) > 1:
-            html.append("<ul>")
-            for state in sorted(unique_states):
-                html.append(f"<li>{state}: {state_counts.get(state, 0)} signals</li>")
-            html.append("</ul>")
+        top_picks = list(leads[:5])
+        if top_picks:
+            html.append("<h2>Top picks (best bets)</h2>")
+            html.append(_lead_rows_html(top_picks, len(top_picks), include_area_office_main, tz))
 
         html.append("<h2>Signals</h2>")
         show_limit = len(leads) if signals_limit is None else max(0, int(signals_limit))
@@ -2651,16 +2986,21 @@ def generate_digest_text(
     snapshot_disable_lows_url: str | None = None,
     snapshot_rows: list[dict] | None = None,
     snapshot_total: int | None = None,
+    state_summary_states: list[str] | None = None,
+    state_summary_counts: dict[str, int] | None = None,
+    hidden_low_state_counts: dict[str, int] | None = None,
+    priority_methodology_line: str | None = None,
     tz: ZoneInfo | None = None,
 ) -> str:
     states = config["states"]
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
     territory_label = territory_display_name(territory_code)
-    state_counts: dict[str, int] = {}
-    for lead in leads:
-        st = (lead.get("site_state") or "UNK").upper()
-        state_counts[st] = state_counts.get(st, 0) + 1
-    unique_states = [state for state in state_counts.keys() if state]
+    summary_states = [str(s).strip().upper() for s in list(state_summary_states or states) if str(s).strip()]
+    state_counts = state_summary_counts or _state_counts_for_rows(leads, summary_states)
+    configured_line, by_state_line, zero_states_line, coverage_basis_line = _build_state_coverage_lines(
+        summary_states,
+        state_counts,
+    )
     main_limit = min(10, config.get("top_k_overall", 25))
     main_rows = leads[:main_limit]
     include_area_office_main = any((lead.get("area_office") or "").strip() for lead in main_rows)
@@ -2703,6 +3043,11 @@ def generate_digest_text(
             low_snapshot = 0
 
         lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low_summary}")
+        methodology = (
+            priority_methodology_line
+            or "Priority tiers use OSHA signal rules plus AI review for customer-fit ranking (AI may raise or lower tiers; no signals are suppressed by AI)."
+        )
+        lines.append(methodology)
         low_note = f"({low_today} available today)" if low_today > 0 else "(none observed today)"
         if include_lows:
             shown = len(low_priority or [])
@@ -2726,6 +3071,17 @@ def generate_digest_text(
                     f"Low signals: OFF {low_note} (not shown). Enable lows. "
                     "(starts next digest; prefs page preview may be unavailable)"
                 )
+    if mode == "daily":
+        lines.append(f"Configured states: {configured_line}")
+        lines.append(f"New signals today by state: {by_state_line}")
+        if zero_states_line:
+            lines.append(f"No new signals in {zero_states_line} today")
+        lines.append(f"Coverage: {coverage_basis_line}")
+        if hidden_low_state_counts:
+            hidden_total = sum(int(v or 0) for v in hidden_low_state_counts.values())
+            if hidden_total > 0:
+                hidden_line = " | ".join([f"{state} {int(hidden_low_state_counts.get(state, 0))}" for state in summary_states])
+                lines.append(f"Low signals hidden ({hidden_total}): {hidden_line}")
     if coverage_line:
         cov = (coverage_line or "").strip()
         if cov.lower() == "sample format (dummy data)":
@@ -2744,19 +3100,21 @@ def generate_digest_text(
             lines.append("")
             lines.append("Low Signals (Fallback):")
             for lead in low_fallback:
+                priority = _priority_label_from_value(_lead_effective_priority(lead))
                 lines.append(
                     f"- {(lead.get('establishment_name') or 'Unknown')} | "
                     f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
-                    f"Score {int(lead.get('lead_score') or 0)}"
+                    f"{priority} | {_reason_chip_label(lead)}"
                 )
         if include_lows and low_priority:
             lines.append("")
             lines.append(f"Low priority ({len(low_priority)}):")
             for lead in low_priority:
+                priority = _priority_label_from_value(_lead_effective_priority(lead))
                 lines.append(
                     f"- {(lead.get('establishment_name') or 'Unknown')} | "
                     f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
-                    f"Score {int(lead.get('lead_score') or 0)}"
+                    f"{priority} | {_reason_chip_label(lead)}"
                 )
 
         if snapshot_label and snapshot_tier_counts is not None and snapshot_rows is not None:
@@ -2792,24 +3150,30 @@ def generate_digest_text(
                 lines.append("")
                 lines.append("No signals in the last 14 days." if include_lows else "No priority signals in the last 14 days.")
     else:
-        if len(unique_states) > 1:
+        top_picks = list(leads[:5])
+        if top_picks:
             lines.append("")
-            lines.append("State breakdown:")
-            for state in sorted(unique_states):
-                lines.append(f"- {state}: {state_counts.get(state, 0)} signals")
+            lines.append("Top picks (best bets):")
+            for lead in top_picks:
+                priority_token = _priority_label_from_value(_lead_effective_priority(lead))
+                lines.append(
+                    f"- {(lead.get('establishment_name') or 'Unknown')} | "
+                    f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
+                    f"{priority_token} | {_reason_chip_label(lead)}"
+                )
 
         lines.append("")
         lines.append("Signals:")
         for lead in main_rows:
             lines.append("")
             lines.append(f"- {(lead.get('establishment_name') or 'Unknown')}")
-            priority = _priority_label(int(lead.get("lead_score") or 0))
+            priority = _priority_label_from_value(_lead_effective_priority(lead))
             location_line = f"  {(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')}"
             if include_area_office_main:
                 location_line += f" | Area Office: {(lead.get('area_office') or '-')}"
             lines.append(location_line)
             lines.append(
-                f"  Priority: {priority} | Signal: {(lead.get('inspection_type') or '-')}"
+                f"  Priority: {priority} | Why: {_reason_chip_label(lead)} | Signal: {(lead.get('inspection_type') or '-')}"
             )
             lines.append(
                 f"  Observed: {_observed_timestamp(lead, tz)} | Event date: {(lead.get('date_opened') or '-')}"
@@ -2828,7 +3192,7 @@ def generate_digest_text(
             lines.append("")
             lines.append("Low Signals (Fallback):")
             for lead in low_fallback:
-                priority = _priority_label(int(lead.get("lead_score") or 0))
+                priority = _priority_label_from_value(_lead_effective_priority(lead))
                 lines.append(
                     f"- {(lead.get('establishment_name') or 'Unknown')} | "
                     f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
@@ -2838,10 +3202,11 @@ def generate_digest_text(
             lines.append("")
             lines.append(f"Low priority ({len(low_priority)}):")
             for lead in low_priority:
+                priority = _priority_label_from_value(_lead_effective_priority(lead))
                 lines.append(
                     f"- {(lead.get('establishment_name') or 'Unknown')} | "
                     f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
-                    f"Score {int(lead.get('lead_score') or 0)}"
+                    f"{priority} | {_reason_chip_label(lead)}"
                 )
 
     lines.append("")
@@ -3355,10 +3720,7 @@ def main() -> None:
         include_changed = False
     # summary_label set after leads computed
     trial_territory_debug_enabled = bool(trial_subscriber)
-    selection_content_filter = content_filter
-    if args.mode == "daily" and trial_territory_debug_enabled:
-        # Always run deterministic signal rules on the full territory-eligible pool first.
-        selection_content_filter = "all"
+    selection_content_filter = "all" if args.mode == "daily" else content_filter
     territory_debug_rows: list[dict] = []
     if trial_territory_debug_enabled:
         leads, low_fallback, filter_stats, territory_debug_rows, _exclude_rows = get_leads_for_period(
@@ -3396,38 +3758,91 @@ def main() -> None:
             subscriber_cbsa_allowlist=subscriber_cbsa_allowlist,
         )
 
-    # Tier counts must include low signals even when the default content filter hides them.
+    # Tier counts and ranking run on the same post-rules/AI candidate pool.
     tier_counts = None
     render_tier_counts = None
     low_priority_all: list[dict] = []
     all_leads_deduped: list[dict] = []
+    triage_overlay_stats: dict[str, int] = {}
+    triage_promote_candidates: list[dict[str, Any]] = []
+    triage_decisions: list[dict[str, Any]] = []
+    triage_removed_rows: list[dict[str, Any]] = []
     snapshot_label = None
     snapshot_days = None
     snapshot_tier_counts = None
     snapshot_all_0_new: list[dict] | None = None
     snapshot_limit_0_new: int | None = None
+    medium_min = int(TIER_THRESHOLDS.get("medium_min", 6))
     if args.mode == "daily":
-        all_leads_deduped, _, _ = get_leads_for_period(
-            conn=conn,
-            states=states,
-            since_days=int(config["opened_window_days"]),
-            new_only_days=int(config["new_only_days"]),
-            skip_first_seen_filter=skip_first_seen_filter,
+        ai_profile_key = _resolve_ai_profile_key(
+            config=config,
+            subscriber_key=subscriber_key,
             territory_code=territory_code,
-            content_filter="all",
-            include_low_fallback=False,
-            window_start=window_start,
-            new_only_cutoff=new_only_cutoff,
-            strict_first_seen_after=strict_first_seen_after,
-            include_changed=include_changed,
-            use_opened_window=use_opened_window,
-            subscriber_cbsa_allowlist=subscriber_cbsa_allowlist,
         )
+        all_leads_deduped, triage_overlay_stats, triage_promote_candidates, triage_decisions, triage_removed_rows = (
+            _apply_trial_triage_overlay_if_enabled(
+                subscriber_key=str(config.get("subscriber_key") or customer_id or ""),
+                gen_date=gen_date,
+                leads=list(leads or []),
+                dry_run=bool(args.dry_run),
+                ai_profile_key=ai_profile_key,
+            )
+        )
+        all_leads_deduped = _sort_leads_for_digest(all_leads_deduped)
         tier_counts = _tier_counts(all_leads_deduped)
-        medium_min = int(TIER_THRESHOLDS.get("medium_min", 6))
-        low_priority_all = [lead for lead in all_leads_deduped if int(lead.get("lead_score") or 0) < medium_min]
+        low_priority_all = [lead for lead in all_leads_deduped if _lead_effective_priority(lead) == "LOW"]
 
-        # Trial-only enhancement: when there are 0 new signals, optionally append a 14-day snapshot (not new).
+        print("PRIORITY_BASE_FIELD=rules_priority")
+        print("LEAD_SCORE_TIER_PRESENT=1")
+        print("EFFECTIVE_PRIORITY_SOURCE=rules+ai")
+        print("AI_PRIORITY_MODE=RAISE_AND_LOWER")
+        ai_effective_counts = _tier_counts(all_leads_deduped)
+        print(
+            "AI_REVIEW_EFFECTIVE_COUNTS "
+            f"high={int(ai_effective_counts.get('high', 0))} "
+            f"medium={int(ai_effective_counts.get('medium', 0))} "
+            f"low={int(ai_effective_counts.get('low', 0))}"
+        )
+        delta_counts = {"raised": 0, "lowered": 0, "unchanged": 0, "no_ai": 0}
+        for decision in list(triage_decisions or []):
+            direction = str(decision.get("delta_direction") or "no_ai").strip().lower()
+            if direction not in delta_counts:
+                direction = "no_ai"
+            delta_counts[direction] += 1
+        print(
+            "AI_REVIEW_DELTAS "
+            f"raised={int(delta_counts['raised'])} "
+            f"lowered={int(delta_counts['lowered'])} "
+            f"unchanged={int(delta_counts['unchanged'])} "
+            f"no_ai={int(delta_counts['no_ai'])}"
+        )
+
+        leads, excluded_effective = _filter_by_effective_priority(all_leads_deduped, content_filter)
+        leads = _sort_leads_for_digest(leads)
+        filter_stats["after_content_filter"] = len(leads)
+        filter_stats["after_dedupe"] = len(leads)
+        filter_stats["final_leads"] = len(leads)
+        filter_stats["excluded_by_content_filter"] = int(excluded_effective)
+        filter_stats["priority_counts"] = _tier_counts(all_leads_deduped)
+        filter_stats["shown_priority_counts"] = _tier_counts(leads)
+
+        if content_filter == "high_medium" and len(leads) == 0 and include_low_fallback:
+            low_fallback = _sort_leads_for_digest(low_priority_all)[:LOW_FALLBACK_LIMIT]
+
+        if trial_state_set_selection:
+            total_pre_cap = len(leads)
+            if total_pre_cap > TRIAL_STATE_SET_CAP:
+                leads = list(leads[:TRIAL_STATE_SET_CAP])
+                filter_stats["after_dedupe"] = len(leads)
+                filter_stats["final_leads"] = len(leads)
+                filter_stats["shown_priority_counts"] = _tier_counts(leads)
+                print(
+                    "TRIAL_STATE_SET_CAPPED=1 "
+                    f"cap={TRIAL_STATE_SET_CAP} total_pre_cap={total_pre_cap}"
+                )
+        render_tier_counts = _tier_counts(leads)
+
+        # Optional snapshot section for empty daily-new output.
         snapshot_when_0_new = bool(config.get("snapshot_when_0_new", False))
         if snapshot_when_0_new and not snapshot_mode and len(leads) == 0:
             snapshot_label = "Last 14 days snapshot (not new)"
@@ -3448,6 +3863,7 @@ def main() -> None:
                 use_opened_window=True,
                 subscriber_cbsa_allowlist=subscriber_cbsa_allowlist,
             )
+            snapshot_all = _sort_leads_for_digest(snapshot_all)
             snapshot_tier_counts = _tier_counts(snapshot_all)
             snapshot_all_0_new = snapshot_all
             try:
@@ -3499,58 +3915,6 @@ def main() -> None:
                 print(f"TERRITORY_DEBUG_WRITTEN path={debug_path} rows={len(territory_debug_rows)}")
         except Exception as exc:
             logger.warning("Territory debug artifact write failed: %s", exc)
-
-    triage_overlay_stats: dict[str, int] = {}
-    triage_promote_candidates: list[dict[str, Any]] = []
-    if args.mode == "daily":
-        leads, triage_overlay_stats, triage_promote_candidates, _triage_decisions, _triage_removed_rows = (
-            _apply_trial_triage_overlay_if_enabled(
-                subscriber_key=str(config.get("subscriber_key") or ""),
-                gen_date=gen_date,
-                leads=leads,
-                dry_run=bool(args.dry_run),
-            )
-        )
-        if trial_territory_debug_enabled and selection_content_filter == "all":
-            post_triage_pool = list(leads or [])
-            # Apply the subscriber content filter after rules/AI priority classification.
-            filtered_leads, _excluded = apply_content_filter(leads, content_filter)
-            filtered_leads, _dedupe_removed = dedupe_by_activity_nr(filtered_leads)
-            leads = list(filtered_leads)
-            if content_filter == "high_medium" and len(leads) == 0 and include_low_fallback:
-                fallback_base, _ = dedupe_by_activity_nr(post_triage_pool)
-                low_candidates = [lead for lead in fallback_base if int(lead.get("lead_score") or 0) < 6]
-                low_candidates.sort(
-                    key=lambda lead: (int(lead.get("lead_score") or 0), lead.get("date_opened") or ""),
-                    reverse=True,
-                )
-                low_fallback = low_candidates[:LOW_FALLBACK_LIMIT]
-            filter_stats["after_content_filter"] = len(leads)
-            filter_stats["after_dedupe"] = len(leads)
-            filter_stats["final_leads"] = len(leads)
-        if trial_state_set_selection:
-            total_pre_cap = len(leads)
-            if total_pre_cap > TRIAL_STATE_SET_CAP:
-                leads = list(leads[:TRIAL_STATE_SET_CAP])
-                filter_stats["after_dedupe"] = len(leads)
-                filter_stats["final_leads"] = len(leads)
-                filter_stats["shown_priority_counts"] = _tier_counts(leads)
-                print(
-                    "TRIAL_STATE_SET_CAPPED=1 "
-                    f"cap={TRIAL_STATE_SET_CAP} total_pre_cap={total_pre_cap}"
-                )
-        if triage_overlay_stats:
-            shown_counts = {"high": 0, "medium": 0, "low": 0}
-            for lead in leads:
-                score = int(lead.get("lead_score") or 0)
-                if score >= 10:
-                    shown_counts["high"] += 1
-                elif score >= 6:
-                    shown_counts["medium"] += 1
-                else:
-                    shown_counts["low"] += 1
-            filter_stats["shown_priority_counts"] = shown_counts
-        render_tier_counts = _tier_counts(leads)
 
     logger.info("Leads after filters: %d", len(leads))
     logger.info(
@@ -3810,6 +4174,12 @@ def main() -> None:
                 print(f"PREFS_LINKS_DISABLED detail={prefs_detail}")
                 os.environ["PREFS_LINKS_DISABLED"] = "1"
 
+    configured_state_order = _normalize_state_codes(list(territory_states or states))
+    if not configured_state_order:
+        configured_state_order = sorted(_normalize_state_codes(list(states or [])))
+    digest_candidate_rows = list(all_leads_deduped if args.mode == "daily" else leads)
+    state_summary_counts = _state_counts_for_rows(leads, configured_state_order)
+
     for recipient in recipients:
         if pilot_mode and recipient not in whitelist:
             logger.warning("PILOT MODE: skipping %s (not in whitelist)", recipient)
@@ -3985,12 +4355,13 @@ def main() -> None:
             except Exception:
                 low_limit = 8
             low_limit = max(0, min(25, int(low_limit)))
-            low_sorted = list(low_priority_all or [])
-            low_sorted.sort(
-                key=lambda lead: str((lead.get("last_seen_at") or lead.get("first_seen_at") or lead.get("date_opened") or "")),
-                reverse=True,
-            )
+            low_sorted = _sort_leads_for_digest(list(low_priority_all or []))
             low_priority_shown = low_sorted[:low_limit]
+
+        hidden_low_state_counts: dict[str, int] = {}
+        if args.mode == "daily" and (not include_lows_pref) and content_filter not in {"all", "low"}:
+            hidden_low_rows = [row for row in digest_candidate_rows if _lead_effective_priority(row) == "LOW"]
+            hidden_low_state_counts = _state_counts_for_rows(hidden_low_rows, configured_state_order)
 
         html_body = generate_digest_html(
             leads=leads,
@@ -4021,6 +4392,9 @@ def main() -> None:
             snapshot_disable_lows_url=snapshot_disable_lows_url,
             snapshot_rows=snapshot_rows,
             snapshot_total=snapshot_total,
+            state_summary_states=configured_state_order,
+            state_summary_counts=state_summary_counts,
+            hidden_low_state_counts=hidden_low_state_counts,
             tz=tz,
         )
 
@@ -4064,6 +4438,9 @@ def main() -> None:
                     snapshot_disable_lows_url=snapshot_disable_lows_url,
                     snapshot_rows=snapshot_rows,
                     snapshot_total=snapshot_total,
+                    state_summary_states=configured_state_order,
+                    state_summary_counts=state_summary_counts,
+                    hidden_low_state_counts=hidden_low_state_counts,
                     tz=tz,
                 )
                 b = _html_bytes(candidate)
@@ -4106,6 +4483,9 @@ def main() -> None:
                     snapshot_disable_lows_url=snapshot_disable_lows_url,
                     snapshot_rows=snapshot_rows,
                     snapshot_total=snapshot_total,
+                    state_summary_states=configured_state_order,
+                    state_summary_counts=state_summary_counts,
+                    hidden_low_state_counts=hidden_low_state_counts,
                     tz=tz,
                 )
                 best_bytes = _html_bytes(best_html)
@@ -4153,6 +4533,9 @@ def main() -> None:
                     snapshot_disable_lows_url=snapshot_disable_lows_url,
                     snapshot_rows=snapshot_rows,
                     snapshot_total=snapshot_total,
+                    state_summary_states=configured_state_order,
+                    state_summary_counts=state_summary_counts,
+                    hidden_low_state_counts=hidden_low_state_counts,
                     tz=tz,
                 )
                 html_bytes = _html_bytes(html_body)
@@ -4188,8 +4571,45 @@ def main() -> None:
             snapshot_disable_lows_url=snapshot_disable_lows_url,
             snapshot_rows=snapshot_rows,
             snapshot_total=snapshot_total,
+            state_summary_states=configured_state_order,
+            state_summary_counts=state_summary_counts,
+            hidden_low_state_counts=hidden_low_state_counts,
             tz=tz,
         )
+
+        if args.mode == "daily":
+            shown_limit = len(leads) if signals_limit is None else max(0, int(signals_limit))
+            shown_keys: set[str] = set()
+            for row in list(leads or [])[:shown_limit]:
+                key = _lead_key(row)
+                if key:
+                    shown_keys.add(key)
+            for row in list(low_priority_shown or []):
+                key = _lead_key(row)
+                if key:
+                    shown_keys.add(key)
+            if include_low_fallback and (not leads):
+                for row in list(low_fallback or []):
+                    key = _lead_key(row)
+                    if key:
+                        shown_keys.add(key)
+            audit_path, audit_total, audit_shown, audit_hidden_low = _write_digest_audit_artifact(
+                subscriber_key=str(subscriber_key or customer_id or ""),
+                customer_id=str(customer_id or ""),
+                recipient_email=str(recipient or ""),
+                territory_code=str(territory_code or ""),
+                run_id=crm_send_event_run_id,
+                gen_date=gen_date,
+                trial_subscriber=bool(trial_subscriber),
+                candidates=list(digest_candidate_rows or []),
+                shown_keys=shown_keys,
+                include_lows_pref=bool(include_lows_pref),
+                content_filter=str(content_filter or ""),
+            )
+            print(f"DIGEST_AUDIT_ARTIFACT_PATH={audit_path}")
+            print(f"DIGEST_AUDIT_CANDIDATES_TOTAL={int(audit_total)}")
+            print(f"DIGEST_AUDIT_SHOWN_TOTAL={int(audit_shown)}")
+            print(f"DIGEST_AUDIT_HIDDEN_LOW_TOTAL={int(audit_hidden_low)}")
 
         if args.mode == "daily" and content_filter not in {"all", "low"}:
             print(

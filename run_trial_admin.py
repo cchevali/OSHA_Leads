@@ -75,18 +75,21 @@ DEFAULT_SENDS_LIMIT = 14
 TRIAL_SENDS_TARGET = 14
 CONVERSION_TEMPLATE_TEXT = (
     "To: {primary_recipient}\n\n"
-    "Subject: Keep your OSHA signal digest running - {territory_label}\n\n"
+    "Subject: Keep your OSHA signal digest running - {territory_subject_label}\n\n"
     "Hi {recipient_name},\n\n"
-    "Thanks for trying MicroFlowOps. Over the trial you've been receiving the weekday OSHA activity digest for {territory_label}.\n\n"
-    "Quick note on \"0 new\": it simply means nothing new was first-seen since the prior weekday send, so there's nothing to report that day.\n\n"
+    "You've been getting the weekday OSHA activity digest for {territory_subject_label} over the past couple of weeks. "
+    "Wanted to check in before it stops.\n\n"
     "If you'd like to keep the feed running without interruption:\n"
-    "• Reply \"go\" and confirm the metros/cities you want covered (current default: {territory_label}), and I'll switch you to the paid feed the same day.\n"
-    "• Or activate via Stripe here: {stripe_link}\n\n"
-    "If you'd rather confirm fit before paying, reply with your target metros/cities and I'll confirm coverage first.\n\n"
-    "Want any tweaks (add/remove metros, add recipients, different send time)? Just reply with what you want and I'll tune it.\n\n"
+    "1. Reply \"go\" and confirm your coverage area (or request changes - different metros, extra recipients, etc.). "
+    "I'll switch you over the same day.\n"
+    "2. Or activate directly here:\n"
+    "Payment link:\n"
+    "Activate checkout: {stripe_link}\n\n"
+    "Not sure yet? Reply with questions or the metros you care about and I'll confirm coverage before anything is charged.\n\n"
+    "A few people ask about \"0 new\" days - that just means no new inspections were first-seen since the last weekday send. "
+    "Nothing missed, nothing broken.\n\n"
     "— Chase\n"
     "MicroFlowOps\n\n"
-    "P.S. If it's not a fit, just reply \"stop\" and I'll close it out.\n"
 )
 
 
@@ -213,8 +216,28 @@ def _resolve_territory_label(territory_code: str) -> str:
     defs = load_territory_definitions()
     canonical = resolve_territory_code(code, defs)
     terr = defs.get(canonical) or defs.get(code) or {}
-    label = str(terr.get("description") or "").strip()
+    label = str(terr.get("label") or terr.get("display_name") or terr.get("description") or "").strip()
     return label or code or "{territory_label}"
+
+
+def _normalize_conversion_territory_label(raw_value: str) -> str:
+    value = " ".join(str(raw_value or "").strip().split())
+    if not value:
+        return "{territory_label}"
+    # Avoid doubled terminal punctuation when templates append sentence punctuation.
+    return re.sub(r"[.]+$", "", value).strip() or "{territory_label}"
+
+
+def _resolve_conversion_territory_labels(territory_code: str) -> tuple[str, str]:
+    code = (territory_code or "").strip().upper()
+    if not code:
+        return "{territory_label}", "{territory_label}"
+    defs = load_territory_definitions()
+    canonical = resolve_territory_code(code, defs)
+    terr = defs.get(canonical) or defs.get(code) or {}
+    subject_raw = str(terr.get("display_name") or terr.get("label") or terr.get("description") or code).strip()
+    body_raw = str(terr.get("description") or terr.get("label") or terr.get("display_name") or code).strip()
+    return _normalize_conversion_territory_label(subject_raw), _normalize_conversion_territory_label(body_raw)
 
 
 def _derive_recipient_name(email: str, subscriber_key: str) -> str:
@@ -232,13 +255,13 @@ def render_conversion_email_text(
     *,
     recipient_name: str,
     primary_recipient: str,
-    territory_label: str,
+    territory_subject_label: str,
     stripe_link: str,
 ) -> str:
     return CONVERSION_TEMPLATE_TEXT.format(
         recipient_name=(recipient_name or "").strip() or "{recipient_name}",
         primary_recipient=(primary_recipient or "").strip().lower() or "{primary_recipient}",
-        territory_label=(territory_label or "").strip() or "{territory_label}",
+        territory_subject_label=_normalize_conversion_territory_label(territory_subject_label),
         stripe_link=(stripe_link or "").strip() or "{stripe_link}",
     )
 
@@ -264,8 +287,10 @@ def _load_conversion_context(
         conn.close()
     recipient_email = str(sub.get("email") or "").strip().lower()
     recipient_name = _derive_recipient_name(recipient_email, sk)
-    territory_label = _resolve_territory_label(str(sub.get("territory_code") or ""))
-    return path, sub, trial, recipient_name, recipient_email, territory_label
+    territory_subject_label, _territory_body_label_unused = _resolve_conversion_territory_labels(
+        str(sub.get("territory_code") or "")
+    )
+    return path, sub, trial, recipient_name, recipient_email, territory_subject_label
 
 
 def write_conversion_draft(
@@ -273,7 +298,7 @@ def write_conversion_draft(
     crm_db_path: str | Path | None,
     emit_stdout: bool = True,
 ) -> Path:
-    path, sub, trial, recipient_name, recipient_email, territory_label = _load_conversion_context(
+    path, sub, trial, recipient_name, recipient_email, territory_subject_label = _load_conversion_context(
         subscriber_key=subscriber_key,
         crm_db_path=crm_db_path,
     )
@@ -281,7 +306,7 @@ def write_conversion_draft(
     body = render_conversion_email_text(
         recipient_name=recipient_name,
         primary_recipient=recipient_email,
-        territory_label=territory_label,
+        territory_subject_label=territory_subject_label,
         stripe_link=stripe_link,
     )
     artifact_path = crm_light.data_dir() / "trials" / _validate_subscriber_key(subscriber_key) / "conversion_email.txt"
@@ -293,7 +318,7 @@ def write_conversion_draft(
         print(f"crm_db={path}")
         print(f"start_date={str(trial.get('start_date') or '').strip()}")
         print(f"recipient_name={recipient_name}")
-        print(f"territory_label={territory_label}")
+        print(f"territory_label={territory_subject_label}")
         print(f"stripe_link={stripe_link or '{stripe_link}'}")
         print(f"conversion_path={artifact_path}")
     return artifact_path

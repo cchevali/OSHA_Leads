@@ -995,14 +995,16 @@ class TestTrialStatus(unittest.TestCase):
                 text = artifact.read_text(encoding="utf-8")
                 self.assertIn("To: wally_trial@example.com", text)
                 self.assertIn("Subject: Keep your OSHA signal digest running -", text)
-                self.assertIn("Quick note on \"0 new\":", text)
-                self.assertIn('Reply "go" and confirm the metros/cities', text)
-                self.assertIn("Or activate via Stripe here:", text)
-                self.assertIn("If you'd rather confirm fit before paying", text)
-                self.assertIn("Want any tweaks (add/remove metros, add recipients, different send time)?", text)
-                self.assertIn('P.S. If it\'s not a fit, just reply "stop" and I\'ll close it out.', text)
+                self.assertIn("You've been getting the weekday OSHA activity digest", text)
+                self.assertIn('1. Reply "go" and confirm your coverage area', text)
+                self.assertIn("2. Or activate directly here:", text)
+                self.assertIn("Payment link:", text)
+                self.assertIn("Activate checkout:", text)
+                self.assertIn("Not sure yet? Reply with questions or the metros you care about", text)
+                self.assertIn('A few people ask about "0 new" days - that just means no new inspections were first-seen', text)
                 self.assertIn("https://example.com/activate", text)
                 self.assertIn("Texas Triangle", text)
+                self.assertNotIn("fallback..", text)
                 self.assertNotRegex(text, re.compile(r"<(html|body|p|a|br)\\b", re.IGNORECASE))
             finally:
                 if old_data_dir is None:
@@ -1546,9 +1548,107 @@ class TestTrialStatus(unittest.TestCase):
 
                 self.assertEqual(code_live, 2)
                 self.assertIn("ERR_TRIAL_LEDGER_SPLIT subscriber_key=wally_trial", live_out.getvalue())
+                self.assertIn("--trial-state-merge source --apply", live_out.getvalue())
                 self.assertEqual(code_non_live, 0)
                 self.assertNotIn("ERR_TRIAL_LEDGER_SPLIT", non_live_out.getvalue())
                 self.assertEqual(calls["deliver"], 1)
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_mfo_data_dir_effective is None:
+                    os.environ.pop("MFO_DATA_DIR_EFFECTIVE", None)
+                else:
+                    os.environ["MFO_DATA_DIR_EFFECTIVE"] = old_mfo_data_dir_effective
+
+    def test_live_send_mirrors_primary_to_secondary_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            leads_db = base / "osha.sqlite"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_mfo_data_dir_effective = os.environ.get("MFO_DATA_DIR_EFFECTIVE")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ["MFO_DATA_DIR_EFFECTIVE"] = str(data_dir)
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=14,
+                )
+
+                calls = {"deliver": 0, "mirror": 0}
+                orig_detect = run_trial_daily._detect_split_ledger_conflict
+                orig_deliver = run_trial_daily._run_deliver_daily
+                orig_mode = run_trial_daily._try_extract_latest_send_start_mode
+                orig_mirror = run_trial_daily._mirror_secondary_trial_ledger
+
+                def _fake_detect(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                    return {
+                        "checked": True,
+                        "conflict": False,
+                        "primary_db": str(db),
+                        "secondary_db": r"C:\dev\OSHA_Leads\out\crm_light.sqlite",
+                        "reason": "",
+                    }
+
+                def _fake_deliver(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                    calls["deliver"] += 1
+                    return 0, "ok"
+
+                def _fake_mirror(subscriber_key: str, primary_db_path: Path):  # type: ignore[no-untyped-def]
+                    calls["mirror"] += 1
+                    self.assertEqual(subscriber_key, "wally_trial")
+                    self.assertEqual(Path(primary_db_path).resolve(strict=False), Path(db).resolve(strict=False))
+                    return "OK"
+
+                run_trial_daily._detect_split_ledger_conflict = _fake_detect  # type: ignore[assignment]
+                run_trial_daily._run_deliver_daily = _fake_deliver  # type: ignore[assignment]
+                run_trial_daily._try_extract_latest_send_start_mode = lambda *_a, **_k: "LIVE"  # type: ignore[assignment]
+                run_trial_daily._mirror_secondary_trial_ledger = _fake_mirror  # type: ignore[assignment]
+                try:
+                    live_out = io.StringIO()
+                    with contextlib.redirect_stdout(live_out):
+                        code_live = run_trial_daily.run_trial_daily(
+                            subscriber_key="wally_trial",
+                            leads_db=str(leads_db),
+                            crm_db=db,
+                            customer_arg="",
+                            send_live=True,
+                            dry_run=False,
+                            test_send_daily=False,
+                            print_config=False,
+                            allow_weekend_send=True,
+                        )
+                    non_live_out = io.StringIO()
+                    with contextlib.redirect_stdout(non_live_out):
+                        code_non_live = run_trial_daily.run_trial_daily(
+                            subscriber_key="wally_trial",
+                            leads_db=str(leads_db),
+                            crm_db=db,
+                            customer_arg="",
+                            send_live=False,
+                            dry_run=False,
+                            test_send_daily=False,
+                            print_config=False,
+                            allow_weekend_send=True,
+                        )
+                finally:
+                    run_trial_daily._detect_split_ledger_conflict = orig_detect  # type: ignore[assignment]
+                    run_trial_daily._run_deliver_daily = orig_deliver  # type: ignore[assignment]
+                    run_trial_daily._try_extract_latest_send_start_mode = orig_mode  # type: ignore[assignment]
+                    run_trial_daily._mirror_secondary_trial_ledger = orig_mirror  # type: ignore[assignment]
+
+                self.assertEqual(code_live, 0)
+                self.assertEqual(code_non_live, 0)
+                self.assertEqual(calls["deliver"], 2)
+                self.assertEqual(calls["mirror"], 1)
+                self.assertIn("TRIAL_LEDGER_MIRROR subscriber_key=wally_trial", live_out.getvalue())
+                self.assertIn("status=OK", live_out.getvalue())
+                self.assertNotIn("TRIAL_LEDGER_MIRROR", non_live_out.getvalue())
             finally:
                 if old_data_dir is None:
                     os.environ.pop("DATA_DIR", None)

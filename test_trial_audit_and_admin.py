@@ -802,6 +802,85 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
         self.assertIn("RECONCILE_LEDGERS_TRIAL_ADJUSTMENTS inserted=0", out_apply_again.getvalue())
         self.assertIn("RECONCILE_LEDGERS_TRIAL_LATCHES inserted=0", out_apply_again.getvalue())
 
+    def test_reconcile_ledgers_source_merge_overwrites_trial_state(self) -> None:
+        source_db = self._tmp_path / "source_source_merge.sqlite"
+        target_db = self._tmp_path / "target_source_merge.sqlite"
+        crm_light.ensure_database(source_db)
+        crm_light.ensure_database(target_db)
+
+        with crm_light.open_conn(source_db) as conn:
+            crm_light.init_schema(conn)
+            crm_light.upsert_subscriber(
+                conn,
+                subscriber_key="wally_trial",
+                email="wally@example.com",
+                territory_code="TX_TRI",
+                tz="America/Chicago",
+                status="trial",
+            )
+            crm_light.upsert_trial_state(
+                conn,
+                subscriber_key="wally_trial",
+                start_date="2026-02-04",
+                sends_limit=19,
+            )
+            conn.execute(
+                "UPDATE trial_state SET notified_at_utc = ?, ended_at_utc = ? WHERE subscriber_key = ?",
+                ("2026-03-02T08:00:00+00:00", "2026-03-02T08:00:01+00:00", "wally_trial"),
+            )
+            conn.commit()
+
+        with crm_light.open_conn(target_db) as conn:
+            crm_light.init_schema(conn)
+            crm_light.upsert_subscriber(
+                conn,
+                subscriber_key="wally_trial",
+                email="wally@example.com",
+                territory_code="TX_TRI",
+                tz="America/Chicago",
+                status="trial",
+            )
+            crm_light.upsert_trial_state(
+                conn,
+                subscriber_key="wally_trial",
+                start_date="2026-02-10",
+                sends_limit=14,
+            )
+            conn.execute(
+                "UPDATE trial_state SET notified_at_utc = ?, ended_at_utc = ? WHERE subscriber_key = ?",
+                ("2026-02-25T10:00:00+00:00", "2026-02-25T10:00:01+00:00", "wally_trial"),
+            )
+            conn.commit()
+
+        out_apply = io.StringIO()
+        with contextlib.redirect_stdout(out_apply):
+            code_apply = run_trial_admin.main(
+                [
+                    "reconcile-ledgers",
+                    "--source-crm-db",
+                    str(source_db),
+                    "--crm-db",
+                    str(target_db),
+                    "--scope",
+                    "explicit",
+                    "--subscriber-key",
+                    "wally_trial",
+                    "--trial-state-merge",
+                    "source",
+                    "--apply",
+                ]
+            )
+        self.assertEqual(code_apply, 0)
+        apply_text = out_apply.getvalue()
+        self.assertIn("RECONCILE_LEDGERS_TRIAL_STATE_MERGE=source", apply_text)
+
+        with crm_light.open_conn(target_db) as conn:
+            trial = crm_light.get_trial_state(conn, "wally_trial") or {}
+        self.assertEqual(str(trial.get("start_date") or ""), "2026-02-04")
+        self.assertEqual(int(trial.get("sends_limit") or 0), 19)
+        self.assertEqual(str(trial.get("notified_at_utc") or ""), "2026-03-02T08:00:00+00:00")
+        self.assertEqual(str(trial.get("ended_at_utc") or ""), "2026-03-02T08:00:01+00:00")
+
     def test_set_trial_limit_apply_and_idempotent(self) -> None:
         crm_db = crm_light.ensure_database(None)
         with crm_light.open_conn(crm_db) as conn:

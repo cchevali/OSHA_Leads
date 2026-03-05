@@ -624,6 +624,35 @@ def _detect_split_ledger_conflict(subscriber_key: str, primary_db_path: Path) ->
     return result
 
 
+def _mirror_secondary_trial_ledger(subscriber_key: str, primary_db_path: Path) -> str:
+    wrapper_effective = str(os.getenv("MFO_DATA_DIR_EFFECTIVE") or "").strip()
+    if not wrapper_effective:
+        return "SKIP_NO_WRAPPER_CONTEXT"
+    primary = Path(primary_db_path).expanduser().resolve(strict=False)
+    secondary = (Path(__file__).resolve().parent / "out" / "crm_light.sqlite").resolve(strict=False)
+    if secondary == primary:
+        return "SKIP_PRIMARY_IS_SECONDARY"
+    if not secondary.exists():
+        return "SKIP_SECONDARY_MISSING"
+    try:
+        run_trial_admin.reconcile_ledgers(
+            source_crm_db_path=primary,
+            target_crm_db_path=secondary,
+            scope="explicit",
+            subscriber_keys=[subscriber_key],
+            apply=True,
+            trial_state_merge="source",
+            emit_tokens=False,
+        )
+        return "OK"
+    except Exception as exc:
+        print(
+            "WARN_TRIAL_LEDGER_MIRROR_FAILED "
+            f"subscriber_key={subscriber_key} source_db={primary} target_db={secondary} detail={exc}"
+        )
+        return f"WARN:{type(exc).__name__}"
+
+
 def run_trial_daily(
     subscriber_key: str,
     leads_db: str,
@@ -639,7 +668,20 @@ def run_trial_daily(
     resolved_crm_db = crm_light.resolve_crm_db_path(crm_db)
     policy = _resolve_policy(sk, resolved_crm_db)
     out_root = crm_light.data_dir()
+    secondary_db = (Path(__file__).resolve().parent / "out" / "crm_light.sqlite").resolve(strict=False)
     run_id = f"trial_{sk}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+
+    def _finalize(exit_code: int, *, mirror_after: bool = False) -> int:
+        if mirror_after and send_live and (not dry_run):
+            mirror_status = _mirror_secondary_trial_ledger(policy.subscriber_key, Path(resolved_crm_db))
+            print(
+                "TRIAL_LEDGER_MIRROR "
+                f"subscriber_key={policy.subscriber_key} "
+                f"source_db={resolved_crm_db} "
+                f"target_db={secondary_db} "
+                f"status={mirror_status}"
+            )
+        return int(exit_code)
 
     print(f"subscriber_key={policy.subscriber_key}")
     print(f"crm_db={resolved_crm_db}")
@@ -670,8 +712,13 @@ def run_trial_daily(
             reason = str(split.get("reason") or "fingerprint_mismatch")
             reconcile_hint = (
                 f".\\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers "
-                f"--source-crm-db {secondary_db} --crm-db {primary_db} --scope explicit "
+                f"--source-crm-db \"{secondary_db}\" --crm-db \"{primary_db}\" --scope explicit "
                 f"--subscriber-key {policy.subscriber_key} --apply"
+            )
+            sync_secondary_hint = (
+                f".\\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers "
+                f"--source-crm-db \"{primary_db}\" --crm-db \"{secondary_db}\" --scope explicit "
+                f"--subscriber-key {policy.subscriber_key} --trial-state-merge source --apply"
             )
             print(
                 "ERR_TRIAL_LEDGER_SPLIT "
@@ -679,6 +726,7 @@ def run_trial_daily(
                 f"primary_db={primary_db} secondary_db={secondary_db} reason={reason}"
             )
             print(f"ERR_TRIAL_LEDGER_SPLIT_REMEDIATE command={reconcile_hint}")
+            print(f"ERR_TRIAL_LEDGER_SPLIT_REMEDIATE_SYNC_SECONDARY command={sync_secondary_hint}")
             return 2
 
     if TRIAL_WEEKDAYS_ONLY and (not allow_weekend_send) and bool(day_ctx["is_weekend"]):
@@ -742,7 +790,7 @@ def run_trial_daily(
                                 },
                                 ts_utc="",
                             )
-                            return 0
+                            return _finalize(0, mirror_after=True)
                         sent, message_id, error_detail = _send_conversion_email_from_artifact(
                             artifact_path=text_artifact,
                             subscriber_key=policy.subscriber_key,
@@ -776,7 +824,7 @@ def run_trial_daily(
                             print(f"WARN_CONVERSION_EMAIL_SEND_FAILED detail={error_detail}")
                     else:
                         print("CONVERSION_EMAIL_PENDING send_live=NO")
-            return 0
+            return _finalize(0, mirror_after=True)
 
         local_today = str(day_ctx["local_date"])
         if send_live and not dry_run and crm_light.has_trial_delivery_on_local_date(
@@ -797,7 +845,7 @@ def run_trial_daily(
                 ts_utc="",
             )
             print(f"TRIAL_EVENT status=SKIP_ALREADY_SENT_LOCAL_DATE local_date={local_today}")
-            return 0
+            return _finalize(0, mirror_after=True)
 
         customer_path = _resolve_customer_config_path(policy.subscriber_key, customer_arg, out_root)
         customer_runtime = _load_or_build_customer_config(policy, customer_path, out_root)
@@ -824,7 +872,7 @@ def run_trial_daily(
             print(f"TRIAL_EVENT status={status}")
             if out.strip():
                 print(out.rstrip())
-            return 0 if code == 0 else code
+            return _finalize(0 if code == 0 else code, mirror_after=True)
 
         code, out = _run_deliver_daily(leads_db, customer_runtime, send_live=send_live, dry_run=dry_run)
         status = "ERROR"
@@ -872,7 +920,7 @@ def run_trial_daily(
         print(f"TRIAL_EVENT status={status}")
         if out.strip():
             print(out.rstrip())
-        return 0 if code == 0 else code
+        return _finalize(0 if code == 0 else code, mirror_after=True)
 
 
 def main(argv: list[str] | None = None) -> int:
