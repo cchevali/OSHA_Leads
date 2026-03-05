@@ -208,7 +208,7 @@ class TestTriageOverlay(unittest.TestCase):
         allow_rule = rules_config.match_naics_suppress("561621")
         self.assertIsNone(allow_rule)
 
-    def test_ai_raise_only_and_cannot_unsuppress(self):
+    def test_ai_bidirectional_and_cannot_unsuppress(self):
         rows = [
             {
                 "activity_nr": "m1",
@@ -264,7 +264,8 @@ class TestTriageOverlay(unittest.TestCase):
 
         by_id = {str(d.get("activity_nr")): d for d in decisions}
         self.assertEqual(by_id["m1"]["rules_priority"], "MEDIUM")
-        self.assertEqual(by_id["m1"]["final_priority"], "MEDIUM")
+        self.assertEqual(by_id["m1"]["final_priority"], "LOW")
+        self.assertEqual(by_id["m1"]["delta_direction"], "lowered")
         self.assertEqual(by_id["s1"]["rules_priority"], "SUPPRESS")
         self.assertEqual(by_id["s1"]["final_priority"], "SUPPRESS")
         self.assertEqual(mocked.call_count, 1)
@@ -352,7 +353,7 @@ class TestTriageOverlay(unittest.TestCase):
                 to.triage(rows, {}, mode="trial_render", allow_ai=True)
         text = out.getvalue()
         self.assertIn("AI_TRIAGE_EVALUATED=2", text)
-        self.assertIn("AI_TRIAGE_RAISED=1 UNCHANGED=1", text)
+        self.assertIn("AI_TRIAGE_RAISED=1 LOWERED=1 UNCHANGED=0 NO_AI=0", text)
 
 
 if __name__ == "__main__":

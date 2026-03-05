@@ -402,6 +402,7 @@ def triage(
     mode: str,
     *,
     allow_ai: bool = True,
+    profile_key: str = "default",
 ) -> list[dict[str, Any]]:
     mode_norm = str(mode or "").strip().lower()
     if mode_norm not in {"trial_render", "outreach_examples"}:
@@ -426,7 +427,9 @@ def triage(
 
     ai_evaluated = 0
     ai_raised = 0
+    ai_lowered = 0
     ai_unchanged = 0
+    ai_no_result = 0
     ai_cached_hits = 0
     ai_api_calls = 0
     ai_unavailable = 0
@@ -444,8 +447,10 @@ def triage(
             freshness_max_days=freshness_max_days,
         )
 
-        final_priority = str(rule_decision.get("rules_priority") or "LOW").upper()
-        ai_priority = "NONE"
+        rules_priority = str(rule_decision.get("rules_priority") or "LOW").upper()
+        final_priority = rules_priority
+        ai_priority = ""
+        ai_reason = ""
         ai_applied = 0
 
         if final_priority != "SUPPRESS" and ai_requested and key:
@@ -455,70 +460,92 @@ def triage(
                 mode=mode_norm,
                 item=_ai_item_payload(item, detail_row),
                 detail_row=dict(detail_row or {}),
+                profile_key=profile_key,
             )
             if payload:
                 ai_priority = str(payload.get("priority") or "LOW").strip().upper()
+                ai_reason = str(payload.get("reason") or "").strip()
                 if ai_priority not in {"HIGH", "MEDIUM", "LOW"}:
                     ai_priority = "LOW"
                 if int(payload.get("cached") or 0) == 1:
                     ai_cached_hits += 1
                 else:
                     ai_api_calls += 1
-                if (
-                    not bool(rule_decision.get("_low_lock"))
-                    and _priority_rank(ai_priority) > _priority_rank(final_priority)
-                ):
-                    final_priority = ai_priority
-                    ai_applied = 1
+                final_priority = ai_priority
+                if _priority_rank(final_priority) > _priority_rank(rules_priority):
                     ai_raised += 1
+                    ai_applied = 1
+                elif _priority_rank(final_priority) < _priority_rank(rules_priority):
+                    ai_lowered += 1
+                    ai_applied = 1
                 else:
                     ai_unchanged += 1
                 print(
                     "AI_TRIAGE "
                     f"signal={key} "
-                    f"rules={rule_decision.get('rules_priority')} "
+                    f"rules={rules_priority} "
                     f"ai={ai_priority} "
                     f"final={final_priority} "
-                    f"reason={str(payload.get('reason') or '').strip()}"
+                    f"reason={ai_reason}"
                 )
             else:
                 ai_unavailable = 1
-                ai_unchanged += 1
+                ai_no_result += 1
                 print(
                     "AI_TRIAGE "
                     f"signal={key} "
-                    f"rules={rule_decision.get('rules_priority')} "
+                    f"rules={rules_priority} "
                     "ai=NONE "
                     f"final={final_priority} "
                     "reason=unavailable"
                 )
+        elif final_priority != "SUPPRESS":
+            ai_no_result += 1
 
         action = _action_from_priorities(str(rule_decision.get("current_priority") or "LOW"), final_priority)
         reasons = [str(x).strip().lower() for x in (rule_decision.get("reasons") or []) if str(x).strip()]
         if ai_applied:
-            reasons.append("ai_raise")
+            if _priority_rank(final_priority) > _priority_rank(rules_priority):
+                reasons.append("ai_raise")
+            elif _priority_rank(final_priority) < _priority_rank(rules_priority):
+                reasons.append("ai_lower")
+
+        if not ai_priority:
+            delta_direction = "no_ai"
+        elif _priority_rank(final_priority) > _priority_rank(rules_priority):
+            delta_direction = "raised"
+        elif _priority_rank(final_priority) < _priority_rank(rules_priority):
+            delta_direction = "lowered"
+        else:
+            delta_direction = "unchanged"
+
+        decision_source = "ai_overlay" if ai_priority else "rules_only"
 
         decision = {
             "activity_nr": str(rule_decision.get("activity_nr") or ""),
             "lead_key": str(rule_decision.get("lead_key") or ""),
             "current_priority": str(rule_decision.get("current_priority") or "LOW"),
-            "rules_priority": str(rule_decision.get("rules_priority") or "LOW"),
+            "rules_priority": rules_priority,
             "final_priority": final_priority,
             "ai_priority": ai_priority,
+            "ai_reason": ai_reason,
             "ai_applied": int(ai_applied),
+            "delta_direction": delta_direction,
+            "decision_source": decision_source,
             "action": action,
             "confidence": 0.95 if final_priority == "SUPPRESS" else 0.90,
             "reasons": reasons[:8] if reasons else ["rules_default"],
             "provenance": {
-                "source": "ai_cached" if ai_applied else "rules_deterministic",
-                "prompt_hash": ai_triage.prompt_hash() if ai_applied else "",
+                "source": "ai_cached" if ai_priority else "rules_deterministic",
+                "prompt_hash": ai_triage.prompt_hash(profile_key) if ai_priority else "",
+                "profile_key": ai_triage.normalize_profile_key(profile_key),
             },
         }
         out.append(decision)
 
     if ai_requested:
         print(f"AI_TRIAGE_EVALUATED={ai_evaluated}")
-        print(f"AI_TRIAGE_RAISED={ai_raised} UNCHANGED={ai_unchanged}")
+        print(f"AI_TRIAGE_RAISED={ai_raised} LOWERED={ai_lowered} UNCHANGED={ai_unchanged} NO_AI={ai_no_result}")
         print(f"AI_TRIAGE_CACHED_HITS={ai_cached_hits} API_CALLS={ai_api_calls}")
         print(f"AI_TRIAGE_UNAVAILABLE={1 if ai_unavailable else 0}")
         if ai_unavailable:
@@ -553,23 +580,35 @@ def apply_trial_overlay_to_leads(
             continue
 
         current_priority = str(d.get("current_priority") or "LOW").upper()
+        rules_priority = str(d.get("rules_priority") or "LOW").upper()
         final_priority = str(d.get("final_priority") or "LOW").upper()
+        ai_priority = str(d.get("ai_priority") or "").upper()
+        ai_reason = str(d.get("ai_reason") or "").strip()
+        delta_direction = str(d.get("delta_direction") or "").strip().lower()
+        decision_source = str(d.get("decision_source") or "").strip().lower()
         action = str(d.get("action") or "keep")
 
+        old_score = _safe_int(lead.get("lead_score") or 0)
+        lead_score_tier = _priority_from_score(old_score)
         lead["triage_overlay_action"] = action
         lead["triage_overlay_confidence"] = float(d.get("confidence") or 0.0)
         lead["triage_overlay_reasons"] = list(d.get("reasons") or [])
-        lead["triage_rules_priority"] = str(d.get("rules_priority") or "")
+        lead["triage_rules_priority"] = rules_priority
         lead["triage_final_priority"] = final_priority
+        lead["rules_priority"] = rules_priority
+        lead["lead_score_tier"] = lead_score_tier
+        lead["effective_priority"] = final_priority
+        lead["ai_priority"] = ai_priority
+        lead["ai_reason"] = ai_reason
+        lead["delta_direction"] = delta_direction or "no_ai"
+        lead["decision_source"] = decision_source or ("ai_overlay" if ai_priority else "rules_only")
 
         if final_priority == "SUPPRESS":
             stats["removed"] += 1
             stats["suppressed"] += 1
             continue
 
-        old_score = _safe_int(lead.get("lead_score") or 0)
         new_score = _priority_to_score(final_priority)
-        lead["lead_score"] = int(new_score)
         if new_score != old_score:
             lead["triage_priority_override"] = final_priority.lower()
 

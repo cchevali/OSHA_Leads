@@ -9,6 +9,39 @@ import send_digest_email as sde
 
 
 class TestTrialTriageOverlay(unittest.TestCase):
+    def test_non_trial_subscriber_still_applies_digest_priority_overlay(self):
+        leads = [{"activity_nr": "2001", "lead_score": 6, "date_opened": "2026-02-20"}]
+        decisions = [
+            {
+                "activity_nr": "2001",
+                "current_priority": "MEDIUM",
+                "rules_priority": "MEDIUM",
+                "final_priority": "HIGH",
+                "ai_priority": "HIGH",
+                "ai_applied": 1,
+                "action": "promote_candidate",
+                "confidence": 0.95,
+                "reasons": ["ai_raise"],
+                "provenance": {"source": "ai_cached"},
+            }
+        ]
+        with mock.patch.dict(os.environ, {"TRIAL_TRIAGE_OVERLAY_ENABLED": "1"}, clear=False), mock.patch.object(
+            sde.scoring_osha_detail_cache, "load_detail_cache_rows", return_value={}
+        ), mock.patch.object(
+            sde.scoring_triage_overlay, "triage", return_value=list(decisions)
+        ), mock.patch.object(
+            sde, "_write_trial_triage_artifacts", return_value=(None, None)
+        ):
+            out_leads, stats, _promoted, _out_decisions, _removed = sde._apply_trial_triage_overlay_if_enabled(
+                subscriber_key="live_subscriber",
+                gen_date="2026-02-25",
+                leads=leads,
+                dry_run=True,
+            )
+        self.assertEqual(len(out_leads), 1)
+        self.assertEqual(str(out_leads[0].get("effective_priority") or ""), "HIGH")
+        self.assertEqual(int(stats.get("raised", 0)), 1)
+
     def test_rules_apply_even_when_overlay_flag_off(self):
         leads = [{"activity_nr": "1001", "lead_score": 8, "date_opened": "2026-02-20"}]
         decisions = [
@@ -78,7 +111,8 @@ class TestTrialTriageOverlay(unittest.TestCase):
                 dry_run=True,
             )
         self.assertEqual(len(out_leads), 1)
-        self.assertEqual(int(out_leads[0]["lead_score"]), 10)
+        self.assertEqual(int(out_leads[0]["lead_score"]), 6)
+        self.assertEqual(str(out_leads[0].get("effective_priority") or ""), "HIGH")
         self.assertEqual(int(stats.get("raised", 0)), 1)
         self.assertEqual(len(promoted), 1)
         kwargs = triage_mock.call_args.kwargs

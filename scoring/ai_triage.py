@@ -14,10 +14,23 @@ import requests
 from scoring import paths as scoring_paths
 
 
-AI_PROMPT_VERSION = "ai_triage_v2_raise_only"
+AI_PROMPT_VERSION = "ai_triage_v3_bidirectional_profiles"
 _DISABLED_EMITTED = False
 _UNAVAILABLE_EMITTED = False
 _AUTO_IMPORT_DONE = False
+
+PROFILE_PROMPTS: dict[str, str] = {
+    "default": (
+        "Focus on relevance for independent safety consultants and OSHA defense advisors serving "
+        "small-to-mid employers in construction, manufacturing, and industrial trades."
+    ),
+    "facs_trial": (
+        "Favor construction, industrial, and manufacturing opportunities. Do not over-penalize "
+        "environmental consulting and industrial services. Penalize likely large-enterprise retail/"
+        "distribution and nursing/elder-care unless signal severity is exceptional. Ground demotions "
+        "in NAICS and signal type when available."
+    ),
+}
 
 
 def _utc_now_iso() -> str:
@@ -69,6 +82,13 @@ def _strict_priority(value: Any) -> str:
     if text in {"HIGH", "MEDIUM", "LOW"}:
         return text
     return ""
+
+
+def normalize_profile_key(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    if key in PROFILE_PROMPTS:
+        return key
+    return "default"
 
 
 def _auto_import_enabled() -> bool:
@@ -378,35 +398,42 @@ def _strict_schema() -> dict[str, Any]:
     }
 
 
-def _system_prompt() -> str:
+def _system_prompt(profile_key: str = "default") -> str:
+    profile = normalize_profile_key(profile_key)
+    profile_text = PROFILE_PROMPTS.get(profile, PROFILE_PROMPTS["default"])
     return (
-        "You are classifying OSHA inspection signals for relevance to independent safety "
-        "consultants and OSHA defense attorneys who serve small to mid-size employers in "
-        "construction, manufacturing, and industrial trades. "
-        "Classify with these criteria: HIGH = active construction/industrial high-hazard signal, "
-        "referral/complaint trigger, emphasis program NAICS, multi-employer site, or likely external safety-help need. "
-        "MEDIUM = active inspection with moderate hazard profile, non-emphasis construction/industrial, "
-        "or ambiguous company profile. "
-        "LOW = routine planned inspection of low-hazard employer, large enterprise with in-house EHS, "
-        "or minimal information content. "
-        "Return strict JSON only."
+        "You are classifying OSHA inspection signals for customer-fit ranking in digest presentation. "
+        f"Profile: {profile}. {profile_text} "
+        "Classify with these criteria: HIGH = strong customer-fit signal with likely urgent safety/OSHA need. "
+        "MEDIUM = meaningful but moderate-fit signal or mixed evidence. "
+        "LOW = weak-fit or routine signal with low likely near-term value. "
+        "Never output SUPPRESS. Return strict JSON only."
     )
 
 
-def prompt_hash() -> str:
+def prompt_hash(profile_key: str = "default") -> str:
+    profile = normalize_profile_key(profile_key)
     material = {
         "version": AI_PROMPT_VERSION,
-        "system": _system_prompt(),
+        "profile_key": profile,
+        "system": _system_prompt(profile),
         "schema": _strict_schema()["schema"],
     }
     blob = json.dumps(material, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _build_prompt(item: dict[str, Any], detail_row: dict[str, Any], mode: str) -> tuple[str, str]:
-    system = _system_prompt()
+def _build_prompt(
+    item: dict[str, Any],
+    detail_row: dict[str, Any],
+    mode: str,
+    profile_key: str,
+) -> tuple[str, str]:
+    profile = normalize_profile_key(profile_key)
+    system = _system_prompt(profile)
     user_payload = {
         "mode": str(mode or ""),
+        "profile_key": profile,
         "signal": {
             "activity_nr": str(item.get("activity_nr") or ""),
             "establishment_name": item.get("establishment_name"),
@@ -522,6 +549,7 @@ def get_or_compute(
     mode: str,
     item: dict[str, Any],
     detail_row: dict[str, Any],
+    profile_key: str = "default",
     cache_db_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
     if not enabled():
@@ -531,7 +559,8 @@ def get_or_compute(
     if not norm_key:
         return None
 
-    p_hash = prompt_hash()
+    profile = normalize_profile_key(profile_key)
+    p_hash = prompt_hash(profile)
     _maybe_auto_import_ai_review_csv_once(
         prompt_hash=p_hash,
         cache_db_path=cache_db_path,
@@ -544,7 +573,12 @@ def get_or_compute(
         if not _api_key():
             _emit_unavailable("missing_openai_api_key")
             return None
-        system_text, user_text = _build_prompt(item=item, detail_row=detail_row, mode=mode)
+        system_text, user_text = _build_prompt(
+            item=item,
+            detail_row=detail_row,
+            mode=mode,
+            profile_key=profile,
+        )
         parsed = _responses_api_call(system_text=system_text, user_text=user_text)
         if not parsed:
             return None
@@ -553,6 +587,7 @@ def get_or_compute(
             "reason": _normalize_reason(parsed.get("reason")),
             "prompt_hash": p_hash,
             "prompt_version": AI_PROMPT_VERSION,
+            "profile_key": profile,
             "model": model_name(),
             "cached": 0,
         }
