@@ -11,11 +11,10 @@ $startUtc = [datetime]::UtcNow
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
 $runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
-$taskLogPath = Join-Path $taskLogDir ("OSHA_Trial_FACS_Daily_{0}.log" -f $timestamp)
-$trialSubscriberKey = "facs_trial"
-$trialExitCode = 1
+$taskLogPath = Join-Path $taskLogDir ("OSHA_Outreach_Auto_{0}.log" -f $timestamp)
+$outreachExitCode = 1
 $preflight = $null
-$commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key $trialSubscriberKey --send-live"
+$commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_outreach_auto.py"
 
 New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runSummaryRoot | Out-Null
@@ -49,13 +48,13 @@ try {
     }
 
     Invoke-And-Log {
-      & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_trial_daily.py" --subscriber-key $trialSubscriberKey --send-live
+      & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_outreach_auto.py"
     }
-    $trialExitCode = [int]$LASTEXITCODE
+    $outreachExitCode = [int]$LASTEXITCODE
   }
   catch {
-    $trialExitCode = 1
-    Write-TaskLine ('TRIAL_EXCEPTION=' + ([string]$_.Exception.Message))
+    $outreachExitCode = 1
+    Write-TaskLine ('OUTREACH_EXCEPTION=' + ([string]$_.Exception.Message))
   }
 }
 finally {
@@ -63,16 +62,15 @@ finally {
 }
 
 Write-TaskLine ("TASK_LOG_PATH=" + $taskLogPath)
-Write-TaskLine ("TRIAL_SUBSCRIBER_KEY=" + $trialSubscriberKey)
-Write-TaskLine ("TRIAL_EXIT_CODE=" + $trialExitCode)
+Write-TaskLine ("OUTREACH_EXIT_CODE=" + $outreachExitCode)
 Write-RuntimeRunSummary `
   -RepoRoot $repoRoot `
-  -WrapperName 'OSHA_Trial_FACS_Daily' `
+  -WrapperName 'OSHA_Outreach_Auto' `
   -CommandLine $commandInvoked `
   -Mode 'scheduled' `
   -Intent 'send' `
   -DryRun:$false `
-  -ExitCode $trialExitCode `
+  -ExitCode $outreachExitCode `
   -StartLocal $startLocal `
   -StartUtc $startUtc `
   -TaskLogPath $taskLogPath `
@@ -81,7 +79,7 @@ Write-RuntimeRunSummary `
   -Fingerprint $(if ($preflight) { [hashtable]$preflight.Values } else { @{} }) `
   -EmitLine ${function:Write-TaskLine} | Out-Null
 
-if ($trialExitCode -ne 0) {
+if ($outreachExitCode -ne 0) {
   exit 1
 }
 exit 0

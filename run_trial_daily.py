@@ -18,6 +18,7 @@ from typing import Any
 import crm_light
 import run_trial_admin
 from lead_filters import load_territory_definitions, resolve_territory_code
+from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict
 
 try:
     from zoneinfo import ZoneInfo
@@ -662,6 +663,7 @@ def run_trial_daily(
     dry_run: bool,
     test_send_daily: bool,
     print_config: bool,
+    confirm_live_send: bool = False,
     allow_weekend_send: bool = False,
 ) -> int:
     sk = _validate_subscriber_key(subscriber_key)
@@ -700,9 +702,32 @@ def run_trial_daily(
     print(f"trial_effective_local_date={day_ctx['local_date']}")
     print(f"trial_effective_weekday={day_ctx['weekday_name']}")
     print(f"trial_allow_weekend_send={'YES' if allow_weekend_send else 'NO'}")
+    runtime_mode = str(os.getenv("MFO_RUNTIME_MODE") or "manual").strip().lower() or "manual"
+    runtime_ctx = runtime_context_dict(mode=runtime_mode, intent="send", dry_run=bool(dry_run))
+    print(f"runtime_role={runtime_ctx.get('runtime_role', '')}")
+    print(f"canonical_hostname={(runtime_ctx.get('canonical_hostname') or '(unset)')}")
+    print(f"task_log_root={(os.getenv('TASK_LOG_ROOT') or '').strip() or '(default)'}")
+    print(f"run_summary_root={(os.getenv('RUN_SUMMARY_ROOT') or '').strip() or '(default)'}")
+    print(f"artifact_sync_dir={(os.getenv('ARTIFACT_SYNC_DIR') or '').strip() or '(unset)'}")
+    print(f"mfo_trusted_scheduled={(os.getenv('MFO_TRUSTED_SCHEDULED') or '0').strip() or '0'}")
 
     if print_config:
         return 0
+
+    if send_live and not dry_run:
+        preflight = run_runtime_preflight(
+            mode=runtime_mode,
+            intent="send",
+            dry_run=False,
+            task_log_root=str(os.getenv("TASK_LOG_ROOT") or ""),
+            run_summary_root=str(os.getenv("RUN_SUMMARY_ROOT") or ""),
+            require_confirm_live_send=True,
+            confirm_live_send=bool(confirm_live_send),
+        )
+        for line in render_runtime_lines(preflight):
+            print(line)
+        if not preflight.ok:
+            return 2
 
     if send_live and not dry_run:
         split = _detect_split_ledger_conflict(policy.subscriber_key, Path(resolved_crm_db))
@@ -889,6 +914,9 @@ def run_trial_daily(
             event_mode = "DRY_RUN" if code == 0 else "ERROR"
         else:
             mode = _try_extract_latest_send_start_mode(customer_id=customer_id)
+            if mode is None:
+                # Fallback to subprocess output when latest.json/send_result is unavailable.
+                mode = _try_extract_last_send_start_mode_from_log_text(out)
             if code == 0 and mode == "LIVE":
                 status = "SENT"
                 event_mode = "LIVE"
@@ -935,6 +963,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="Never send; record DRY_RUN in send_events.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved trial policy (non-secret) and exit.")
     ap.add_argument(
+        "--confirm-live-send",
+        action="store_true",
+        help="Manual live-send confirmation flag (not required for trusted scheduled runtime).",
+    )
+    ap.add_argument(
         "--allow-weekend-send",
         action="store_true",
         help="Emergency/manual override: allow trial send path on Sat/Sun (default blocked).",
@@ -957,6 +990,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=bool(args.dry_run),
             test_send_daily=bool(args.test_send_daily),
             print_config=bool(args.print_config),
+            confirm_live_send=bool(args.confirm_live_send),
             allow_weekend_send=bool(args.allow_weekend_send),
         )
     except RuntimeError as exc:

@@ -31,6 +31,11 @@ class TestRunOshaIngestDaily(unittest.TestCase):
         self.assertIn("INGEST_STATES=TX,CA,FL", out)
         self.assertIn("INGEST_SINCE_DAYS=3", out)
         self.assertIn("INGEST_MAX_DETAILS=200", out)
+        self.assertIn("INGEST_RUNTIME_ROLE=", out)
+        self.assertIn("INGEST_CANONICAL_HOSTNAME=", out)
+        self.assertIn("INGEST_ARTIFACT_SYNC_DIR=", out)
+        self.assertIn("INGEST_TASK_LOG_ROOT=", out)
+        self.assertIn("INGEST_RUN_SUMMARY_ROOT=", out)
         self.assertIn("PASS_INGEST_DAILY_COMPLETE status=PRINT_CONFIG", out)
 
     def test_dry_run_skips_ingestion_call(self):

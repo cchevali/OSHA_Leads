@@ -14,9 +14,12 @@ class TestRunTrialFacsDailyWrapper(unittest.TestCase):
         self.assertIn("--subscriber-key", text)
         self.assertIn("facs_trial", text)
         self.assertIn("--send-live", text)
+        self.assertIn("runtime_guard.ps1", text)
+        self.assertIn("runtime_run_summary.ps1", text)
         self.assertIn("TASK_LOG_PATH=", text)
         self.assertIn("TRIAL_SUBSCRIBER_KEY=", text)
         self.assertIn("TRIAL_EXIT_CODE=", text)
+        self.assertIn("RUN_SUMMARY_JSON_PATH=", text)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,11 @@ param(
   [Nullable[int]] $BounceImapMaxMessages = $null,
   [string] $TaskSchedUser = '',
   [string] $TaskSchedPassword = '',
+  [string] $RuntimeRole = '',
+  [string] $CanonicalHostname = '',
+  [string] $ArtifactSyncDir = '',
+  [string] $TaskLogRoot = '',
+  [string] $RunSummaryRoot = '',
   [switch] $PrintConfig
 )
 
@@ -134,6 +139,15 @@ function Normalize-CommaList([string]$Raw) {
 }
 
 function Test-ValidAbsoluteDataDir([string]$Value) {
+  $text = (($Value -as [string]))
+  if ($null -eq $text) { $text = '' }
+  $text = $text.Trim()
+  if (-not $text) { return $false }
+  if ($text -ieq 'out') { return $false }
+  return [System.IO.Path]::IsPathRooted($text)
+}
+
+function Test-ValidAbsoluteOptionalPath([string]$Value) {
   $text = (($Value -as [string]))
   if ($null -eq $text) { $text = '' }
   $text = $text.Trim()
@@ -353,7 +367,12 @@ try {
     'BounceImapSinceHours',
     'BounceImapMaxMessages',
     'TaskSchedUser',
-    'TaskSchedPassword'
+    'TaskSchedPassword',
+    'RuntimeRole',
+    'CanonicalHostname',
+    'ArtifactSyncDir',
+    'TaskLogRoot',
+    'RunSummaryRoot'
   )
   $hasMutatingArgs = $false
   foreach ($name in $mutatingArgs) {
@@ -426,6 +445,32 @@ try {
   if ($PSBoundParameters.ContainsKey('TaskSchedPassword')) {
     if (-not (($TaskSchedPassword -as [string]).Trim())) {
       Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TaskSchedPassword'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('RuntimeRole')) {
+    $runtimeRoleValue = (($RuntimeRole -as [string]).Trim().ToLowerInvariant())
+    if (($runtimeRoleValue -ne 'canonical_scheduler') -and ($runtimeRoleValue -ne 'dev_client')) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_RuntimeRole'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('CanonicalHostname')) {
+    if (-not (($CanonicalHostname -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_CanonicalHostname'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ArtifactSyncDir')) {
+    if (-not (Test-ValidAbsoluteOptionalPath ($ArtifactSyncDir -as [string]))) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ArtifactSyncDir_absolute_required'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('TaskLogRoot')) {
+    if (-not (Test-ValidAbsoluteOptionalPath ($TaskLogRoot -as [string]))) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TaskLogRoot_absolute_required'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('RunSummaryRoot')) {
+    if (-not (Test-ValidAbsoluteOptionalPath ($RunSummaryRoot -as [string]))) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_RunSummaryRoot_absolute_required'
     }
   }
 
@@ -622,6 +667,20 @@ try {
       $taskSchedPasswordPresent = if (Map-HasValue $printMap 'TASK_SCHED_PASSWORD') { 'YES' } else { 'NO' }
       Write-Output ('task_sched_user=' + $taskSchedUserValue)
       Write-Output ('task_sched_password_present=' + $taskSchedPasswordPresent)
+      $runtimeRoleValue = if (Map-HasValue $printMap 'RUNTIME_ROLE') { ([string]$printMap['RUNTIME_ROLE']).Trim().ToLowerInvariant() } else { 'dev_client' }
+      $canonicalHostnameValue = if (Map-HasValue $printMap 'CANONICAL_HOSTNAME') { ([string]$printMap['CANONICAL_HOSTNAME']).Trim() } else { '' }
+      $artifactSyncDirValue = if (Map-HasValue $printMap 'ARTIFACT_SYNC_DIR') { ([string]$printMap['ARTIFACT_SYNC_DIR']).Trim() } else { '' }
+      $taskLogRootValue = if (Map-HasValue $printMap 'TASK_LOG_ROOT') { ([string]$printMap['TASK_LOG_ROOT']).Trim() } else { '' }
+      $runSummaryRootValue = if (Map-HasValue $printMap 'RUN_SUMMARY_ROOT') { ([string]$printMap['RUN_SUMMARY_ROOT']).Trim() } else { '' }
+      $canonicalHostnameOut = if ($canonicalHostnameValue) { $canonicalHostnameValue } else { '(unset)' }
+      $artifactSyncDirOut = if ($artifactSyncDirValue) { $artifactSyncDirValue } else { '(unset)' }
+      $taskLogRootOut = if ($taskLogRootValue) { $taskLogRootValue } else { '(default)' }
+      $runSummaryRootOut = if ($runSummaryRootValue) { $runSummaryRootValue } else { '(default)' }
+      Write-Output ('runtime_role=' + $runtimeRoleValue)
+      Write-Output ('canonical_hostname=' + $canonicalHostnameOut)
+      Write-Output ('artifact_sync_dir=' + $artifactSyncDirOut)
+      Write-Output ('task_log_root=' + $taskLogRootOut)
+      Write-Output ('run_summary_root=' + $runSummaryRootOut)
       $printDataDir = if (Map-HasValue $printMap 'DATA_DIR') { ([string]$printMap['DATA_DIR']).Trim() } else { 'out' }
       Pass-Token $PASS_SET_OUTREACH_ENV_DATA_DIR ('value=' + $printDataDir + ' source=unchanged')
       Pass-Token $PASS_SET_OUTREACH_ENV_COMPLETE 'mode=print_config'
@@ -906,6 +965,28 @@ try {
 
     if ($PSBoundParameters.ContainsKey('TaskSchedPassword')) {
       Set-MapValue -Map $map -Key 'TASK_SCHED_PASSWORD' -Value (($TaskSchedPassword -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('RuntimeRole')) {
+      Set-MapValue -Map $map -Key 'RUNTIME_ROLE' -Value (($RuntimeRole -as [string]).Trim().ToLowerInvariant()) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'RUNTIME_ROLE')) {
+      Set-MapValue -Map $map -Key 'RUNTIME_ROLE' -Value 'dev_client' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('CanonicalHostname')) {
+      Set-MapValue -Map $map -Key 'CANONICAL_HOSTNAME' -Value (($CanonicalHostname -as [string]).Trim().ToLowerInvariant()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ArtifactSyncDir')) {
+      Set-MapValue -Map $map -Key 'ARTIFACT_SYNC_DIR' -Value (($ArtifactSyncDir -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('TaskLogRoot')) {
+      Set-MapValue -Map $map -Key 'TASK_LOG_ROOT' -Value (($TaskLogRoot -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('RunSummaryRoot')) {
+      Set-MapValue -Map $map -Key 'RUN_SUMMARY_ROOT' -Value (($RunSummaryRoot -as [string]).Trim()) -TouchedList $touched
     }
 
     $rendered = Render-DotenvMap $map

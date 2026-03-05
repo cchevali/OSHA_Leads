@@ -865,6 +865,7 @@ def run_live_send(
     customer_config: str,
     admin_email: str,
     send_live: bool,
+    confirm_live_send: bool = False,
     allow_weekend_send: bool = False,
 ) -> None:
     day_ctx = _wally_local_day_context(customer_config)
@@ -887,6 +888,8 @@ def run_live_send(
     ]
     if send_live:
         cmd.append("--send-live")
+    if confirm_live_send:
+        cmd.append("--confirm-live-send")
     if allow_weekend_send:
         cmd.append("--allow-weekend-send")
     subprocess.run(cmd, check=True)
@@ -1314,6 +1317,11 @@ def main() -> None:
     parser.add_argument("--admin-email", default="support@microflowops.com")
     parser.add_argument("--send-live", action="store_true", help="Trigger first live send to Wally")
     parser.add_argument(
+        "--confirm-live-send",
+        action="store_true",
+        help="Manual live-send confirmation flag (not required for trusted scheduled runtime).",
+    )
+    parser.add_argument(
         "--allow-weekend-send",
         action="store_true",
         help="Emergency/manual override: allow trial live send on Sat/Sun.",
@@ -1446,6 +1454,7 @@ def main() -> None:
             str(customer_path),
             args.admin_email,
             True,
+            confirm_live_send=bool(args.confirm_live_send),
             allow_weekend_send=bool(args.allow_weekend_send),
         )
         print("First live send triggered via run_trial_daily.py")

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import socket
 import subprocess
 import sys
 import tempfile
@@ -131,6 +132,8 @@ class TestOutreachRunAuto(unittest.TestCase):
                 env.pop(k, None)
             else:
                 env[k] = v
+        env.setdefault("CANONICAL_HOSTNAME", socket.gethostname().strip().lower())
+        env.setdefault("RUNTIME_ROLE", "dev_client")
         return env
 
     def _stdout_value(self, stdout: str, key: str) -> str:

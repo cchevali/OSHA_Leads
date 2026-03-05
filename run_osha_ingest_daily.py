@@ -8,6 +8,7 @@ from pathlib import Path
 import crm_light
 import ingest_osha
 from lead_filters import load_territory_definitions, resolve_territory_code
+from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict
 
 
 ERR_INGEST_DAILY_CONFIG = "ERR_INGEST_DAILY_CONFIG"
@@ -216,6 +217,14 @@ def main(argv: list[str] | None = None) -> int:
         scope_states=scope_states,
         scope_source=scope_source,
     )
+    runtime_mode = str(os.getenv("MFO_RUNTIME_MODE") or "manual").strip().lower() or "manual"
+    runtime_ctx = runtime_context_dict(mode=runtime_mode, intent="write", dry_run=bool(args.dry_run))
+    _emit("INGEST_RUNTIME_ROLE", str(runtime_ctx.get("runtime_role") or ""))
+    _emit("INGEST_CANONICAL_HOSTNAME", str(runtime_ctx.get("canonical_hostname") or "(unset)"))
+    _emit("INGEST_ARTIFACT_SYNC_DIR", (os.getenv("ARTIFACT_SYNC_DIR") or "").strip() or "(unset)")
+    _emit("INGEST_TASK_LOG_ROOT", (os.getenv("TASK_LOG_ROOT") or "").strip() or "(default)")
+    _emit("INGEST_RUN_SUMMARY_ROOT", (os.getenv("RUN_SUMMARY_ROOT") or "").strip() or "(default)")
+    _emit("INGEST_MFO_TRUSTED_SCHEDULED", (os.getenv("MFO_TRUSTED_SCHEDULED") or "0").strip() or "0")
 
     if args.print_config:
         print(f"{PASS_INGEST_DAILY_COMPLETE} status=PRINT_CONFIG")
@@ -223,6 +232,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(f"{PASS_INGEST_DAILY_COMPLETE} status=DRY_RUN")
         return 0
+
+    runtime_preflight = run_runtime_preflight(
+        mode=runtime_mode,
+        intent="write",
+        dry_run=False,
+        task_log_root=str(os.getenv("TASK_LOG_ROOT") or ""),
+        run_summary_root=str(os.getenv("RUN_SUMMARY_ROOT") or ""),
+    )
+    for line in render_runtime_lines(runtime_preflight):
+        print(line)
+    if not runtime_preflight.ok:
+        return 2
 
     try:
         ingest_osha.setup_logging("INFO")

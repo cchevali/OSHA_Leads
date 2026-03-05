@@ -1,0 +1,51 @@
+name: Ingest Evening + AI Review Dump (Self-Hosted)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 9 * * 1-5"
+    - cron: "0 10 * * 1-5"
+
+jobs:
+  ingest_evening_ai:
+    runs-on: [self-hosted, windows, osha-pc-canonical]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Gate Exact 5:00 AM ET Weekday
+        id: gate
+        shell: powershell
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            "run_now=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+          $utcNow = [datetime]::UtcNow
+          $etNow = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId($utcNow, 'Eastern Standard Time')
+          $isWeekday = ($etNow.DayOfWeek -ne 'Saturday' -and $etNow.DayOfWeek -ne 'Sunday')
+          $isTargetMinute = ($etNow.Hour -eq 5 -and $etNow.Minute -eq 0)
+          if ($isWeekday -and $isTargetMinute) {
+            "run_now=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "run_now=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Output ("SKIP_ET_GATE now_et=" + $etNow.ToString("o"))
+          }
+
+      - name: Run Evening Ingest Wrapper
+        if: steps.gate.outputs.run_now == 'true'
+        shell: powershell
+        run: |
+          cd C:\dev\OSHA_Leads
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\run_osha_ingest_evening.ps1
+
+      - name: Upload Runtime Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ingest-evening-artifacts-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            out/task_logs/**
+            out/run_summaries/**
+            out/backups/**

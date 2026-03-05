@@ -16,12 +16,15 @@ class TestRunOshaIngestEveningWrapper(unittest.TestCase):
         self.assertNotIn("TX,CA,FL,OR,WA", text)
         self.assertIn("dump_signals_for_ai_review.ps1", text)
         self.assertIn("-SinceDays 14", text)
+        self.assertIn("runtime_guard.ps1", text)
+        self.assertIn("runtime_run_summary.ps1", text)
         self.assertIn("TASK_LOG_PATH=", text)
         self.assertIn("INGEST_EXIT_CODE=", text)
         self.assertIn("AI_REVIEW_DUMP_EXIT_CODE=", text)
         self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
         self.assertIn("AI_REVIEW_DUMP_OUTREACH_MATCHED_TOTAL=", text)
         self.assertIn("AI_REVIEW_DUMP_SUBSCRIBERS_MATCHED_TOTAL=", text)
+        self.assertIn("RUN_SUMMARY_JSON_PATH=", text)
 
 
 if __name__ == "__main__":
