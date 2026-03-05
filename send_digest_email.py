@@ -3804,8 +3804,9 @@ def main() -> None:
             f"low={int(ai_effective_counts.get('low', 0))}"
         )
         delta_counts = {"raised": 0, "lowered": 0, "unchanged": 0, "no_ai": 0}
-        for decision in list(triage_decisions or []):
-            direction = str(decision.get("delta_direction") or "no_ai").strip().lower()
+        # Keep delta counts aligned with the final digest candidate pool.
+        for lead in list(all_leads_deduped or []):
+            direction = str(lead.get("delta_direction") or "no_ai").strip().lower()
             if direction not in delta_counts:
                 direction = "no_ai"
             delta_counts[direction] += 1
