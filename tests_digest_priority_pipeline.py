@@ -80,14 +80,14 @@ class TestDigestPriorityPipeline(unittest.TestCase):
             state_summary_states=["CA", "OR", "WA"],
         )
 
-        self.assertIn("Configured states:</strong> CA, OR, WA", html)
         self.assertIn("New signals today by state:</strong> CA 1 | OR 0 | WA 1", html)
         self.assertIn("No new signals in OR today", html)
-        self.assertIn("Coverage: configured states (CA, OR, WA)", html)
-        self.assertIn("Configured states: CA, OR, WA", text)
         self.assertIn("New signals today by state: CA 1 | OR 0 | WA 1", text)
         self.assertIn("No new signals in OR today", text)
-        self.assertIn("Coverage: configured states (CA, OR, WA)", text)
+        self.assertNotIn("Top picks (best bets)", html)
+        self.assertNotIn("Top picks (best bets)", text)
+        self.assertNotIn("Priority tiers use OSHA signal rules plus AI review", html)
+        self.assertNotIn("Priority tiers use OSHA signal rules plus AI review", text)
 
     def test_sorting_is_deterministic_and_priority_first(self):
         rows = [
@@ -96,21 +96,21 @@ class TestDigestPriorityPipeline(unittest.TestCase):
                 "inspection_type": "Inspection",
                 "naics": "541620",
                 "effective_priority": "MEDIUM",
-                "first_seen_at": "2026-03-01T10:00:00+00:00",
+                "date_opened": "2026-03-02",
             },
             {
                 "activity_nr": "2",
                 "inspection_type": "Accident",
                 "naics": "236220",
                 "effective_priority": "HIGH",
-                "first_seen_at": "2026-03-01T09:00:00+00:00",
+                "date_opened": "2026-03-02",
             },
             {
                 "activity_nr": "1",
                 "inspection_type": "Complaint",
                 "naics": "236220",
                 "effective_priority": "HIGH",
-                "first_seen_at": "2026-03-01T08:00:00+00:00",
+                "date_opened": "2026-03-03",
             },
         ]
         ordered_a = sde._sort_leads_for_digest(rows)

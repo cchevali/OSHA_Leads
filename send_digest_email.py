@@ -422,25 +422,6 @@ def _inspection_type_token(value: Any) -> str:
     return text
 
 
-def _event_type_weight(lead: dict[str, Any]) -> int:
-    token = _inspection_type_token(lead.get("inspection_type"))
-    if token in {"referral", "complaint"}:
-        return 3
-    if token == "accident":
-        return 2
-    return 1
-
-
-def _naics_fit_weight(lead: dict[str, Any]) -> int:
-    reasons = [str(x or "").strip().lower() for x in (lead.get("triage_overlay_reasons") or [])]
-    if "naics_emphasis" in reasons:
-        return 2
-    naics = "".join(ch for ch in str(lead.get("naics") or "") if ch.isdigit())
-    if naics.startswith("23") or naics.startswith("31") or naics.startswith("32") or naics.startswith("33"):
-        return 1
-    return 0
-
-
 def _lead_recency_value(lead: dict[str, Any]) -> float:
     for field in ("first_seen_at", "changed_at", "last_seen_at", "date_opened"):
         parsed = _parse_timestamp(str(lead.get(field) or ""))
@@ -451,17 +432,23 @@ def _lead_recency_value(lead: dict[str, Any]) -> float:
     return 0.0
 
 
+def _lead_event_date_value(lead: dict[str, Any]) -> float:
+    parsed = _parse_timestamp(str(lead.get("date_opened") or ""))
+    if not parsed:
+        return 0.0
+    aware = _coerce_datetime_aware_utc(parsed)
+    return aware.timestamp()
+
+
 def _sort_leads_for_digest(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ordered = list(rows or [])
     ordered.sort(
         key=lambda lead: (
-            _priority_rank_value(_lead_effective_priority(lead)),
-            _event_type_weight(lead),
-            _naics_fit_weight(lead),
-            _lead_recency_value(lead),
+            -_priority_rank_value(_lead_effective_priority(lead)),
+            -_lead_event_date_value(lead),
+            -_lead_recency_value(lead),
             str(lead.get("activity_nr") or lead.get("lead_key") or lead.get("lead_id") or ""),
         ),
-        reverse=True,
     )
     return ordered
 
@@ -2684,7 +2671,6 @@ def generate_digest_html(
     state_summary_states: list[str] | None = None,
     state_summary_counts: dict[str, int] | None = None,
     hidden_low_state_counts: dict[str, int] | None = None,
-    priority_methodology_line: str | None = None,
     tz: ZoneInfo | None = None,
 ) -> str:
     states = config["states"]
@@ -2695,7 +2681,7 @@ def generate_digest_html(
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
     summary_states = [str(s).strip().upper() for s in list(state_summary_states or states) if str(s).strip()]
     state_counts = state_summary_counts or _state_counts_for_rows(leads, summary_states)
-    configured_line, by_state_line, zero_states_line, coverage_basis_line = _build_state_coverage_lines(
+    _configured_line, by_state_line, zero_states_line, _coverage_basis_line = _build_state_coverage_lines(
         summary_states,
         state_counts,
     )
@@ -2763,13 +2749,6 @@ def generate_digest_html(
         html.append(
             f"<p style=\"margin: 6px 0 0 0; color: #555; font-size: 12px;\">Tier summary: High {high}, Medium {medium}, Low {low}</p>"
         )
-        methodology = (
-            priority_methodology_line
-            or "Priority tiers use OSHA signal rules plus AI review for customer-fit ranking (AI may raise or lower tiers; no signals are suppressed by AI)."
-        )
-        html.append(
-            f"<p style=\"margin: 6px 0 0 0; color: #555; font-size: 12px;\">{methodology}</p>"
-        )
     html.append("</div>")
     if mode == "daily" and tier_counts is not None:
         low_today = int(low_available_today) if low_available_today is not None else int(tier_counts.get("low", 0))
@@ -2831,13 +2810,9 @@ def generate_digest_html(
                   )
     if mode == "daily":
         html.append('<div style="background-color: #f8fafc; padding: 12px; border-radius: 6px; margin: 12px 0;">')
-        html.append(f"<p style=\"margin:0;\"><strong>Configured states:</strong> {configured_line}</p>")
-        html.append(f"<p style=\"margin:6px 0 0 0;\"><strong>New signals today by state:</strong> {by_state_line}</p>")
+        html.append(f"<p style=\"margin:0;\"><strong>New signals today by state:</strong> {by_state_line}</p>")
         if zero_states_line:
             html.append(f"<p style=\"margin:6px 0 0 0; color:#374151;\">No new signals in {zero_states_line} today</p>")
-        html.append(
-            f"<p style=\"margin:6px 0 0 0; color:#555; font-size:12px;\">Coverage: {coverage_basis_line}</p>"
-        )
         if hidden_low_state_counts:
             hidden_total = sum(int(v or 0) for v in hidden_low_state_counts.values())
             if hidden_total > 0:
@@ -2880,11 +2855,6 @@ def generate_digest_html(
             html.append(f"<h2>Low priority ({len(low_priority)})</h2>")
             html.append(_lead_rows_html(low_priority, len(low_priority), include_area_office_low, tz))
     else:
-        top_picks = list(leads[:5])
-        if top_picks:
-            html.append("<h2>Top picks (best bets)</h2>")
-            html.append(_lead_rows_html(top_picks, len(top_picks), include_area_office_main, tz))
-
         html.append("<h2>Signals</h2>")
         show_limit = len(leads) if signals_limit is None else max(0, int(signals_limit))
         shown = leads[:show_limit]
@@ -2989,7 +2959,6 @@ def generate_digest_text(
     state_summary_states: list[str] | None = None,
     state_summary_counts: dict[str, int] | None = None,
     hidden_low_state_counts: dict[str, int] | None = None,
-    priority_methodology_line: str | None = None,
     tz: ZoneInfo | None = None,
 ) -> str:
     states = config["states"]
@@ -2997,7 +2966,7 @@ def generate_digest_text(
     territory_label = territory_display_name(territory_code)
     summary_states = [str(s).strip().upper() for s in list(state_summary_states or states) if str(s).strip()]
     state_counts = state_summary_counts or _state_counts_for_rows(leads, summary_states)
-    configured_line, by_state_line, zero_states_line, coverage_basis_line = _build_state_coverage_lines(
+    _configured_line, by_state_line, zero_states_line, _coverage_basis_line = _build_state_coverage_lines(
         summary_states,
         state_counts,
     )
@@ -3043,11 +3012,6 @@ def generate_digest_text(
             low_snapshot = 0
 
         lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low_summary}")
-        methodology = (
-            priority_methodology_line
-            or "Priority tiers use OSHA signal rules plus AI review for customer-fit ranking (AI may raise or lower tiers; no signals are suppressed by AI)."
-        )
-        lines.append(methodology)
         low_note = f"({low_today} available today)" if low_today > 0 else "(none observed today)"
         if include_lows:
             shown = len(low_priority or [])
@@ -3072,11 +3036,9 @@ def generate_digest_text(
                     "(starts next digest; prefs page preview may be unavailable)"
                 )
     if mode == "daily":
-        lines.append(f"Configured states: {configured_line}")
         lines.append(f"New signals today by state: {by_state_line}")
         if zero_states_line:
             lines.append(f"No new signals in {zero_states_line} today")
-        lines.append(f"Coverage: {coverage_basis_line}")
         if hidden_low_state_counts:
             hidden_total = sum(int(v or 0) for v in hidden_low_state_counts.values())
             if hidden_total > 0:
@@ -3150,18 +3112,6 @@ def generate_digest_text(
                 lines.append("")
                 lines.append("No signals in the last 14 days." if include_lows else "No priority signals in the last 14 days.")
     else:
-        top_picks = list(leads[:5])
-        if top_picks:
-            lines.append("")
-            lines.append("Top picks (best bets):")
-            for lead in top_picks:
-                priority_token = _priority_label_from_value(_lead_effective_priority(lead))
-                lines.append(
-                    f"- {(lead.get('establishment_name') or 'Unknown')} | "
-                    f"{(lead.get('site_city') or '-')}, {(lead.get('site_state') or '-')} | "
-                    f"{priority_token} | {_reason_chip_label(lead)}"
-                )
-
         lines.append("")
         lines.append("Signals:")
         for lead in main_rows:
