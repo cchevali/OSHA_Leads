@@ -1790,12 +1790,12 @@ class TestOutreachRunAuto(unittest.TestCase):
                                 ],
                             )
                             expected_subject = (
-                                "Quick heads up — new CA inspection opened Feb 18"
+                                "Quick heads up — CA inspection opened Feb 18"
                                 if expected_state == "CA"
-                                else "Quick heads up — new FL inspection opened Feb 18"
+                                else "Quick heads up — FL inspection opened Feb 18"
                             )
                             self.assertEqual(subject, expected_subject)
-                            self.assertIn("I spotted a new OSHA inspection", text_body)
+                            self.assertIn("I spotted a recent OSHA inspection", text_body)
                             self.assertIn(
                                 "Recently observed in public OSHA data; opened dates are listed below and none have citations yet",
                                 text_body,
@@ -1875,7 +1875,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                         }
                     ],
                 )
-            self.assertEqual(subject, "Quick heads up — new CA inspection opened Feb 18")
+            self.assertEqual(subject, "Quick heads up — CA inspection opened Feb 18")
             self.assertIn(
                 "Hi - saw a new OSHA inspection in California that might be relevant to your team:",
                 text_body,
@@ -1943,6 +1943,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("Hi Alonso,", text_body)
             self.assertNotIn("Hi Alonso,,", text_body)
             self.assertIn("your team at Temperature Pro West Austin", text_body)
+            self.assertIn("may be relevant to your team at Temperature Pro West Austin", text_body)
         finally:
             conn.close()
 

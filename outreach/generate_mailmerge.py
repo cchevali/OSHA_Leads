@@ -60,6 +60,7 @@ UPPERCASE_COMPANY_TOKENS = {
     "EHS",
     "HSE",
 }
+FORCE_UPPER_ESTABLISHMENT_SUFFIX_TOKENS = {"LLC", "LLP", "LP", "INC", "LTD"}
 
 
 def _utc_now_iso() -> str:
@@ -287,6 +288,26 @@ def _clean_first_name(value: str) -> str:
     return text
 
 
+def _clean_establishment_name(value: str) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    if _is_shouty_text(text):
+        return _smart_company_case(text)
+    parts: list[str] = []
+    for token in text.split(" "):
+        core, tail = _split_trailing_punct(token)
+        if not core:
+            parts.append(token)
+            continue
+        letters = "".join(ch for ch in core if ch.isalpha())
+        if letters and letters.upper() in FORCE_UPPER_ESTABLISHMENT_SUFFIX_TOKENS:
+            parts.append(core.upper() + tail)
+        else:
+            parts.append(core + tail)
+    return " ".join(parts)
+
+
 STATE_FULL_NAMES = {
     "TX": "Texas",
     "CA": "California",
@@ -397,10 +418,10 @@ def _build_copy_tokens(
 
     if clean_first:
         greeting_text = f"Hi {clean_first},"
-        count_phrase = "a new OSHA inspection" if low_signal else "a few new OSHA inspections"
+        count_phrase = "a recent OSHA inspection" if low_signal else "a few recent OSHA inspections"
         team_phrase = f"your team at {clean_firm}" if clean_firm else "your team"
         intro_text = (
-            f"I spotted {count_phrase} in {state_full_name} that {team_phrase} might want to know about. "
+            f"I spotted {count_phrase} in {state_full_name} that may be relevant to {team_phrase}. "
             "Recently observed in public OSHA data; opened dates are listed below and none have citations yet:"
         )
         post_cards_text = ""
@@ -511,7 +532,8 @@ def _subject_opened_or_observed_date(lead: dict) -> str:
 
 
 def _format_recent_signal_line(lead: dict) -> str:
-    est = _truncate_text((lead.get("establishment_name") or "").strip() or "Unknown establishment", 52)
+    est = _clean_establishment_name((lead.get("establishment_name") or "").strip()) or "Unknown establishment"
+    est = _truncate_text(est, 52)
     city = (lead.get("site_city") or "").strip()
     state = (lead.get("site_state") or "").strip()
     itype = (lead.get("inspection_type") or "").strip()
@@ -645,7 +667,14 @@ def _recent_signals_html_from_leads(leads: list[dict]) -> str:
     try:
         import outbound_cold_email as oce
 
-        parts = [oce.format_lead_for_html(lead) for lead in leads]
+        parts = []
+        for lead in leads:
+            rendered = dict(lead or {})
+            rendered["establishment_name"] = (
+                _clean_establishment_name((rendered.get("establishment_name") or "").strip())
+                or "Unknown establishment"
+            )
+            parts.append(oce.format_lead_for_html(rendered))
         html = "\n".join([p for p in parts if (p or "").strip()]).strip()
         return html or "<div></div>"
     except Exception:
@@ -799,9 +828,10 @@ def _subject_for_multi_signal(*, signal_count: int, state_abbrev: str, primary_t
 
 def _subject_for_single_signal(*, state_abbrev: str, opened_label: str) -> str:
     candidates = [
-        f"Quick heads up — new {state_abbrev} inspection opened {opened_label}",
-        f"Quick heads up — new {state_abbrev} inspection opened recently",
-        f"Heads up — new {state_abbrev} inspection opened recently",
+        f"Quick heads up — {state_abbrev} inspection opened {opened_label}",
+        f"Quick heads up — recent {state_abbrev} inspection",
+        f"Quick heads up — {state_abbrev} inspection opened recently",
+        f"Heads up — {state_abbrev} inspection opened recently",
     ]
     for candidate in candidates:
         if len(candidate) <= 64:
