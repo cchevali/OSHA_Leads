@@ -307,3 +307,38 @@ Operators also needed remote visibility into scheduled outcomes without touching
 - Non-canonical live attempts fail fast with deterministic `ERR_RUNTIME_*` tokens.
 - Manual live sends now require explicit `--confirm-live-send` unless running in trusted scheduled context.
 - Offline self-hosted runner state is visible as queued/failed workflow telemetry and treated as an ops signal.
+
+## ADR-0011: Runtime Tick Workflow Is The Primary Scheduler; Task Scheduler Is Break-Glass Only
+
+Date: 2026-03-06
+Status: Accepted
+
+### Context
+
+Keeping both GitHub Actions and Windows Task Scheduler as active schedulers left the system vulnerable to drift in task actions, runtime accounts, Python resolution, and split job ownership.
+The runtime hardening work introduced a single orchestrator (`run_runtime_tick.py`) and canonical status artifacts, but the docs still described GitHub Actions as visibility-only.
+
+### Decision
+
+- Make `.github/workflows/runtime-tick-selfhosted.yml` the primary scheduled control plane for live operations on the canonical self-hosted runner.
+- Use `run_runtime_tick.py` as the only scheduled orchestrator for:
+  - inbound triage
+  - AI review dump
+  - OSHA ingest
+  - prospect replenishment
+  - outreach auto-send
+  - FACS daily trial send
+- Keep Windows Task Scheduler wrappers and installers only for manual break-glass recovery on the canonical PC.
+- Do not run Task Scheduler and runtime tick as parallel daily schedulers after cutover.
+
+### Rationale
+
+- One scheduler removes action drift and overlapping ownership of the same live jobs.
+- The GitHub workflow gives remote visibility, durable artifacts, and explicit runner health while still executing on the canonical PC.
+- Retaining local wrappers preserves a recovery path without keeping two live schedulers in competition.
+
+### Consequences
+
+- Operator docs and runbooks must treat runtime tick as the default daily path.
+- Workflow enablement on the default branch becomes part of runtime cutover.
+- Task Scheduler credentials and installers remain supported only for recovery scenarios, not as standard daily operations.

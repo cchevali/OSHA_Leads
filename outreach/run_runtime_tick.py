@@ -265,6 +265,14 @@ def _powershell_file_cmd(path: Path, args: list[str] | None = None) -> list[str]
     return cmd
 
 
+def _job_skip_reason(repo_root: Path, job_name: str) -> str:
+    if job_name == "inbound_triage":
+        gmail_credentials = (repo_root / "secrets" / "gmail_credentials.json").resolve(strict=False)
+        if not gmail_credentials.exists():
+            return "gmail_credentials_missing"
+    return ""
+
+
 def _job_commands(repo_root: Path, job_name: str, mode: str) -> list[list[str]]:
     if job_name == "inbound_triage":
         if mode == "live":
@@ -545,6 +553,22 @@ def main(argv: list[str] | None = None) -> int:
             )
 
             mode_name = "doctor" if args.doctor else "dry_run" if args.dry_run else "live"
+            skip_reason = _job_skip_reason(repo_root, spec.name)
+            if skip_reason:
+                job_results.append(
+                    {
+                        "name": spec.name,
+                        "result": "skipped",
+                        "reason": skip_reason,
+                        "exit_code": 0,
+                        "slot_key": slot_key,
+                    }
+                )
+                _emit(
+                    "RUNTIME_TICK_JOB_RESULT",
+                    f"name={spec.name} result=skipped exit_code=0 reason={skip_reason}",
+                )
+                continue
             if not due and not args.doctor:
                 job_results.append(
                     {

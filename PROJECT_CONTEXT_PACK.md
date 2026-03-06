@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=e809bd7e27304bf2f0d694a027df9bba113dcd7d
-PACK_BUILD_UTC=2026-03-06T01:39:21Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=0a4ba6666b7bed93227445ab67a49118f96c8be8ef735b322ce726f4ab40282d docs/DECISIONS.md=c411e34ae47c5a71dd8a674276ceb57aa91593e6b26cf7687e0fb2e07dfaeefe docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=25eb68b4e72a4894120de61e2eadf487a4c89b031fe8cde62ebea1a729cac68f docs/TODO.md=b65594bda87950dd7c8d44c97d8b414e324f5b8fa2ff1bb8fdf2d5af05205318 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=66e862da0a72740b9db7b4c6abc9b60b5c03cac9333bcacce6d52707cdb45350
+PACK_GIT_SHA=b1115c378bf9ab035b41cd119f7745334759e198
+PACK_BUILD_UTC=2026-03-06T15:37:04Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=edbbd93c214cef8e7911f52bf05bb205368e93e3ca79b09a0bdfe950018baa93 docs/DECISIONS.md=c39bc7b1615bbbd884d0fa591685468b7a5b92cf479c03c4d39c84d6213e9e3a docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=8c959088aeaa345516d2882d6182e6bd3f82104b92e38cf72d3f12ca51efd404 docs/TODO.md=806e22e4a1a4e86b1ceb13a879e72f0a04e450847c3d72da5de8ec9a5064abfe docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=da7e55ae79ee35f52cee68309403d2419e20b26d72eb632e80904169794ec6a0
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -108,13 +108,16 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 
 - Single-writer rule: the canonical Windows PC is the only runtime that may perform live SQLite writes and live sends.
 - Runtime guard layer (`runtime_guard.py` + `scripts/scheduled/runtime_guard.ps1`) enforces host/data-root policy before write/send paths.
-- Scheduled visibility plane: GitHub Actions workflows run on a label-pinned self-hosted Windows runner (`self-hosted`, `windows`, `osha-pc-canonical`) on that PC.
+- Primary scheduled control plane: GitHub Actions workflows run on a label-pinned self-hosted Windows runner (`self-hosted`, `windows`, `osha-pc-canonical`) on the canonical PC.
+- Primary scheduler entrypoint: `run_runtime_tick.py`, invoked by `.github/workflows/runtime-tick-selfhosted.yml` every 15 minutes and fanning into due jobs by local time.
+- Windows Task Scheduler wrappers are retained only as manual break-glass fallbacks and must not remain enabled in parallel with runtime tick once cutover is complete.
 - Wrappers emit deterministic run summaries (`runtime_run_summary_v1`) plus task logs and optional backup manifests.
 - Artifact roots:
-  - Task logs: `${TASK_LOG_ROOT}` or `<repo>\out\task_logs`
-  - Run summaries: `${RUN_SUMMARY_ROOT}` or `<repo>\out\run_summaries`
-  - Backup metadata/snapshots: `${BACKUP_ROOT}` or `<repo>\out\backups`
+  - Task logs: `${TASK_LOG_ROOT}` or `${DATA_DIR}\out\task_logs` or `<repo>\out\task_logs`
+  - Run summaries: `${RUN_SUMMARY_ROOT}` or `${DATA_DIR}\out\run_summaries` or `<repo>\out\run_summaries`
+  - Backup metadata/snapshots: `${BACKUP_ROOT}` or `${DATA_DIR}\out\backups` or `<repo>\out\backups`
   - Optional mirror: `${ARTIFACT_SYNC_DIR}` (artifacts/backups only; never live DB)
+- Runtime tick status artifacts live under `${DATA_DIR}\runtime\status\` and include `runtime_latest.json`, `runtime_latest.md`, and per-job status JSON files.
 - Laptop/dev clients are read-only operationally: print-config, doctor, dry-run, and artifact inspection.
 
 ## Outreach CRM Auto-Run Data Flow
@@ -492,6 +495,41 @@ Operators also needed remote visibility into scheduled outcomes without touching
 - Non-canonical live attempts fail fast with deterministic `ERR_RUNTIME_*` tokens.
 - Manual live sends now require explicit `--confirm-live-send` unless running in trusted scheduled context.
 - Offline self-hosted runner state is visible as queued/failed workflow telemetry and treated as an ops signal.
+
+## ADR-0011: Runtime Tick Workflow Is The Primary Scheduler; Task Scheduler Is Break-Glass Only
+
+Date: 2026-03-06
+Status: Accepted
+
+### Context
+
+Keeping both GitHub Actions and Windows Task Scheduler as active schedulers left the system vulnerable to drift in task actions, runtime accounts, Python resolution, and split job ownership.
+The runtime hardening work introduced a single orchestrator (`run_runtime_tick.py`) and canonical status artifacts, but the docs still described GitHub Actions as visibility-only.
+
+### Decision
+
+- Make `.github/workflows/runtime-tick-selfhosted.yml` the primary scheduled control plane for live operations on the canonical self-hosted runner.
+- Use `run_runtime_tick.py` as the only scheduled orchestrator for:
+  - inbound triage
+  - AI review dump
+  - OSHA ingest
+  - prospect replenishment
+  - outreach auto-send
+  - FACS daily trial send
+- Keep Windows Task Scheduler wrappers and installers only for manual break-glass recovery on the canonical PC.
+- Do not run Task Scheduler and runtime tick as parallel daily schedulers after cutover.
+
+### Rationale
+
+- One scheduler removes action drift and overlapping ownership of the same live jobs.
+- The GitHub workflow gives remote visibility, durable artifacts, and explicit runner health while still executing on the canonical PC.
+- Retaining local wrappers preserves a recovery path without keeping two live schedulers in competition.
+
+### Consequences
+
+- Operator docs and runbooks must treat runtime tick as the default daily path.
+- Workflow enablement on the default branch becomes part of runtime cutover.
+- Task Scheduler credentials and installers remain supported only for recovery scenarios, not as standard daily operations.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -555,10 +593,13 @@ Runtime model:
 
 - Canonical PC is the only live writer/sender for `osha.sqlite`, `crm.sqlite`, `crm_light.sqlite`, and live email sends.
 - Laptop/dev clients are limited to `--print-config`, `--doctor`, `--dry-run`, and artifact review.
-- GitHub Actions is control-plane visibility only and must invoke repo wrappers on the canonical self-hosted runner (`self-hosted`, `windows`, `osha-pc-canonical`).
+- GitHub Actions on the label-pinned self-hosted runner (`self-hosted`, `windows`, `osha-pc-canonical`) is the primary scheduled control plane.
+- Windows Task Scheduler wrappers remain available for manual break-glass recovery only and must not stay enabled as a parallel daily scheduler once runtime tick is live.
 
-Primary wrappers:
+Primary entrypoints:
 
+- `run_runtime_tick.py`
+- `run_runtime_state_migrate.py`
 - `scripts\scheduled\run_trial_facs_daily.ps1`
 - `scripts\scheduled\run_outreach_auto.ps1`
 - `scripts\scheduled\run_osha_ingest_daily.ps1`
@@ -568,9 +609,9 @@ Primary wrappers:
 
 Artifact locations:
 
-- Task logs: `${TASK_LOG_ROOT}` or `.\out\task_logs`
-- Run summaries: `${RUN_SUMMARY_ROOT}` or `.\out\run_summaries`
-- Backup snapshots/manifests: `${BACKUP_ROOT}` or `.\out\backups`
+- Task logs: `${TASK_LOG_ROOT}` or `${DATA_DIR}\out\task_logs` or `.\out\task_logs`
+- Run summaries: `${RUN_SUMMARY_ROOT}` or `${DATA_DIR}\out\run_summaries` or `.\out\run_summaries`
+- Backup snapshots/manifests: `${BACKUP_ROOT}` or `${DATA_DIR}\out\backups` or `.\out\backups`
 - Optional cloud mirror root: `${ARTIFACT_SYNC_DIR}` (artifacts/backups only; never live DB path)
 
 Triage ladder:
@@ -586,6 +627,51 @@ Runner-offline behavior:
 - If the canonical PC/self-hosted runner is offline, scheduled GitHub workflows will queue/fail visibly.
 - Treat this as expected telemetry; do not reroute live writes/sends to laptop.
 - Recovery is: restore runner availability on PC, validate guard/paths with `--print-config` and dry-run, then rerun wrapper/workflow.
+
+## Runtime Tick (Primary Scheduler)
+
+Primary scheduled workflow:
+
+- `.github\workflows\runtime-tick-selfhosted.yml`
+- Executes `run_runtime_tick.py` on the canonical self-hosted runner every 15 minutes
+- Writes status artifacts under `${DATA_DIR}\runtime\status\`
+
+Operator commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+gh workflow view runtime-tick-selfhosted.yml
+gh workflow enable runtime-tick-selfhosted.yml
+gh workflow run runtime-tick-selfhosted.yml -f mode=doctor -f job=all
+gh run list --workflow "Runtime Tick (Self-Hosted)" --limit 5
+```
+
+Direct wrapper commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --print-config
+.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --doctor
+.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --dry-run
+```
+
+Status artifacts:
+
+- `${DATA_DIR}\runtime\status\runtime_latest.json`
+- `${DATA_DIR}\runtime\status\runtime_latest.md`
+- `${DATA_DIR}\runtime\status\jobs\<job>.json`
+
+## Runtime State Migration
+
+Use the migration entrypoint before cutting live runtime state fully into `${DATA_DIR}`:
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --print-config
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --doctor
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --dry-run
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --apply
+```
 
 ## WIP Autosave Discipline
 
@@ -911,7 +997,7 @@ Use these commands instead of inline `py -3 -c "..."` one-liners. PowerShell quo
 
 ### Prospect Replenishment (Scheduled First)
 
-Run the canonical replenishment wrapper first each day. It runs generation doctor -> generation -> discovery in order:
+`run_runtime_tick.py` runs replenishment automatically at the daily due window. Use the canonical replenishment wrapper directly only for manual break-glass execution. It runs generation doctor -> generation -> discovery in order:
 
 ```powershell
 cd C:\dev\OSHA_Leads
@@ -1625,48 +1711,34 @@ Idempotency and state behavior:
 - Does **not** mutate IMAP flags/folders (`Seen`/move is not used).
 - Emits `BOUNCE_IMPORT_MODERATION_NOTICE_SEEN=1` when a moderation notice is parsed as a hard bounce.
 
-### Task Scheduler (PC)
+### Task Scheduler (Break-Glass Only)
 
-Create/update weekday-only tasks (Mon-Fri) (OSHA ingest first, then generation, discovery, outreach).
-Operational expectation is America/New_York local time:
+Do not keep Windows Task Scheduler as an active parallel scheduler once `runtime-tick-selfhosted.yml` is live on the canonical runner.
+Use Task Scheduler only for temporary local recovery when GitHub Actions on the canonical PC is unavailable.
 
-```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 06:45 /TN "OSHA_Osha_Ingest_Daily" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_osha_ingest_daily.ps1" `
-  /RL HIGHEST
-```
-
-```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:15 /TN "OSHA_Prospect_Replenish_Daily" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_replenish_daily.ps1" `
-  /RL HIGHEST
-```
-
-```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 08:00 /TN "OSHA_Outreach_Auto" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_outreach_auto.ps1" `
-  /RL HIGHEST
-```
-
-Deterministic installer (preferred):
+Break-glass installer commands:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --print-config
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --dry-run
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
 ```
 
-Rerun `.\scripts\install_scheduled_tasks.ps1 --apply` to update existing tasks to weekday-only schedules.
+Verification:
 
-### Logged-Off Execution Enforcement (All `OSHA*` Tasks)
+```powershell
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --verify
+```
 
-Set scheduler credentials in secrets-managed env (password is never printed by `--print-config`):
+### Logged-Off Execution Enforcement (Break-Glass Tasks Only)
+
+Only required when using Task Scheduler as a temporary recovery path. Set scheduler credentials in secrets-managed env (password is never printed by `--print-config`):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -TaskSchedUser "DESKTOP-Q8QM4N9\lever" -TaskSchedPassword "<TASK_SCHED_PASSWORD>"
 ```
 
-Apply installers via secrets wrapper so `TASK_SCHED_USER` / `TASK_SCHED_PASSWORD` are loaded:
+Apply break-glass installers via secrets wrapper so `TASK_SCHED_USER` / `TASK_SCHED_PASSWORD` are loaded:
 
 ```powershell
 .\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
@@ -2074,7 +2146,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 ## Human-only (UI/credentials)
 
 - [ ] After any PR/commit that changes docs/contracts/templates/workflow (or any time `WARN_CONTEXT_PACK_STALE` appears): run build + fingerprint + upload + mark-uploaded + check (in that order).
-- [ ] Configure/verify GitHub self-hosted runner on canonical PC with labels `self-hosted`, `windows`, `osha-pc-canonical` and repository permissions for workflow execution.
+- [ ] Install the registered GitHub self-hosted runner on the canonical PC as a Windows service from an elevated shell so it survives reboot/logoff.
 - [ ] Set runtime role keys on canonical PC via `scripts\set_outreach_env.ps1` (`RUNTIME_ROLE=canonical_scheduler`, `CANONICAL_HOSTNAME=<pc-hostname>`) and verify with wrapper `--print-config` paths.
 - [ ] Set optional `ARTIFACT_SYNC_DIR` (for example OneDrive artifacts folder) via `scripts\set_outreach_env.ps1` and confirm mirrors for task logs/run summaries/backups.
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
@@ -2097,6 +2169,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Done
 
+- 2026-03-06: Registered and verified repo self-hosted runner `desktop-q8qm4n9-runtime` on the canonical PC with labels `self-hosted`, `Windows`, `X64`, `osha-pc-canonical`. Verified by successful job pickup from `Runtime Tick (Self-Hosted)` workflow dispatch on `main`.
 - 2026-02-15: Completed outbound sender domain verification (SPF, DKIM, DMARC) for `microflowops.com`. DNS records published; test email confirmed `spf=pass`, `dkim=pass`, `dmarc=pass` with aligned domains. Verification commands added to `docs/RUNBOOK.md` under "Deliverability Preflight".
 - 2026-02-12: Set website Stripe payment link in `web/config/site.json` (`stripePaymentLink`) and wire it into `web/app/pricing/page.tsx` + `web/app/contact/page.tsx` (commit `54c2a3c6`).
 

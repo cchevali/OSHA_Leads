@@ -11,10 +11,13 @@ Runtime model:
 
 - Canonical PC is the only live writer/sender for `osha.sqlite`, `crm.sqlite`, `crm_light.sqlite`, and live email sends.
 - Laptop/dev clients are limited to `--print-config`, `--doctor`, `--dry-run`, and artifact review.
-- GitHub Actions is control-plane visibility only and must invoke repo wrappers on the canonical self-hosted runner (`self-hosted`, `windows`, `osha-pc-canonical`).
+- GitHub Actions on the label-pinned self-hosted runner (`self-hosted`, `windows`, `osha-pc-canonical`) is the primary scheduled control plane.
+- Windows Task Scheduler wrappers remain available for manual break-glass recovery only and must not stay enabled as a parallel daily scheduler once runtime tick is live.
 
-Primary wrappers:
+Primary entrypoints:
 
+- `run_runtime_tick.py`
+- `run_runtime_state_migrate.py`
 - `scripts\scheduled\run_trial_facs_daily.ps1`
 - `scripts\scheduled\run_outreach_auto.ps1`
 - `scripts\scheduled\run_osha_ingest_daily.ps1`
@@ -24,9 +27,9 @@ Primary wrappers:
 
 Artifact locations:
 
-- Task logs: `${TASK_LOG_ROOT}` or `.\out\task_logs`
-- Run summaries: `${RUN_SUMMARY_ROOT}` or `.\out\run_summaries`
-- Backup snapshots/manifests: `${BACKUP_ROOT}` or `.\out\backups`
+- Task logs: `${TASK_LOG_ROOT}` or `${DATA_DIR}\out\task_logs` or `.\out\task_logs`
+- Run summaries: `${RUN_SUMMARY_ROOT}` or `${DATA_DIR}\out\run_summaries` or `.\out\run_summaries`
+- Backup snapshots/manifests: `${BACKUP_ROOT}` or `${DATA_DIR}\out\backups` or `.\out\backups`
 - Optional cloud mirror root: `${ARTIFACT_SYNC_DIR}` (artifacts/backups only; never live DB path)
 
 Triage ladder:
@@ -42,6 +45,51 @@ Runner-offline behavior:
 - If the canonical PC/self-hosted runner is offline, scheduled GitHub workflows will queue/fail visibly.
 - Treat this as expected telemetry; do not reroute live writes/sends to laptop.
 - Recovery is: restore runner availability on PC, validate guard/paths with `--print-config` and dry-run, then rerun wrapper/workflow.
+
+## Runtime Tick (Primary Scheduler)
+
+Primary scheduled workflow:
+
+- `.github\workflows\runtime-tick-selfhosted.yml`
+- Executes `run_runtime_tick.py` on the canonical self-hosted runner every 15 minutes
+- Writes status artifacts under `${DATA_DIR}\runtime\status\`
+
+Operator commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+gh workflow view runtime-tick-selfhosted.yml
+gh workflow enable runtime-tick-selfhosted.yml
+gh workflow run runtime-tick-selfhosted.yml -f mode=doctor -f job=all
+gh run list --workflow "Runtime Tick (Self-Hosted)" --limit 5
+```
+
+Direct wrapper commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --print-config
+.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --doctor
+.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --dry-run
+```
+
+Status artifacts:
+
+- `${DATA_DIR}\runtime\status\runtime_latest.json`
+- `${DATA_DIR}\runtime\status\runtime_latest.md`
+- `${DATA_DIR}\runtime\status\jobs\<job>.json`
+
+## Runtime State Migration
+
+Use the migration entrypoint before cutting live runtime state fully into `${DATA_DIR}`:
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --print-config
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --doctor
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --dry-run
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --apply
+```
 
 ## WIP Autosave Discipline
 
@@ -367,7 +415,7 @@ Use these commands instead of inline `py -3 -c "..."` one-liners. PowerShell quo
 
 ### Prospect Replenishment (Scheduled First)
 
-Run the canonical replenishment wrapper first each day. It runs generation doctor -> generation -> discovery in order:
+`run_runtime_tick.py` runs replenishment automatically at the daily due window. Use the canonical replenishment wrapper directly only for manual break-glass execution. It runs generation doctor -> generation -> discovery in order:
 
 ```powershell
 cd C:\dev\OSHA_Leads
@@ -1081,48 +1129,34 @@ Idempotency and state behavior:
 - Does **not** mutate IMAP flags/folders (`Seen`/move is not used).
 - Emits `BOUNCE_IMPORT_MODERATION_NOTICE_SEEN=1` when a moderation notice is parsed as a hard bounce.
 
-### Task Scheduler (PC)
+### Task Scheduler (Break-Glass Only)
 
-Create/update weekday-only tasks (Mon-Fri) (OSHA ingest first, then generation, discovery, outreach).
-Operational expectation is America/New_York local time:
+Do not keep Windows Task Scheduler as an active parallel scheduler once `runtime-tick-selfhosted.yml` is live on the canonical runner.
+Use Task Scheduler only for temporary local recovery when GitHub Actions on the canonical PC is unavailable.
 
-```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 06:45 /TN "OSHA_Osha_Ingest_Daily" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_osha_ingest_daily.ps1" `
-  /RL HIGHEST
-```
-
-```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:15 /TN "OSHA_Prospect_Replenish_Daily" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_replenish_daily.ps1" `
-  /RL HIGHEST
-```
-
-```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 08:00 /TN "OSHA_Outreach_Auto" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_outreach_auto.ps1" `
-  /RL HIGHEST
-```
-
-Deterministic installer (preferred):
+Break-glass installer commands:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --print-config
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --dry-run
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
 ```
 
-Rerun `.\scripts\install_scheduled_tasks.ps1 --apply` to update existing tasks to weekday-only schedules.
+Verification:
 
-### Logged-Off Execution Enforcement (All `OSHA*` Tasks)
+```powershell
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --verify
+```
 
-Set scheduler credentials in secrets-managed env (password is never printed by `--print-config`):
+### Logged-Off Execution Enforcement (Break-Glass Tasks Only)
+
+Only required when using Task Scheduler as a temporary recovery path. Set scheduler credentials in secrets-managed env (password is never printed by `--print-config`):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -TaskSchedUser "DESKTOP-Q8QM4N9\lever" -TaskSchedPassword "<TASK_SCHED_PASSWORD>"
 ```
 
-Apply installers via secrets wrapper so `TASK_SCHED_USER` / `TASK_SCHED_PASSWORD` are loaded:
+Apply break-glass installers via secrets wrapper so `TASK_SCHED_USER` / `TASK_SCHED_PASSWORD` are loaded:
 
 ```powershell
 .\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply

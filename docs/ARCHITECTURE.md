@@ -17,13 +17,16 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 
 - Single-writer rule: the canonical Windows PC is the only runtime that may perform live SQLite writes and live sends.
 - Runtime guard layer (`runtime_guard.py` + `scripts/scheduled/runtime_guard.ps1`) enforces host/data-root policy before write/send paths.
-- Scheduled visibility plane: GitHub Actions workflows run on a label-pinned self-hosted Windows runner (`self-hosted`, `windows`, `osha-pc-canonical`) on that PC.
+- Primary scheduled control plane: GitHub Actions workflows run on a label-pinned self-hosted Windows runner (`self-hosted`, `windows`, `osha-pc-canonical`) on the canonical PC.
+- Primary scheduler entrypoint: `run_runtime_tick.py`, invoked by `.github/workflows/runtime-tick-selfhosted.yml` every 15 minutes and fanning into due jobs by local time.
+- Windows Task Scheduler wrappers are retained only as manual break-glass fallbacks and must not remain enabled in parallel with runtime tick once cutover is complete.
 - Wrappers emit deterministic run summaries (`runtime_run_summary_v1`) plus task logs and optional backup manifests.
 - Artifact roots:
-  - Task logs: `${TASK_LOG_ROOT}` or `<repo>\out\task_logs`
-  - Run summaries: `${RUN_SUMMARY_ROOT}` or `<repo>\out\run_summaries`
-  - Backup metadata/snapshots: `${BACKUP_ROOT}` or `<repo>\out\backups`
+  - Task logs: `${TASK_LOG_ROOT}` or `${DATA_DIR}\out\task_logs` or `<repo>\out\task_logs`
+  - Run summaries: `${RUN_SUMMARY_ROOT}` or `${DATA_DIR}\out\run_summaries` or `<repo>\out\run_summaries`
+  - Backup metadata/snapshots: `${BACKUP_ROOT}` or `${DATA_DIR}\out\backups` or `<repo>\out\backups`
   - Optional mirror: `${ARTIFACT_SYNC_DIR}` (artifacts/backups only; never live DB)
+- Runtime tick status artifacts live under `${DATA_DIR}\runtime\status\` and include `runtime_latest.json`, `runtime_latest.md`, and per-job status JSON files.
 - Laptop/dev clients are read-only operationally: print-config, doctor, dry-run, and artifact inspection.
 
 ## Outreach CRM Auto-Run Data Flow
