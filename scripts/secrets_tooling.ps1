@@ -316,7 +316,11 @@ function Decrypt-DotenvSopsFile {
 
   $p = New-Object System.Diagnostics.Process
   $p.StartInfo = $psi
-  [void]$p.Start()
+  try {
+    [void]$p.Start()
+  } catch {
+    throw ("sops_start_failed file=" + $SopsExe + " err=" + $_.Exception.Message)
+  }
   $stdout = $p.StandardOutput.ReadToEnd()
   $stderr = $p.StandardError.ReadToEnd()
   $p.WaitForExit()

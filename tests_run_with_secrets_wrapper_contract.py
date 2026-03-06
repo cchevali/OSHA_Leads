@@ -49,6 +49,7 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         self.assertIn("WARN_ENV_CONFLICT=1 key=DATA_DIR", tooling_text)
         self.assertIn("WARN_DATA_DIR_NOT_ABSOLUTE=1", tooling_text)
         self.assertIn("OSHA_Leads\\keys\\age\\keys.txt", tooling_text)
+        self.assertIn("sops_start_failed file=", tooling_text)
         self.assertIn("$env:ProgramData", tooling_text)
 
     def test_target_wrapper_check_decrypt_uses_direct_sops_invocation(self):
