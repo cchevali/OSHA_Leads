@@ -5,6 +5,7 @@ import re
 import shutil
 import sqlite3
 import sys
+from collections import Counter
 from pathlib import Path
 
 try:  # pragma: no cover
@@ -81,6 +82,32 @@ def _coerce_source_fit_tier(value: str, source: str) -> str:
     if tier in VALID_SOURCE_FIT_TIERS:
         return tier
     return _source_fit_defaults(source)[0]
+
+
+def _source_family(source: str) -> str:
+    text = _norm_source(source).lower()
+    if not text:
+        return "UNKNOWN"
+    if text.startswith("aiha_consultants_listing"):
+        return "AIHA"
+    if text.startswith("ohs_buyers_guide"):
+        return "OHS_BG"
+    if text.startswith("apollo"):
+        return "APOLLO"
+    if text.startswith("bcsp"):
+        return "BCSP"
+    if text.startswith("osha_news"):
+        return "OSHA_NEWS"
+    if text.startswith("state_lic"):
+        return "STATE_LIC"
+    if text.startswith("seed_recipients_pools"):
+        return "SEED"
+    return "UNKNOWN"
+
+
+def _is_valid_boolish(value: str) -> bool:
+    text = (value or "").strip().lower()
+    return text in {"1", "true", "yes", "on", "0", "false", "no", "off"}
 
 
 def _title_score(title: str) -> int:
@@ -309,6 +336,12 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
     updated = 0
     skipped = 0
     ts = crm_store.utc_now_iso()
+    source_counts: Counter = Counter()
+    tier_counts: Counter = Counter()
+    backfill_source_counts: Counter = Counter()
+    default_send_eligible_total = 0
+    unknown_source_backfill_count = 0
+    unknown_source_samples: list[str] = []
 
     with open(input_path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -339,7 +372,12 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
             last_contacted_at = (row.get("last_contacted_at") or "").strip() or None
 
             source = _norm_source(row.get("source") or "csv_seed")
+            source_family = _source_family(source)
             source_fit_default, sendable_default = _source_fit_defaults(source)
+            source_fit_raw = (row.get("source_fit_tier") or "").strip().lower()
+            sendable_raw = (row.get("default_send_eligible") or "").strip()
+            source_fit_backfilled = source_fit_raw not in VALID_SOURCE_FIT_TIERS
+            sendable_backfilled = not _is_valid_boolish(sendable_raw)
             payload = {
                 "prospect_id": prospect_id,
                 "firm": firm,
@@ -360,6 +398,17 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                 "created_at": created_at,
                 "last_contacted_at": last_contacted_at,
             }
+            source_counts[source_family] += 1
+            tier_counts[str(payload["source_fit_tier"] or "")] += 1
+            if int(payload["default_send_eligible"] or 0) == 1:
+                default_send_eligible_total += 1
+            if source_fit_backfilled or sendable_backfilled:
+                backfill_source_counts[source_family] += 1
+                if source_family == "UNKNOWN":
+                    unknown_source_backfill_count += 1
+                    sample_value = source or BLANK_SOURCE_LABEL
+                    if sample_value not in unknown_source_samples and len(unknown_source_samples) < 8:
+                        unknown_source_samples.append(sample_value)
 
             # Preserve UNIQUE(email) invariant without aborting the whole seed batch.
             email_owner = cur.execute(
@@ -413,6 +462,18 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
     print(f"{PASS_CRM_SEED} inserted_count={inserted}")
     print(f"{PASS_CRM_SEED} updated_count={updated}")
     print(f"{PASS_CRM_SEED} skipped_count={skipped}")
+    for family in ("SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC", "UNKNOWN"):
+        print(f"DISCOVERY_SOURCE_COUNT_{family}={int(source_counts.get(family, 0))}")
+    for tier in ("core_consultant", "recoverable_consultant", "adjacent_contractor"):
+        print(f"DISCOVERY_TIER_COUNT_{tier.upper()}={int(tier_counts.get(tier, 0))}")
+    print(f"DISCOVERY_DEFAULT_SEND_ELIGIBLE_TOTAL={int(default_send_eligible_total)}")
+    for family in ("SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC", "UNKNOWN"):
+        print(f"DISCOVERY_BACKFILL_SOURCE_COUNT_{family}={int(backfill_source_counts.get(family, 0))}")
+    print(f"DISCOVERY_BACKFILL_UNKNOWN_SOURCE_COUNT={int(unknown_source_backfill_count)}")
+    print(
+        "DISCOVERY_BACKFILL_UNKNOWN_SOURCE_SAMPLE="
+        f"{'|'.join(unknown_source_samples) if unknown_source_samples else 'none'}"
+    )
     if archived_to:
         print(f"{PASS_CRM_SEED} archived_to={archived_to}")
     return 0

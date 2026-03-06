@@ -2,6 +2,7 @@ import argparse
 import csv
 import hashlib
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -65,6 +66,9 @@ AUTOGROW_REJECT_KEYS = (
     "missing_state",
     "state_mismatch",
     "duplicate_in_batch",
+    "role_mismatch",
+    "role_inbox",
+    "fit_mismatch",
 )
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
 ROLE_INBOX_LOCALS = {
@@ -82,6 +86,31 @@ ROLE_INBOX_LOCALS = {
     "jobs",
     "hr",
 }
+APOLLO_ROLE_FIT_TOKENS = (
+    "owner",
+    "founder",
+    "co-founder",
+    "president",
+    "principal",
+    "managing partner",
+    "managing director",
+    "partner",
+    "practice lead",
+    "senior consultant",
+    "principal consultant",
+    "consultant",
+)
+APOLLO_CONSULTANT_FIT_TOKENS = (
+    "consult",
+    "industrial hygiene",
+    "oehs",
+    "ehs",
+    "hse",
+    "osha",
+    "safety",
+    "risk",
+    "compliance",
+)
 APOLLO_DEFAULT_PERSON_TITLES = [
     "owner",
     "founder",
@@ -105,6 +134,7 @@ GENERATOR_FILTER_KEYS = (
     "other",
 )
 DEFAULT_STATE_SCOPE_ALL = ("TX", "CA", "FL")
+VALID_SOURCE_FIT_TIERS = {"core_consultant", "recoverable_consultant", "adjacent_contractor"}
 US_STATE_NAME_TO_ABBR = {
     "alabama": "AL",
     "alaska": "AK",
@@ -158,6 +188,7 @@ US_STATE_NAME_TO_ABBR = {
     "wisconsin": "WI",
     "wyoming": "WY",
 }
+US_STATE_ABBREVIATIONS = set(US_STATE_NAME_TO_ABBR.values())
 
 
 def _valid_email(value: str) -> bool:
@@ -201,8 +232,41 @@ def _normalize_state(value: str) -> str:
     return US_STATE_NAME_TO_ABBR.get(normalized_name, direct)
 
 
+def _normalize_us_state(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    upper = text.upper()
+    if len(upper) == 2 and upper in US_STATE_ABBREVIATIONS:
+        return upper
+    normalized_name = " ".join(text.lower().split())
+    return US_STATE_NAME_TO_ABBR.get(normalized_name, "")
+
+
 def _normalize_text(value: str) -> str:
     return (value or "").strip()
+
+
+def _clean_city(value: str) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    compact = re.sub(r"\s+", " ", text).strip(" ,")
+    if not compact:
+        return ""
+    compact = re.sub(r",?\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?$", "", compact).strip(" ,")
+    parts = [p.strip() for p in compact.split(",") if p.strip()]
+    if len(parts) > 1:
+        for candidate in reversed(parts):
+            if re.fullmatch(r"[A-Za-z .'-]{2,}", candidate):
+                return candidate
+    if re.search(r"\d", compact):
+        if parts:
+            for candidate in parts:
+                if re.fullmatch(r"[A-Za-z .'-]{2,}", candidate):
+                    return candidate
+        return ""
+    return compact
 
 
 def _ascii_safe_text(value: str) -> str:
@@ -214,6 +278,106 @@ def _email_domain(email: str) -> str:
     if "@" not in e:
         return ""
     return e.split("@", 1)[1].strip().lower()
+
+
+def _source_fit_defaults(source: str) -> tuple[str, int]:
+    source_norm = _normalize_text(source).lower()
+    if source_norm.startswith("state_lic"):
+        return "adjacent_contractor", 0
+    if source_norm.startswith("apollo"):
+        return "core_consultant", 1
+    if source_norm.startswith("aiha_consultants_listing:"):
+        return "recoverable_consultant", 1
+    if source_norm.startswith("ohs_buyers_guide:"):
+        return "recoverable_consultant", 1
+    return "recoverable_consultant", 1
+
+
+def _coerce_boolish_int(value: str, default: int) -> int:
+    text = _normalize_text(value).lower()
+    if not text:
+        return 1 if int(default) else 0
+    if text in {"1", "true", "yes", "on"}:
+        return 1
+    if text in {"0", "false", "no", "off"}:
+        return 0
+    try:
+        return 1 if int(text) != 0 else 0
+    except Exception:
+        return 1 if int(default) else 0
+
+
+def _coerce_source_fit_tier(value: str, source: str) -> str:
+    tier = _normalize_text(value)
+    if tier in VALID_SOURCE_FIT_TIERS:
+        return tier
+    return _source_fit_defaults(source)[0]
+
+
+def _apollo_role_fit_text(row: dict[str, str]) -> str:
+    fields = [
+        _normalize_text(row.get("title") or row.get("contact_role") or ""),
+        _normalize_text(row.get("contact_name") or ""),
+    ]
+    return " ".join([f for f in fields if f]).lower()
+
+
+def _apollo_consultant_fit_text(row: dict[str, str]) -> str:
+    fields = [
+        _normalize_text(row.get("firm") or row.get("company_name") or ""),
+        _normalize_text(row.get("title") or row.get("contact_role") or ""),
+        _normalize_text(row.get("website") or ""),
+        _normalize_text(row.get("source") or ""),
+    ]
+    return " ".join([f for f in fields if f]).lower()
+
+
+def _contains_any_token(text: str, tokens: tuple[str, ...]) -> bool:
+    haystack = str(text or "").lower()
+    if not haystack:
+        return False
+    return any(token in haystack for token in tokens)
+
+
+def _source_family(source: str) -> str:
+    text = _normalize_text(source).lower()
+    if not text:
+        return "UNKNOWN"
+    if text.startswith("aiha_consultants_listing"):
+        return "AIHA"
+    if text.startswith("ohs_buyers_guide"):
+        return "OHS_BG"
+    if text.startswith("apollo"):
+        return "APOLLO"
+    if text.startswith("bcsp"):
+        return "BCSP"
+    if text.startswith("osha_news"):
+        return "OSHA_NEWS"
+    if text.startswith("state_lic"):
+        return "STATE_LIC"
+    if text.startswith("seed_recipients_pools"):
+        return "SEED"
+    return "UNKNOWN"
+
+
+def _generator_row_observability(rows: list[dict[str, str]]) -> dict[str, object]:
+    source_counts: Counter = Counter()
+    tier_counts: Counter = Counter()
+    default_send_eligible_total = 0
+    for row in list(rows or []):
+        source = _normalize_text(row.get("source") or "")
+        family = _source_family(source)
+        source_counts[family] += 1
+        tier = _coerce_source_fit_tier(row.get("source_fit_tier") or "", source)
+        tier_counts[tier] += 1
+        default_send = _coerce_boolish_int(row.get("default_send_eligible") or "", _source_fit_defaults(source)[1])
+        if default_send == 1:
+            default_send_eligible_total += 1
+    return {
+        "source_counts": dict(source_counts),
+        "tier_counts": dict(tier_counts),
+        "default_send_eligible_total": int(default_send_eligible_total),
+    }
 
 
 def _output_path(data_dir: Path) -> Path:
@@ -261,7 +425,19 @@ def _source_cache_path_for_state(cache_root_dir: Path, source_token: str, state:
 
 
 def _discovery_fields() -> list[str]:
-    return ["prospect_id", "firm", "email", "title", "city", "state", "source", "contact_name", "website"]
+    return [
+        "prospect_id",
+        "firm",
+        "email",
+        "title",
+        "city",
+        "state",
+        "source",
+        "source_fit_tier",
+        "default_send_eligible",
+        "contact_name",
+        "website",
+    ]
 
 
 def _prospect_id(state: str, domain: str, email: str) -> str:
@@ -395,6 +571,7 @@ def _parse_apollo_config(autogrow_sources: list[str]) -> dict:
     api_key = _normalize_text(os.getenv("APOLLO_API_KEY", ""))
     enrich_enabled = _bool_env(os.getenv("APOLLO_ENRICH_ENABLED", "0"))
     enrich_max_per_run = _parse_int_env(os.getenv("APOLLO_ENRICH_MAX_PER_RUN", ""), default=50, minimum=1)
+    allow_role_inbox = _bool_env(os.getenv("APOLLO_ALLOW_ROLE_INBOX", "0"))
     person_locations_mode = _normalize_text(os.getenv("APOLLO_PERSON_LOCATIONS_MODE", "state")).lower() or "state"
     if person_locations_mode != "state":
         raise ValueError("invalid_APOLLO_PERSON_LOCATIONS_MODE")
@@ -408,6 +585,7 @@ def _parse_apollo_config(autogrow_sources: list[str]) -> dict:
         "api_key": api_key,
         "enrich_enabled": enrich_enabled,
         "enrich_max_per_run": enrich_max_per_run,
+        "allow_role_inbox": allow_role_inbox,
         "person_titles": person_titles,
         "person_locations_mode": person_locations_mode,
     }
@@ -490,7 +668,9 @@ def _to_discovery_rows(input_rows: list[dict[str, str]]) -> list[dict[str, str]]
             continue
         seen_emails.add(email)
 
-        state = _normalize_state(row.get("state") or "")
+        source = _normalize_text(row.get("source") or "seed_recipients_pools")
+        _source_fit_default, sendable_default = _source_fit_defaults(source)
+        state = _normalize_us_state(row.get("state") or "")
         domain = _normalize_text(row.get("domain") or "").lower() or _email_domain(email)
         prospect_id = _normalize_text(row.get("prospect_id") or "")
         if not prospect_id:
@@ -501,9 +681,13 @@ def _to_discovery_rows(input_rows: list[dict[str, str]]) -> list[dict[str, str]]
                 "firm": _normalize_text(row.get("firm") or row.get("company_name") or ""),
                 "email": email,
                 "title": _normalize_text(row.get("title") or row.get("contact_role") or ""),
-                "city": _normalize_text(row.get("city") or ""),
+                "city": _clean_city(row.get("city") or ""),
                 "state": state,
-                "source": _normalize_text(row.get("source") or "seed_recipients_pools"),
+                "source": source,
+                "source_fit_tier": _coerce_source_fit_tier(row.get("source_fit_tier") or "", source),
+                "default_send_eligible": str(
+                    _coerce_boolish_int(row.get("default_send_eligible") or "", sendable_default)
+                ),
                 "contact_name": _normalize_text(row.get("contact_name") or ""),
                 "website": _normalize_text(row.get("website") or ""),
             }
@@ -625,10 +809,12 @@ def compute_uncontacted_backlog(
     sent_ids = _fetch_prior_sent_ids(conn)
     status_col = "status" if "status" in columns else "''"
     last_contacted_col = "last_contacted_at" if "last_contacted_at" in columns else "''"
+    default_send_col = "default_send_eligible" if "default_send_eligible" in columns else "1"
 
     rows = conn.execute(
         f"""
-        SELECT prospect_id, email, state, {status_col} AS status, {last_contacted_col} AS last_contacted_at
+        SELECT prospect_id, email, state, {status_col} AS status, {last_contacted_col} AS last_contacted_at,
+               {default_send_col} AS default_send_eligible
         FROM prospects
         """
     ).fetchall()
@@ -645,6 +831,8 @@ def compute_uncontacted_backlog(
         if email in suppressed_emails:
             continue
         if bool(skip_role_inboxes) and _is_role_inbox_email(email):
+            continue
+        if _coerce_boolish_int(str(row["default_send_eligible"] or ""), 1) != 1:
             continue
 
         status = _normalize_text(str(row["status"] or "")).lower()
@@ -695,6 +883,7 @@ def _compute_input_cohort(
 
     status_col = "status" if "status" in columns else "''"
     last_contacted_col = "last_contacted_at" if "last_contacted_at" in columns else "''"
+    default_send_col = "default_send_eligible" if "default_send_eligible" in columns else "1"
     sent_ids = _fetch_prior_sent_ids(conn)
     scope = None if states_scope is None else {_normalize_state(s) for s in list(states_scope or []) if _normalize_state(s)}
     filtered: Counter = Counter()
@@ -703,7 +892,8 @@ def _compute_input_cohort(
 
     rows = conn.execute(
         f"""
-        SELECT prospect_id, email, state, {status_col} AS status, {last_contacted_col} AS last_contacted_at
+        SELECT prospect_id, email, state, {status_col} AS status, {last_contacted_col} AS last_contacted_at,
+               {default_send_col} AS default_send_eligible
         FROM prospects
         """
     ).fetchall()
@@ -729,6 +919,9 @@ def _compute_input_cohort(
             continue
         if email in suppressed_emails:
             filtered["suppressed"] += 1
+            continue
+        if _coerce_boolish_int(str(row["default_send_eligible"] or ""), 1) != 1:
+            filtered["already_sent_or_ineligible"] += 1
             continue
 
         status = _normalize_text(str(row["status"] or "")).lower()
@@ -769,8 +962,11 @@ def _filter_autogrow_candidates(
     suppressed_emails: set[str],
     existing_crm_emails: set[str],
     preseen_batch_emails: set[str] | None = None,
+    source_token: str = "",
+    apollo_allow_role_inbox: bool = False,
 ) -> tuple[list[dict[str, str]], Counter]:
-    target = _normalize_state(target_state)
+    target = _normalize_us_state(target_state)
+    source_norm = _normalize_state(source_token)
     seen_batch: set[str] = set()
     preseen_batch: set[str] = set(preseen_batch_emails or set())
     accepted: list[dict[str, str]] = []
@@ -798,7 +994,7 @@ def _filter_autogrow_candidates(
             counters["already_in_crm"] += 1
             continue
 
-        state = _normalize_state(row.get("state") or "")
+        state = _normalize_us_state(row.get("state") or "")
         if not state:
             counters["missing_state"] += 1
             continue
@@ -806,9 +1002,36 @@ def _filter_autogrow_candidates(
             counters["state_mismatch"] += 1
             continue
 
+        if source_norm == "APOLLO":
+            role_fit_text = _apollo_role_fit_text(row)
+            if not _contains_any_token(role_fit_text, APOLLO_ROLE_FIT_TOKENS):
+                counters["role_mismatch"] += 1
+                continue
+            if (not apollo_allow_role_inbox) and _is_role_inbox_email(email):
+                counters["role_inbox"] += 1
+                continue
+            consultant_fit_text = _apollo_consultant_fit_text(row)
+            if not _contains_any_token(consultant_fit_text, APOLLO_CONSULTANT_FIT_TOKENS):
+                counters["fit_mismatch"] += 1
+                continue
+
         if email in seen_batch:
             counters["duplicate_in_batch"] += 1
             continue
+
+        source = _normalize_text(row.get("source") or "")
+        if not source:
+            if source_norm == "AIHA":
+                source = "aiha_consultants_listing"
+            elif source_norm == "OHS_BG":
+                source = "ohs_buyers_guide"
+            elif source_norm == "STATE_LIC":
+                source = "STATE_LIC"
+            elif source_norm == "APOLLO":
+                source = "apollo_export_csv"
+            else:
+                source = "aiha_consultants_listing"
+        _source_fit_default, sendable_default = _source_fit_defaults(source)
 
         seen_batch.add(email)
         accepted.append(
@@ -818,11 +1041,15 @@ def _filter_autogrow_candidates(
                 "contact_email": email,
                 "contact_role": _normalize_text(row.get("title") or row.get("contact_role") or "EHS Consultant"),
                 "contact_name": _normalize_text(row.get("contact_name") or ""),
-                "city": _normalize_text(row.get("city") or ""),
+                "city": _clean_city(row.get("city") or ""),
                 "state": state,
                 "domain": _normalize_text(row.get("domain") or "").lower() or _email_domain(email),
                 "website": _normalize_text(row.get("website") or ""),
-                "source": _normalize_text(row.get("source") or "aiha_consultants_listing"),
+                "source": source,
+                "source_fit_tier": _coerce_source_fit_tier(row.get("source_fit_tier") or "", source),
+                "default_send_eligible": str(
+                    _coerce_boolish_int(row.get("default_send_eligible") or "", sendable_default)
+                ),
             }
         )
 
@@ -839,7 +1066,9 @@ def _default_apollo_result(cache_root_dir: Path, selected_state: str, *, sources
         "search_pages_fetched": 0,
         "search_rows_returned": 0,
         "search_rows_has_email_true": 0,
+        "search_rows_role_fit_true": 0,
         "search_rows_deduped_id": 0,
+        "imported_sendable": 0,
         "enrich_attempted": 0,
         "enriched": 0,
         "enrich_no_match": 0,
@@ -1072,6 +1301,7 @@ def _print_tokens(
     extra_source_results: dict | None = None,
     extra_source_rejected: dict | None = None,
     print_availability: bool = False,
+    row_observability: dict | None = None,
 ) -> None:
     print(f"GENERATOR_OUTPUT_PATH={path.resolve()}")
     print(f"GENERATOR_ROWS_READ={rows_read}")
@@ -1129,6 +1359,14 @@ def _print_tokens(
         f"excluded={int(input_cohort.get('excluded') or 0)} "
         f"excluded_breakdown={excluded_breakdown or 'none'}"
     )
+    observability = dict(row_observability or {})
+    source_counts = dict(observability.get("source_counts") or {})
+    tier_counts = dict(observability.get("tier_counts") or {})
+    for family in ("SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC", "UNKNOWN"):
+        print(f"GENERATOR_SOURCE_COUNT_{family}={int(source_counts.get(family, 0))}")
+    for tier in ("core_consultant", "recoverable_consultant", "adjacent_contractor"):
+        print(f"GENERATOR_TIER_COUNT_{tier.upper()}={int(tier_counts.get(tier, 0))}")
+    print(f"GENERATOR_DEFAULT_SEND_ELIGIBLE_TOTAL={int(observability.get('default_send_eligible_total') or 0)}")
     print(f"GENERATOR_ENRICH_ATTEMPTED={int(enrich_metrics.get('attempted') or 0)}")
     print(f"GENERATOR_ENRICH_DOMAIN_RESOLVED={int(enrich_metrics.get('domain_resolved') or 0)}")
     print(f"GENERATOR_ENRICH_EMAIL_GUESSED={int(enrich_metrics.get('email_guessed') or 0)}")
@@ -1244,6 +1482,7 @@ def _print_tokens(
     print(f"GENERATOR_APOLLO_ENABLED={1 if apollo_cfg.get('source_enabled') else 0}")
     print(f"GENERATOR_APOLLO_ENRICH_ENABLED={1 if apollo_cfg.get('enrich_enabled') else 0}")
     print(f"GENERATOR_APOLLO_ENRICH_MAX_PER_RUN={int(apollo_cfg.get('enrich_max_per_run') or 0)}")
+    print(f"GENERATOR_APOLLO_ALLOW_ROLE_INBOX={1 if apollo_cfg.get('allow_role_inbox') else 0}")
     print(f"GENERATOR_APOLLO_PERSON_TITLES={','.join(list(apollo_cfg.get('person_titles') or []))}")
     print(f"GENERATOR_APOLLO_PERSON_LOCATIONS_MODE={apollo_cfg.get('person_locations_mode') or 'state'}")
     print(f"GENERATOR_APOLLO_CACHE_PATH={Path(apollo_result['cache_path']).resolve()}")
@@ -1254,7 +1493,9 @@ def _print_tokens(
     print(f"GENERATOR_APOLLO_SEARCH_PAGES_FETCHED={int(apollo_result.get('search_pages_fetched') or 0)}")
     print(f"GENERATOR_APOLLO_SEARCH_ROWS_RETURNED={int(apollo_result.get('search_rows_returned') or 0)}")
     print(f"GENERATOR_APOLLO_SEARCH_ROWS_HAS_EMAIL_TRUE={int(apollo_result.get('search_rows_has_email_true') or 0)}")
+    print(f"GENERATOR_APOLLO_SEARCH_ROWS_ROLE_FIT_TRUE={int(apollo_result.get('search_rows_role_fit_true') or 0)}")
     print(f"GENERATOR_APOLLO_SEARCH_ROWS_DEDUPED_ID={int(apollo_result.get('search_rows_deduped_id') or 0)}")
+    print(f"GENERATOR_APOLLO_IMPORTED_SENDABLE={int(apollo_result.get('imported_sendable') or 0)}")
     print(f"GENERATOR_APOLLO_ENRICH_ATTEMPTED={int(apollo_result.get('enrich_attempted') or 0)}")
     print(f"GENERATOR_APOLLO_ENRICHED={int(apollo_result.get('enriched') or 0)}")
     print(f"GENERATOR_APOLLO_ENRICH_NO_MATCH={int(apollo_result.get('enrich_no_match') or 0)}")
@@ -1272,6 +1513,16 @@ def _print_tokens(
     print(f"GENERATOR_APOLLO_REJECTED_MISSING_STATE={int(apollo_rejected.get('missing_state', 0))}")
     print(f"GENERATOR_APOLLO_REJECTED_STATE_MISMATCH={int(apollo_rejected.get('state_mismatch', 0))}")
     print(f"GENERATOR_APOLLO_REJECTED_DUPLICATE_IN_BATCH={int(apollo_rejected.get('duplicate_in_batch', 0))}")
+    print(f"GENERATOR_APOLLO_REJECTED_ROLE_MISMATCH={int(apollo_rejected.get('role_mismatch', 0))}")
+    print(f"GENERATOR_APOLLO_REJECTED_ROLE_INBOX={int(apollo_rejected.get('role_inbox', 0))}")
+    print(f"GENERATOR_APOLLO_REJECTED_FIT_MISMATCH={int(apollo_rejected.get('fit_mismatch', 0))}")
+    print(
+        "GENERATOR_APOLLO_USABLE_YIELD "
+        f"searched={int(apollo_result.get('search_rows_returned') or 0)} "
+        f"has_email={int(apollo_result.get('search_rows_has_email_true') or 0)} "
+        f"role_fit={int(apollo_result.get('search_rows_role_fit_true') or 0)} "
+        f"imported_sendable={int(apollo_result.get('imported_sendable') or 0)}"
+    )
     for source_key in ("BCSP", "OSHA_NEWS", "STATE_LIC"):
         src_results = dict(extra_source_results or {})
         src_rejected = dict(extra_source_rejected or {})
@@ -1601,6 +1852,7 @@ def main(argv: list[str] | None = None) -> int:
             extra_source_results=extra_source_results,
             extra_source_rejected=extra_source_rejected,
             print_availability=True,
+            row_observability=_generator_row_observability([]),
         )
         return 0
 
@@ -1670,9 +1922,14 @@ def main(argv: list[str] | None = None) -> int:
                 suppressed_emails=suppressed_emails,
                 existing_crm_emails=set(existing_crm_emails),
                 preseen_batch_emails=set(autogrow_seen_emails),
+                source_token=source_token,
+                apollo_allow_role_inbox=bool(apollo_cfg.get("allow_role_inbox")),
             )
             accepted_rows = filtered_rows[:remaining_needed]
-            remaining_needed = max(0, remaining_needed - len(accepted_rows))
+            sendable_accepted = sum(
+                1 for row in accepted_rows if _coerce_boolish_int(row.get("default_send_eligible") or "", 1) == 1
+            )
+            remaining_needed = max(0, remaining_needed - int(sendable_accepted))
 
             source_prefix = source_prefix_map.get(source_token, "")
             if source_prefix:
@@ -1682,6 +1939,7 @@ def main(argv: list[str] | None = None) -> int:
                     detail[f"{source_prefix}_rejected_{reject_key}"] = int(rejected.get(reject_key, 0))
 
             if source_token == "APOLLO":
+                role_fit_true = max(0, len(rows_candidate) - int(rejected.get("role_mismatch") or 0))
                 apollo_result["search_pages_fetched"] = int(apollo_result.get("search_pages_fetched") or 0) + int(
                     result.get("pages_fetched") or 0
                 )
@@ -1691,8 +1949,14 @@ def main(argv: list[str] | None = None) -> int:
                 apollo_result["search_rows_has_email_true"] = int(
                     apollo_result.get("search_rows_has_email_true") or 0
                 ) + int(result.get("search_rows_has_email_true") or 0)
+                apollo_result["search_rows_role_fit_true"] = int(
+                    apollo_result.get("search_rows_role_fit_true") or 0
+                ) + int(role_fit_true)
                 apollo_result["search_rows_deduped_id"] = int(apollo_result.get("search_rows_deduped_id") or 0) + int(
                     result.get("search_rows_deduped_id") or 0
+                )
+                apollo_result["imported_sendable"] = int(apollo_result.get("imported_sendable") or 0) + int(
+                    sendable_accepted
                 )
                 apollo_result["enrich_attempted"] = int(apollo_result.get("enrich_attempted") or 0) + int(
                     result.get("enrich_attempted") or 0
@@ -1804,6 +2068,7 @@ def main(argv: list[str] | None = None) -> int:
             source_availability=source_availability,
             extra_source_results=extra_source_results,
             extra_source_rejected=extra_source_rejected,
+            row_observability=_generator_row_observability(rows),
         )
         return 0
 
@@ -1836,6 +2101,7 @@ def main(argv: list[str] | None = None) -> int:
         source_availability=source_availability,
         extra_source_results=extra_source_results,
         extra_source_rejected=extra_source_rejected,
+        row_observability=_generator_row_observability(rows),
     )
     return 0
 
