@@ -44,6 +44,13 @@ class TestRunOshaIngestDaily(unittest.TestCase):
         self.assertEqual(rc, 0, msg=out)
         self.assertIn("PASS_INGEST_DAILY_COMPLETE status=DRY_RUN", out)
 
+    def test_doctor_emits_runtime_lines_and_pass_token(self):
+        rc, out = self._run(["--doctor"], {"OUTREACH_STATES": "TX"})
+        self.assertEqual(rc, 0, msg=out)
+        self.assertIn("PASS_RUNTIME_PREFLIGHT", out)
+        self.assertIn("PASS_INGEST_DAILY_DOCTOR status=OK", out)
+        self.assertIn("PASS_INGEST_DAILY_COMPLETE status=DOCTOR", out)
+
     def test_default_state_resolution_from_outreach_states(self):
         rc, out = self._run(["--print-config"], {"OUTREACH_STATES": "FL,CA,TX"})
         self.assertEqual(rc, 0, msg=out)
@@ -68,6 +75,12 @@ class TestRunOshaIngestDaily(unittest.TestCase):
         rc, out = self._run(["--print-config", "--states", "TX,F1"], {"OUTREACH_STATES": "TX"})
         self.assertNotEqual(rc, 0, msg=out)
         self.assertIn("ERR_INGEST_DAILY_CONFIG", out)
+
+    def test_modes_are_mutually_exclusive(self):
+        rc, out = self._run(["--doctor", "--dry-run"], {"OUTREACH_STATES": "TX"})
+        self.assertNotEqual(rc, 0, msg=out)
+        self.assertIn("ERR_INGEST_DAILY_CONFIG", out)
+        self.assertIn("modes_mutually_exclusive", out)
 
     def test_scope_mode_resolver_unions_outreach_and_trial_live_states(self):
         with mock.patch.object(ingest_daily, "_trial_live_states_from_crm", return_value=["OR", "WA", "FL"]):

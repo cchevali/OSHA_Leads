@@ -13,6 +13,7 @@ from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_c
 
 ERR_INGEST_DAILY_CONFIG = "ERR_INGEST_DAILY_CONFIG"
 ERR_INGEST_DAILY_FAILED = "ERR_INGEST_DAILY_FAILED"
+PASS_INGEST_DAILY_DOCTOR = "PASS_INGEST_DAILY_DOCTOR"
 PASS_INGEST_DAILY_COMPLETE = "PASS_INGEST_DAILY_COMPLETE"
 
 
@@ -178,6 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Daily OSHA ingest wrapper driven by OUTREACH_STATES for outreach signal freshness."
     )
     ap.add_argument("--print-config", action="store_true", help="Print resolved config and exit.")
+    ap.add_argument("--doctor", action="store_true", help="Run runtime/readiness checks and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Print resolved config and skip ingest.")
     ap.add_argument("--states", default="", help="Optional comma-separated state override (e.g., TX,CA,FL).")
     ap.add_argument(
@@ -193,6 +195,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    selected_modes = int(bool(args.print_config)) + int(bool(args.doctor)) + int(bool(args.dry_run))
+    if selected_modes > 1:
+        return _error(ERR_INGEST_DAILY_CONFIG, "modes_mutually_exclusive")
     if args.since_days < 1:
         return _error(ERR_INGEST_DAILY_CONFIG, f"invalid_since_days={args.since_days}")
     if args.max_details < 1:
@@ -228,6 +233,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.print_config:
         print(f"{PASS_INGEST_DAILY_COMPLETE} status=PRINT_CONFIG")
+        return 0
+    if args.doctor:
+        runtime_preflight = run_runtime_preflight(
+            mode=runtime_mode,
+            intent="write",
+            dry_run=True,
+            task_log_root=str(os.getenv("TASK_LOG_ROOT") or ""),
+            run_summary_root=str(os.getenv("RUN_SUMMARY_ROOT") or ""),
+        )
+        for line in render_runtime_lines(runtime_preflight):
+            print(line)
+        if not runtime_preflight.ok:
+            return 2
+        print(f"{PASS_INGEST_DAILY_DOCTOR} status=OK")
+        print(f"{PASS_INGEST_DAILY_COMPLETE} status=DOCTOR")
         return 0
     if args.dry_run:
         print(f"{PASS_INGEST_DAILY_COMPLETE} status=DRY_RUN")

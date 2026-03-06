@@ -1,0 +1,94 @@
+name: Runtime Tick (Self-Hosted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Execution mode: live, doctor, or dry_run."
+        required: false
+        default: "live"
+      job:
+        description: "Job name or all."
+        required: false
+        default: "all"
+      now_local:
+        description: "Optional local timestamp override (YYYY-MM-DDTHH:MM)."
+        required: false
+        default: ""
+      force:
+        description: "Force selected job(s) regardless of schedule windows."
+        required: false
+        default: "false"
+  schedule:
+    - cron: "*/15 * * * *"
+
+concurrency:
+  group: runtime-tick-selfhosted
+  cancel-in-progress: false
+
+jobs:
+  runtime_tick:
+    runs-on: [self-hosted, windows, osha-pc-canonical]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Tick Args
+        id: args
+        shell: powershell
+        run: |
+          $mode = 'live'
+          $job = 'all'
+          $nowLocal = ''
+          $force = 'false'
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            if ("${{ inputs.mode }}") { $mode = "${{ inputs.mode }}" }
+            if ("${{ inputs.job }}") { $job = "${{ inputs.job }}" }
+            if ("${{ inputs.now_local }}") { $nowLocal = "${{ inputs.now_local }}" }
+            if ("${{ inputs.force }}") { $force = "${{ inputs.force }}" }
+          }
+          $modeNorm = ($mode.Trim().ToLowerInvariant())
+          if (@('live','doctor','dry_run') -notcontains $modeNorm) {
+            Write-Output ("ERR_RUNTIME_TICK_WORKFLOW_INVALID_MODE mode=" + $modeNorm)
+            exit 1
+          }
+          $args = @('run_runtime_tick.py')
+          if ($modeNorm -eq 'doctor') {
+            $args += '--doctor'
+          } elseif ($modeNorm -eq 'dry_run') {
+            $args += '--dry-run'
+          }
+          $args += @('--job', $job)
+          if ($nowLocal.Trim()) {
+            $args += @('--now-local', $nowLocal.Trim())
+          }
+          if ($force.Trim().ToLowerInvariant() -eq 'true') {
+            $args += '--force'
+          }
+          $serialized = ($args -join ' ')
+          "cmd_args=$serialized" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Output ("RUNTIME_TICK_WORKFLOW_ARGS=" + $serialized)
+
+      - name: Run Runtime Tick
+        shell: powershell
+        run: |
+          cd C:\dev\OSHA_Leads
+          $args = "${{ steps.args.outputs.cmd_args }}"
+          if (-not $args) {
+            Write-Output "ERR_RUNTIME_TICK_WORKFLOW_ARGS_MISSING"
+            exit 1
+          }
+          $argParts = $args.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\run_with_secrets.ps1 -- py -3 @argParts
+
+      - name: Upload Runtime Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-tick-artifacts-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            C:\osha_data\out\task_logs\**
+            C:\osha_data\out\run_summaries\**
+            C:\osha_data\out\backups\**
+            C:\osha_data\runtime\status\**

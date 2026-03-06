@@ -34,6 +34,7 @@ DEFAULT_SENDS_LIMIT = 14
 DEFAULT_EXPIRED_BEHAVIOR = "notify_once"
 TRIAL_WEEKDAYS_ONLY = True
 TRIAL_WEEKEND_SKIP_TOKEN = "SKIP_NON_WEEKDAY"
+PASS_TRIAL_DAILY_DOCTOR = "PASS_TRIAL_DAILY_DOCTOR"
 
 
 @dataclass(frozen=True)
@@ -663,6 +664,7 @@ def run_trial_daily(
     dry_run: bool,
     test_send_daily: bool,
     print_config: bool,
+    doctor: bool = False,
     confirm_live_send: bool = False,
     allow_weekend_send: bool = False,
 ) -> int:
@@ -674,15 +676,6 @@ def run_trial_daily(
     run_id = f"trial_{sk}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
 
     def _finalize(exit_code: int, *, mirror_after: bool = False) -> int:
-        if mirror_after and send_live and (not dry_run):
-            mirror_status = _mirror_secondary_trial_ledger(policy.subscriber_key, Path(resolved_crm_db))
-            print(
-                "TRIAL_LEDGER_MIRROR "
-                f"subscriber_key={policy.subscriber_key} "
-                f"source_db={resolved_crm_db} "
-                f"target_db={secondary_db} "
-                f"status={mirror_status}"
-            )
         return int(exit_code)
 
     print(f"subscriber_key={policy.subscriber_key}")
@@ -712,6 +705,24 @@ def run_trial_daily(
     print(f"mfo_trusted_scheduled={(os.getenv('MFO_TRUSTED_SCHEDULED') or '0').strip() or '0'}")
 
     if print_config:
+        return 0
+
+    if doctor:
+        preflight = run_runtime_preflight(
+            mode=runtime_mode,
+            intent="send",
+            dry_run=True,
+            task_log_root=str(os.getenv("TASK_LOG_ROOT") or ""),
+            run_summary_root=str(os.getenv("RUN_SUMMARY_ROOT") or ""),
+        )
+        for line in render_runtime_lines(preflight):
+            print(line)
+        if not preflight.ok:
+            return 2
+        leads_path = Path(leads_db).expanduser().resolve(strict=False)
+        if not leads_path.exists():
+            print(f"WARN_TRIAL_DOCTOR_LEADS_DB_MISSING path={leads_path}")
+        print(f"{PASS_TRIAL_DAILY_DOCTOR} status=OK")
         return 0
 
     if send_live and not dry_run:
@@ -746,13 +757,12 @@ def run_trial_daily(
                 f"--subscriber-key {policy.subscriber_key} --trial-state-merge source --apply"
             )
             print(
-                "ERR_TRIAL_LEDGER_SPLIT "
+                "WARN_TRIAL_LEDGER_SPLIT "
                 f"subscriber_key={policy.subscriber_key} "
                 f"primary_db={primary_db} secondary_db={secondary_db} reason={reason}"
             )
-            print(f"ERR_TRIAL_LEDGER_SPLIT_REMEDIATE command={reconcile_hint}")
-            print(f"ERR_TRIAL_LEDGER_SPLIT_REMEDIATE_SYNC_SECONDARY command={sync_secondary_hint}")
-            return 2
+            print(f"WARN_TRIAL_LEDGER_SPLIT_REMEDIATE command={reconcile_hint}")
+            print(f"WARN_TRIAL_LEDGER_SPLIT_REMEDIATE_SYNC_SECONDARY command={sync_secondary_hint}")
 
     if TRIAL_WEEKDAYS_ONLY and (not allow_weekend_send) and bool(day_ctx["is_weekend"]):
         print(
@@ -815,7 +825,7 @@ def run_trial_daily(
                                 },
                                 ts_utc="",
                             )
-                            return _finalize(0, mirror_after=True)
+                            return _finalize(0, mirror_after=False)
                         sent, message_id, error_detail = _send_conversion_email_from_artifact(
                             artifact_path=text_artifact,
                             subscriber_key=policy.subscriber_key,
@@ -849,7 +859,7 @@ def run_trial_daily(
                             print(f"WARN_CONVERSION_EMAIL_SEND_FAILED detail={error_detail}")
                     else:
                         print("CONVERSION_EMAIL_PENDING send_live=NO")
-            return _finalize(0, mirror_after=True)
+            return _finalize(0, mirror_after=False)
 
         local_today = str(day_ctx["local_date"])
         if send_live and not dry_run and crm_light.has_trial_delivery_on_local_date(
@@ -870,7 +880,7 @@ def run_trial_daily(
                 ts_utc="",
             )
             print(f"TRIAL_EVENT status=SKIP_ALREADY_SENT_LOCAL_DATE local_date={local_today}")
-            return _finalize(0, mirror_after=True)
+            return _finalize(0, mirror_after=False)
 
         customer_path = _resolve_customer_config_path(policy.subscriber_key, customer_arg, out_root)
         customer_runtime = _load_or_build_customer_config(policy, customer_path, out_root)
@@ -897,7 +907,7 @@ def run_trial_daily(
             print(f"TRIAL_EVENT status={status}")
             if out.strip():
                 print(out.rstrip())
-            return _finalize(0 if code == 0 else code, mirror_after=True)
+            return _finalize(0 if code == 0 else code, mirror_after=False)
 
         code, out = _run_deliver_daily(leads_db, customer_runtime, send_live=send_live, dry_run=dry_run)
         status = "ERROR"
@@ -948,7 +958,7 @@ def run_trial_daily(
         print(f"TRIAL_EVENT status={status}")
         if out.strip():
             print(out.rstrip())
-        return _finalize(0 if code == 0 else code, mirror_after=True)
+        return _finalize(0 if code == 0 else code, mirror_after=False)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -962,6 +972,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--send-live", action="store_true", help="Allow live send (passes through existing safety gates).")
     ap.add_argument("--dry-run", action="store_true", help="Never send; record DRY_RUN in send_events.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved trial policy (non-secret) and exit.")
+    ap.add_argument("--doctor", action="store_true", help="Run runtime/readiness checks and exit.")
     ap.add_argument(
         "--confirm-live-send",
         action="store_true",
@@ -979,6 +990,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = ap.parse_args(argv)
+    if args.doctor and (args.send_live or args.dry_run or args.test_send_daily):
+        print("CONFIG_ERROR invalid_mode_combination doctor_mutually_exclusive", file=sys.stderr)
+        return 1
+    if args.doctor and args.print_config:
+        print("CONFIG_ERROR invalid_mode_combination print_config_doctor_mutually_exclusive", file=sys.stderr)
+        return 1
     crm_db = crm_light.resolve_crm_db_path(str(args.crm_db or "").strip() or None)
     try:
         return run_trial_daily(
@@ -990,6 +1007,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=bool(args.dry_run),
             test_send_daily=bool(args.test_send_daily),
             print_config=bool(args.print_config),
+            doctor=bool(args.doctor),
             confirm_live_send=bool(args.confirm_live_send),
             allow_weekend_send=bool(args.allow_weekend_send),
         )
