@@ -32,7 +32,9 @@ function Invoke-NativeAllowStderr {
     [string[]]$ArgumentList = @()
   )
 
+  $previousErrorActionPreference = $ErrorActionPreference
   try {
+    $ErrorActionPreference = 'Continue'
     $output = @(& $FilePath @ArgumentList 2>&1)
   } catch {
     $nativePath = [string]$FilePath
@@ -41,6 +43,8 @@ function Invoke-NativeAllowStderr {
       $nativeArgs = ($ArgumentList | ForEach-Object { [string]$_ }) -join ' '
     }
     throw ("native_start_failed file=" + $nativePath + " args=" + $nativeArgs + " err=" + $_.Exception.Message)
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
   }
   $exitCode = 0
   if ($null -ne $LASTEXITCODE) {
