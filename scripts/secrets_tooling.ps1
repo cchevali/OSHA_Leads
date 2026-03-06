@@ -116,6 +116,16 @@ function Get-AgeKeyFilePath {
     return $repoKeys
   }
 
+  # Machine-wide canonical location for service identities that do not have a user profile key.
+  $programDataRoot = [string]$env:ProgramData
+  if ($programDataRoot.Trim().Length -gt 0) {
+    $sharedKeys = Join-Path $programDataRoot 'OSHA_Leads\keys\age\keys.txt'
+    if (Test-Path -LiteralPath $sharedKeys) {
+      $env:SOPS_AGE_KEY_FILE = $sharedKeys
+      return $sharedKeys
+    }
+  }
+
   # Default SOPS age key location on Windows.
   return (Join-Path (Join-Path $env:APPDATA 'sops\age') 'keys.txt')
 }
