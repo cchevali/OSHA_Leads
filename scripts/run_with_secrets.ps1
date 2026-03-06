@@ -35,7 +35,16 @@ function Invoke-NativeAllowStderr {
   $stdoutPath = [System.IO.Path]::GetTempFileName()
   $stderrPath = [System.IO.Path]::GetTempFileName()
   try {
-    $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    try {
+      $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    } catch {
+      $nativePath = [string]$FilePath
+      $nativeArgs = ''
+      if ($ArgumentList -and $ArgumentList.Count -gt 0) {
+        $nativeArgs = ($ArgumentList | ForEach-Object { [string]$_ }) -join ' '
+      }
+      throw ("native_start_failed file=" + $nativePath + " args=" + $nativeArgs + " err=" + $_.Exception.Message)
+    }
     $stdoutLines = @()
     $stderrLines = @()
     if (Test-Path -LiteralPath $stdoutPath) {
