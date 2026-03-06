@@ -122,10 +122,13 @@ OPTIONAL_PROSPECT_COLUMNS = (
     "role",
     "contact_role",
     "buyer_segment",
+    "source_fit_tier",
+    "default_send_eligible",
 )
 FILTER_BREAKDOWN_FILTER_KEYS = (
     "suppressed",
     "invalid_email",
+    "not_default_send_eligible",
     "status_do_not_contact",
     "status_unsubscribed",
     "status_bounced",
@@ -512,6 +515,36 @@ def _safe_csv_value(value: str) -> str:
     return _safe_text(value).replace(",", ";")
 
 
+def _source_fit_tier(row: sqlite3.Row) -> str:
+    if "source_fit_tier" not in row.keys():
+        return ""
+    raw = row["source_fit_tier"]
+    return _safe_text("" if raw is None else str(raw)).lower()
+
+
+def _default_send_eligible(row: sqlite3.Row) -> int:
+    if "default_send_eligible" not in row.keys():
+        return 1
+    raw = row["default_send_eligible"]
+    text = _safe_text("" if raw is None else str(raw)).lower()
+    if text in {"1", "true", "yes", "on"}:
+        return 1
+    if text in {"0", "false", "no", "off"}:
+        return 0
+    try:
+        return 1 if int(text) != 0 else 0
+    except Exception:
+        return 1
+
+
+def _is_send_eligible_for_default(row: sqlite3.Row, include_adjacent_contractors: bool) -> bool:
+    if _default_send_eligible(row) == 1:
+        return True
+    if include_adjacent_contractors and _source_fit_tier(row) == "adjacent_contractor":
+        return True
+    return False
+
+
 def _score_tier(score: int) -> str:
     if score >= 8:
         return "high"
@@ -656,12 +689,15 @@ def _skip_reason(
     sent_ids: set[str],
     allow_repeat: bool,
     skip_role_inboxes: bool,
+    include_adjacent_contractors: bool,
 ) -> str:
     status = str(row["status"] or "").strip().lower()
     if status in EXCLUDED_STATUSES:
         if status == "do_not_contact":
             return "status_do_not_contact"
         return f"status_{status}"
+    if not _is_send_eligible_for_default(row, include_adjacent_contractors=include_adjacent_contractors):
+        return "not_default_send_eligible"
 
     email = _norm_email(str(row["email"] or ""))
     if not email or "@" not in email:
@@ -748,7 +784,8 @@ def _select_candidates(
     suppressed_emails: set[str],
     allow_repeat: bool,
     skip_role_inboxes: bool,
-) -> tuple[list[dict], Counter, list[dict], dict[str, int]]:
+    include_adjacent_contractors: bool,
+) -> tuple[list[dict], Counter, list[dict], dict[str, object]]:
     cols = _prospect_select_columns(conn)
     query = "SELECT " + ", ".join(cols) + " FROM prospects WHERE UPPER(COALESCE(state, '')) = ?"
     rows = conn.execute(query, ((state or "").upper(),)).fetchall()
@@ -760,6 +797,8 @@ def _select_candidates(
     ranked: list[dict] = []
     role_inbox_penalty_count = 0
     missing_state_pref_count = 0
+    eligible_by_tier: Counter = Counter()
+    excluded_adjacent_contractor_total = 0
     for row in rows:
         candidate = _candidate_from_row(row)
         if _role_inbox_penalty(candidate["email"]) > 0:
@@ -772,13 +811,20 @@ def _select_candidates(
             sent_ids=sent_ids,
             allow_repeat=allow_repeat,
             skip_role_inboxes=skip_role_inboxes,
+            include_adjacent_contractors=include_adjacent_contractors,
         )
         if reason:
             skipped[reason] += 1
+            if reason == "not_default_send_eligible" and _source_fit_tier(row) == "adjacent_contractor":
+                excluded_adjacent_contractor_total += 1
             dropped = _candidate_csv_row(candidate)
             dropped.update({"status": "dropped", "reason": reason})
             manifest_rows.append(dropped)
             continue
+        tier = _source_fit_tier(row)
+        if tier not in {"core_consultant", "recoverable_consultant", "adjacent_contractor"}:
+            tier = "recoverable_consultant"
+        eligible_by_tier[tier] += 1
         ranked.append(candidate)
 
     ranked.sort(key=lambda item: item["rank_tuple"])
@@ -813,6 +859,12 @@ def _select_candidates(
         "eligible": int(len(ranked)),
         "role_inbox_penalty": int(role_inbox_penalty_count),
         "missing_state_pref": int(missing_state_pref_count),
+        "eligible_by_tier": {
+            "core_consultant": int(eligible_by_tier.get("core_consultant", 0)),
+            "recoverable_consultant": int(eligible_by_tier.get("recoverable_consultant", 0)),
+            "adjacent_contractor": int(eligible_by_tier.get("adjacent_contractor", 0)),
+        },
+        "excluded_adjacent_contractor_total": int(excluded_adjacent_contractor_total),
     }
     return selected, skipped, manifest_rows, selection_stats
 
@@ -932,6 +984,7 @@ def _crm_uncontacted_by_state(
     suppressed_emails: set[str],
     allow_repeat: bool,
     skip_role_inboxes: bool,
+    include_adjacent_contractors: bool,
 ) -> dict[str, int]:
     normalized_states = [str(s or "").strip().upper() for s in states if str(s or "").strip()]
     counts: dict[str, int] = {s: 0 for s in normalized_states}
@@ -962,6 +1015,7 @@ def _crm_uncontacted_by_state(
             sent_ids=sent_ids,
             allow_repeat=allow_repeat,
             skip_role_inboxes=skip_role_inboxes,
+            include_adjacent_contractors=include_adjacent_contractors,
         )
         if reason:
             continue
@@ -975,6 +1029,7 @@ def _crm_funnel_breakdown_for_summary(
     suppressed_emails: set[str],
     allow_repeat: bool,
     skip_role_inboxes: bool,
+    include_adjacent_contractors: bool,
     selected_state: str,
 ) -> dict:
     normalized_states = [str(s or "").strip().upper() for s in states if str(s or "").strip()]
@@ -1017,6 +1072,7 @@ def _crm_funnel_breakdown_for_summary(
             sent_ids=sent_ids,
             allow_repeat=allow_repeat,
             skip_role_inboxes=skip_role_inboxes,
+            include_adjacent_contractors=include_adjacent_contractors,
         )
         if reason == "invalid_email":
             out["invalid_email_count"] = int(out["invalid_email_count"]) + 1
@@ -1175,7 +1231,7 @@ def _build_plan_diagnostics(
     selected: list[dict],
     skipped: Counter,
     pool_total_all_states: int,
-    selection_stats: dict[str, int],
+    selection_stats: dict[str, object],
     rotation_selected_state: str = "",
     state_rotation_source: str = "weekday_index",
     fallback_triggered: bool = False,
@@ -1203,6 +1259,9 @@ def _build_plan_diagnostics(
         "will_send": int(len(selected)),
         "pool_total_all_states": int(filter_breakdown["pool_total_all_states"]),
         "pool_total_selected_state": int(filter_breakdown["pool_total_selected_state"]),
+        "eligible_total": max(0, int(selection_stats.get("eligible", 0))),
+        "eligible_by_tier": dict(selection_stats.get("eligible_by_tier") or {}),
+        "excluded_adjacent_contractor_total": max(0, int(selection_stats.get("excluded_adjacent_contractor_total", 0))),
         "skip_breakdown": _plan_skip_breakdown(skipped),
         "filter_breakdown": filter_breakdown,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -1435,6 +1494,20 @@ def _plan_skip_breakdown(skipped: Counter) -> dict[str, int]:
     }
 
 
+def _print_plan_selection_counters(selection_stats: dict[str, object]) -> None:
+    eligible_total = max(0, int(selection_stats.get("eligible", 0)))
+    eligible_by_tier = dict(selection_stats.get("eligible_by_tier") or {})
+    excluded_adjacent_total = max(0, int(selection_stats.get("excluded_adjacent_contractor_total", 0)))
+    print(f"OUTREACH_PLAN_ELIGIBLE_TOTAL={eligible_total}")
+    print(f"OUTREACH_PLAN_ELIGIBLE_BY_TIER_CORE_CONSULTANT={int(eligible_by_tier.get('core_consultant', 0))}")
+    print(
+        "OUTREACH_PLAN_ELIGIBLE_BY_TIER_RECOVERABLE_CONSULTANT="
+        f"{int(eligible_by_tier.get('recoverable_consultant', 0))}"
+    )
+    print(f"OUTREACH_PLAN_ELIGIBLE_BY_TIER_ADJACENT_CONTRACTOR={int(eligible_by_tier.get('adjacent_contractor', 0))}")
+    print(f"OUTREACH_PLAN_EXCLUDED_ADJACENT_CONTRACTOR_TOTAL={excluded_adjacent_total}")
+
+
 def _print_plan_output(
     run_date: date,
     state: str,
@@ -1459,6 +1532,13 @@ def _print_plan_output(
     print(f"OUTREACH_PLAN_POOL_TOTAL_ALL_STATES={pool_total_all_states}")
     print(f"OUTREACH_PLAN_POOL_TOTAL_SELECTED_STATE={pool_total_selected_state}")
     print(f"OUTREACH_PLAN_WILL_SEND={len(selected)}")
+    _print_plan_selection_counters(
+        {
+            "eligible": diagnostics.get("eligible_total", 0),
+            "eligible_by_tier": diagnostics.get("eligible_by_tier") or {},
+            "excluded_adjacent_contractor_total": diagnostics.get("excluded_adjacent_contractor_total", 0),
+        }
+    )
     print(
         "OUTREACH_PLAN_SKIP_BREAKDOWN "
         f"suppressed={breakdown['suppressed']} "
@@ -2313,6 +2393,11 @@ def main() -> int:
     ap.add_argument("--for-date", default="", help="Override run date (YYYY-MM-DD) for doctor/print-config/dry-run/plan.")
     ap.add_argument("--allow-repeat", action="store_true", help="Allow contacting previously contacted prospects.")
     ap.add_argument(
+        "--include-adjacent-contractors",
+        action="store_true",
+        help="Include adjacent_contractor rows that are excluded by default_send_eligible=0.",
+    )
+    ap.add_argument(
         "--allow-second-live-run-same-day",
         action="store_true",
         help="Emergency/manual override: allow a second live outreach run on the same local day.",
@@ -2389,6 +2474,7 @@ def main() -> int:
         print(f"{PASS_AUTO_PRINT_CONFIG} run_date={run_date.isoformat()}")
         print(f"outreach_fallback_on_empty_state={1 if fallback_on_empty_state else 0}")
         print(f"outreach_skip_role_inboxes={1 if skip_role_inboxes else 0}")
+        print(f"outreach_include_adjacent_contractors={1 if args.include_adjacent_contractors else 0}")
         print(f"outreach_debug_selection={1 if debug_selection_live else 0}")
         print(f"outreach_signal_window_days={signal_window_days}")
         print(f"{PASS_AUTO_PRINT_CONFIG} outreach_signal_db={Path(osha_db).resolve()}")
@@ -2476,6 +2562,7 @@ def main() -> int:
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
             skip_role_inboxes=skip_role_inboxes,
+            include_adjacent_contractors=bool(args.include_adjacent_contractors),
             selected_state=rotation_state,
         )
         fallback_decision = _empty_state_fallback_decision(
@@ -2505,6 +2592,7 @@ def main() -> int:
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
             skip_role_inboxes=skip_role_inboxes,
+            include_adjacent_contractors=bool(args.include_adjacent_contractors),
         )
         effective_sendable_estimate = max(
             0,
@@ -2559,6 +2647,7 @@ def main() -> int:
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
             skip_role_inboxes=skip_role_inboxes,
+            include_adjacent_contractors=bool(args.include_adjacent_contractors),
             selected_state=state,
         )
         state_inventory_lines_pre = _outreach_state_inventory_health_lines(
@@ -2623,6 +2712,7 @@ def main() -> int:
             )
             print(f"{PASS_AUTO_DRY_RUN} would_contact_prospect_ids={','.join(selected_ids) if selected_ids else '(none)'}")
             print(f"{PASS_AUTO_DRY_RUN} skipped_count={skipped_count} top_skip_reasons={top_skip}")
+            _print_plan_selection_counters(selection_stats)
             print(f"{PASS_AUTO_DRY_RUN} summary_to={summary_to}")
             print(f"{PASS_AUTO_DRY_RUN} outbox_path={outbox_path}")
             print(f"{PASS_AUTO_DRY_RUN} manifest_path={manifest_path}")
@@ -2703,12 +2793,14 @@ def main() -> int:
         top_skip = _format_top_reasons(skipped, limit=5)
         contacted_count = sum(1 for r in send_results if r.get("ok"))
         failed_count = sum(1 for r in send_results if not r.get("ok"))
+        _print_plan_selection_counters(selection_stats)
         uncontacted_by_state = _crm_uncontacted_by_state(
             conn=conn,
             states=states,
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
             skip_role_inboxes=skip_role_inboxes,
+            include_adjacent_contractors=bool(args.include_adjacent_contractors),
         )
         crm_funnel = _crm_funnel_breakdown_for_summary(
             conn=conn,
@@ -2716,6 +2808,7 @@ def main() -> int:
             suppressed_emails=suppressed_emails,
             allow_repeat=bool(args.allow_repeat),
             skip_role_inboxes=skip_role_inboxes,
+            include_adjacent_contractors=bool(args.include_adjacent_contractors),
             selected_state=state,
         )
         uncontacted_by_state_text = _format_state_counts(states=states, counts=uncontacted_by_state)

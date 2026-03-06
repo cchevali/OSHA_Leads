@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -11,6 +12,23 @@ TOC_URL = "https://info.aiha.org/consultants-listing/toc/"
 PAGE_URL_TEMPLATE = "https://info.aiha.org/consultants-listing/{page_id}"
 USER_AGENT = "OSHA_Leads/1.0 (+https://microflowops.com)"
 CACHE_MAX_AGE_DAYS = 7
+AIHA_REJECT_TOKENS = (
+    "multi_person_contact",
+    "placeholder_firm",
+    "invalid_city_state",
+    "missing_email",
+)
+PLACEHOLDER_FIRM_KEYS = {
+    "inc",
+    "llc",
+    "consulting",
+    "associates",
+    "associate",
+    "company",
+    "co",
+    "corporation",
+    "corp",
+}
 
 US_STATE_NAMES = {
     "ALABAMA": "AL",
@@ -219,6 +237,20 @@ def _extract_page_paragraphs(html: str) -> tuple[list[str], str]:
 def _split_segments(paragraphs: list[str]) -> list[str]:
     if not paragraphs:
         return []
+
+    direct_segments: list[str] = []
+    for paragraph in paragraphs:
+        p = _normalize_text(paragraph)
+        if not p:
+            continue
+        lower = p.lower()
+        has_listing_type = ("commercial" in lower) or ("residential" in lower)
+        has_listing_structure = ("contact:" in lower) or ("website:" in lower) or ("specialty:" in lower)
+        if has_listing_type and has_listing_structure:
+            direct_segments.append(p)
+    if direct_segments:
+        return direct_segments
+
     merged = " ".join(paragraphs)
     if not merged:
         return []
@@ -240,9 +272,10 @@ def _split_segments(paragraphs: list[str]) -> list[str]:
 
 
 def _extract_city_state(text: str) -> tuple[str, str]:
-    match = re.search(r"([A-Za-z .'-]+),\s*([A-Z]{2})\s+\d{5}(?:-\d{4})?", text)
-    if not match:
+    matches = list(re.finditer(r"([A-Za-z .'-]+),\s*([A-Z]{2})\s+\d{5}(?:-\d{4})?", text))
+    if not matches:
         return "", ""
+    match = matches[-1]
     city = _normalize_text(match.group(1))
     state = _normalize_text(match.group(2)).upper()
     return city, state
@@ -286,42 +319,184 @@ def _extract_emails(text: str) -> list[str]:
     return out
 
 
-def parse_aiha_page(page_html: str, page_id: str) -> tuple[list[dict[str, str]], str]:
+def _clean_city(city: str) -> str:
+    text = _normalize_text(city)
+    if not text:
+        return ""
+    compact = re.sub(r"\s+", " ", text).strip(" ,")
+    if not compact:
+        return ""
+    compact = re.sub(r",?\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?$", "", compact).strip(" ,")
+    parts = [p.strip() for p in compact.split(",") if p.strip()]
+    if len(parts) > 1:
+        for candidate in reversed(parts):
+            if re.fullmatch(r"[A-Za-z .'-]{2,}", candidate):
+                return candidate
+    tokens = compact.split()
+    street_tokens = {
+        "street",
+        "st",
+        "road",
+        "rd",
+        "avenue",
+        "ave",
+        "boulevard",
+        "blvd",
+        "drive",
+        "dr",
+        "lane",
+        "ln",
+        "way",
+        "suite",
+        "ste",
+        "highway",
+        "hwy",
+    }
+    if len(tokens) >= 3 and any(t.lower().strip(".") in street_tokens for t in tokens[:-1]):
+        for width in (2, 3):
+            if len(tokens) < width:
+                continue
+            candidate = " ".join(tokens[-width:])
+            if re.fullmatch(r"[A-Za-z .'-]{2,}", candidate):
+                return candidate
+    if re.search(r"\d", compact):
+        for candidate in parts:
+            if re.fullmatch(r"[A-Za-z .'-]{2,}", candidate):
+                return candidate
+        return ""
+    if re.fullmatch(r"[A-Za-z .'-]{2,}", compact):
+        return compact
+    return ""
+
+
+def _normalize_state_abbrev(value: str) -> str:
+    text = _normalize_text(value).upper()
+    if len(text) == 2 and text in US_STATE_NAMES.values():
+        return text
+    return ""
+
+
+def _firm_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", "", _normalize_text(value).lower()).strip()
+
+
+def _is_placeholder_firm(firm: str) -> bool:
+    key = _firm_key(firm)
+    if not key:
+        return True
+    if key in PLACEHOLDER_FIRM_KEYS:
+        return True
+    return False
+
+
+def _is_multi_person_contact(contact_name: str) -> bool:
+    text = _normalize_text(contact_name)
+    if not text:
+        return True
+    lowered = text.lower()
+    if " and " in lowered or " & " in lowered or ";" in text:
+        return True
+    if "/" in text and re.search(r"[A-Za-z]\s*/\s*[A-Za-z]", text):
+        return True
+    if re.search(r",\s*[A-Z][a-z]+(?:\s+[A-Z][A-Za-z.'-]+)+", text):
+        return True
+    return False
+
+
+def _is_valid_city_state(city: str, state: str) -> bool:
+    city_norm = _clean_city(city)
+    state_norm = _normalize_state_abbrev(state)
+    if not city_norm or not state_norm:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z .'-]{2,}", city_norm))
+
+
+def parse_aiha_page_with_diagnostics(page_html: str, page_id: str) -> dict:
     paragraphs, mode = _extract_page_paragraphs(page_html)
     if not paragraphs:
-        return [], "FAILED"
+        return {
+            "rows": [],
+            "mode": "FAILED",
+            "reject_counts": {token: 0 for token in AIHA_REJECT_TOKENS},
+            "row_diagnostics": [],
+        }
 
     segments = _split_segments(paragraphs)
     rows: list[dict[str, str]] = []
-    for segment in segments:
-        if "contact email:" not in segment.lower() and "@" not in segment:
+    reject_counts: Counter = Counter()
+    row_diagnostics: list[dict[str, str]] = []
+    for idx, segment in enumerate(segments, start=1):
+        segment_text = _normalize_text(segment)
+        if not segment_text:
             continue
-        firm = _extract_firm(segment)
-        city, state = _extract_city_state(segment)
-        website = _extract_website(segment)
-        contact_name = _extract_contact_name(segment)
-        emails = _extract_emails(segment)
-        for email in emails:
-            rows.append(
-                {
-                    "prospect_id": "",
-                    "firm": firm,
-                    "company_name": firm,
-                    "email": email,
-                    "contact_email": email,
-                    "title": "EHS Consultant",
-                    "contact_role": "EHS Consultant",
-                    "contact_name": contact_name,
-                    "city": city,
-                    "state": state,
-                    "website": website,
-                    "source": f"aiha_consultants_listing:{page_id}",
-                }
-            )
+        if not re.search(r"\b(?:commercial(?:/residential)?|residential)\b", segment_text, flags=re.I):
+            continue
+        firm = _extract_firm(segment_text)
+        city_raw, state_raw = _extract_city_state(segment_text)
+        city = _clean_city(city_raw)
+        state = _normalize_state_abbrev(state_raw)
+        website = _extract_website(segment_text)
+        contact_name = _extract_contact_name(segment_text)
+        emails = _extract_emails(segment_text)
+        email = emails[0] if emails else ""
 
-    if rows:
-        return rows, mode
-    return [], "FAILED"
+        reject_token = ""
+        if _is_multi_person_contact(contact_name):
+            reject_token = "multi_person_contact"
+        elif _is_placeholder_firm(firm):
+            reject_token = "placeholder_firm"
+        elif not _is_valid_city_state(city, state):
+            reject_token = "invalid_city_state"
+        elif not email:
+            reject_token = "missing_email"
+
+        diag = {
+            "page_id": str(page_id or ""),
+            "segment_index": str(idx),
+            "status": "accepted" if not reject_token else "rejected",
+            "reject_token": reject_token,
+            "firm": _normalize_text(firm),
+            "contact_name": _normalize_text(contact_name),
+            "email": _normalize_text(email).lower(),
+            "city": _normalize_text(city),
+            "state": _normalize_text(state).upper(),
+        }
+
+        if reject_token:
+            reject_counts[reject_token] += 1
+            row_diagnostics.append(diag)
+            continue
+
+        row_diagnostics.append(diag)
+        rows.append(
+            {
+                "prospect_id": "",
+                "firm": _normalize_text(firm),
+                "company_name": _normalize_text(firm),
+                "email": _normalize_text(email).lower(),
+                "contact_email": _normalize_text(email).lower(),
+                "title": "EHS Consultant",
+                "contact_role": "EHS Consultant",
+                "contact_name": _normalize_text(contact_name),
+                "city": _normalize_text(city),
+                "state": _normalize_text(state).upper(),
+                "website": _normalize_text(website),
+                "source": f"aiha_consultants_listing:{page_id}",
+            }
+        )
+
+    reject_counts_out = {token: int(reject_counts.get(token, 0)) for token in AIHA_REJECT_TOKENS}
+    return {
+        "rows": rows,
+        "mode": mode,
+        "reject_counts": reject_counts_out,
+        "row_diagnostics": row_diagnostics,
+    }
+
+
+def parse_aiha_page(page_html: str, page_id: str) -> tuple[list[dict[str, str]], str]:
+    parsed = parse_aiha_page_with_diagnostics(page_html=page_html, page_id=page_id)
+    return list(parsed.get("rows") or []), str(parsed.get("mode") or "FAILED")
 
 
 def _write_diagnostic(diagnostics_dir: Path, state: str, payload: dict) -> Path:
@@ -333,13 +508,16 @@ def _write_diagnostic(diagnostics_dir: Path, state: str, payload: dict) -> Path:
 
 
 def _effective_parse_mode(page_modes: list[str], total_rows: int) -> str:
-    if total_rows <= 0:
+    _ = total_rows
+    if not page_modes:
         return "FAILED"
-    if any(m == "FAILED" for m in page_modes):
-        return "FALLBACK"
+    if all(m == "FAILED" for m in page_modes):
+        return "FAILED"
     if any(m == "FALLBACK" for m in page_modes):
         return "FALLBACK"
-    return "TEXT_CONTAINER"
+    if any(m == "TEXT_CONTAINER" for m in page_modes):
+        return "TEXT_CONTAINER"
+    return "FAILED"
 
 
 def fetch_aiha_state_rows(
@@ -366,6 +544,8 @@ def fetch_aiha_state_rows(
     cached_payload = _read_cache(cache_path)
     if cached_payload and _cache_is_fresh(cached_payload):
         rows = list(cached_payload.get("rows") or [])
+        reject_counts = dict(cached_payload.get("reject_counts") or {})
+        row_diagnostics = list(cached_payload.get("row_diagnostics") or [])
         return {
             "rows": rows,
             "cache_used": True,
@@ -373,6 +553,8 @@ def fetch_aiha_state_rows(
             "cache_path": cache_path,
             "pages_fetched": int(cached_payload.get("pages_fetched") or 0),
             "parse_mode": str(cached_payload.get("parse_mode") or "FAILED"),
+            "reject_counts": {token: int(reject_counts.get(token, 0)) for token in AIHA_REJECT_TOKENS},
+            "row_diagnostics": row_diagnostics,
             "diagnostics_path": None,
         }
 
@@ -388,6 +570,8 @@ def fetch_aiha_state_rows(
 
         all_rows: list[dict[str, str]] = []
         page_modes: list[str] = []
+        reject_counts: Counter = Counter()
+        row_diagnostics: list[dict[str, str]] = []
         pages_fetched = 0
         for idx, page_id in enumerate(page_ids):
             if idx > 0 and sleep_ms > 0:
@@ -397,9 +581,15 @@ def fetch_aiha_state_rows(
             if int(status) != 200:
                 page_modes.append("FAILED")
                 continue
-            page_rows, page_mode = parse_aiha_page(page_html, page_id=page_id)
+            page_parse = parse_aiha_page_with_diagnostics(page_html=page_html, page_id=page_id)
+            page_mode = str(page_parse.get("mode") or "FAILED")
             page_modes.append(page_mode)
+            page_rows = list(page_parse.get("rows") or [])
             all_rows.extend(page_rows)
+            for token, count in dict(page_parse.get("reject_counts") or {}).items():
+                if token in AIHA_REJECT_TOKENS:
+                    reject_counts[token] += int(count or 0)
+            row_diagnostics.extend(list(page_parse.get("row_diagnostics") or []))
 
         parse_mode = _effective_parse_mode(page_modes, total_rows=len(all_rows))
         if parse_mode == "FAILED":
@@ -413,6 +603,8 @@ def fetch_aiha_state_rows(
             "pages_fetched": pages_fetched,
             "parse_mode": parse_mode,
             "rows": all_rows,
+            "reject_counts": {token: int(reject_counts.get(token, 0)) for token in AIHA_REJECT_TOKENS},
+            "row_diagnostics": row_diagnostics,
         }
         if allow_cache_write:
             _write_cache(cache_path, payload)
@@ -423,6 +615,8 @@ def fetch_aiha_state_rows(
             "cache_path": cache_path,
             "pages_fetched": pages_fetched,
             "parse_mode": parse_mode,
+            "reject_counts": {token: int(reject_counts.get(token, 0)) for token in AIHA_REJECT_TOKENS},
+            "row_diagnostics": row_diagnostics,
             "diagnostics_path": None,
         }
     except Exception as exc:

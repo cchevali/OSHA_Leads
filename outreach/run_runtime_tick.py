@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from outreach.runtime_operator_alerts import resolve_alert_recipient, send_plain_text_alert, smtp_missing_key
 from runtime_data_dir import resolve_data_dir
 from runtime_guard import render_runtime_lines, run_runtime_preflight
 
@@ -31,6 +32,9 @@ PASS_RUNTIME_TICK_COMPLETE = "PASS_RUNTIME_TICK_COMPLETE"
 RUNTIME_TZ_NAME = "America/New_York"
 RUNTIME_TZ_FALLBACK = "Eastern Standard Time"
 LOCK_STALE_SECONDS = 4 * 60 * 60
+ALERTS_SCHEMA = "runtime_tick_alert_v1"
+ALERTS_SUMMARY_SCHEMA = "runtime_tick_alert_summary_v1"
+CRITICAL_WINDOW_JOBS = frozenset({"ingest_daily", "prospect_replenish_daily", "outreach_auto", "trial_facs_daily"})
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,20 @@ class JobSpec:
     interval_minutes: int = 0
     catchup_minutes: int = 180
     max_attempts_per_slot: int = 3
+
+
+@dataclass(frozen=True)
+class AlertCandidate:
+    name: str
+    category: str
+    slot_key: str
+    scheduled_local: str
+    result: str
+    reason: str
+    exit_code: int
+    task_log_path: str
+    run_summary_json_path: str
+    run_summary_text_path: str
 
 
 JOBS: tuple[JobSpec, ...] = (
@@ -110,6 +128,10 @@ def _locks_root(data_dir: Path) -> Path:
 
 def _job_state_path(data_dir: Path, job_name: str) -> Path:
     return (_status_root(data_dir) / "jobs" / f"{job_name}.json").resolve(strict=False)
+
+
+def _alerts_root(data_dir: Path) -> Path:
+    return (_status_root(data_dir) / "alerts").resolve(strict=False)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -391,6 +413,264 @@ def _selected_jobs(job_arg: str) -> list[JobSpec]:
     raise ValueError(f"invalid_job={job_arg}")
 
 
+def _env_bool(name: str, *, default: bool, env: dict[str, str]) -> bool:
+    raw = str(env.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _sanitize_for_filename(text: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(text or "").strip())
+    return cleaned or "none"
+
+
+def _alert_marker_path(data_dir: Path, candidate: AlertCandidate) -> Path:
+    file_name = (
+        f"{_sanitize_for_filename(candidate.name)}_"
+        f"{_sanitize_for_filename(candidate.slot_key)}_"
+        f"{_sanitize_for_filename(candidate.category)}.json"
+    )
+    return (_alerts_root(data_dir) / file_name).resolve(strict=False)
+
+
+def _collect_alert_candidates(job_results: list[dict[str, Any]]) -> list[AlertCandidate]:
+    candidates: list[AlertCandidate] = []
+    for job in job_results:
+        name = str(job.get("name") or "").strip()
+        if not name:
+            continue
+        result = str(job.get("result") or "").strip().lower()
+        reason = str(job.get("reason") or "").strip()
+        slot_key = str(job.get("slot_key") or "").strip()
+        scheduled_local = str(job.get("scheduled_local") or "").strip()
+        task_log_path = str(job.get("task_log_path") or "").strip()
+        run_summary_json_path = str(job.get("run_summary_json_path") or "").strip()
+        run_summary_text_path = str(job.get("run_summary_text_path") or "").strip()
+        exit_code = int(job.get("exit_code") or 0)
+
+        if result == "failed":
+            candidates.append(
+                AlertCandidate(
+                    name=name,
+                    category="job_failure",
+                    slot_key=slot_key,
+                    scheduled_local=scheduled_local,
+                    result=result,
+                    reason=reason,
+                    exit_code=exit_code,
+                    task_log_path=task_log_path,
+                    run_summary_json_path=run_summary_json_path,
+                    run_summary_text_path=run_summary_text_path,
+                )
+            )
+            continue
+
+        if (
+            result == "skipped"
+            and name in CRITICAL_WINDOW_JOBS
+            and reason.startswith("window_closed_")
+        ):
+            candidates.append(
+                AlertCandidate(
+                    name=name,
+                    category="missed_window",
+                    slot_key=slot_key,
+                    scheduled_local=scheduled_local,
+                    result=result,
+                    reason=reason,
+                    exit_code=exit_code,
+                    task_log_path=task_log_path,
+                    run_summary_json_path=run_summary_json_path,
+                    run_summary_text_path=run_summary_text_path,
+                )
+            )
+    return candidates
+
+
+def _build_alert_subject(candidate: AlertCandidate) -> str:
+    if candidate.category == "missed_window":
+        return f"[OSHA Runtime Missed Window] {candidate.name} {candidate.slot_key or 'unslotted'}"
+    return f"[OSHA Runtime Failure] {candidate.name} {candidate.slot_key or 'unslotted'}"
+
+
+def _build_alert_body(
+    *,
+    candidate: AlertCandidate,
+    repo_root: Path,
+    data_dir: Path,
+    git_sha: str,
+    now_local: datetime,
+) -> str:
+    lines = [
+        "OSHA Runtime Alert",
+        "",
+        f"category: {candidate.category}",
+        f"job_name: {candidate.name}",
+        f"slot_key: {candidate.slot_key}",
+        f"scheduled_local: {candidate.scheduled_local}",
+        f"result: {candidate.result}",
+        f"reason: {candidate.reason}",
+        f"exit_code: {candidate.exit_code}",
+        f"triggered_local: {now_local.isoformat()}",
+        f"git_sha: {git_sha}",
+        f"repo_root: {repo_root}",
+        f"data_dir: {data_dir}",
+    ]
+    if candidate.task_log_path:
+        lines.append(f"task_log_path: {candidate.task_log_path}")
+    if candidate.run_summary_json_path:
+        lines.append(f"run_summary_json_path: {candidate.run_summary_json_path}")
+    if candidate.run_summary_text_path:
+        lines.append(f"run_summary_text_path: {candidate.run_summary_text_path}")
+    return "\n".join(lines) + "\n"
+
+
+def _evaluate_runtime_alerts(
+    *,
+    data_dir: Path,
+    repo_root: Path,
+    mode: str,
+    env: dict[str, str],
+    now_local: datetime,
+    job_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    git_sha = _git_sha(repo_root)
+    candidates = _collect_alert_candidates(job_results)
+    recipient = resolve_alert_recipient(env)
+    alerts_enabled = _env_bool(
+        "RUNTIME_ALERTS_ENABLED",
+        default=bool(recipient),
+        env=env,
+    )
+
+    sent_records: list[dict[str, Any]] = []
+    skipped_records: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    if not candidates:
+        _emit("RUNTIME_TICK_ALERT_SKIPPED", "reason=no_candidates")
+
+    for candidate in candidates:
+        send_allowed = mode == "live" and alerts_enabled and bool(recipient)
+        candidate_reason = "ready_to_send" if send_allowed else (
+            "non_live_mode" if mode != "live" else (
+                "disabled" if not alerts_enabled else "no_recipient"
+            )
+        )
+        _emit(
+            "RUNTIME_TICK_ALERT_CANDIDATE",
+            f"name={candidate.name} category={candidate.category} send={1 if send_allowed else 0} reason={candidate_reason}",
+        )
+        if not send_allowed:
+            skipped_records.append(
+                {
+                    "name": candidate.name,
+                    "category": candidate.category,
+                    "slot_key": candidate.slot_key,
+                    "reason": candidate_reason,
+                }
+            )
+            _emit(
+                "RUNTIME_TICK_ALERT_SKIPPED",
+                f"name={candidate.name} category={candidate.category} reason={candidate_reason}",
+            )
+            continue
+
+        marker_path = _alert_marker_path(data_dir, candidate)
+        if marker_path.exists():
+            skipped_records.append(
+                {
+                    "name": candidate.name,
+                    "category": candidate.category,
+                    "slot_key": candidate.slot_key,
+                    "reason": "duplicate",
+                }
+            )
+            _emit(
+                "RUNTIME_TICK_ALERT_SKIPPED",
+                f"name={candidate.name} category={candidate.category} reason=duplicate",
+            )
+            continue
+
+        missing = smtp_missing_key(env)
+        if missing:
+            skipped_records.append(
+                {
+                    "name": candidate.name,
+                    "category": candidate.category,
+                    "slot_key": candidate.slot_key,
+                    "reason": f"smtp_unavailable_{missing}",
+                }
+            )
+            _emit(
+                "RUNTIME_TICK_ALERT_SKIPPED",
+                f"name={candidate.name} category={candidate.category} reason=smtp_unavailable_{missing}",
+            )
+            continue
+
+        subject = _build_alert_subject(candidate)
+        body = _build_alert_body(
+            candidate=candidate,
+            repo_root=repo_root,
+            data_dir=data_dir,
+            git_sha=git_sha,
+            now_local=now_local,
+        )
+        try:
+            send_plain_text_alert(
+                recipient=recipient,
+                subject=subject,
+                body=body,
+                env=env,
+            )
+            marker_payload = {
+                "schema": ALERTS_SCHEMA,
+                "sent_local": now_local.isoformat(),
+                "recipient": recipient,
+                "subject": subject,
+                "git_sha": git_sha,
+                "job_name": candidate.name,
+                "category": candidate.category,
+                "slot_key": candidate.slot_key,
+                "scheduled_local": candidate.scheduled_local,
+                "result": candidate.result,
+                "reason": candidate.reason,
+                "exit_code": candidate.exit_code,
+                "task_log_path": candidate.task_log_path,
+                "run_summary_json_path": candidate.run_summary_json_path,
+                "run_summary_text_path": candidate.run_summary_text_path,
+            }
+            _write_json(marker_path, marker_payload)
+            sent_records.append(marker_payload)
+            _emit("RUNTIME_TICK_ALERT_SENT", f"count={len(sent_records)} recipient={recipient}")
+        except Exception as exc:
+            detail = f"name={candidate.name} category={candidate.category} detail={exc.__class__.__name__}:{exc}"
+            errors.append(detail)
+            _emit("RUNTIME_TICK_ALERT_ERROR", detail)
+            skipped_records.append(
+                {
+                    "name": candidate.name,
+                    "category": candidate.category,
+                    "slot_key": candidate.slot_key,
+                    "reason": "send_error",
+                }
+            )
+
+    summary: dict[str, Any] = {
+        "schema": ALERTS_SUMMARY_SCHEMA,
+        "alerts_enabled": bool(alerts_enabled),
+        "recipient": recipient,
+        "alerts_evaluated": len(candidates),
+        "alerts_sent": len(sent_records),
+        "alerts_skipped": len(skipped_records),
+        "last_alerts": sent_records,
+        "skipped_alerts": skipped_records,
+        "errors": errors,
+    }
+    return summary
+
+
 def _update_runtime_latest(
     *,
     data_dir: Path,
@@ -399,6 +679,7 @@ def _update_runtime_latest(
     now_local: datetime,
     repo_root: Path,
     job_results: list[dict[str, Any]],
+    alert_summary: dict[str, Any] | None = None,
 ) -> None:
     root = _status_root(data_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -412,6 +693,8 @@ def _update_runtime_latest(
         "git_sha": _git_sha(repo_root),
         "jobs": job_results,
     }
+    if alert_summary:
+        payload["alerts"] = alert_summary
     latest_json = root / "runtime_latest.json"
     latest_md = root / "runtime_latest.md"
     _write_json(latest_json, payload)
@@ -430,6 +713,24 @@ def _update_runtime_latest(
             f"- `{job.get('name','')}` result=`{job.get('result','')}` "
             f"exit_code=`{job.get('exit_code','')}` reason=`{job.get('reason','')}`"
         )
+    if alert_summary:
+        lines.extend(
+            [
+                "",
+                "## Alerts",
+                f"- enabled: `{1 if bool(alert_summary.get('alerts_enabled')) else 0}`",
+                f"- evaluated: `{alert_summary.get('alerts_evaluated', 0)}`",
+                f"- sent: `{alert_summary.get('alerts_sent', 0)}`",
+                f"- skipped: `{alert_summary.get('alerts_skipped', 0)}`",
+                f"- recipient: `{alert_summary.get('recipient', '')}`",
+            ]
+        )
+        sent_rows = alert_summary.get("last_alerts") or []
+        for row in sent_rows:
+            lines.append(
+                f"- sent `{row.get('category','')}` for `{row.get('job_name','')}` "
+                f"slot=`{row.get('slot_key','')}`"
+            )
     latest_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
     _emit("RUNTIME_TICK_STATUS_JSON_PATH", str(latest_json))
     _emit("RUNTIME_TICK_STATUS_TEXT_PATH", str(latest_md))
@@ -522,6 +823,7 @@ def main(argv: list[str] | None = None) -> int:
     started_local = now_local
     status_fail = False
     job_results: list[dict[str, Any]] = []
+    alert_summary: dict[str, Any] | None = None
     env = dict(os.environ)
 
     lock_path = (_locks_root(data_dir) / "runtime_tick.lock").resolve(strict=False)
@@ -660,6 +962,14 @@ def main(argv: list[str] | None = None) -> int:
                     break
 
         now_done = datetime.now(now_local.tzinfo)
+        alert_summary = _evaluate_runtime_alerts(
+            data_dir=data_dir,
+            repo_root=repo_root,
+            mode="doctor" if args.doctor else "dry_run" if args.dry_run else "live",
+            env=env,
+            now_local=now_done,
+            job_results=job_results,
+        )
         _update_runtime_latest(
             data_dir=data_dir,
             mode="doctor" if args.doctor else "dry_run" if args.dry_run else "live",
@@ -667,6 +977,7 @@ def main(argv: list[str] | None = None) -> int:
             now_local=now_done,
             repo_root=repo_root,
             job_results=job_results,
+            alert_summary=alert_summary,
         )
     finally:
         if lock_acquired:

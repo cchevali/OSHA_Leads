@@ -11,6 +11,11 @@ OUTREACH_EVENTS_MIGRATION_COLUMNS = {
     "attributed_state_at_send": "TEXT",
     "attributed_model": "TEXT",
 }
+PROSPECTS_MIGRATION_COLUMNS = {
+    "source_fit_tier": "TEXT NOT NULL DEFAULT 'recoverable_consultant'",
+    "default_send_eligible": "INTEGER NOT NULL DEFAULT 1",
+}
+VALID_SOURCE_FIT_TIERS = ("core_consultant", "recoverable_consultant", "adjacent_contractor")
 
 
 def data_dir_resolution() -> DataDirResolution:
@@ -60,6 +65,92 @@ def ensure_outreach_events_columns(conn: sqlite3.Connection) -> None:
         conn.execute(f"ALTER TABLE outreach_events ADD COLUMN {name} {col_type}")
 
 
+def ensure_prospect_columns(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "prospects"):
+        return
+    existing = _table_columns(conn, "prospects")
+    for name, col_type in PROSPECTS_MIGRATION_COLUMNS.items():
+        if name in existing:
+            continue
+        conn.execute(f"ALTER TABLE prospects ADD COLUMN {name} {col_type}")
+
+
+def ensure_prospect_metadata_defaults(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "prospects"):
+        return
+    existing = _table_columns(conn, "prospects")
+    if "source_fit_tier" not in existing or "default_send_eligible" not in existing:
+        return
+
+    valid_tiers = ",".join([f"'{tier}'" for tier in VALID_SOURCE_FIT_TIERS])
+    tier_needs_normalize = conn.execute(
+        f"""
+        SELECT 1
+        FROM prospects
+        WHERE lower(trim(COALESCE(source_fit_tier, ''))) IN ({valid_tiers})
+          AND COALESCE(source_fit_tier, '') <> lower(trim(COALESCE(source_fit_tier, '')))
+        LIMIT 1
+        """
+    ).fetchone()
+    if tier_needs_normalize:
+        conn.execute(
+            f"""
+            UPDATE prospects
+            SET source_fit_tier = lower(trim(COALESCE(source_fit_tier, '')))
+            WHERE lower(trim(COALESCE(source_fit_tier, ''))) IN ({valid_tiers})
+            """
+        )
+
+    tier_needs_default = conn.execute(
+        f"""
+        SELECT 1
+        FROM prospects
+        WHERE source_fit_tier IS NULL
+           OR trim(source_fit_tier) = ''
+           OR lower(trim(source_fit_tier)) NOT IN ({valid_tiers})
+        LIMIT 1
+        """
+    ).fetchone()
+    if tier_needs_default:
+        conn.execute(
+            f"""
+            UPDATE prospects
+            SET source_fit_tier = 'recoverable_consultant'
+            WHERE source_fit_tier IS NULL
+               OR trim(source_fit_tier) = ''
+               OR lower(trim(source_fit_tier)) NOT IN ({valid_tiers})
+            """
+        )
+
+    sendable_needs_normalize = conn.execute(
+        """
+        SELECT 1
+        FROM prospects
+        WHERE lower(trim(CAST(COALESCE(default_send_eligible, '') AS TEXT))) NOT IN ('0', '1')
+        LIMIT 1
+        """
+    ).fetchone()
+    if sendable_needs_normalize:
+        conn.execute(
+            """
+            UPDATE prospects
+            SET default_send_eligible = CASE
+                WHEN lower(trim(CAST(COALESCE(default_send_eligible, '') AS TEXT))) IN ('1', 'true', 'yes', 'on') THEN 1
+                WHEN lower(trim(CAST(COALESCE(default_send_eligible, '') AS TEXT))) IN ('0', 'false', 'no', 'off') THEN 0
+                ELSE 1
+            END
+            """
+        )
+
+
+def ensure_prospect_indexes(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "prospects"):
+        return
+    existing = _table_columns(conn, "prospects")
+    if "default_send_eligible" in existing:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_prospects_send_eligible ON prospects(default_send_eligible);")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -73,6 +164,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
             state TEXT NOT NULL DEFAULT '',
             website TEXT NOT NULL DEFAULT '',
             source TEXT NOT NULL DEFAULT '',
+            source_fit_tier TEXT NOT NULL DEFAULT 'recoverable_consultant',
+            default_send_eligible INTEGER NOT NULL DEFAULT 1,
             score INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'new',
             created_at TEXT NOT NULL,
@@ -132,6 +225,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_bounce_events_class ON bounce_events(bounce_class);
         """
     )
+    ensure_prospect_columns(conn)
+    ensure_prospect_metadata_defaults(conn)
+    ensure_prospect_indexes(conn)
     ensure_outreach_events_columns(conn)
     conn.commit()
 

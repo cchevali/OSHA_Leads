@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=b1115c378bf9ab035b41cd119f7745334759e198
-PACK_BUILD_UTC=2026-03-06T15:37:04Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=edbbd93c214cef8e7911f52bf05bb205368e93e3ca79b09a0bdfe950018baa93 docs/DECISIONS.md=c39bc7b1615bbbd884d0fa591685468b7a5b92cf479c03c4d39c84d6213e9e3a docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=8c959088aeaa345516d2882d6182e6bd3f82104b92e38cf72d3f12ca51efd404 docs/TODO.md=806e22e4a1a4e86b1ceb13a879e72f0a04e450847c3d72da5de8ec9a5064abfe docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=da7e55ae79ee35f52cee68309403d2419e20b26d72eb632e80904169794ec6a0
+PACK_GIT_SHA=5f9a35159c2d04c04e7ec3fc5421edbb2d1a6a59
+PACK_BUILD_UTC=2026-03-06T15:46:59Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=26a00c72663c2703259bc704d1d2c06d7ddfc41455464cfa874ed37efd2ada53 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=bfc1ccc593b2acf4ada5a73a310f72deb368b34e83dac96817ddd135a39dbba2 docs/TODO.md=806e22e4a1a4e86b1ceb13a879e72f0a04e450847c3d72da5de8ec9a5064abfe docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=5ad632276abc6a5083e86b47e2b3ac5db21338fbd34dd5ce0e790a10b3f28ed9
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -112,6 +112,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Primary scheduler entrypoint: `run_runtime_tick.py`, invoked by `.github/workflows/runtime-tick-selfhosted.yml` every 15 minutes and fanning into due jobs by local time.
 - Windows Task Scheduler wrappers are retained only as manual break-glass fallbacks and must not remain enabled in parallel with runtime tick once cutover is complete.
 - Wrappers emit deterministic run summaries (`runtime_run_summary_v1`) plus task logs and optional backup manifests.
+- Runtime tick emits operator alert candidates and sends live SMTP alerts (recipient `RUNTIME_ALERT_RECIPIENT` fallback `OSHA_SMOKE_TO`) for job failures and critical missed morning windows with per-slot dedupe markers under `${DATA_DIR}\runtime\status\alerts\`.
 - Artifact roots:
   - Task logs: `${TASK_LOG_ROOT}` or `${DATA_DIR}\out\task_logs` or `<repo>\out\task_logs`
   - Run summaries: `${RUN_SUMMARY_ROOT}` or `${DATA_DIR}\out\run_summaries` or `<repo>\out\run_summaries`
@@ -530,6 +531,37 @@ The runtime hardening work introduced a single orchestrator (`run_runtime_tick.p
 - Operator docs and runbooks must treat runtime tick as the default daily path.
 - Workflow enablement on the default branch becomes part of runtime cutover.
 - Task Scheduler credentials and installers remain supported only for recovery scenarios, not as standard daily operations.
+
+## ADR-0012: Runtime Tick Failure Alerts With Slot Dedupe
+
+Date: 2026-03-06
+Status: Accepted
+
+### Context
+
+Runtime tick centralized scheduling and status artifacts, but operators still had to poll logs to detect failures or missed morning windows. The system needed high-signal alerts without adding new infrastructure or introducing send loops.
+
+### Decision
+
+- Runtime tick evaluates alert candidates after each run.
+- Live-mode SMTP alerts are sent to `RUNTIME_ALERT_RECIPIENT` or fallback `OSHA_SMOKE_TO`.
+- Alert categories:
+  - `job_failure`: any failed runtime job.
+  - `missed_window`: `window_closed_*` skips for `ingest_daily`, `prospect_replenish_daily`, `outreach_auto`, and `trial_facs_daily`.
+- Per-slot dedupe markers are written under `${DATA_DIR}\runtime\status\alerts\*.json`.
+- Doctor/dry-run modes never send alerts.
+
+### Rationale
+
+- Reuses existing SMTP and operator mailbox setup.
+- Avoids duplicate paging every 15 minutes after a window closes.
+- Keeps runtime tick failures visible without changing send/prospect business behavior.
+
+### Consequences
+
+- Runtime status artifacts now include alert summary fields.
+- Operators can monitor alert state from `runtime_latest.json` plus alert dedupe records.
+- Missing SMTP or recipient configuration degrades to non-fatal skipped-alert tokens.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -660,6 +692,16 @@ Status artifacts:
 - `${DATA_DIR}\runtime\status\runtime_latest.json`
 - `${DATA_DIR}\runtime\status\runtime_latest.md`
 - `${DATA_DIR}\runtime\status\jobs\<job>.json`
+- `${DATA_DIR}\runtime\status\alerts\*.json` (dedupe markers for sent runtime alerts)
+
+Runtime tick operator alerts:
+
+- Recipient resolution: `RUNTIME_ALERT_RECIPIENT` -> `OSHA_SMOKE_TO`.
+- Enablement: `RUNTIME_ALERTS_ENABLED` (`1|0`), default on when a recipient is resolvable.
+- Alert categories:
+  - `job_failure` for any failed runtime tick job.
+  - `missed_window` for skipped `window_closed_*` on `ingest_daily`, `prospect_replenish_daily`, `outreach_auto`, and `trial_facs_daily`.
+- Alerts are live-mode only; `--doctor` and `--dry-run` emit candidate/skipped tokens but do not send email.
 
 ## Runtime State Migration
 

@@ -41,6 +41,71 @@ class TestProspectSourcesAiha(unittest.TestCase):
         self.assertEqual(mode, "FAILED")
         self.assertEqual(rows, [])
 
+    def test_parse_aiha_page_with_diagnostics_emits_reject_tokens(self):
+        page_html = """
+        <html><body>
+        <div id="text-container">
+        <p>Inc. Commercial 100 Main St Los Angeles, CA 90001 USA Website: inc.example Contact: Alex One Contact Email: alex@inc.example Specialty: 5 Consulting</p>
+        <p>Valid Safety Partners Commercial 200 Main St Los Angeles, CA 90001 USA Website: valid.example Contact: Sam One and Lee Two Contact Email: sam@valid.example Specialty: 5 Consulting</p>
+        <p>Valid Safety Partners Commercial 300 Main St Los Angeles USA Website: valid.example Contact: Sam One Contact Email: sam2@valid.example Specialty: 5 Consulting</p>
+        <p>Valid Safety Partners Commercial 400 Main St Los Angeles, CA 90001 USA Website: valid.example Contact: Sam One Specialty: 5 Consulting</p>
+        <p>Valid Safety Partners Commercial 500 Main St Los Angeles, CA 90001 USA Website: valid.example Contact: Sam One Contact Email: sam@valid.example Contact Email: secondary@valid.example Specialty: 5 Consulting</p>
+        </div>
+        </body></html>
+        """
+        parsed = aiha.parse_aiha_page_with_diagnostics(page_html, "12-13")
+        rows = list(parsed.get("rows") or [])
+        reject_counts = dict(parsed.get("reject_counts") or {})
+        row_diagnostics = list(parsed.get("row_diagnostics") or [])
+
+        self.assertEqual(parsed.get("mode"), "TEXT_CONTAINER")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["email"], "sam@valid.example")
+        self.assertEqual(reject_counts.get("placeholder_firm"), 1)
+        self.assertEqual(reject_counts.get("multi_person_contact"), 1)
+        self.assertEqual(reject_counts.get("invalid_city_state"), 1)
+        self.assertEqual(reject_counts.get("missing_email"), 1)
+        self.assertGreaterEqual(len(row_diagnostics), 5)
+        statuses = {str(item.get("status") or "") for item in row_diagnostics}
+        self.assertIn("accepted", statuses)
+        self.assertIn("rejected", statuses)
+
+    def test_fetch_collects_reject_counts_and_row_diagnostics(self):
+        toc_html = self._read("toc.html")
+        page_html = """
+        <html><body>
+        <div id="text-container">
+        <p>Consulting Commercial 100 Main St Los Angeles, CA 90001 USA Website: bad.example Contact: Sam One Contact Email: sam@bad.example Specialty: 5 Consulting</p>
+        <p>Acme Safety Consulting Commercial 123 Main St Los Angeles, CA 90001 USA Website: good.example Contact: Jane Owner Contact Email: jane@good.example Specialty: 5 Consulting</p>
+        </div>
+        </body></html>
+        """
+
+        def fake_fetcher(url: str):
+            if "toc" in url:
+                return 200, toc_html
+            return 200, page_html
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            result = aiha.fetch_aiha_state_rows(
+                state="CA",
+                run_date=date(2026, 2, 18),
+                max_pages=1,
+                sleep_ms=0,
+                cache_dir=root / "cache",
+                diagnostics_dir=root / "diagnostics",
+                fetcher=fake_fetcher,
+                allow_cache_write=False,
+            )
+
+        self.assertEqual(result["parse_mode"], "TEXT_CONTAINER")
+        self.assertEqual(len(list(result.get("rows") or [])), 1)
+        reject_counts = dict(result.get("reject_counts") or {})
+        self.assertEqual(int(reject_counts.get("placeholder_firm") or 0), 1)
+        self.assertEqual(int(reject_counts.get("missing_email") or 0), 0)
+        self.assertGreaterEqual(len(list(result.get("row_diagnostics") or [])), 2)
+
     def test_fetch_uses_cache_metadata_timestamp(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -55,6 +120,8 @@ class TestProspectSourcesAiha(unittest.TestCase):
                 "pages_fetched": 2,
                 "parse_mode": "TEXT_CONTAINER",
                 "rows": [{"email": "cache@example.com", "state": "CA"}],
+                "reject_counts": {token: 0 for token in aiha.AIHA_REJECT_TOKENS},
+                "row_diagnostics": [],
             }
             cache_path = aiha._cache_path(cache_dir, "CA")
             cache_path.write_text(json.dumps(cache_payload), encoding="utf-8")
@@ -75,6 +142,8 @@ class TestProspectSourcesAiha(unittest.TestCase):
             self.assertTrue(result["cache_used"])
             self.assertEqual(len(result["rows"]), 1)
             self.assertEqual(result["rows"][0]["email"], "cache@example.com")
+            self.assertIn("reject_counts", result)
+            self.assertIn("row_diagnostics", result)
 
     def test_fetch_failed_writes_diagnostics(self):
         with tempfile.TemporaryDirectory() as d:
