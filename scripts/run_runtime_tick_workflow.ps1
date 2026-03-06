@@ -1,10 +1,10 @@
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-
 param(
   [string]$WorkspacePath = '',
   [string]$CommandArgs = ''
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
 if (-not ([string]$WorkspacePath).Trim()) {
   Write-Output 'ERR_RUNTIME_TICK_WORKFLOW_WORKSPACE_MISSING'
