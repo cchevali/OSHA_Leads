@@ -35,51 +35,23 @@ jobs:
 
       - name: Build Tick Args
         id: args
-        shell: powershell
-        run: |
-          $mode = 'live'
-          $job = 'all'
-          $nowLocal = ''
-          $force = 'false'
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            if ("${{ inputs.mode }}") { $mode = "${{ inputs.mode }}" }
-            if ("${{ inputs.job }}") { $job = "${{ inputs.job }}" }
-            if ("${{ inputs.now_local }}") { $nowLocal = "${{ inputs.now_local }}" }
-            if ("${{ inputs.force }}") { $force = "${{ inputs.force }}" }
-          }
-          $modeNorm = ($mode.Trim().ToLowerInvariant())
-          if (@('live','doctor','dry_run') -notcontains $modeNorm) {
-            Write-Output ("ERR_RUNTIME_TICK_WORKFLOW_INVALID_MODE mode=" + $modeNorm)
-            exit 1
-          }
-          $args = @('run_runtime_tick.py')
-          if ($modeNorm -eq 'doctor') {
-            $args += '--doctor'
-          } elseif ($modeNorm -eq 'dry_run') {
-            $args += '--dry-run'
-          }
-          $args += @('--job', $job)
-          if ($nowLocal.Trim()) {
-            $args += @('--now-local', $nowLocal.Trim())
-          }
-          if ($force.Trim().ToLowerInvariant() -eq 'true') {
-            $args += '--force'
-          }
-          $serialized = ($args -join ' ')
-          "cmd_args=$serialized" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Write-Output ("RUNTIME_TICK_WORKFLOW_ARGS=" + $serialized)
+        shell: cmd
+        run: >
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+          .\scripts\build_runtime_tick_args.ps1
+          -GithubEventName "${{ github.event_name }}"
+          -Mode "${{ inputs.mode }}"
+          -Job "${{ inputs.job }}"
+          -NowLocal "${{ inputs.now_local }}"
+          -Force "${{ inputs.force }}"
 
       - name: Run Runtime Tick
-        shell: powershell
-        run: |
-          cd C:\dev\OSHA_Leads
-          $args = "${{ steps.args.outputs.cmd_args }}"
-          if (-not $args) {
-            Write-Output "ERR_RUNTIME_TICK_WORKFLOW_ARGS_MISSING"
-            exit 1
-          }
-          $argParts = $args.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\run_with_secrets.ps1 -- py -3 @argParts
+        shell: cmd
+        run: >
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+          .\scripts\run_runtime_tick_workflow.ps1
+          -WorkspacePath "%GITHUB_WORKSPACE%"
+          -CommandArgs "${{ steps.args.outputs.cmd_args }}"
 
       - name: Upload Runtime Artifacts
         if: always()
