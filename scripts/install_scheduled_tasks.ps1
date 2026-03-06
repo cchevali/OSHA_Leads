@@ -79,15 +79,15 @@ function Get-TaskDefinitions([string]$RepoRoot) {
   $generationRunner = Join-Path $RepoRoot 'scripts\scheduled\run_prospect_generation.ps1'
   $inboundRunner = Join-Path $RepoRoot 'scripts\scheduled\run_inbound_triage.ps1'
   $facsTrialRunner = Join-Path $RepoRoot 'scripts\scheduled\run_trial_facs_daily.ps1'
+  $outreachRunner = Join-Path $RepoRoot 'scripts\scheduled\run_outreach_auto.ps1'
   $wrapper = Join-Path $RepoRoot 'run_with_secrets.ps1'
   $discovery = Join-Path $RepoRoot 'run_prospect_discovery.py'
-  $outreach = Join-Path $RepoRoot 'run_outreach_auto.py'
 
   return @(
     (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '06:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestRunner)),
     (New-TaskDefinition -Name 'OSHA_Prospect_Generation' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $generationRunner)),
     (New-TaskDefinition -Name 'OSHA_Prospect_Discovery' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:30' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $discovery)),
-    (New-TaskDefinition -Name 'OSHA_Outreach_Auto' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $wrapper + ' py -3 ' + $outreach)),
+    (New-TaskDefinition -Name 'OSHA_Outreach_Auto' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $outreachRunner)),
     (New-TaskDefinition -Name 'OSHA_Trial_FACS_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '09:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $facsTrialRunner)),
     (New-TaskDefinition -Name 'OSHA_Inbound_Triage' -ScheduleType 'minute' -StartTime '' -MinuteInterval 15 -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $inboundRunner))
   )
@@ -654,9 +654,9 @@ $requiredPaths = @(
   (Join-Path $repoRoot 'scripts\scheduled\run_prospect_generation.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_trial_facs_daily.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_inbound_triage.ps1'),
+  (Join-Path $repoRoot 'scripts\scheduled\run_outreach_auto.ps1'),
   (Join-Path $repoRoot 'run_with_secrets.ps1'),
-  (Join-Path $repoRoot 'run_prospect_discovery.py'),
-  (Join-Path $repoRoot 'run_outreach_auto.py')
+  (Join-Path $repoRoot 'run_prospect_discovery.py')
 )
 foreach ($path in $requiredPaths) {
   if (-not (Test-Path -LiteralPath $path)) {

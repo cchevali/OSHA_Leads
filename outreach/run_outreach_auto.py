@@ -41,6 +41,7 @@ if str(REPO_ROOT) not in sys.path:
 from outreach import crm_store
 from outreach import generate_mailmerge as gm
 from outreach import run_prospect_generation as prospect_generation
+from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict
 
 
 ERR_AUTO_ENV = "ERR_AUTO_ENV"
@@ -2320,6 +2321,11 @@ def main() -> int:
         action="store_true",
         help="Emergency/manual override: allow live outreach sends on Sat/Sun.",
     )
+    ap.add_argument(
+        "--confirm-live-send",
+        action="store_true",
+        help="Manual live-send confirmation flag (not required for trusted scheduled runtime).",
+    )
     ap.add_argument("--to", default="", help="Optional summary recipient override; must equal OSHA_SMOKE_TO.")
     args = ap.parse_args()
 
@@ -2356,6 +2362,8 @@ def main() -> int:
     crm_db = _crm_db_path()
     suppression_csv = _suppression_csv_path()
     export_ledger = _export_ledger_path()
+    runtime_mode = str(os.getenv("MFO_RUNTIME_MODE") or "manual").strip().lower() or "manual"
+    runtime_ctx = runtime_context_dict(mode=runtime_mode, intent="send", dry_run=bool(args.dry_run))
 
     if args.print_config:
         daily_limit, daily_limit_source = _daily_limit_with_source()
@@ -2389,9 +2397,30 @@ def main() -> int:
         print(f"outreach_effective_weekday={local_now['weekday_name']}")
         print(f"outreach_allow_weekend_send={'YES' if args.allow_weekend_send else 'NO'}")
         print(f"trial_conversion_url_present={trial_conversion_url_present}")
+        print(f"runtime_role={runtime_ctx.get('runtime_role', '')}")
+        print(f"canonical_hostname={(runtime_ctx.get('canonical_hostname') or '(unset)')}")
+        print(f"artifact_sync_dir={(os.getenv('ARTIFACT_SYNC_DIR') or '').strip() or '(unset)'}")
+        print(f"task_log_root={(os.getenv('TASK_LOG_ROOT') or '').strip() or '(default)'}")
+        print(f"run_summary_root={(os.getenv('RUN_SUMMARY_ROOT') or '').strip() or '(default)'}")
+        print(f"mfo_trusted_scheduled={(os.getenv('MFO_TRUSTED_SCHEDULED') or '0').strip() or '0'}")
         return 0
 
     is_live_send = not bool(args.dry_run or args.plan or args.doctor or args.print_config)
+    if is_live_send:
+        runtime_preflight = run_runtime_preflight(
+            mode=runtime_mode,
+            intent="send",
+            dry_run=False,
+            task_log_root=str(os.getenv("TASK_LOG_ROOT") or ""),
+            run_summary_root=str(os.getenv("RUN_SUMMARY_ROOT") or ""),
+            require_confirm_live_send=True,
+            confirm_live_send=bool(args.confirm_live_send),
+        )
+        for line in render_runtime_lines(runtime_preflight):
+            print(line)
+        if not runtime_preflight.ok:
+            return 2
+
     if (
         is_live_send
         and OUTREACH_WEEKDAYS_ONLY

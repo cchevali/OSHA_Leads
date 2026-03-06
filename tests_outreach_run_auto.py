@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import socket
 import subprocess
 import sys
 import tempfile
@@ -131,6 +132,8 @@ class TestOutreachRunAuto(unittest.TestCase):
                 env.pop(k, None)
             else:
                 env[k] = v
+        env.setdefault("CANONICAL_HOSTNAME", socket.gethostname().strip().lower())
+        env.setdefault("RUNTIME_ROLE", "dev_client")
         return env
 
     def _stdout_value(self, stdout: str, key: str) -> str:
@@ -693,7 +696,11 @@ class TestOutreachRunAuto(unittest.TestCase):
                 ), mock.patch.object(
                     roa, "_has_prior_sent_event", return_value=True
                 ):
-                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--for-date", "2026-02-24"]):
+                    with mock.patch.object(
+                        sys,
+                        "argv",
+                        ["run_outreach_auto.py", "--confirm-live-send", "--for-date", "2026-02-24"],
+                    ):
                         out = io.StringIO()
                         err = io.StringIO()
                         with redirect_stdout(out), redirect_stderr(err):
@@ -754,7 +761,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 with mock.patch.object(roa, "_outreach_local_now", return_value=weekday_now), mock.patch.object(
                     roa, "_select_candidates", side_effect=AssertionError("selection should not run on same-day guard")
                 ):
-                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py"]):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--confirm-live-send"]):
                         out = io.StringIO()
                         err = io.StringIO()
                         with redirect_stdout(out), redirect_stderr(err):
@@ -807,7 +814,9 @@ class TestOutreachRunAuto(unittest.TestCase):
                     roa, "_select_candidates", side_effect=RuntimeError("after_same_day_guard")
                 ):
                     with mock.patch.object(
-                        sys, "argv", ["run_outreach_auto.py", "--allow-second-live-run-same-day"]
+                        sys,
+                        "argv",
+                        ["run_outreach_auto.py", "--confirm-live-send", "--allow-second-live-run-same-day"],
                     ):
                         with self.assertRaisesRegex(RuntimeError, "after_same_day_guard"):
                             roa.main()
@@ -838,7 +847,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
             }
-            p = self._run(["--allow-weekend-send", "--to", "wrong@example.com"], env)
+            p = self._run(["--allow-weekend-send", "--confirm-live-send", "--to", "wrong@example.com"], env)
             self.assertNotEqual(p.returncode, 0)
             self.assertIn("ERR_AUTO_SUMMARY_TO_MISMATCH", (p.stderr or "") + (p.stdout or ""))
 
@@ -953,7 +962,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 ), mock.patch.object(
                     roa, "_send_outreach_email", side_effect=_fake_send
                 ), mock.patch.object(roa, "_write_events_and_status_updates", side_effect=_fake_write):
-                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py"]):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--confirm-live-send"]):
                         out = io.StringIO()
                         err = io.StringIO()
                         with redirect_stdout(out), redirect_stderr(err):
@@ -1173,7 +1182,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 ), mock.patch.object(
                     roa, "_send_summary_email", side_effect=_fake_summary_send
                 ):
-                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py"]):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--confirm-live-send"]):
                         out = io.StringIO()
                         err = io.StringIO()
                         with redirect_stdout(out), redirect_stderr(err):
@@ -1649,7 +1658,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("batch=2001-01-02_CA", dry_run.stdout or "")
             self.assertIn("would_contact_prospect_ids=p_ca", dry_run.stdout or "")
 
-            live = self._run(["--allow-weekend-send", "--for-date", "2001-01-02"], env)
+            live = self._run(["--allow-weekend-send", "--confirm-live-send", "--for-date", "2001-01-02"], env)
             self.assertNotEqual(live.returncode, 0)
             self.assertIn("ERR_AUTO_FOR_DATE_LIVE_SEND_BLOCKED", (live.stderr or "") + (live.stdout or ""))
 

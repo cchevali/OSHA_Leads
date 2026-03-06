@@ -59,6 +59,11 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "WebStripeWebhookSecret",
             "TaskSchedUser",
             "TaskSchedPassword",
+            "RuntimeRole",
+            "CanonicalHostname",
+            "ArtifactSyncDir",
+            "TaskLogRoot",
+            "RunSummaryRoot",
             "PrintConfig",
         ]
         required_tokens = [
@@ -130,6 +135,16 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("task_sched_password_present=", text)
         self.assertIn("TASK_SCHED_USER", text)
         self.assertIn("TASK_SCHED_PASSWORD", text)
+        self.assertIn("RUNTIME_ROLE", text)
+        self.assertIn("CANONICAL_HOSTNAME", text)
+        self.assertIn("ARTIFACT_SYNC_DIR", text)
+        self.assertIn("TASK_LOG_ROOT", text)
+        self.assertIn("RUN_SUMMARY_ROOT", text)
+        self.assertIn("runtime_role=", text)
+        self.assertIn("canonical_hostname=", text)
+        self.assertIn("artifact_sync_dir=", text)
+        self.assertIn("task_log_root=", text)
+        self.assertIn("run_summary_root=", text)
         self.assertIn("Test-ValidAbsoluteDataDir", text)
         self.assertIn("invalid_DataDir_absolute_required", text)
         self.assertIn("$dataDirSource = 'param'", text)

@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import socket
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -59,15 +60,18 @@ class TestDigestSameDayGuard(unittest.TestCase):
                 "--mode",
                 "daily",
                 "--send-live",
+                "--confirm-live-send",
                 "--output-dir",
                 str(out_dir),
             ]
-            env_keys = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS"]
+            env_keys = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "DATA_DIR", "CANONICAL_HOSTNAME"]
             old_env = {k: os.environ.get(k) for k in env_keys}
             os.environ["SMTP_HOST"] = "smtp.example.com"
             os.environ["SMTP_PORT"] = "587"
             os.environ["SMTP_USER"] = "user"
             os.environ["SMTP_PASS"] = "pass"
+            os.environ["DATA_DIR"] = str(Path(td) / "runtime_data")
+            os.environ["CANONICAL_HOSTNAME"] = socket.gethostname().strip().lower()
             try:
                 with mock.patch.object(sde, "load_environment", return_value=None), mock.patch.object(
                     sde, "load_customer_config", return_value=self._base_config()
@@ -121,14 +125,17 @@ class TestDigestSameDayGuard(unittest.TestCase):
                 "--mode",
                 "daily",
                 "--send-live",
+                "--confirm-live-send",
                 "--allow-second-live-send-same-day",
             ]
-            env_keys = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS"]
+            env_keys = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "DATA_DIR", "CANONICAL_HOSTNAME"]
             old_env = {k: os.environ.get(k) for k in env_keys}
             os.environ["SMTP_HOST"] = "smtp.example.com"
             os.environ["SMTP_PORT"] = "587"
             os.environ["SMTP_USER"] = "user"
             os.environ["SMTP_PASS"] = "pass"
+            os.environ["DATA_DIR"] = str(Path(td) / "runtime_data")
+            os.environ["CANONICAL_HOSTNAME"] = socket.gethostname().strip().lower()
             try:
                 with mock.patch.object(sde, "load_environment", return_value=None), mock.patch.object(
                     sde, "load_customer_config", return_value=self._base_config()

@@ -3,17 +3,26 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+. (Join-Path $PSScriptRoot "runtime_guard.ps1")
+. (Join-Path $PSScriptRoot "runtime_run_summary.ps1")
+
+$startLocal = Get-Date
+$startUtc = [datetime]::UtcNow
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$taskLogDir = Join-Path $repoRoot "out\task_logs"
+$taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
+$runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
 $taskLogPath = Join-Path $taskLogDir ("OSHA_Osha_Ingest_Evening_{0}.log" -f $timestamp)
 
 New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
+New-Item -ItemType Directory -Force -Path $runSummaryRoot | Out-Null
 
 $ingestExitCode = 1
 $dumpExitCode = 1
 $dumpOutputPath = ''
 $dumpOutreachMatched = ''
 $dumpSubscribersMatched = ''
+$preflight = $null
+$commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --scope-mode outreach_plus_trial_live; .\scripts\dump_signals_for_ai_review.ps1 -SinceDays 14"
 
 function Write-TaskLine([string]$Line) {
   $text = [string]$Line
@@ -31,6 +40,18 @@ function Invoke-And-Log([scriptblock]$Invocation) {
 try {
   Push-Location $repoRoot
   try {
+    $preflight = Invoke-RuntimePreflight `
+      -RepoRoot $repoRoot `
+      -Mode 'scheduled' `
+      -Intent 'write' `
+      -DryRun:$false `
+      -TaskLogRoot $taskLogDir `
+      -RunSummaryRoot $runSummaryRoot `
+      -EmitLine ${function:Write-TaskLine}
+    if (-not [bool]$preflight.Ok) {
+      throw "runtime preflight failed"
+    }
+
     Invoke-And-Log { & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_osha_ingest_daily.py" --scope-mode "outreach_plus_trial_live" }
     $ingestExitCode = [int]$LASTEXITCODE
   }
@@ -77,6 +98,23 @@ if ($dumpOutreachMatched) {
 if ($dumpSubscribersMatched) {
   Write-TaskLine ("AI_REVIEW_DUMP_SUBSCRIBERS_MATCHED_TOTAL=" + $dumpSubscribersMatched)
 }
+$summaryResult = Write-RuntimeRunSummary `
+  -RepoRoot $repoRoot `
+  -WrapperName 'OSHA_Osha_Ingest_Evening' `
+  -CommandLine $commandInvoked `
+  -Mode 'scheduled' `
+  -Intent 'write' `
+  -DryRun:$false `
+  -ExitCode $(if ($ingestExitCode -ne 0 -or $dumpExitCode -ne 0) { 1 } else { 0 }) `
+  -StartLocal $startLocal `
+  -StartUtc $startUtc `
+  -TaskLogPath $taskLogPath `
+  -TaskLogRoot $taskLogDir `
+  -RunSummaryRoot $runSummaryRoot `
+  -Fingerprint $(if ($preflight) { [hashtable]$preflight.Values } else { @{} }) `
+  -ExtraArtifactPaths @($dumpOutputPath) `
+  -EmitLine ${function:Write-TaskLine}
+# RUN_SUMMARY_JSON_PATH= / RUN_SUMMARY_TEXT_PATH= emitted above via Write-RuntimeRunSummary.
 
 if ($ingestExitCode -ne 0 -or $dumpExitCode -ne 0) {
   exit 1

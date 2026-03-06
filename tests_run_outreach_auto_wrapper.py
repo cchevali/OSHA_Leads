@@ -6,6 +6,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
 SCRIPT = REPO_ROOT / "run_outreach_auto.py"
+SCHEDULED_WRAPPER = REPO_ROOT / "scripts" / "scheduled" / "run_outreach_auto.ps1"
 
 
 class TestRunOutreachAutoWrapper(unittest.TestCase):
@@ -34,6 +35,16 @@ class TestRunOutreachAutoWrapper(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("from outreach.run_outreach_auto import main", text)
         self.assertIn("raise SystemExit(main())", text)
+
+    def test_scheduled_wrapper_contract_tokens(self):
+        self.assertTrue(SCHEDULED_WRAPPER.exists(), msg=f"missing wrapper: {SCHEDULED_WRAPPER}")
+        text = SCHEDULED_WRAPPER.read_text(encoding="utf-8")
+        self.assertIn("run_outreach_auto.py", text)
+        self.assertIn("runtime_guard.ps1", text)
+        self.assertIn("runtime_run_summary.ps1", text)
+        self.assertIn("TASK_LOG_PATH=", text)
+        self.assertIn("OUTREACH_EXIT_CODE=", text)
+        self.assertIn("RUN_SUMMARY_JSON_PATH=", text)
 
 
 if __name__ == "__main__":
