@@ -59,6 +59,32 @@ class TestRunRuntimeTick(unittest.TestCase):
         self.assertIn("--doctor", joined)
         self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
 
+    def test_doctor_inbound_triage_skips_when_gmail_credentials_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo_root = Path(d)
+            (repo_root / "run_with_secrets.ps1").write_text("", encoding="utf-8")
+            data_dir = repo_root / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            out_buf = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"DATA_DIR": str(data_dir)}, clear=False),
+                mock.patch.object(tick, "_repo_root", return_value=repo_root),
+                mock.patch.object(tick, "_git_sha", return_value="deadbeef"),
+                mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+                mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+                mock.patch.object(tick.subprocess, "run") as mocked_run,
+                redirect_stdout(out_buf),
+            ):
+                rc = tick.main(["--doctor", "--job", "inbound_triage"])
+        out = out_buf.getvalue()
+        self.assertEqual(rc, 0, msg=out)
+        mocked_run.assert_not_called()
+        self.assertIn(
+            "RUNTIME_TICK_JOB_RESULT=name=inbound_triage result=skipped exit_code=0 reason=gmail_credentials_missing",
+            out,
+        )
+        self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
+
     def test_live_mode_writes_state_and_next_run_skips_same_slot(self):
         calls: list[list[str]] = []
 

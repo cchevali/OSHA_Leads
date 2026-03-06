@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=e809bd7e27304bf2f0d694a027df9bba113dcd7d
-PACK_BUILD_UTC=2026-03-06T01:39:21Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=edbbd93c214cef8e7911f52bf05bb205368e93e3ca79b09a0bdfe950018baa93 docs/DECISIONS.md=c39bc7b1615bbbd884d0fa591685468b7a5b92cf479c03c4d39c84d6213e9e3a docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=8c959088aeaa345516d2882d6182e6bd3f82104b92e38cf72d3f12ca51efd404 docs/TODO.md=b65594bda87950dd7c8d44c97d8b414e324f5b8fa2ff1bb8fdf2d5af05205318 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=41402a6c0a74d68a914f0e36cdfb93b81d3055e915ada0e2d23fafa1d2703b79
+PACK_GIT_SHA=b1115c378bf9ab035b41cd119f7745334759e198
+PACK_BUILD_UTC=2026-03-06T15:37:04Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=edbbd93c214cef8e7911f52bf05bb205368e93e3ca79b09a0bdfe950018baa93 docs/DECISIONS.md=c39bc7b1615bbbd884d0fa591685468b7a5b92cf479c03c4d39c84d6213e9e3a docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=8c959088aeaa345516d2882d6182e6bd3f82104b92e38cf72d3f12ca51efd404 docs/TODO.md=806e22e4a1a4e86b1ceb13a879e72f0a04e450847c3d72da5de8ec9a5064abfe docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=da7e55ae79ee35f52cee68309403d2419e20b26d72eb632e80904169794ec6a0
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -2146,7 +2146,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 ## Human-only (UI/credentials)
 
 - [ ] After any PR/commit that changes docs/contracts/templates/workflow (or any time `WARN_CONTEXT_PACK_STALE` appears): run build + fingerprint + upload + mark-uploaded + check (in that order).
-- [ ] Configure/verify GitHub self-hosted runner on canonical PC with labels `self-hosted`, `windows`, `osha-pc-canonical` and repository permissions for workflow execution.
+- [ ] Install the registered GitHub self-hosted runner on the canonical PC as a Windows service from an elevated shell so it survives reboot/logoff.
 - [ ] Set runtime role keys on canonical PC via `scripts\set_outreach_env.ps1` (`RUNTIME_ROLE=canonical_scheduler`, `CANONICAL_HOSTNAME=<pc-hostname>`) and verify with wrapper `--print-config` paths.
 - [ ] Set optional `ARTIFACT_SYNC_DIR` (for example OneDrive artifacts folder) via `scripts\set_outreach_env.ps1` and confirm mirrors for task logs/run summaries/backups.
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
@@ -2169,6 +2169,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Done
 
+- 2026-03-06: Registered and verified repo self-hosted runner `desktop-q8qm4n9-runtime` on the canonical PC with labels `self-hosted`, `Windows`, `X64`, `osha-pc-canonical`. Verified by successful job pickup from `Runtime Tick (Self-Hosted)` workflow dispatch on `main`.
 - 2026-02-15: Completed outbound sender domain verification (SPF, DKIM, DMARC) for `microflowops.com`. DNS records published; test email confirmed `spf=pass`, `dkim=pass`, `dmarc=pass` with aligned domains. Verification commands added to `docs/RUNBOOK.md` under "Deliverability Preflight".
 - 2026-02-12: Set website Stripe payment link in `web/config/site.json` (`stripePaymentLink`) and wire it into `web/app/pricing/page.tsx` + `web/app/contact/page.tsx` (commit `54c2a3c6`).
 
