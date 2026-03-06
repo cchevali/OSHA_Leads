@@ -338,6 +338,64 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertTrue(artifact_path.exists())
             self.assertIn("outreach_triage_details=", out.getvalue())
 
+    def test_prepare_signal_content_with_triage_applies_selector_before_token_build(self):
+        source_recent = [
+            {"activity_nr": "older-high", "date_opened": "2026-02-09", "inspection_type": "Accident", "lead_score": 12},
+            {"activity_nr": "fresh-1", "date_opened": "2026-03-03", "inspection_type": "Complaint", "lead_score": 6},
+            {"activity_nr": "fresh-2", "date_opened": "2026-03-02", "inspection_type": "Referral", "lead_score": 6},
+            {"activity_nr": "backfill", "date_opened": "2026-02-15", "inspection_type": "Inspection", "lead_score": 5},
+        ]
+        triaged_recent = list(source_recent)
+        selected_recent = [
+            triaged_recent[1],
+            triaged_recent[2],
+            triaged_recent[3],
+        ]
+        triage_ctx = {"enabled": True, "ai_triage_action": "REPLACED_SOME"}
+        built_tokens = {"RECENT_SIGNALS_LINES": "- fresh", "RECENT_SIGNALS_HTML": "<div>fresh</div>"}
+
+        with mock.patch.object(
+            roa.gm,
+            "_best_effort_recent_leads_and_refresh",
+            return_value=(list(source_recent), "2026-03-05 08:00 ET"),
+        ) as m_recent, mock.patch.object(
+            roa.gm,
+            "_triage_recent_signals_for_outreach",
+            return_value=(list(triaged_recent), dict(triage_ctx)),
+        ) as m_triage, mock.patch.object(
+            roa.gm,
+            "_select_outreach_card_examples",
+            return_value=list(selected_recent),
+        ) as m_select, mock.patch.object(
+            roa.gm,
+            "_build_signal_template_tokens",
+            return_value=dict(built_tokens),
+        ) as m_tokens:
+            signal_ctx = roa._prepare_signal_content_with_triage(
+                batch="2026-03-05_TX",
+                state="TX",
+                osha_db=":memory:",
+                dry_run_suffix="_dry_run",
+            )
+
+        m_recent.assert_called_once_with(db_path=":memory:", state="TX", limit=12)
+        m_triage.assert_called_once_with(
+            batch="2026-03-05_TX",
+            recent_leads=list(source_recent),
+            dry_run_suffix="_dry_run",
+        )
+        m_select.assert_called_once_with(list(triaged_recent), limit=5)
+        m_tokens.assert_called_once_with(
+            db_path=":memory:",
+            state="TX",
+            recent_leads=list(selected_recent),
+            lookback_days=14,
+        )
+        self.assertEqual(signal_ctx["recent_leads_original"], source_recent)
+        self.assertEqual(signal_ctx["recent_leads"], selected_recent)
+        self.assertEqual(signal_ctx["signal_tokens"], built_tokens)
+        self.assertEqual(signal_ctx["triage_ctx"], triage_ctx)
+
     def test_no_repeat_gate_and_allow_repeat_override(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -1877,7 +1935,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 )
             self.assertEqual(subject, "Quick heads up — CA inspection opened Feb 18")
             self.assertIn(
-                "Hi - saw a new OSHA inspection in California that might be relevant to your team:",
+                "Hi - saw a recent OSHA inspection in California that may be relevant to your team:",
                 text_body,
             )
             self.assertIn(

@@ -7,7 +7,7 @@ import os
 import re
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
@@ -60,7 +60,15 @@ UPPERCASE_COMPANY_TOKENS = {
     "EHS",
     "HSE",
 }
-FORCE_UPPER_ESTABLISHMENT_SUFFIX_TOKENS = {"LLC", "LLP", "LP", "INC", "LTD"}
+ESTABLISHMENT_SUFFIX_DISPLAY_FORMS = {
+    "LLC": "LLC",
+    "LLP": "LLP",
+    "LP": "LP",
+    "INC": "Inc.",
+    "LTD": "Ltd.",
+    "CORP": "Corp.",
+    "CO": "Co.",
+}
 
 
 def _utc_now_iso() -> str:
@@ -288,23 +296,32 @@ def _clean_first_name(value: str) -> str:
     return text
 
 
+def _normalize_establishment_suffix(core: str, tail: str) -> str | None:
+    letters = "".join(ch for ch in str(core or "") if ch.isalpha()).upper()
+    if not letters:
+        return None
+    display = ESTABLISHMENT_SUFFIX_DISPLAY_FORMS.get(letters)
+    if not display:
+        return None
+    normalized_tail = str(tail or "")
+    if display.endswith(".") and normalized_tail.startswith("."):
+        normalized_tail = normalized_tail[1:]
+    return display + normalized_tail
+
+
 def _clean_establishment_name(value: str) -> str:
     text = " ".join(str(value or "").strip().split())
     if not text:
         return ""
-    if _is_shouty_text(text):
-        return _smart_company_case(text)
+    normalized_text = _smart_company_case(text) if _is_shouty_text(text) else text
     parts: list[str] = []
-    for token in text.split(" "):
+    for token in normalized_text.split(" "):
         core, tail = _split_trailing_punct(token)
         if not core:
             parts.append(token)
             continue
-        letters = "".join(ch for ch in core if ch.isalpha())
-        if letters and letters.upper() in FORCE_UPPER_ESTABLISHMENT_SUFFIX_TOKENS:
-            parts.append(core.upper() + tail)
-        else:
-            parts.append(core + tail)
+        suffix_token = _normalize_establishment_suffix(core, tail)
+        parts.append(suffix_token if suffix_token is not None else (core + tail))
     return " ".join(parts)
 
 
@@ -442,9 +459,9 @@ def _build_copy_tokens(
         )
     else:
         greeting_text = (
-            f"Hi - saw a new OSHA inspection in {state_full_name} that might be relevant to your team:"
+            f"Hi - saw a recent OSHA inspection in {state_full_name} that may be relevant to your team:"
             if low_signal
-            else f"Hi - saw a few new OSHA inspections in {state_full_name} that might be relevant to your team:"
+            else f"Hi - saw a few recent OSHA inspections in {state_full_name} that may be relevant to your team:"
         )
         intro_text = ""
         post_cards_text = "Recently observed in public OSHA data. Opened dates are listed above and none have citations yet."
@@ -529,6 +546,110 @@ def _subject_opened_or_observed_date(lead: dict) -> str:
             return label
     observed = _subject_short_date(_observed_date(lead))
     return observed or "recently"
+
+
+def _parse_datetime_utc(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    parsed: datetime | None = None
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except Exception:
+        try:
+            parsed = datetime.strptime(text[:10], "%Y-%m-%d")
+        except Exception:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _inspection_type_rank_for_outreach(value: object) -> int:
+    text = str(value or "").strip().lower()
+    if "accident" in text:
+        return 3
+    if "referral" in text:
+        return 2
+    if "complaint" in text:
+        return 2
+    if "inspection" in text:
+        return 1
+    if "planned" in text:
+        return 0
+    if "prog related" in text:
+        return 0
+    return 0
+
+
+def _priority_rank_for_outreach(lead: dict) -> int:
+    try:
+        score = int(lead.get("lead_score") or 0)
+    except Exception:
+        score = 0
+    if score >= 10:
+        return 2
+    if score >= 6:
+        return 1
+    return 0
+
+
+def _select_outreach_card_examples(rows: list[dict], limit: int = 5) -> list[dict]:
+    try:
+        max_items = max(0, int(limit))
+    except Exception:
+        max_items = 0
+    if max_items <= 0:
+        return []
+    candidates = list(rows or [])
+    if not candidates:
+        return []
+
+    today_utc = datetime.now(timezone.utc).date()
+    opened_cutoff = today_utc - timedelta(days=10)
+    observed_cutoff = today_utc - timedelta(days=14)
+
+    def _observed_dt(lead: dict) -> datetime | None:
+        for key in ("last_seen_at", "changed_at", "first_seen_at"):
+            parsed = _parse_datetime_utc(lead.get(key))
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _sort_key(lead: dict, *, prefer_opened: bool) -> tuple:
+        opened_dt = _parse_datetime_utc(lead.get("date_opened"))
+        observed_dt = _observed_dt(lead)
+        opened_ts = opened_dt.timestamp() if opened_dt is not None else 0.0
+        observed_ts = observed_dt.timestamp() if observed_dt is not None else 0.0
+        type_rank = _inspection_type_rank_for_outreach(lead.get("inspection_type"))
+        priority_rank = _priority_rank_for_outreach(lead)
+        try:
+            score = int(lead.get("lead_score") or 0)
+        except Exception:
+            score = 0
+        key = str(lead.get("activity_nr") or lead.get("lead_key") or lead.get("lead_id") or "")
+        if prefer_opened:
+            return (-opened_ts, -observed_ts, -type_rank, -priority_rank, -score, key)
+        return (-observed_ts, -opened_ts, -type_rank, -priority_rank, -score, key)
+
+    primary: list[dict] = []
+    backfill: list[dict] = []
+    older: list[dict] = []
+    for lead in candidates:
+        opened_dt = _parse_datetime_utc(lead.get("date_opened"))
+        observed_dt = _observed_dt(lead)
+        if opened_dt is not None and opened_dt.date() >= opened_cutoff:
+            primary.append(lead)
+        elif observed_dt is not None and observed_dt.date() >= observed_cutoff:
+            backfill.append(lead)
+        else:
+            older.append(lead)
+
+    ordered = sorted(primary, key=lambda lead: _sort_key(lead, prefer_opened=True))
+    ordered.extend(sorted(backfill, key=lambda lead: _sort_key(lead, prefer_opened=False)))
+    ordered.extend(sorted(older, key=lambda lead: _sort_key(lead, prefer_opened=False)))
+    return ordered[:max_items]
 
 
 def _format_recent_signal_line(lead: dict) -> str:
@@ -1212,7 +1333,7 @@ def _render_preview(args: argparse.Namespace) -> int:
         recent_leads=list(recent_leads or []),
         dry_run_suffix="preview",
     )
-    recent_leads = list(recent_leads[:5])
+    recent_leads = _select_outreach_card_examples(list(recent_leads or []), limit=5)
     signal_tokens = _build_signal_template_tokens(
         db_path=str(args.db),
         state=state_filter,
@@ -1445,7 +1566,7 @@ def main() -> int:
         recent_leads=recent_leads,
         dry_run_suffix="export",
     )
-    recent_leads = list(recent_leads[:5])
+    recent_leads = _select_outreach_card_examples(list(recent_leads or []), limit=5)
     signal_tokens = _build_signal_template_tokens(
         db_path=str(args.db),
         state=state_filter,

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -888,7 +889,7 @@ class TestOutreachMailmerge(unittest.TestCase):
         self.assertIn("Tri Dal, LLC", shouty)
         self.assertNotIn("TRI DAL, LLC", shouty)
 
-        suffix_case = gm._format_recent_signal_line(
+        suffix_case_llc = gm._format_recent_signal_line(
             {
                 "establishment_name": "Tri Dal, Llc",
                 "site_city": "Frisco",
@@ -898,7 +899,33 @@ class TestOutreachMailmerge(unittest.TestCase):
                 "first_seen_at": "2026-02-17T00:00:00Z",
             }
         )
-        self.assertIn("Tri Dal, LLC", suffix_case)
+        self.assertIn("Tri Dal, LLC", suffix_case_llc)
+
+        suffix_case_inc = gm._format_recent_signal_line(
+            {
+                "establishment_name": "ONE CLASS ENG INC",
+                "site_city": "Taylor",
+                "site_state": "TX",
+                "inspection_type": "Accident",
+                "date_opened": "2026-02-11",
+                "first_seen_at": "2026-02-17T00:00:00Z",
+            }
+        )
+        self.assertIn("One Class Eng Inc.", suffix_case_inc)
+        self.assertNotIn("ONE CLASS ENG INC", suffix_case_inc)
+
+        suffix_case_inc_with_punct = gm._format_recent_signal_line(
+            {
+                "establishment_name": "TIMEC OIL AND GAS, INC.",
+                "site_city": "Beaumont",
+                "site_state": "TX",
+                "inspection_type": "Accident",
+                "date_opened": "2026-02-13",
+                "first_seen_at": "2026-02-19T00:00:00Z",
+            }
+        )
+        self.assertIn("Timec Oil And Gas, Inc.", suffix_case_inc_with_punct)
+        self.assertNotIn("Inc..", suffix_case_inc_with_punct)
 
         mixed_case = gm._format_recent_signal_line(
             {
@@ -911,6 +938,92 @@ class TestOutreachMailmerge(unittest.TestCase):
             }
         )
         self.assertIn("McVey Mechanical LLC", mixed_case)
+
+    def test_build_copy_tokens_unnamed_fallback_uses_recent_not_new(self):
+        from outreach import generate_mailmerge as gm
+
+        tokens_single = gm._build_copy_tokens(
+            state_full_name="California",
+            state_metro_examples="Los Angeles, Inland Empire",
+            first_name="",
+            firm_name="",
+            segment="",
+            role_or_title="",
+            recent_leads=[{"activity_nr": "1"}],
+        )
+        self.assertEqual(
+            tokens_single["GREETING_LINE_TEXT"],
+            "Hi - saw a recent OSHA inspection in California that may be relevant to your team:",
+        )
+        self.assertNotIn("new OSHA", tokens_single["GREETING_LINE_TEXT"])
+
+        tokens_plural = gm._build_copy_tokens(
+            state_full_name="California",
+            state_metro_examples="Los Angeles, Inland Empire",
+            first_name="",
+            firm_name="",
+            segment="",
+            role_or_title="",
+            recent_leads=[{"activity_nr": "1"}, {"activity_nr": "2"}],
+        )
+        self.assertEqual(
+            tokens_plural["GREETING_LINE_TEXT"],
+            "Hi - saw a few recent OSHA inspections in California that may be relevant to your team:",
+        )
+        self.assertNotIn("new OSHA", tokens_plural["GREETING_LINE_TEXT"])
+
+    def test_select_outreach_card_examples_prioritizes_freshness_then_backfill(self):
+        from outreach import generate_mailmerge as gm
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                base = datetime(2026, 3, 6, 0, 0, 0, tzinfo=timezone.utc)
+                return base if tz is None else base.astimezone(tz)
+
+        rows = [
+            {
+                "activity_nr": "older-high",
+                "inspection_type": "Accident",
+                "lead_score": 12,
+                "date_opened": "2026-02-09",
+                "last_seen_at": "2026-02-12T00:00:00Z",
+            },
+            {
+                "activity_nr": "fresh-complaint",
+                "inspection_type": "Complaint",
+                "lead_score": 6,
+                "date_opened": "2026-03-03",
+                "last_seen_at": "2026-03-05T00:00:00Z",
+            },
+            {
+                "activity_nr": "fresh-referral",
+                "inspection_type": "Referral",
+                "lead_score": 6,
+                "date_opened": "2026-03-02",
+                "last_seen_at": "2026-03-04T00:00:00Z",
+            },
+            {
+                "activity_nr": "observed-backfill",
+                "inspection_type": "Inspection",
+                "lead_score": 5,
+                "date_opened": "2026-02-15",
+                "last_seen_at": "2026-03-05T00:00:00Z",
+            },
+        ]
+
+        with mock.patch.object(gm, "datetime", _FixedDatetime):
+            selected_top3 = gm._select_outreach_card_examples(rows, limit=3)
+            selected_all = gm._select_outreach_card_examples(rows, limit=5)
+
+        self.assertEqual(
+            [str(r.get("activity_nr") or "") for r in selected_top3],
+            ["fresh-complaint", "fresh-referral", "observed-backfill"],
+        )
+        self.assertEqual(
+            [str(r.get("activity_nr") or "") for r in selected_all],
+            ["fresh-complaint", "fresh-referral", "observed-backfill", "older-high"],
+        )
 
     def test_outreach_overlay_flag_off_keeps_mailmerge_schema_without_ai_columns(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1218,7 +1331,7 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertIn("Hi Riley,", stdout)
             self.assertIn("Hi - saw a few things Acme Industrial should probably have on their radar:", stdout)
             self.assertIn(
-                "Hi - saw a few new OSHA inspections in California that might be relevant to your team:",
+                "Hi - saw a few recent OSHA inspections in California that may be relevant to your team:",
                 stdout,
             )
             self.assertIn(
@@ -1248,7 +1361,7 @@ class TestOutreachMailmerge(unittest.TestCase):
             )
             self.assertEqual(p_missing.returncode, 0, msg=p_missing.stderr + "\n" + p_missing.stdout)
             self.assertIn(
-                "Hi - saw a few new OSHA inspections in California that might be relevant to your team:",
+                "Hi - saw a few recent OSHA inspections in California that may be relevant to your team:",
                 p_missing.stdout or "",
             )
 
