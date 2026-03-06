@@ -338,6 +338,64 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertTrue(artifact_path.exists())
             self.assertIn("outreach_triage_details=", out.getvalue())
 
+    def test_prepare_signal_content_with_triage_applies_selector_before_token_build(self):
+        source_recent = [
+            {"activity_nr": "older-high", "date_opened": "2026-02-09", "inspection_type": "Accident", "lead_score": 12},
+            {"activity_nr": "fresh-1", "date_opened": "2026-03-03", "inspection_type": "Complaint", "lead_score": 6},
+            {"activity_nr": "fresh-2", "date_opened": "2026-03-02", "inspection_type": "Referral", "lead_score": 6},
+            {"activity_nr": "fresh-3", "date_opened": "2026-02-24", "inspection_type": "Accident", "lead_score": 11},
+        ]
+        triaged_recent = list(source_recent)
+        selected_recent = [
+            triaged_recent[1],
+            triaged_recent[2],
+            triaged_recent[3],
+        ]
+        triage_ctx = {"enabled": True, "ai_triage_action": "REPLACED_SOME"}
+        built_tokens = {"RECENT_SIGNALS_LINES": "- fresh", "RECENT_SIGNALS_HTML": "<div>fresh</div>"}
+
+        with mock.patch.object(
+            roa.gm,
+            "_best_effort_recent_leads_and_refresh",
+            return_value=(list(source_recent), "2026-03-05 08:00 ET"),
+        ) as m_recent, mock.patch.object(
+            roa.gm,
+            "_triage_recent_signals_for_outreach",
+            return_value=(list(triaged_recent), dict(triage_ctx)),
+        ) as m_triage, mock.patch.object(
+            roa.gm,
+            "_select_outreach_card_examples",
+            return_value=list(selected_recent),
+        ) as m_select, mock.patch.object(
+            roa.gm,
+            "_build_signal_template_tokens",
+            return_value=dict(built_tokens),
+        ) as m_tokens:
+            signal_ctx = roa._prepare_signal_content_with_triage(
+                batch="2026-03-05_TX",
+                state="TX",
+                osha_db=":memory:",
+                dry_run_suffix="_dry_run",
+            )
+
+        m_recent.assert_called_once_with(db_path=":memory:", state="TX", limit=50)
+        m_triage.assert_called_once_with(
+            batch="2026-03-05_TX",
+            recent_leads=list(source_recent),
+            dry_run_suffix="_dry_run",
+        )
+        m_select.assert_called_once_with(list(triaged_recent), limit=5)
+        m_tokens.assert_called_once_with(
+            db_path=":memory:",
+            state="TX",
+            recent_leads=list(selected_recent),
+            lookback_days=14,
+        )
+        self.assertEqual(signal_ctx["recent_leads_original"], source_recent)
+        self.assertEqual(signal_ctx["recent_leads"], selected_recent)
+        self.assertEqual(signal_ctx["signal_tokens"], built_tokens)
+        self.assertEqual(signal_ctx["triage_ctx"], triage_ctx)
+
     def test_no_repeat_gate_and_allow_repeat_override(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -1790,14 +1848,24 @@ class TestOutreachRunAuto(unittest.TestCase):
                                 ],
                             )
                             expected_subject = (
-                                "Quick heads up — new CA inspection opened Feb 18"
+                                "Quick heads up — CA inspection opened Feb 18"
                                 if expected_state == "CA"
-                                else "Quick heads up — new FL inspection opened Feb 18"
+                                else "Quick heads up — FL inspection opened Feb 18"
                             )
                             self.assertEqual(subject, expected_subject)
-                            self.assertIn("I spotted a new OSHA inspection", text_body)
-                            self.assertIn("opened recently and none have citations yet", text_body)
-                            self.assertIn("Happy to set up a short trial feed", text_body)
+                            self.assertIn("I spotted a recent OSHA inspection", text_body)
+                            self.assertIn(
+                                "Recently observed in public OSHA data; opened dates are listed below and none have citations yet",
+                                text_body,
+                            )
+                            self.assertIn(
+                                "If useful, you can reply with the metros you care about",
+                                text_body,
+                            )
+                            self.assertIn(
+                                "https://microflowops.com/contact",
+                                text_body,
+                            )
                             self.assertEqual(html_body.count(">Unsubscribe</a>"), 1)
                             self.assertEqual(html_body.count(">Manage preferences</a>"), 0)
                             self.assertEqual(html_body.count("unsubscribe.example/u"), 1)
@@ -1869,12 +1937,75 @@ class TestOutreachRunAuto(unittest.TestCase):
                         }
                     ],
                 )
-            self.assertEqual(subject, "Quick heads up — new CA inspection opened Feb 18")
+            self.assertEqual(subject, "Quick heads up — CA inspection opened Feb 18")
             self.assertIn(
-                "Hi - saw a new OSHA inspection in California that might be relevant to your team:",
+                "Hi - saw a recent OSHA inspection in California that may be relevant to your team:",
                 text_body,
             )
-            self.assertIn("Opened recently and none have citations yet.", text_body)
+            self.assertIn(
+                "Recently observed in public OSHA data. Opened dates are listed above and none have citations yet.",
+                text_body,
+            )
+        finally:
+            conn.close()
+
+    def test_render_payload_normalizes_shouty_name_and_company(self):
+        template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt")
+        html_template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html")
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                """
+                CREATE TABLE prospect_preview (
+                    prospect_id TEXT,
+                    contact_name TEXT,
+                    firm TEXT,
+                    email TEXT,
+                    title TEXT
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO prospect_preview(prospect_id, contact_name, firm, email, title) VALUES(?, ?, ?, ?, ?)",
+                ("p1", "ALONSO,", "TEMPERATURE PRO WEST AUSTIN", "alonso@example.com", "Owner"),
+            )
+            row = conn.execute("SELECT * FROM prospect_preview").fetchone()
+            self.assertIsNotNone(row)
+            with mock.patch.object(
+                roa.gm,
+                "_build_urls",
+                return_value=("https://unsubscribe.example/u", "https://unsubscribe.example/prefs"),
+            ):
+                _subject, text_body, _html_body, _unsub = roa._render_outreach_payload(
+                    row=row,
+                    state="TX",
+                    batch="2026-03-05_TX",
+                    template_text=template_text,
+                    html_template_text=html_template_text,
+                    recent_signals_lines="- Metro Safety Co (Austin, TX) | Complaint | Opened 2026-03-04 | Observed 2026-03-05",
+                    recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-03-05</div>",
+                    last_refresh_et="2026-03-05 08:00 ET",
+                    signal_tokens={
+                        "STATE_FULL_NAME": "Texas",
+                        "STATE_METRO_EXAMPLES": "Austin, Houston",
+                        "SIGNALS_WINDOW_NOTE_TEXT": "",
+                        "SIGNALS_WINDOW_NOTE_HTML": "",
+                        "SIGNALS_FALLBACK_TEXT": "",
+                        "SIGNALS_FALLBACK_HTML": "",
+                    },
+                    recent_leads=[
+                        {
+                            "date_opened": "2026-03-04",
+                            "first_seen_at": "2026-03-05T12:00:00Z",
+                            "site_state": "TX",
+                        }
+                    ],
+                )
+            self.assertIn("Hi Alonso,", text_body)
+            self.assertNotIn("Hi Alonso,,", text_body)
+            self.assertIn("your team at Temperature Pro West Austin", text_body)
+            self.assertIn("may be relevant to your team at Temperature Pro West Austin", text_body)
         finally:
             conn.close()
 
@@ -1924,12 +2055,13 @@ class TestOutreachRunAuto(unittest.TestCase):
             recent_leads = [
                 {
                     "activity_nr": "111",
-                    "date_opened": "2026-02-18",
-                    "first_seen_at": "2026-02-18T12:00:00Z",
+                    "date_opened": "2026-03-04",
+                    "first_seen_at": "2026-03-05T12:00:00Z",
                     "site_state": "CA",
                     "site_city": "Los Angeles",
                     "inspection_type": "Complaint",
                     "establishment_name": "Metro Safety Co",
+                    "lead_score": 6,
                 }
             ]
             argv = [
@@ -1962,7 +2094,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 ),
                 clear=True,
             ), mock.patch.object(
-                roa.gm, "_best_effort_recent_leads_and_refresh", return_value=(list(recent_leads), "2026-02-18 08:00 ET")
+                roa.gm, "_best_effort_recent_leads_and_refresh", return_value=(list(recent_leads), "2026-03-05 08:00 ET")
             ), mock.patch.object(
                 roa.gm, "_load_local_suppression_set", return_value=set()
             ), mock.patch.object(
@@ -2017,9 +2149,9 @@ class TestOutreachRunAuto(unittest.TestCase):
                         batch="2026-02-18_CA",
                         template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt"),
                         html_template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html"),
-                        recent_signals_lines="- Metro Safety Co (Los Angeles, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
-                        recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-02-18</div>",
-                        last_refresh_et="2026-02-18 08:00 ET",
+                        recent_signals_lines="- Metro Safety Co (Los Angeles, CA) | Complaint | Opened 2026-03-04 | Observed 2026-03-05",
+                        recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-03-05</div>",
+                        last_refresh_et="2026-03-05 08:00 ET",
                         signal_tokens=signal_tokens,
                         recent_leads=list(recent_leads),
                     )
