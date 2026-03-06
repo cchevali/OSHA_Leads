@@ -1742,6 +1742,29 @@ class TestProspectGeneration(unittest.TestCase):
         self.assertIn("PASS_DOCTOR_STATE_LIC", out)
         self.assertIn("GENERATOR_DOCTOR_COMPLETE", out)
 
+    def test_generator_doctor_ascii_sanitizes_crawl4ai_reason(self):
+        from outreach import run_prospect_generation as generator
+
+        env = {
+            "OUTREACH_STATES": "TX",
+        }
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+            with mock.patch(
+                "outreach.run_prospect_generation.scraper_engine.probe_crawl4ai_runtime",
+                return_value={
+                    "crawl4ai_installed": False,
+                    "playwright_browsers_installed": False,
+                    "error_reason": "bad \u2713 \u2192 reason",
+                },
+            ):
+                with redirect_stdout(buf):
+                    rc = generator.main(["--doctor"])
+        self.assertEqual(rc, 0)
+        out = buf.getvalue()
+        self.assertIn("WARN_DOCTOR_CRAWL4AI", out)
+        self.assertIn("reason=bad \\u2713 \\u2192 reason", out)
+
 
 if __name__ == "__main__":
     unittest.main()

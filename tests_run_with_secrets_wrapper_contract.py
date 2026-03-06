@@ -62,6 +62,8 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         target_text = TARGET_SCRIPT.read_text(encoding="utf-8")
         self.assertIn("Invoke-NativeAllowStderr -FilePath $sopsExe", target_text)
         self.assertIn("native_start_failed file=", target_text)
+        self.assertIn("& $FilePath @ArgumentList 2>&1", target_text)
+        self.assertNotIn("Start-Process -FilePath $FilePath", target_text)
         self.assertNotIn("-FilePath 'cmd' -ArgumentList @('/c', $cmdLine)", target_text)
 
     def test_wrapper_sets_context_pack_sentinel_before_payload(self):

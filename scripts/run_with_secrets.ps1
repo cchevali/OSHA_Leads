@@ -32,38 +32,30 @@ function Invoke-NativeAllowStderr {
     [string[]]$ArgumentList = @()
   )
 
-  $stdoutPath = [System.IO.Path]::GetTempFileName()
-  $stderrPath = [System.IO.Path]::GetTempFileName()
   try {
-    try {
-      $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-    } catch {
-      $nativePath = [string]$FilePath
-      $nativeArgs = ''
-      if ($ArgumentList -and $ArgumentList.Count -gt 0) {
-        $nativeArgs = ($ArgumentList | ForEach-Object { [string]$_ }) -join ' '
-      }
-      throw ("native_start_failed file=" + $nativePath + " args=" + $nativeArgs + " err=" + $_.Exception.Message)
+    $output = @(& $FilePath @ArgumentList 2>&1)
+  } catch {
+    $nativePath = [string]$FilePath
+    $nativeArgs = ''
+    if ($ArgumentList -and $ArgumentList.Count -gt 0) {
+      $nativeArgs = ($ArgumentList | ForEach-Object { [string]$_ }) -join ' '
     }
-    $stdoutLines = @()
-    $stderrLines = @()
-    if (Test-Path -LiteralPath $stdoutPath) {
-      $stdoutLines = @(Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue)
+    throw ("native_start_failed file=" + $nativePath + " args=" + $nativeArgs + " err=" + $_.Exception.Message)
+  }
+  $exitCode = 0
+  if ($null -ne $LASTEXITCODE) {
+    $exitCode = [int]$LASTEXITCODE
+  }
+  $outputLines = @()
+  foreach ($line in @($output)) {
+    if ($null -eq $line) {
+      continue
     }
-    if (Test-Path -LiteralPath $stderrPath) {
-      $stderrLines = @(Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue)
-    }
-    return @{
-      Output = @($stdoutLines + $stderrLines)
-      ExitCode = [int]$proc.ExitCode
-    }
-  } finally {
-    if (Test-Path -LiteralPath $stdoutPath) {
-      Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
-    }
-    if (Test-Path -LiteralPath $stderrPath) {
-      Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
-    }
+    $outputLines += [string]$line
+  }
+  return @{
+    Output = @($outputLines)
+    ExitCode = $exitCode
   }
 }
 
