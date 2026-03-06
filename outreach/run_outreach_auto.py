@@ -1252,7 +1252,7 @@ def _prepare_signal_content_with_triage(
     osha_db: str,
     dry_run_suffix: str,
 ) -> dict[str, object]:
-    signal_fetch_limit = 12
+    signal_fetch_limit = gm.OUTREACH_SIGNAL_FETCH_LIMIT
     recent_leads, last_refresh_et = gm._best_effort_recent_leads_and_refresh(
         db_path=osha_db,
         state=state,

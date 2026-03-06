@@ -971,8 +971,11 @@ class TestOutreachMailmerge(unittest.TestCase):
             "Hi - saw a few recent OSHA inspections in California that may be relevant to your team:",
         )
         self.assertNotIn("new OSHA", tokens_plural["GREETING_LINE_TEXT"])
+        self.assertIn("reply with the metros you care about", tokens_plural["TRIAL_LINE_TEXT"])
+        self.assertIn("https://microflowops.com/contact", tokens_plural["TRIAL_LINE_TEXT"])
+        self.assertIn("<a href=\"https://microflowops.com/contact\"", tokens_plural["TRIAL_LINE_HTML"])
 
-    def test_select_outreach_card_examples_prioritizes_freshness_then_backfill(self):
+    def test_select_outreach_card_examples_uses_only_recent_opened_rows(self):
         from outreach import generate_mailmerge as gm
 
         class _FixedDatetime(datetime):
@@ -1004,7 +1007,14 @@ class TestOutreachMailmerge(unittest.TestCase):
                 "last_seen_at": "2026-03-04T00:00:00Z",
             },
             {
-                "activity_nr": "observed-backfill",
+                "activity_nr": "fresh-accident",
+                "inspection_type": "Accident",
+                "lead_score": 11,
+                "date_opened": "2026-02-24",
+                "last_seen_at": "2026-03-03T00:00:00Z",
+            },
+            {
+                "activity_nr": "stale-observed-backfill",
                 "inspection_type": "Inspection",
                 "lead_score": 5,
                 "date_opened": "2026-02-15",
@@ -1018,12 +1028,147 @@ class TestOutreachMailmerge(unittest.TestCase):
 
         self.assertEqual(
             [str(r.get("activity_nr") or "") for r in selected_top3],
-            ["fresh-complaint", "fresh-referral", "observed-backfill"],
+            ["fresh-accident", "fresh-complaint", "fresh-referral"],
         )
         self.assertEqual(
             [str(r.get("activity_nr") or "") for r in selected_all],
-            ["fresh-complaint", "fresh-referral", "observed-backfill", "older-high"],
+            ["fresh-accident", "fresh-complaint", "fresh-referral"],
         )
+
+    def test_select_outreach_card_examples_does_not_pad_to_five_with_stale_rows(self):
+        from outreach import generate_mailmerge as gm
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                base = datetime(2026, 3, 6, 0, 0, 0, tzinfo=timezone.utc)
+                return base if tz is None else base.astimezone(tz)
+
+        rows = [
+            {
+                "activity_nr": "fresh-complaint",
+                "inspection_type": "Complaint",
+                "lead_score": 7,
+                "date_opened": "2026-03-03",
+            },
+            {
+                "activity_nr": "fresh-referral",
+                "inspection_type": "Referral",
+                "lead_score": 6,
+                "date_opened": "2026-03-02",
+            },
+            {
+                "activity_nr": "stale-1",
+                "inspection_type": "Accident",
+                "lead_score": 12,
+                "date_opened": "2026-02-13",
+                "last_seen_at": "2026-03-05T00:00:00Z",
+            },
+            {
+                "activity_nr": "stale-2",
+                "inspection_type": "Complaint",
+                "lead_score": 8,
+                "date_opened": "2026-02-18",
+                "last_seen_at": "2026-03-02T00:00:00Z",
+            },
+        ]
+
+        with mock.patch.object(gm, "datetime", _FixedDatetime):
+            selected = gm._select_outreach_card_examples(rows, limit=5)
+
+        self.assertEqual(
+            [str(r.get("activity_nr") or "") for r in selected],
+            ["fresh-complaint", "fresh-referral"],
+        )
+
+    def test_select_outreach_card_examples_excludes_low_priority_rows(self):
+        from outreach import generate_mailmerge as gm
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                base = datetime(2026, 3, 6, 0, 0, 0, tzinfo=timezone.utc)
+                return base if tz is None else base.astimezone(tz)
+
+        rows = [
+            {
+                "activity_nr": "medium-complaint",
+                "inspection_type": "Complaint",
+                "lead_score": 7,
+                "date_opened": "2026-03-03",
+            },
+            {
+                "activity_nr": "low-planned",
+                "inspection_type": "Planned",
+                "lead_score": 4,
+                "date_opened": "2026-03-03",
+            },
+        ]
+
+        with mock.patch.object(gm, "datetime", _FixedDatetime):
+            selected = gm._select_outreach_card_examples(rows, limit=5)
+
+        self.assertEqual(
+            [str(r.get("activity_nr") or "") for r in selected],
+            ["medium-complaint"],
+        )
+
+    def test_select_outreach_card_examples_uses_final_priority_over_raw_score(self):
+        from outreach import generate_mailmerge as gm
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                base = datetime(2026, 3, 6, 0, 0, 0, tzinfo=timezone.utc)
+                return base if tz is None else base.astimezone(tz)
+
+        rows = [
+            {
+                "activity_nr": "triage-high-score-medium",
+                "inspection_type": "Complaint",
+                "lead_score": 11,
+                "final_priority": "MEDIUM",
+                "date_opened": "2026-03-03",
+            },
+            {
+                "activity_nr": "triage-high-score-low",
+                "inspection_type": "Referral",
+                "lead_score": 7,
+                "final_priority": "HIGH",
+                "date_opened": "2026-03-02",
+            },
+        ]
+
+        with mock.patch.object(gm, "datetime", _FixedDatetime):
+            selected = gm._select_outreach_card_examples(rows, limit=5)
+
+        self.assertEqual(
+            [str(r.get("activity_nr") or "") for r in selected],
+            ["triage-high-score-low", "triage-high-score-medium"],
+        )
+        self.assertEqual(str(selected[0].get("display_priority_label") or ""), "High")
+        self.assertEqual(str(selected[1].get("display_priority_label") or ""), "Medium")
+
+    def test_recent_signals_html_uses_display_priority_label_when_present(self):
+        from outreach import generate_mailmerge as gm
+
+        html = gm._recent_signals_html_from_leads(
+            [
+                {
+                    "activity_nr": "x1",
+                    "establishment_name": "Signal Co",
+                    "site_city": "Austin",
+                    "site_state": "TX",
+                    "inspection_type": "Complaint",
+                    "date_opened": "2026-03-03",
+                    "first_seen_at": "2026-03-05T00:00:00Z",
+                    "lead_score": 7,
+                    "display_priority_label": "High",
+                }
+            ]
+        )
+
+        self.assertIn("High &middot; Austin, TX", html)
 
     def test_outreach_overlay_flag_off_keeps_mailmerge_schema_without_ai_columns(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1109,6 +1254,7 @@ class TestOutreachMailmerge(unittest.TestCase):
                     "site_city": "Austin",
                     "site_state": "TX",
                     "inspection_type": "Complaint",
+                    "lead_score": 6,
                     "date_opened": "2026-02-24",
                     "first_seen_at": "2026-02-24T00:00:00Z",
                 },
@@ -1118,6 +1264,7 @@ class TestOutreachMailmerge(unittest.TestCase):
                     "site_city": "Dallas",
                     "site_state": "TX",
                     "inspection_type": "Referral",
+                    "lead_score": 6,
                     "date_opened": "2026-02-23",
                     "first_seen_at": "2026-02-23T00:00:00Z",
                 },

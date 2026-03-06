@@ -45,9 +45,12 @@ REQUIRED_INPUT_COLUMNS = [
 
 DEFAULT_REPLY_TO_EMAIL = "support@microflowops.com"
 DEFAULT_SAMPLE_FEED_URL = "https://microflowops.com/sample"
+DEFAULT_CONTACT_URL = "https://microflowops.com/contact"
 ERR_ONE_CLICK_REQUIRED = "ERR_ONE_CLICK_REQUIRED"
 ERR_SUPPRESSION_REQUIRED = "ERR_SUPPRESSION_REQUIRED"
 ET_TZ = ZoneInfo("America/New_York")
+OUTREACH_SIGNAL_FETCH_LIMIT = 50
+OUTREACH_RECENT_OPENED_DAYS = 10
 UPPERCASE_COMPANY_TOKENS = {
     "LLC",
     "LLP",
@@ -417,6 +420,28 @@ def _clean_company_name(value: str) -> str:
     return text
 
 
+def _contact_url() -> str:
+    configured = (os.getenv("MICROFLOWOPS_CONTACT_URL") or "").strip()
+    if configured:
+        return configured
+    return DEFAULT_CONTACT_URL
+
+
+def _trial_cta_lines() -> tuple[str, str]:
+    url = _contact_url()
+    text_line = (
+        "I track these daily across every state using public OSHA data. "
+        f"If useful, you can reply with the metros you care about, or request a short trial feed here: {url}"
+    )
+    safe_url = _html_escape(url)
+    html_line = (
+        "I track these daily across every state using public OSHA data. "
+        "If useful, you can reply with the metros you care about, or request a short trial feed here: "
+        f"<a href=\"{safe_url}\" target=\"_blank\" rel=\"noopener noreferrer\">{safe_url}</a>"
+    )
+    return text_line, html_line
+
+
 def _build_copy_tokens(
     *,
     state_full_name: str,
@@ -432,6 +457,7 @@ def _build_copy_tokens(
     clean_first = _clean_first_name(first_name)
     clean_firm = _clean_company_name(firm_name)
     low_signal = signal_count == 1
+    trial_text, trial_html = _trial_cta_lines()
 
     if clean_first:
         greeting_text = f"Hi {clean_first},"
@@ -442,20 +468,12 @@ def _build_copy_tokens(
             "Recently observed in public OSHA data; opened dates are listed below and none have citations yet:"
         )
         post_cards_text = ""
-        trial_text = (
-            "I track these daily across every state using public OSHA data. "
-            "If useful, I can set up a short trial feed for the metros you care about — just reply with the cities."
-        )
     elif clean_firm:
         greeting_text = f"Hi - saw a few things {clean_firm} should probably have on their radar:"
         intro_text = ""
         post_cards_text = (
             f"Recently observed in public OSHA data across {state_full_name}; "
             "opened dates are listed above and none have citations yet."
-        )
-        trial_text = (
-            "I track these daily across every state using public OSHA data. "
-            "If useful, I can set up a short trial feed for the metros you care about — just reply with the cities."
         )
     else:
         greeting_text = (
@@ -465,10 +483,6 @@ def _build_copy_tokens(
         )
         intro_text = ""
         post_cards_text = "Recently observed in public OSHA data. Opened dates are listed above and none have citations yet."
-        trial_text = (
-            "I track these daily across every state using public OSHA data. "
-            "If useful, I can set up a short trial feed for the metros you care about — just reply with the cities."
-        )
 
     return {
         "SIGNAL_COUNT": str(max(0, signal_count)),
@@ -480,14 +494,14 @@ def _build_copy_tokens(
         "POST_CARDS_LINE_TEXT": post_cards_text,
         "POST_CARDS_LINE_HTML": _html_escape(post_cards_text),
         "TRIAL_LINE_TEXT": trial_text,
-        "TRIAL_LINE_HTML": _html_escape(trial_text),
+        "TRIAL_LINE_HTML": trial_html,
         # Legacy keys retained to avoid breaking custom templates.
         "OPENING_LINE_TEXT": intro_text,
         "OPENING_LINE_HTML": _html_escape(intro_text),
         "RELEVANCE_LINE_TEXT": "",
         "RELEVANCE_LINE_HTML": "",
         "CTA_LINE_TEXT": trial_text,
-        "CTA_LINE_HTML": _html_escape(trial_text),
+        "CTA_LINE_HTML": trial_html,
         "TRUST_LINE_TEXT": "",
         "TRUST_LINE_HTML": "",
         "COMPANY_INTRO_TEXT": "",
@@ -583,16 +597,65 @@ def _inspection_type_rank_for_outreach(value: object) -> int:
     return 0
 
 
-def _priority_rank_for_outreach(lead: dict) -> int:
+def _coerce_outreach_priority_label(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"HIGH", "MEDIUM", "LOW", "SUPPRESS"}:
+        return text
+    return ""
+
+
+def _display_priority_label(label: str) -> str:
+    normalized = _coerce_outreach_priority_label(label)
+    if normalized in {"HIGH", "MEDIUM", "LOW"}:
+        return normalized.title()
+    return ""
+
+
+def _priority_label_from_score(lead: dict) -> str:
     try:
         score = int(lead.get("lead_score") or 0)
     except Exception:
         score = 0
     if score >= 10:
-        return 2
+        return "HIGH"
     if score >= 6:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _resolve_outreach_priority_label(lead: dict) -> str:
+    for key in ("_outreach_priority", "final_priority", "current_priority"):
+        label = _coerce_outreach_priority_label(lead.get(key))
+        if label:
+            return label
+    display_label = _coerce_outreach_priority_label(lead.get("display_priority_label"))
+    if display_label:
+        return display_label
+    return _priority_label_from_score(lead)
+
+
+def _priority_rank_from_label(label: str) -> int:
+    normalized = _coerce_outreach_priority_label(label)
+    if normalized == "HIGH":
+        return 2
+    if normalized == "MEDIUM":
         return 1
     return 0
+
+
+def _annotate_lead_with_outreach_priority(lead: dict, label: str) -> dict:
+    row = dict(lead or {})
+    normalized = _coerce_outreach_priority_label(label) or _resolve_outreach_priority_label(row)
+    row["_outreach_priority"] = normalized
+    row["_outreach_priority_rank"] = _priority_rank_from_label(normalized)
+    display_label = _display_priority_label(normalized)
+    if display_label:
+        row["display_priority_label"] = display_label
+    return row
+
+
+def _priority_rank_for_outreach(lead: dict) -> int:
+    return _priority_rank_from_label(_resolve_outreach_priority_label(lead))
 
 
 def _select_outreach_card_examples(rows: list[dict], limit: int = 5) -> list[dict]:
@@ -607,49 +670,30 @@ def _select_outreach_card_examples(rows: list[dict], limit: int = 5) -> list[dic
         return []
 
     today_utc = datetime.now(timezone.utc).date()
-    opened_cutoff = today_utc - timedelta(days=10)
-    observed_cutoff = today_utc - timedelta(days=14)
+    opened_cutoff = today_utc - timedelta(days=OUTREACH_RECENT_OPENED_DAYS)
 
-    def _observed_dt(lead: dict) -> datetime | None:
-        for key in ("last_seen_at", "changed_at", "first_seen_at"):
-            parsed = _parse_datetime_utc(lead.get(key))
-            if parsed is not None:
-                return parsed
-        return None
-
-    def _sort_key(lead: dict, *, prefer_opened: bool) -> tuple:
+    def _sort_key(lead: dict) -> tuple:
         opened_dt = _parse_datetime_utc(lead.get("date_opened"))
-        observed_dt = _observed_dt(lead)
         opened_ts = opened_dt.timestamp() if opened_dt is not None else 0.0
-        observed_ts = observed_dt.timestamp() if observed_dt is not None else 0.0
-        type_rank = _inspection_type_rank_for_outreach(lead.get("inspection_type"))
         priority_rank = _priority_rank_for_outreach(lead)
+        type_rank = _inspection_type_rank_for_outreach(lead.get("inspection_type"))
         try:
             score = int(lead.get("lead_score") or 0)
         except Exception:
             score = 0
         key = str(lead.get("activity_nr") or lead.get("lead_key") or lead.get("lead_id") or "")
-        if prefer_opened:
-            return (-opened_ts, -observed_ts, -type_rank, -priority_rank, -score, key)
-        return (-observed_ts, -opened_ts, -type_rank, -priority_rank, -score, key)
+        return (-priority_rank, -opened_ts, -type_rank, -score, key)
 
-    primary: list[dict] = []
-    backfill: list[dict] = []
-    older: list[dict] = []
+    fresh_opened: list[dict] = []
     for lead in candidates:
-        opened_dt = _parse_datetime_utc(lead.get("date_opened"))
-        observed_dt = _observed_dt(lead)
+        annotated = _annotate_lead_with_outreach_priority(lead, "")
+        if _priority_rank_for_outreach(annotated) <= 0:
+            continue
+        opened_dt = _parse_datetime_utc(annotated.get("date_opened"))
         if opened_dt is not None and opened_dt.date() >= opened_cutoff:
-            primary.append(lead)
-        elif observed_dt is not None and observed_dt.date() >= observed_cutoff:
-            backfill.append(lead)
-        else:
-            older.append(lead)
+            fresh_opened.append(annotated)
 
-    ordered = sorted(primary, key=lambda lead: _sort_key(lead, prefer_opened=True))
-    ordered.extend(sorted(backfill, key=lambda lead: _sort_key(lead, prefer_opened=False)))
-    ordered.extend(sorted(older, key=lambda lead: _sort_key(lead, prefer_opened=False)))
-    return ordered[:max_items]
+    return sorted(fresh_opened, key=_sort_key)[:max_items]
 
 
 def _format_recent_signal_line(lead: dict) -> str:
@@ -1056,27 +1100,22 @@ def _triage_recent_signals_for_outreach(
                 current_hint = str(d.get("current_priority") or "").strip().upper()
                 if current_hint in {"HIGH", "MEDIUM", "LOW"}:
                     final_priority = current_hint
+        final_priority = _coerce_outreach_priority_label(final_priority)
+        if not final_priority:
+            final_priority = _priority_label_from_score(row)
+
         if final_priority == "SUPPRESS":
             suppressed += 1
             continue
+        rendered_row = _annotate_lead_with_outreach_priority(row, final_priority)
         if final_priority == "HIGH":
-            high_rows.append(row)
+            high_rows.append(rendered_row)
         elif final_priority == "MEDIUM":
-            medium_rows.append(row)
+            medium_rows.append(rendered_row)
         elif final_priority == "LOW":
-            low_rows.append(row)
+            low_rows.append(rendered_row)
         else:
-            # Fallback to score tier when decision missing.
-            try:
-                score = int(row.get("lead_score") or 0)
-            except Exception:
-                score = 0
-            if score >= 10:
-                high_rows.append(row)
-            elif score >= 6:
-                medium_rows.append(row)
-            else:
-                low_rows.append(row)
+            low_rows.append(rendered_row)
 
     # Outreach examples are HIGH-first with MEDIUM backfill; LOW never shown.
     filtered = list(high_rows) + list(medium_rows)
@@ -1325,7 +1364,7 @@ def _render_preview(args: argparse.Namespace) -> int:
     recent_leads, last_refresh_et = _best_effort_recent_leads_and_refresh(
         db_path=str(args.db),
         state=state_filter,
-        limit=12,
+        limit=OUTREACH_SIGNAL_FETCH_LIMIT,
     )
     preview_batch = f"PREVIEW_{state_filter}"
     recent_leads, _preview_triage_ctx = _triage_recent_signals_for_outreach(
@@ -1552,7 +1591,7 @@ def main() -> int:
     except Exception:
         html_template_text = ""
 
-    signal_fetch_limit = 12
+    signal_fetch_limit = OUTREACH_SIGNAL_FETCH_LIMIT
 
     # Precompute state-level snippets for template rendering.
     recent_leads, last_refresh_et = _best_effort_recent_leads_and_refresh(

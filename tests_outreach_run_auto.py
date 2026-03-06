@@ -343,7 +343,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             {"activity_nr": "older-high", "date_opened": "2026-02-09", "inspection_type": "Accident", "lead_score": 12},
             {"activity_nr": "fresh-1", "date_opened": "2026-03-03", "inspection_type": "Complaint", "lead_score": 6},
             {"activity_nr": "fresh-2", "date_opened": "2026-03-02", "inspection_type": "Referral", "lead_score": 6},
-            {"activity_nr": "backfill", "date_opened": "2026-02-15", "inspection_type": "Inspection", "lead_score": 5},
+            {"activity_nr": "fresh-3", "date_opened": "2026-02-24", "inspection_type": "Accident", "lead_score": 11},
         ]
         triaged_recent = list(source_recent)
         selected_recent = [
@@ -378,7 +378,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 dry_run_suffix="_dry_run",
             )
 
-        m_recent.assert_called_once_with(db_path=":memory:", state="TX", limit=12)
+        m_recent.assert_called_once_with(db_path=":memory:", state="TX", limit=50)
         m_triage.assert_called_once_with(
             batch="2026-03-05_TX",
             recent_leads=list(source_recent),
@@ -1859,7 +1859,11 @@ class TestOutreachRunAuto(unittest.TestCase):
                                 text_body,
                             )
                             self.assertIn(
-                                "If useful, I can set up a short trial feed for the metros you care about",
+                                "If useful, you can reply with the metros you care about",
+                                text_body,
+                            )
+                            self.assertIn(
+                                "https://microflowops.com/contact",
                                 text_body,
                             )
                             self.assertEqual(html_body.count(">Unsubscribe</a>"), 1)
@@ -2051,12 +2055,13 @@ class TestOutreachRunAuto(unittest.TestCase):
             recent_leads = [
                 {
                     "activity_nr": "111",
-                    "date_opened": "2026-02-18",
-                    "first_seen_at": "2026-02-18T12:00:00Z",
+                    "date_opened": "2026-03-04",
+                    "first_seen_at": "2026-03-05T12:00:00Z",
                     "site_state": "CA",
                     "site_city": "Los Angeles",
                     "inspection_type": "Complaint",
                     "establishment_name": "Metro Safety Co",
+                    "lead_score": 6,
                 }
             ]
             argv = [
@@ -2089,7 +2094,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 ),
                 clear=True,
             ), mock.patch.object(
-                roa.gm, "_best_effort_recent_leads_and_refresh", return_value=(list(recent_leads), "2026-02-18 08:00 ET")
+                roa.gm, "_best_effort_recent_leads_and_refresh", return_value=(list(recent_leads), "2026-03-05 08:00 ET")
             ), mock.patch.object(
                 roa.gm, "_load_local_suppression_set", return_value=set()
             ), mock.patch.object(
@@ -2144,9 +2149,9 @@ class TestOutreachRunAuto(unittest.TestCase):
                         batch="2026-02-18_CA",
                         template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt"),
                         html_template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html"),
-                        recent_signals_lines="- Metro Safety Co (Los Angeles, CA) | Complaint | Opened 2026-02-18 | Observed 2026-02-18",
-                        recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-02-18</div>",
-                        last_refresh_et="2026-02-18 08:00 ET",
+                        recent_signals_lines="- Metro Safety Co (Los Angeles, CA) | Complaint | Opened 2026-03-04 | Observed 2026-03-05",
+                        recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-03-05</div>",
+                        last_refresh_et="2026-03-05 08:00 ET",
                         signal_tokens=signal_tokens,
                         recent_leads=list(recent_leads),
                     )

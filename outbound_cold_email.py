@@ -92,6 +92,21 @@ def get_priority_label(score: int | str) -> str:
     return "Low"
 
 
+def _normalize_display_priority_label(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"HIGH", "MEDIUM", "LOW"}:
+        return text.title()
+    return ""
+
+
+def _display_priority_label_for_lead(lead: dict) -> str:
+    for key in ("display_priority_label", "_outreach_priority", "final_priority", "current_priority"):
+        normalized = _normalize_display_priority_label(lead.get(key))
+        if normalized:
+            return normalized
+    return get_priority_label(lead.get("lead_score", 0))
+
+
 def get_observed_date(lead: dict) -> str:
     """Return YYYY-MM-DD for first_seen_at, falling back to date_opened."""
     first_seen = (lead.get("first_seen_at") or "").strip()
@@ -907,7 +922,7 @@ def format_lead_for_html(lead: dict) -> str:
     opened = html_escape(lead.get("date_opened", "") or "Unknown")
     observed = html_escape(get_observed_date(lead) or "Unknown")
     insp_type = html_escape(lead.get("inspection_type", "") or "Inspection")
-    priority = html_escape(get_priority_label(lead.get("lead_score", 0)))
+    priority = html_escape(_display_priority_label_for_lead(lead))
     osha_url = html_escape(get_osha_url(lead))
     border_color = _priority_border_color(priority)
     
