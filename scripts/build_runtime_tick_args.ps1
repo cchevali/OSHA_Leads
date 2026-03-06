@@ -1,6 +1,3 @@
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-
 param(
   [string]$GithubEventName = '',
   [string]$Mode = '',
@@ -8,6 +5,9 @@ param(
   [string]$NowLocal = '',
   [string]$Force = ''
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
 $modeValue = 'live'
 $jobValue = 'all'

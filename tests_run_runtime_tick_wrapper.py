@@ -1,5 +1,7 @@
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -52,6 +54,66 @@ class TestRunRuntimeTickWrapper(unittest.TestCase):
     def test_runtime_tick_workflow_scripts_exist(self):
         self.assertTrue(BUILD_ARGS_SCRIPT.exists(), msg=f"missing workflow helper: {BUILD_ARGS_SCRIPT}")
         self.assertTrue(RUN_WORKFLOW_SCRIPT.exists(), msg=f"missing workflow helper: {RUN_WORKFLOW_SCRIPT}")
+
+    def test_build_runtime_tick_args_script_executes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "github_output.txt"
+            env = dict(**os.environ, GITHUB_OUTPUT=str(output_path))
+            proc = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(BUILD_ARGS_SCRIPT),
+                    "-GithubEventName",
+                    "workflow_dispatch",
+                    "-Mode",
+                    "doctor",
+                    "-Job",
+                    "all",
+                    "-NowLocal",
+                    "",
+                    "-Force",
+                    "false",
+                ],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(proc.returncode, 0, msg=(proc.stderr or "") + "\n" + (proc.stdout or ""))
+            self.assertTrue(output_path.exists(), msg="expected GITHUB_OUTPUT file to be written")
+            self.assertIn("cmd_args=run_runtime_tick.py --doctor --job all", output_path.read_text(encoding="utf-8"))
+
+    def test_run_runtime_tick_workflow_script_errors_cleanly_when_args_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            runner = workspace / "run_with_secrets.ps1"
+            runner.write_text(
+                "param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Args)\n"
+                "Write-Output ('RUNNER_ARGS=' + ($Args -join ' '))\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(RUN_WORKFLOW_SCRIPT),
+                    "-WorkspacePath",
+                    str(workspace),
+                ],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(proc.returncode, 0, msg=proc.stdout)
+            self.assertIn("ERR_RUNTIME_TICK_WORKFLOW_ARGS_MISSING", proc.stdout)
 
 
 if __name__ == "__main__":
