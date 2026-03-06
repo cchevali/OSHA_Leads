@@ -19,6 +19,7 @@ Primary wrappers:
 - `scripts\scheduled\run_outreach_auto.ps1`
 - `scripts\scheduled\run_osha_ingest_daily.ps1`
 - `scripts\scheduled\run_osha_ingest_evening.ps1`
+- `scripts\scheduled\run_prospect_replenish_daily.ps1`
 - `scripts\scheduled\backup_runtime_state.ps1`
 
 Artifact locations:
@@ -313,7 +314,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachSkipRoleInboxes 1 `
   -ProspectAutoGrowEnabled 1 `
   -ProspectAutoGrowSafetyNetEnabled 1 `
-  -ProspectAutoGrowSources AIHA,OHS_BG,APOLLO `
+  -ProspectAutoGrowSources AIHA,OHS_BG `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
@@ -364,13 +365,28 @@ Use these commands instead of inline `py -3 -c "..."` one-liners. PowerShell quo
 .\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py verify-import --csv .\apollo_export.csv
 ```
 
-### Prospect Generation (Scheduled First)
+### Prospect Replenishment (Scheduled First)
 
-Run canonical prospect generation first each day. This writes the discovery feed CSV that discovery imports into CRM:
+Run the canonical replenishment wrapper first each day. It runs generation doctor -> generation -> discovery in order:
 
 ```powershell
 cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py
+```
+
+Replenishment dry-run and print-config:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py --dry-run
+.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py --print-config
+```
+
+Direct generation/discovery commands remain available for troubleshooting:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --doctor
 .\run_with_secrets.ps1 -- py -3 run_prospect_generation.py
+.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
 ```
 
 No-arg generation output path:
@@ -557,9 +573,8 @@ Legacy `PASS_DISCOVERY_*` / `ERR_DISCOVERY_*` tokens remain supported for compat
 Canonical daily sequence:
 
 1. `.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py`
-2. `.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py`
-3. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
-4. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
+2. `.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py`
+3. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
 
 ### OSHA Ingest Scope Modes (Operator Truth)
 
@@ -1078,14 +1093,8 @@ schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 06:45 /TN "OSHA_Osha_I
 ```
 
 ```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:15 /TN "OSHA_Prospect_Generation" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_generation.ps1" `
-  /RL HIGHEST
-```
-
-```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:30 /TN "OSHA_Prospect_Discovery" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_prospect_discovery.py" `
+schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:15 /TN "OSHA_Prospect_Replenish_Daily" `
+  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_replenish_daily.ps1" `
   /RL HIGHEST
 ```
 

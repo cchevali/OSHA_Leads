@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=e809bd7e27304bf2f0d694a027df9bba113dcd7d
-PACK_BUILD_UTC=2026-03-06T01:39:21Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=1a4860e031b1d57b2c7720eb12234ce558052c0328c858a8d1384a5d14a244b9 docs/DECISIONS.md=8482ded2cba9629a9954d532b9363e95b548e7b4befc2b5fcd09e288740e8357 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=e2ca8a78f43b60bdfcc275bb5e2ba79a20acf8a4c9c10ccc564b7ef679b99704 docs/TODO.md=b65594bda87950dd7c8d44c97d8b414e324f5b8fa2ff1bb8fdf2d5af05205318 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=f2051908181f81b0383187b996571ddac68226295d9f1758410db832e6790597
+PACK_GIT_SHA=5b94de155296aec8dc8b79994483889626b49581
+PACK_BUILD_UTC=2026-03-04T05:07:07Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=6c5a5835c51ddc112056950b26e9ae989380298fcb5f0898c683781a4eabcc05 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=9510c4ba8da37ec28ab279afd0753d67587f2cd06a04a75612bec83bf0245eae
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -103,19 +103,6 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Suppression/opt-out: local suppression list (`out/suppression.csv`) and optional one-click unsubscribe service
 - Outreach operations (this repo): SQLite CRM-lite (`out/crm.sqlite`) for prospect selection, sending, and lifecycle tracking
 - Outreach debug export: optional CSV outbox generation for QA/debug only
-
-## Centralized Runtime Control Plane
-
-- Single-writer rule: the canonical Windows PC is the only runtime that may perform live SQLite writes and live sends.
-- Runtime guard layer (`runtime_guard.py` + `scripts/scheduled/runtime_guard.ps1`) enforces host/data-root policy before write/send paths.
-- Scheduled visibility plane: GitHub Actions workflows run on a label-pinned self-hosted Windows runner (`self-hosted`, `windows`, `osha-pc-canonical`) on that PC.
-- Wrappers emit deterministic run summaries (`runtime_run_summary_v1`) plus task logs and optional backup manifests.
-- Artifact roots:
-  - Task logs: `${TASK_LOG_ROOT}` or `<repo>\out\task_logs`
-  - Run summaries: `${RUN_SUMMARY_ROOT}` or `<repo>\out\run_summaries`
-  - Backup metadata/snapshots: `${BACKUP_ROOT}` or `<repo>\out\backups`
-  - Optional mirror: `${ARTIFACT_SYNC_DIR}` (artifacts/backups only; never live DB)
-- Laptop/dev clients are read-only operationally: print-config, doctor, dry-run, and artifact inspection.
 
 ## Outreach CRM Auto-Run Data Flow
 
@@ -455,38 +442,6 @@ Prospect autogrow is expanding to browser-backed scraping sources (for example B
 
 - Operators must perform a one-time `crawl4ai-setup` when enabling OSHA_NEWS in production.
 - Generator output now includes additional readiness/availability tokens in `--print-config` and `--doctor` paths.
-
-## ADR-0010: Centralized Runtime Writer + GitHub Actions Self-Hosted Control Plane
-
-Date: 2026-03-05
-Status: Accepted
-
-### Context
-
-Multiple machines were able to run write/send paths, creating split-brain risk for SQLite runtime state and send ledgers.
-Operators also needed remote visibility into scheduled outcomes without touching live databases.
-
-### Decision
-
-- Enforce a canonical runtime model:
-  - Canonical PC is the only live writer/sender.
-  - Runtime preflight guard validates host, role, data-root, and required artifact directories before writes/sends.
-- Add deterministic runtime fingerprints and summary artifacts to scheduled/manual wrappers.
-- Use GitHub Actions only as control plane visibility, with workflows pinned to a self-hosted Windows runner label on the canonical PC.
-- Publish logs/summaries/backups as artifacts for remote inspection.
-- Keep backups as snapshot/copy artifacts only; no live DB synchronization.
-
-### Rationale
-
-- Removes split-brain live-write/send failure mode.
-- Preserves existing outreach/compliance behavior while improving operability and incident triage.
-- Gives laptop operators near-real-time observability through workflow/artifact telemetry without direct DB access.
-
-### Consequences
-
-- Non-canonical live attempts fail fast with deterministic `ERR_RUNTIME_*` tokens.
-- Manual live sends now require explicit `--confirm-live-send` unless running in trusted scheduled context.
-- Offline self-hosted runner state is visible as queued/failed workflow telemetry and treated as an ops signal.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -520,9 +475,6 @@ Success metric (funnel): **reply -> call -> paid** (track conversion per batch).
 - All outreach exports/sends must include an opt-out mechanism.
 - Suppression must be enforced for all exports and sends (email and, where available, domain).
 - Trial and paid onboarding must capture structured recipient data (`recipients[]`) so recipient-aware delivery is configured deterministically.
-- Single-writer runtime invariant: the canonical PC is the only live writer/sender for SQLite state and outbound sends.
-- Non-canonical clients (for example laptop) are limited to inspection, dry-run, and artifact review workflows.
-- Scheduled execution visibility is provided by GitHub Actions using a self-hosted runner on the canonical PC; actions are control-plane only.
 
 ## Do Not Break
 
@@ -543,43 +495,6 @@ Success metric (funnel): **reply -> call -> paid** (track conversion per batch).
 
 `AGENTS.md` at repo root is the canonical operator + Codex instruction contract.
 Use this runbook for executable commands, but resolve policy conflicts in favor of `AGENTS.md`.
-
-## Centralized Runtime Operations
-
-Runtime model:
-
-- Canonical PC is the only live writer/sender for `osha.sqlite`, `crm.sqlite`, `crm_light.sqlite`, and live email sends.
-- Laptop/dev clients are limited to `--print-config`, `--doctor`, `--dry-run`, and artifact review.
-- GitHub Actions is control-plane visibility only and must invoke repo wrappers on the canonical self-hosted runner (`self-hosted`, `windows`, `osha-pc-canonical`).
-
-Primary wrappers:
-
-- `scripts\scheduled\run_trial_facs_daily.ps1`
-- `scripts\scheduled\run_outreach_auto.ps1`
-- `scripts\scheduled\run_osha_ingest_daily.ps1`
-- `scripts\scheduled\run_osha_ingest_evening.ps1`
-- `scripts\scheduled\backup_runtime_state.ps1`
-
-Artifact locations:
-
-- Task logs: `${TASK_LOG_ROOT}` or `.\out\task_logs`
-- Run summaries: `${RUN_SUMMARY_ROOT}` or `.\out\run_summaries`
-- Backup snapshots/manifests: `${BACKUP_ROOT}` or `.\out\backups`
-- Optional cloud mirror root: `${ARTIFACT_SYNC_DIR}` (artifacts/backups only; never live DB path)
-
-Triage ladder:
-
-1. Open run summary (`runtime_run_summary_v1` JSON + text).
-2. Open referenced task log.
-3. Validate runtime fingerprint block (`RUNTIME_HOSTNAME`, `RUNTIME_ROLE`, `RUNTIME_DATA_DIR`, `MFO_RUNTIME_MODE`, `MFO_TRUSTED_SCHEDULED`).
-4. Resolve host/path mismatch (`ERR_RUNTIME_*`) before rerun.
-5. Reconcile state if needed (for example trial ledger reconcile), then rerun wrapper.
-
-Runner-offline behavior:
-
-- If the canonical PC/self-hosted runner is offline, scheduled GitHub workflows will queue/fail visibly.
-- Treat this as expected telemetry; do not reroute live writes/sends to laptop.
-- Recovery is: restore runner availability on PC, validate guard/paths with `--print-config` and dry-run, then rerun wrapper/workflow.
 
 ## WIP Autosave Discipline
 
@@ -1630,7 +1545,7 @@ schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:30 /TN "OSHA_Prospe
 
 ```powershell
 schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 08:00 /TN "OSHA_Outreach_Auto" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_outreach_auto.ps1" `
+  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_outreach_auto.py" `
   /RL HIGHEST
 ```
 
@@ -2060,9 +1975,6 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 ## Human-only (UI/credentials)
 
 - [ ] After any PR/commit that changes docs/contracts/templates/workflow (or any time `WARN_CONTEXT_PACK_STALE` appears): run build + fingerprint + upload + mark-uploaded + check (in that order).
-- [ ] Configure/verify GitHub self-hosted runner on canonical PC with labels `self-hosted`, `windows`, `osha-pc-canonical` and repository permissions for workflow execution.
-- [ ] Set runtime role keys on canonical PC via `scripts\set_outreach_env.ps1` (`RUNTIME_ROLE=canonical_scheduler`, `CANONICAL_HOSTNAME=<pc-hostname>`) and verify with wrapper `--print-config` paths.
-- [ ] Set optional `ARTIFACT_SYNC_DIR` (for example OneDrive artifacts folder) via `scripts\set_outreach_env.ps1` and confirm mirrors for task logs/run summaries/backups.
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
 - [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
 - [ ] If enabling AI triage, set `AI_TRIAGE_ENABLED` / `AI_TRIAGE_OPENAI_MODEL` via `scripts\set_outreach_env.ps1` and load `OPENAI_API_KEY` in the shell first (no manual `.env` / `.env.sops` edits).
@@ -2072,7 +1984,6 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 ## Codex-owned engineering backlog
 
 - [ ] Add follow-on autogrow sources on top of `outreach/scraper_engine.py` foundation: `AGC`, `BLUEBOOK`, `THOMASNET`, `BBB` (source modules + fixtures + generator tests).
-- [ ] Add integration test coverage that validates workflow artifact upload path patterns against generated wrapper outputs (`out/task_logs`, `out/run_summaries`, `out/backups`).
 - [ ] Wire landing page conversion CTA references to paid path after Stripe link is set.
   Reference points: `web/config/site.json`, `web/components/CTAButtons.tsx`, `web/app/pricing/page.tsx`, `web/app/contact/page.tsx`.
 - [ ] Define trial -> paid email-only sequence using existing lifecycle states (`replied`, `trial_started`, `converted`) and conversion artifacts in `run_trial_daily.py`.

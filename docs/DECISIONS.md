@@ -179,7 +179,7 @@ Adopt a single upstream feed path:
 
 ### Consequences
 
-- Daily scheduler flow becomes generation -> discovery -> outreach.
+- Daily scheduler flow becomes ingest -> prospect replenishment (doctor + generation + discovery) -> outreach.
 - Operators now monitor both `GENERATOR_*` and `DISCOVERY_*` machine-readable outputs.
 - Suppression and campaign tracking artifacts remain separate from the discovery feed.
 
