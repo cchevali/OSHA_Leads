@@ -7,17 +7,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
 SCRIPT = REPO_ROOT / "scripts" / "install_scheduled_tasks.ps1"
-EXPECTED_GENERATION_TR = (
+EXPECTED_REPLENISH_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
-    r"C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_generation.ps1"
+    r"C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_replenish_daily.ps1"
 )
 EXPECTED_INGEST_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
     r"C:\dev\OSHA_Leads\scripts\scheduled\run_osha_ingest_daily.ps1"
-)
-EXPECTED_DISCOVERY_TR = (
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
-    r"C:\dev\OSHA_Leads\run_with_secrets.ps1 py -3 C:\dev\OSHA_Leads\run_prospect_discovery.py"
 )
 EXPECTED_OUTREACH_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
@@ -99,7 +95,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(now_proc.returncode, 0, msg=now_proc.stderr + "\n" + now_proc.stdout)
         self.assertGreater(proc.stdout.strip(), now_proc.stdout.strip(), msg=out)
 
-    def test_print_config_includes_generation_task_and_exact_tr(self):
+    def test_print_config_includes_replenish_task_and_exact_tr(self):
         self.assertTrue(SCRIPT.exists(), msg=f"missing script: {SCRIPT}")
         proc = _run("--print-config")
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
@@ -110,7 +106,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_PRINT_CONFIG", out)
 
         tasks = _parse_task_config(out)
-        self.assertEqual(len(tasks), 6, msg=out)
+        self.assertEqual(len(tasks), 5, msg=out)
 
         ingest = [t for t in tasks.values() if t.get("NAME") == "OSHA_Osha_Ingest_Daily"]
         self.assertEqual(len(ingest), 1, msg=out)
@@ -124,24 +120,17 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(int(ingest_task.get("TR_LENGTH", "0")), len(EXPECTED_INGEST_TR), msg=out)
         self._assert_future_boundary(ingest_task.get("START_BOUNDARY_LOCAL", ""), out)
 
-        generation = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Generation"]
-        self.assertEqual(len(generation), 1, msg=out)
-        generation_task = generation[0]
-        self.assertEqual(generation_task.get("SCHEDULE"), "weekly", msg=out)
-        self.assertEqual(generation_task.get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
-        self.assertEqual(generation_task.get("TIME"), "07:15", msg=out)
-        self.assertEqual(generation_task.get("RL"), "HIGHEST", msg=out)
-        self.assertEqual(generation_task.get("TR"), EXPECTED_GENERATION_TR, msg=out)
-        self.assertLess(len(EXPECTED_GENERATION_TR), 261)
-        self.assertEqual(int(generation_task.get("TR_LENGTH", "0")), len(EXPECTED_GENERATION_TR), msg=out)
-        self._assert_future_boundary(generation_task.get("START_BOUNDARY_LOCAL", ""), out)
-
-        discovery = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Discovery"]
-        self.assertEqual(len(discovery), 1, msg=out)
-        self.assertEqual(discovery[0].get("SCHEDULE"), "weekly", msg=out)
-        self.assertEqual(discovery[0].get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
-        self.assertEqual(discovery[0].get("TR"), EXPECTED_DISCOVERY_TR, msg=out)
-        self._assert_future_boundary(discovery[0].get("START_BOUNDARY_LOCAL", ""), out)
+        replenish = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Replenish_Daily"]
+        self.assertEqual(len(replenish), 1, msg=out)
+        replenish_task = replenish[0]
+        self.assertEqual(replenish_task.get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(replenish_task.get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
+        self.assertEqual(replenish_task.get("TIME"), "07:15", msg=out)
+        self.assertEqual(replenish_task.get("RL"), "HIGHEST", msg=out)
+        self.assertEqual(replenish_task.get("TR"), EXPECTED_REPLENISH_TR, msg=out)
+        self.assertLess(len(EXPECTED_REPLENISH_TR), 261)
+        self.assertEqual(int(replenish_task.get("TR_LENGTH", "0")), len(EXPECTED_REPLENISH_TR), msg=out)
+        self._assert_future_boundary(replenish_task.get("START_BOUNDARY_LOCAL", ""), out)
 
         outreach = [t for t in tasks.values() if t.get("NAME") == "OSHA_Outreach_Auto"]
         self.assertEqual(len(outreach), 1, msg=out)
@@ -186,7 +175,6 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("DRY_RUN_COMMAND_3=", out)
         self.assertIn("DRY_RUN_COMMAND_4=", out)
         self.assertIn("DRY_RUN_COMMAND_5=", out)
-        self.assertIn("DRY_RUN_COMMAND_6=", out)
         self.assertIn("/RU \"DESKTOP-Q8QM4N9\\lever\" /RP ***REDACTED***", out)
         self.assertNotIn("dont-print-me", out)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_DRY_RUN", out)
@@ -195,6 +183,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("/SC WEEKLY /D MON,TUE,WED,THU,FRI", out)
         self.assertIn(EXPECTED_INBOUND_TR, out)
         self.assertIn(EXPECTED_INGEST_TR, out)
+        self.assertIn(EXPECTED_REPLENISH_TR, out)
         self.assertIn(EXPECTED_FACS_TRIAL_TR, out)
         self.assertNotIn(r"C:\dev\OSHA_Leads\run_inbound_triage.ps1", out)
 
@@ -248,8 +237,9 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertNotIn("function Invoke-SchtasksCommand([string[]]$Args)", text)
         self.assertIn("last_run_result_hex=0x41303", text)
         self.assertNotIn("last_result=0x41303", text)
-        self.assertNotIn(" -- py -3 ", text)
-        self.assertIn(" py -3 ", text)
+        self.assertIn("OSHA_Prospect_Replenish_Daily", text)
+        self.assertIn("run_prospect_replenish_daily.ps1", text)
+        self.assertIn("TASK_REMOVED_LEGACY", text)
         self.assertIn("--verify", text)
         self.assertIn("--status", text)
         self.assertIn("$modeArg -eq '--verify' -or $modeArg -eq '--status'", text)

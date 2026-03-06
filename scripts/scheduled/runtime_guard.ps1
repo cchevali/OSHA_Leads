@@ -2,6 +2,35 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+function Resolve-PythonCommand {
+  $forced = ([string]$env:PYTHON_EXE).Trim()
+  if ($forced) {
+    if (Test-Path -LiteralPath $forced) {
+      return @{
+        Exe = (Resolve-Path -LiteralPath $forced).Path
+        ArgsPrefix = @()
+      }
+    }
+  }
+
+  if (Get-Command -Name py -ErrorAction SilentlyContinue) {
+    return @{
+      Exe = 'py'
+      ArgsPrefix = @('-3')
+    }
+  }
+
+  $pythonCmd = Get-Command -Name python -ErrorAction SilentlyContinue
+  if ($pythonCmd -and $pythonCmd.Source) {
+    return @{
+      Exe = $pythonCmd.Source
+      ArgsPrefix = @()
+    }
+  }
+
+  throw 'ERR_RUNTIME_GUARD_PYTHON_MISSING'
+}
+
 function Invoke-RuntimePreflight {
   param(
     [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -20,14 +49,15 @@ function Invoke-RuntimePreflight {
     throw ('ERR_RUNTIME_GUARD_MISSING path=' + $runtimeGuardPy)
   }
 
-  $cmd = @('-3', $runtimeGuardPy, 'preflight', '--mode', $Mode, '--intent', $Intent)
+  $python = Resolve-PythonCommand
+  $cmd = @($python.ArgsPrefix) + @($runtimeGuardPy, 'preflight', '--mode', $Mode, '--intent', $Intent)
   if ($DryRun) { $cmd += '--dry-run' }
   if ($TaskLogRoot) { $cmd += @('--task-log-root', $TaskLogRoot) }
   if ($RunSummaryRoot) { $cmd += @('--run-summary-root', $RunSummaryRoot) }
   if ($RequireConfirmLiveSend) { $cmd += '--require-confirm-live-send' }
   if ($ConfirmLiveSend) { $cmd += '--confirm-live-send' }
 
-  $output = & py @cmd 2>&1
+  $output = & $python.Exe @cmd 2>&1
   $exitCode = [int]$LASTEXITCODE
 
   $values = @{}

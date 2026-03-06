@@ -2,9 +2,6 @@ name: Trial FACS Daily (Self-Hosted)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 13 * * 1-5"
-    - cron: "0 14 * * 1-5"
 
 jobs:
   trial_facs_daily:

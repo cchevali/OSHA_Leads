@@ -59,6 +59,11 @@ function Invoke-NativeAllowStderr {
 }
 
 function Resolve-PythonExePath {
+  $forced = ([string]$env:PYTHON_EXE).Trim()
+  if ($forced -and (Test-Path -LiteralPath $forced)) {
+    try { return (Resolve-Path -LiteralPath $forced).Path } catch { return $forced }
+  }
+
   $pythonCmd = Get-Command -Name 'python' -ErrorAction SilentlyContinue
   if ($pythonCmd -and $pythonCmd.Source -and (Test-Path -LiteralPath $pythonCmd.Source)) {
     try { return (Resolve-Path -LiteralPath $pythonCmd.Source).Path } catch { return $pythonCmd.Source }

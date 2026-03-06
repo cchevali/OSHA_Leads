@@ -108,6 +108,27 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_APOLLO_ENABLED=0", out)
             self.assertFalse(out_path.exists(), msg="--print-config must not write output")
 
+    def test_apollo_default_titles_are_consultant_firm_buyer_focused(self):
+        from outreach import run_prospect_generation as generator
+
+        with mock.patch.dict(os.environ, self._test_env({}), clear=True):
+            cfg = generator._parse_apollo_config([])
+        self.assertEqual(
+            list(cfg.get("person_titles") or []),
+            [
+                "owner",
+                "founder",
+                "co-founder",
+                "president",
+                "principal",
+                "managing partner",
+                "partner",
+                "practice lead",
+                "senior consultant",
+                "principal consultant",
+            ],
+        )
+
     def test_dry_run_no_writes(self):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "data"
@@ -1724,4 +1745,3 @@ class TestProspectGeneration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
