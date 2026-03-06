@@ -832,7 +832,8 @@ def compute_uncontacted_backlog(
             continue
         if bool(skip_role_inboxes) and _is_role_inbox_email(email):
             continue
-        if _coerce_boolish_int(str(row["default_send_eligible"] or ""), 1) != 1:
+        sendable_raw = row["default_send_eligible"] if row["default_send_eligible"] is not None else ""
+        if _coerce_boolish_int(str(sendable_raw), 1) != 1:
             continue
 
         status = _normalize_text(str(row["status"] or "")).lower()
@@ -920,7 +921,8 @@ def _compute_input_cohort(
         if email in suppressed_emails:
             filtered["suppressed"] += 1
             continue
-        if _coerce_boolish_int(str(row["default_send_eligible"] or ""), 1) != 1:
+        sendable_raw = row["default_send_eligible"] if row["default_send_eligible"] is not None else ""
+        if _coerce_boolish_int(str(sendable_raw), 1) != 1:
             filtered["already_sent_or_ineligible"] += 1
             continue
 

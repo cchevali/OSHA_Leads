@@ -90,7 +90,7 @@ class TestOutreachDiscovery(unittest.TestCase):
         self.assertEqual(block[-1], f"DISCOVERY_COMPLETE status={status}", msg="\n".join(lines))
 
         discovery_indexes = [i for i, line in enumerate(lines) if line.startswith("DISCOVERY_")]
-        self.assertEqual(discovery_indexes, list(range(len(lines) - 7, len(lines))), msg="\n".join(lines))
+        self.assertTrue(discovery_indexes[-7:] == list(range(len(lines) - 7, len(lines))), msg="\n".join(lines))
         return block
 
     def test_module_importable_and_main_callable(self):

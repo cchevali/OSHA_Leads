@@ -987,7 +987,13 @@ class TestProspectGeneration(unittest.TestCase):
             apollo_cache = data_dir / "prospect_generation" / "cache" / "apollo" / "state_TX.json"
             apollo_result = {
                 "rows": [
-                    {"email": "apollo1@exampletx.com", "state": "TX", "company_name": "Apollo One", "source": "apollo:bulk_match:1"}
+                    {
+                        "email": "apollo1@exampletx.com",
+                        "state": "TX",
+                        "company_name": "Apollo Safety Consulting",
+                        "title": "Owner",
+                        "source": "apollo:bulk_match:1",
+                    }
                 ],
                 "cache_used": False,
                 "cache_age_days": 0,
@@ -1246,7 +1252,15 @@ class TestProspectGeneration(unittest.TestCase):
                 "diagnostics_path": None,
             }
             apollo_result = {
-                "rows": [{"email": "apollorefill@examplefl.com", "state": "FL", "company_name": "Apollo Refill", "source": "apollo:bulk_match:abc"}],
+                "rows": [
+                    {
+                        "email": "apollorefill@examplefl.com",
+                        "state": "FL",
+                        "company_name": "Apollo Safety Refill",
+                        "title": "Founder",
+                        "source": "apollo:bulk_match:abc",
+                    }
+                ],
                 "cache_used": False,
                 "cache_age_days": 0,
                 "cache_path": apollo_cache,
@@ -1305,7 +1319,15 @@ class TestProspectGeneration(unittest.TestCase):
                 state = str(kwargs.get("state") or "").upper()
                 calls.append(state)
                 return {
-                    "rows": [{"email": f"{state.lower()}@example.com", "state": state, "company_name": f"{state} Co", "source": "apollo:bulk_match:test"}],
+                    "rows": [
+                        {
+                            "email": f"{state.lower()}@example.com",
+                            "state": state,
+                            "company_name": f"{state} Safety Consulting",
+                            "title": "Owner",
+                            "source": "apollo:bulk_match:test",
+                        }
+                    ],
                     "cache_used": False,
                     "cache_age_days": 0,
                     "cache_path": data_dir / "prospect_generation" / "cache" / "apollo" / f"state_{state}.json",

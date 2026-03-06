@@ -158,6 +158,13 @@ def _seed_stats_rows(db_path: Path) -> None:
 
 
 class TestOutreachCrmAdmin(unittest.TestCase):
+    def _stdout_value(self, stdout: str, token: str) -> str:
+        prefix = f"{token}="
+        for line in (stdout or "").splitlines():
+            if line.startswith(prefix):
+                return line.split("=", 1)[1].strip()
+        self.fail(f"missing_token={token}")
+
     def _run(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(REPO_ROOT)
@@ -344,6 +351,78 @@ class TestOutreachCrmAdmin(unittest.TestCase):
             p = self._run(["verify-import", "--csv", str(missing)], {"DATA_DIR": str(data_dir)})
             self.assertEqual(p.returncode, 2, msg=p.stderr + "\n" + p.stdout)
             self.assertIn("ERR_CRM_VERIFY_INPUT_MISSING", p.stderr or "")
+
+    def test_seed_backfills_unknown_source_and_emits_diagnostics(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            csv_path = tmp / "prospects.csv"
+            _write_csv(
+                csv_path,
+                [
+                    "prospect_id",
+                    "email",
+                    "firm",
+                    "title",
+                    "state",
+                    "city",
+                    "source",
+                    "source_fit_tier",
+                    "default_send_eligible",
+                ],
+                [
+                    {
+                        "prospect_id": "u1",
+                        "email": "unknown1@example.com",
+                        "firm": "Unknown One",
+                        "title": "Owner",
+                        "state": "TX",
+                        "city": "Austin",
+                        "source": "legacy_directory_export",
+                        "source_fit_tier": "",
+                        "default_send_eligible": "",
+                    },
+                    {
+                        "prospect_id": "s1",
+                        "email": "state1@example.com",
+                        "firm": "State One",
+                        "title": "Owner",
+                        "state": "TX",
+                        "city": "Austin",
+                        "source": "STATE_LIC",
+                        "source_fit_tier": "",
+                        "default_send_eligible": "",
+                    },
+                ],
+            )
+
+            p = self._run(["seed", "--input", str(csv_path), "--no-archive"], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_SOURCE_COUNT_UNKNOWN"), "1")
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_SOURCE_COUNT_STATE_LIC"), "1")
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_BACKFILL_SOURCE_COUNT_UNKNOWN"), "1")
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_BACKFILL_SOURCE_COUNT_STATE_LIC"), "1")
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_BACKFILL_UNKNOWN_SOURCE_COUNT"), "1")
+            self.assertIn("legacy_directory_export", self._stdout_value(out, "DISCOVERY_BACKFILL_UNKNOWN_SOURCE_SAMPLE"))
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_DEFAULT_SEND_ELIGIBLE_TOTAL"), "1")
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_TIER_COUNT_RECOVERABLE_CONSULTANT"), "1")
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_TIER_COUNT_ADJACENT_CONTRACTOR"), "1")
+
+            conn = sqlite3.connect(str(data_dir / "crm.sqlite"))
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT prospect_id, source_fit_tier, default_send_eligible
+                    FROM prospects
+                    ORDER BY prospect_id
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+            normalized = {str(pid): (str(tier or ""), int(sendable or 0)) for pid, tier, sendable in rows}
+            self.assertEqual(normalized["u1"], ("recoverable_consultant", 1))
+            self.assertEqual(normalized["s1"], ("adjacent_contractor", 0))
 
 
 if __name__ == "__main__":

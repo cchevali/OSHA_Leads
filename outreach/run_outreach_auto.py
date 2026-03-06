@@ -518,13 +518,15 @@ def _safe_csv_value(value: str) -> str:
 def _source_fit_tier(row: sqlite3.Row) -> str:
     if "source_fit_tier" not in row.keys():
         return ""
-    return _safe_text(str(row["source_fit_tier"] or "")).lower()
+    raw = row["source_fit_tier"]
+    return _safe_text("" if raw is None else str(raw)).lower()
 
 
 def _default_send_eligible(row: sqlite3.Row) -> int:
     if "default_send_eligible" not in row.keys():
         return 1
-    text = _safe_text(str(row["default_send_eligible"] or "")).lower()
+    raw = row["default_send_eligible"]
+    text = _safe_text("" if raw is None else str(raw)).lower()
     if text in {"1", "true", "yes", "on"}:
         return 1
     if text in {"0", "false", "no", "off"}:
