@@ -89,6 +89,7 @@ function Resolve-SopsExe {
     -WinGetPackagePrefixes @('Mozilla.SOPS_') `
     -WinGetPackageRelativeCandidates @('sops.exe') `
     -ExtraAbsoluteCandidates @(
+      (Join-Path $env:ProgramData 'OSHA_Leads\tools\sops.exe'),
       (Join-Path $env:ProgramFiles 'sops\sops.exe'),
       (Join-Path $env:ProgramFiles 'SOPS\sops.exe')
     )
@@ -101,6 +102,7 @@ function Resolve-AgeExe {
     -WinGetPackagePrefixes @('FiloSottile.age_') `
     -WinGetPackageRelativeCandidates @('age\age.exe','age.exe') `
     -ExtraAbsoluteCandidates @(
+      (Join-Path $env:ProgramData 'OSHA_Leads\tools\age.exe'),
       (Join-Path $env:ProgramFiles 'age\age.exe'),
       (Join-Path $env:ProgramFiles 'Age\age.exe')
     )
@@ -113,6 +115,7 @@ function Resolve-AgeKeygenExe {
     -WinGetPackagePrefixes @('FiloSottile.age_') `
     -WinGetPackageRelativeCandidates @('age\age-keygen.exe','age-keygen.exe') `
     -ExtraAbsoluteCandidates @(
+      (Join-Path $env:ProgramData 'OSHA_Leads\tools\age-keygen.exe'),
       (Join-Path $env:ProgramFiles 'age\age-keygen.exe'),
       (Join-Path $env:ProgramFiles 'Age\age-keygen.exe')
     )

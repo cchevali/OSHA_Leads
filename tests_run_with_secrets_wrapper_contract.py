@@ -49,6 +49,8 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         self.assertIn("WARN_ENV_CONFLICT=1 key=DATA_DIR", tooling_text)
         self.assertIn("WARN_DATA_DIR_NOT_ABSOLUTE=1", tooling_text)
         self.assertIn("OSHA_Leads\\keys\\age\\keys.txt", tooling_text)
+        self.assertIn("OSHA_Leads\\tools\\sops.exe", tooling_text)
+        self.assertIn("OSHA_Leads\\tools\\age.exe", tooling_text)
         self.assertIn("sops_start_failed file=", tooling_text)
         self.assertIn("$env:ProgramData", tooling_text)
         self.assertIn("WinGet\\Packages", tooling_text)
