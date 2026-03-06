@@ -13,6 +13,19 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Outreach operations (this repo): SQLite CRM-lite (`out/crm.sqlite`) for prospect selection, sending, and lifecycle tracking
 - Outreach debug export: optional CSV outbox generation for QA/debug only
 
+## Centralized Runtime Control Plane
+
+- Single-writer rule: the canonical Windows PC is the only runtime that may perform live SQLite writes and live sends.
+- Runtime guard layer (`runtime_guard.py` + `scripts/scheduled/runtime_guard.ps1`) enforces host/data-root policy before write/send paths.
+- Scheduled visibility plane: GitHub Actions workflows run on a label-pinned self-hosted Windows runner (`self-hosted`, `windows`, `osha-pc-canonical`) on that PC.
+- Wrappers emit deterministic run summaries (`runtime_run_summary_v1`) plus task logs and optional backup manifests.
+- Artifact roots:
+  - Task logs: `${TASK_LOG_ROOT}` or `<repo>\out\task_logs`
+  - Run summaries: `${RUN_SUMMARY_ROOT}` or `<repo>\out\run_summaries`
+  - Backup metadata/snapshots: `${BACKUP_ROOT}` or `<repo>\out\backups`
+  - Optional mirror: `${ARTIFACT_SYNC_DIR}` (artifacts/backups only; never live DB)
+- Laptop/dev clients are read-only operationally: print-config, doctor, dry-run, and artifact inspection.
+
 ## Outreach CRM Auto-Run Data Flow
 
 1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).

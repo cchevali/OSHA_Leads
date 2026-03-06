@@ -7,6 +7,9 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 ## Human-only (UI/credentials)
 
 - [ ] After any PR/commit that changes docs/contracts/templates/workflow (or any time `WARN_CONTEXT_PACK_STALE` appears): run build + fingerprint + upload + mark-uploaded + check (in that order).
+- [ ] Configure/verify GitHub self-hosted runner on canonical PC with labels `self-hosted`, `windows`, `osha-pc-canonical` and repository permissions for workflow execution.
+- [ ] Set runtime role keys on canonical PC via `scripts\set_outreach_env.ps1` (`RUNTIME_ROLE=canonical_scheduler`, `CANONICAL_HOSTNAME=<pc-hostname>`) and verify with wrapper `--print-config` paths.
+- [ ] Set optional `ARTIFACT_SYNC_DIR` (for example OneDrive artifacts folder) via `scripts\set_outreach_env.ps1` and confirm mirrors for task logs/run summaries/backups.
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
 - [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
 - [ ] If enabling AI triage, set `AI_TRIAGE_ENABLED` / `AI_TRIAGE_OPENAI_MODEL` via `scripts\set_outreach_env.ps1` and load `OPENAI_API_KEY` in the shell first (no manual `.env` / `.env.sops` edits).
@@ -16,6 +19,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 ## Codex-owned engineering backlog
 
 - [ ] Add follow-on autogrow sources on top of `outreach/scraper_engine.py` foundation: `AGC`, `BLUEBOOK`, `THOMASNET`, `BBB` (source modules + fixtures + generator tests).
+- [ ] Add integration test coverage that validates workflow artifact upload path patterns against generated wrapper outputs (`out/task_logs`, `out/run_summaries`, `out/backups`).
 - [ ] Wire landing page conversion CTA references to paid path after Stripe link is set.
   Reference points: `web/config/site.json`, `web/components/CTAButtons.tsx`, `web/app/pricing/page.tsx`, `web/app/contact/page.tsx`.
 - [ ] Define trial -> paid email-only sequence using existing lifecycle states (`replied`, `trial_started`, `converted`) and conversion artifacts in `run_trial_daily.py`.

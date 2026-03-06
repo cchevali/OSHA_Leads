@@ -21,7 +21,7 @@ EXPECTED_DISCOVERY_TR = (
 )
 EXPECTED_OUTREACH_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
-    r"C:\dev\OSHA_Leads\run_with_secrets.ps1 py -3 C:\dev\OSHA_Leads\run_outreach_auto.py"
+    r"C:\dev\OSHA_Leads\scripts\scheduled\run_outreach_auto.ps1"
 )
 EXPECTED_INBOUND_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "

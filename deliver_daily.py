@@ -24,6 +24,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from lead_filters import normalize_content_filter
+from runtime_guard import render_runtime_lines, run_runtime_preflight
 
 try:
     from dotenv import load_dotenv
@@ -519,6 +520,11 @@ def main():
     parser.add_argument("--send-live", action="store_true",
                         help="Allow live send to customer recipients (requires config allow_live_send and send_enabled)")
     parser.add_argument(
+        "--confirm-live-send",
+        action="store_true",
+        help="Manual live-send confirmation flag (not required for trusted scheduled runtime).",
+    )
+    parser.add_argument(
         "--allow-second-live-send-same-day",
         action="store_true",
         help="Emergency/manual override: allow a second same-day live digest send.",
@@ -529,6 +535,21 @@ def main():
                         help=f"Admin email for failure notifications (default: {ADMIN_EMAIL})")
     
     args = parser.parse_args()
+    runtime_mode = str(os.getenv("MFO_RUNTIME_MODE") or "manual").strip().lower() or "manual"
+    if args.send_live and (not args.dry_run):
+        runtime_preflight = run_runtime_preflight(
+            mode=runtime_mode,
+            intent="send",
+            dry_run=False,
+            task_log_root=str(os.getenv("TASK_LOG_ROOT") or ""),
+            run_summary_root=str(os.getenv("RUN_SUMMARY_ROOT") or ""),
+            require_confirm_live_send=True,
+            confirm_live_send=bool(args.confirm_live_send),
+        )
+        for line in render_runtime_lines(runtime_preflight):
+            print(line)
+        if not runtime_preflight.ok:
+            sys.exit(2)
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_started_at = datetime.now().isoformat()
@@ -685,6 +706,8 @@ def main():
                 email_cmd.append("--dry-run")
             if args.send_live:
                 email_cmd.append("--send-live")
+            if args.confirm_live_send:
+                email_cmd.append("--confirm-live-send")
             if args.allow_second_live_send_same_day:
                 email_cmd.append("--allow-second-live-send-same-day")
             

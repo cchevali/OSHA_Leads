@@ -23,6 +23,7 @@ import trial_audit
 from email_footer import build_footer_html, build_footer_text
 from lead_filters import load_territory_definitions, merge_territory_definition, resolve_territory_code
 from send_digest_email import build_unsubscribe_payload, resolve_branding, send_email
+from runtime_guard import render_runtime_lines, run_runtime_preflight
 
 
 def _count_status_live_primary_weekdays(
@@ -1936,8 +1937,25 @@ def scope_enhancement(
     to_date: str,
     extend_days: int,
     send_live: bool,
+    confirm_live_send: bool = False,
     customer_config_path: str = "",
 ) -> int:
+    if send_live:
+        runtime_mode = str(os.getenv("MFO_RUNTIME_MODE") or "manual").strip().lower() or "manual"
+        preflight = run_runtime_preflight(
+            mode=runtime_mode,
+            intent="send",
+            dry_run=False,
+            task_log_root=str(os.getenv("TASK_LOG_ROOT") or ""),
+            run_summary_root=str(os.getenv("RUN_SUMMARY_ROOT") or ""),
+            require_confirm_live_send=True,
+            confirm_live_send=bool(confirm_live_send),
+        )
+        for line in render_runtime_lines(preflight):
+            print(line)
+        if not preflight.ok:
+            return 2
+
     report = generate_missed_signals_report(
         subscriber_key=subscriber_key,
         leads_db_path=leads_db_path,
@@ -2239,6 +2257,11 @@ def main(argv: list[str] | None = None) -> int:
     scope_mode = scope.add_mutually_exclusive_group(required=True)
     scope_mode.add_argument("--dry-run", action="store_true")
     scope_mode.add_argument("--send-live", action="store_true")
+    scope.add_argument(
+        "--confirm-live-send",
+        action="store_true",
+        help="Manual live-send confirmation flag (not required for trusted scheduled runtime).",
+    )
 
     args = ap.parse_args(argv)
 
@@ -2431,6 +2454,7 @@ def main(argv: list[str] | None = None) -> int:
                 to_date=str(args.to_date),
                 extend_days=int(args.extend_days),
                 send_live=bool(args.send_live),
+                confirm_live_send=bool(args.confirm_live_send),
                 customer_config_path=str(args.customer or ""),
             )
         except Exception as exc:

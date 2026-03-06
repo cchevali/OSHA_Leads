@@ -1,0 +1,57 @@
+name: Manual Wrapper Smoke (Self-Hosted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      wrapper:
+        description: "Wrapper to execute"
+        required: true
+        default: "trial_facs_daily"
+        type: choice
+        options:
+          - trial_facs_daily
+          - ingest_evening
+          - outreach_auto
+          - backup_runtime_state_dry_run
+
+jobs:
+  wrapper_smoke:
+    runs-on: [self-hosted, windows, osha-pc-canonical]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Selected Wrapper
+        shell: powershell
+        run: |
+          cd C:\dev\OSHA_Leads
+          $wrapper = "${{ github.event.inputs.wrapper }}"
+          if ($wrapper -eq "trial_facs_daily") {
+            powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\run_trial_facs_daily.ps1
+            exit $LASTEXITCODE
+          }
+          if ($wrapper -eq "ingest_evening") {
+            powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\run_osha_ingest_evening.ps1
+            exit $LASTEXITCODE
+          }
+          if ($wrapper -eq "outreach_auto") {
+            powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\run_outreach_auto.ps1
+            exit $LASTEXITCODE
+          }
+          if ($wrapper -eq "backup_runtime_state_dry_run") {
+            powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\backup_runtime_state.ps1 -DryRun
+            exit $LASTEXITCODE
+          }
+          Write-Error ("Unknown wrapper input: " + $wrapper)
+          exit 1
+
+      - name: Upload Runtime Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-wrapper-artifacts-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            out/task_logs/**
+            out/run_summaries/**
+            out/backups/**

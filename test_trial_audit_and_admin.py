@@ -365,6 +365,7 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
                 to_date="2026-02-20",
                 extend_days=7,
                 send_live=True,
+                confirm_live_send=True,
                 customer_config_path="",
             )
             self.assertEqual(code1, 0)
@@ -378,6 +379,7 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
                 to_date="2026-02-20",
                 extend_days=7,
                 send_live=True,
+                confirm_live_send=True,
                 customer_config_path="",
             )
             self.assertEqual(code2, 0)

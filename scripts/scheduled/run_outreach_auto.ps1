@@ -5,15 +5,16 @@ $ProgressPreference = 'SilentlyContinue'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 . (Join-Path $PSScriptRoot "runtime_guard.ps1")
 . (Join-Path $PSScriptRoot "runtime_run_summary.ps1")
+
 $startLocal = Get-Date
 $startUtc = [datetime]::UtcNow
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
 $runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
-$taskLogPath = Join-Path $taskLogDir ("OSHA_Osha_Ingest_Daily_{0}.log" -f $timestamp)
-$ingestExitCode = 1
+$taskLogPath = Join-Path $taskLogDir ("OSHA_Outreach_Auto_{0}.log" -f $timestamp)
+$outreachExitCode = 1
 $preflight = $null
-$commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py"
+$commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_outreach_auto.py"
 
 New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runSummaryRoot | Out-Null
@@ -37,7 +38,7 @@ try {
     $preflight = Invoke-RuntimePreflight `
       -RepoRoot $repoRoot `
       -Mode 'scheduled' `
-      -Intent 'write' `
+      -Intent 'send' `
       -DryRun:$false `
       -TaskLogRoot $taskLogDir `
       -RunSummaryRoot $runSummaryRoot `
@@ -47,37 +48,39 @@ try {
     }
 
     Invoke-And-Log {
-      & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 (Join-Path $repoRoot "run_osha_ingest_daily.py")
+      & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_outreach_auto.py"
     }
-    $ingestExitCode = [int]$LASTEXITCODE
+    $outreachExitCode = [int]$LASTEXITCODE
   }
   catch {
-    $ingestExitCode = 1
-    Write-TaskLine ('INGEST_EXCEPTION=' + ([string]$_.Exception.Message))
+    $outreachExitCode = 1
+    Write-TaskLine ('OUTREACH_EXCEPTION=' + ([string]$_.Exception.Message))
   }
-} finally {
+}
+finally {
   try { Pop-Location } catch {}
 }
 
 Write-TaskLine ("TASK_LOG_PATH=" + $taskLogPath)
-Write-TaskLine ("INGEST_EXIT_CODE=" + $ingestExitCode)
-Write-RuntimeRunSummary `
+Write-TaskLine ("OUTREACH_EXIT_CODE=" + $outreachExitCode)
+$summaryResult = Write-RuntimeRunSummary `
   -RepoRoot $repoRoot `
-  -WrapperName 'OSHA_Osha_Ingest_Daily' `
+  -WrapperName 'OSHA_Outreach_Auto' `
   -CommandLine $commandInvoked `
   -Mode 'scheduled' `
-  -Intent 'write' `
+  -Intent 'send' `
   -DryRun:$false `
-  -ExitCode $ingestExitCode `
+  -ExitCode $outreachExitCode `
   -StartLocal $startLocal `
   -StartUtc $startUtc `
   -TaskLogPath $taskLogPath `
   -TaskLogRoot $taskLogDir `
   -RunSummaryRoot $runSummaryRoot `
   -Fingerprint $(if ($preflight) { [hashtable]$preflight.Values } else { @{} }) `
-  -EmitLine ${function:Write-TaskLine} | Out-Null
+  -EmitLine ${function:Write-TaskLine}
+# RUN_SUMMARY_JSON_PATH= / RUN_SUMMARY_TEXT_PATH= emitted above via Write-RuntimeRunSummary.
 
-if ($ingestExitCode -ne 0) {
+if ($outreachExitCode -ne 0) {
   exit 1
 }
 exit 0
