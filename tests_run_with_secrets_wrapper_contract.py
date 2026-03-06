@@ -51,6 +51,9 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         self.assertIn("OSHA_Leads\\keys\\age\\keys.txt", tooling_text)
         self.assertIn("sops_start_failed file=", tooling_text)
         self.assertIn("$env:ProgramData", tooling_text)
+        self.assertIn("WinGet\\Packages", tooling_text)
+        self.assertIn("WinGet\\Links", tooling_text)
+        self.assertLess(tooling_text.index("WinGet\\Packages"), tooling_text.index("Get-Command $ToolName"))
 
     def test_target_wrapper_check_decrypt_uses_direct_sops_invocation(self):
         self.assertTrue(TARGET_SCRIPT.exists(), msg=f"missing script: {TARGET_SCRIPT}")

@@ -17,33 +17,25 @@ function Resolve-ExternalExe {
     [string[]] $ExtraAbsoluteCandidates = @()
   )
 
-  # 1) First: whatever is already resolvable via Get-Command.
-  $cmd = Get-Command $ToolName -ErrorAction SilentlyContinue
-  if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source)) {
-    return (Resolve-Path $cmd.Source).Path
-  }
-
-  # 2) WinGet Links shims (commonly missing from PATH in scheduler contexts).
-  $linksDir = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links'
-  if (Test-Path $linksDir) {
-    foreach ($exe in $WinGetLinkExeNames) {
-      $p = Join-Path $linksDir $exe
-      if (Test-Path $p) {
-        return (Resolve-Path $p).Path
-      }
-    }
-  }
-
-  # 3) Common absolute installs.
+  # 1) Common absolute installs.
   foreach ($p in $ExtraAbsoluteCandidates) {
     if ($p -and (Test-Path $p)) {
       return (Resolve-Path $p).Path
     }
   }
 
-  # 4) WinGet Packages directory (matches are versioned in the folder name).
-  $pkgRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
-  if (Test-Path $pkgRoot) {
+  # 2) Prefer real machine/user package binaries before WinGet shim links.
+  $packageRoots = New-Object System.Collections.Generic.List[string]
+  if ([string]$env:ProgramFiles) {
+    [void]$packageRoots.Add((Join-Path $env:ProgramFiles 'WinGet\Packages'))
+  }
+  if ([string]$env:LOCALAPPDATA) {
+    [void]$packageRoots.Add((Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'))
+  }
+  foreach ($pkgRoot in @($packageRoots)) {
+    if (-not $pkgRoot -or -not (Test-Path $pkgRoot)) {
+      continue
+    }
     foreach ($prefix in $WinGetPackagePrefixes) {
       $dirs =
         Get-ChildItem -LiteralPath $pkgRoot -Directory -ErrorAction SilentlyContinue |
@@ -57,6 +49,32 @@ function Resolve-ExternalExe {
             return (Resolve-Path $p).Path
           }
         }
+      }
+    }
+  }
+
+  # 3) Then whatever is already resolvable via Get-Command.
+  $cmd = Get-Command $ToolName -ErrorAction SilentlyContinue
+  if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source)) {
+    return (Resolve-Path $cmd.Source).Path
+  }
+
+  # 4) WinGet Links shims remain a last-resort fallback.
+  $linksDirs = New-Object System.Collections.Generic.List[string]
+  if ([string]$env:ProgramFiles) {
+    [void]$linksDirs.Add((Join-Path $env:ProgramFiles 'WinGet\Links'))
+  }
+  if ([string]$env:LOCALAPPDATA) {
+    [void]$linksDirs.Add((Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links'))
+  }
+  foreach ($linksDir in @($linksDirs)) {
+    if (-not $linksDir -or -not (Test-Path $linksDir)) {
+      continue
+    }
+    foreach ($exe in $WinGetLinkExeNames) {
+      $p = Join-Path $linksDir $exe
+      if (Test-Path $p) {
+        return (Resolve-Path $p).Path
       }
     }
   }
