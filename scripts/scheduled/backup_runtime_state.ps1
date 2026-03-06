@@ -3,6 +3,9 @@ param(
   [switch]$DryRun,
   [switch]$Compress
 )
+# CLI compatibility notes:
+#   --print-config maps to -PrintConfig
+#   --dry-run maps to -DryRun
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'

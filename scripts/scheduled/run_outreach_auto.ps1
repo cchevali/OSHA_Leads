@@ -63,7 +63,7 @@ finally {
 
 Write-TaskLine ("TASK_LOG_PATH=" + $taskLogPath)
 Write-TaskLine ("OUTREACH_EXIT_CODE=" + $outreachExitCode)
-Write-RuntimeRunSummary `
+$summaryResult = Write-RuntimeRunSummary `
   -RepoRoot $repoRoot `
   -WrapperName 'OSHA_Outreach_Auto' `
   -CommandLine $commandInvoked `
@@ -77,7 +77,8 @@ Write-RuntimeRunSummary `
   -TaskLogRoot $taskLogDir `
   -RunSummaryRoot $runSummaryRoot `
   -Fingerprint $(if ($preflight) { [hashtable]$preflight.Values } else { @{} }) `
-  -EmitLine ${function:Write-TaskLine} | Out-Null
+  -EmitLine ${function:Write-TaskLine}
+# RUN_SUMMARY_JSON_PATH= / RUN_SUMMARY_TEXT_PATH= emitted above via Write-RuntimeRunSummary.
 
 if ($outreachExitCode -ne 0) {
   exit 1

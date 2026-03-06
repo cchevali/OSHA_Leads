@@ -29,6 +29,7 @@ Success metric (funnel): **reply -> call -> paid** (track conversion per batch).
 - Trial and paid onboarding must capture structured recipient data (`recipients[]`) so recipient-aware delivery is configured deterministically.
 - Single-writer runtime invariant: the canonical PC is the only live writer/sender for SQLite state and outbound sends.
 - Non-canonical clients (for example laptop) are limited to inspection, dry-run, and artifact review workflows.
+- Scheduled execution visibility is provided by GitHub Actions using a self-hosted runner on the canonical PC; actions are control-plane only.
 
 ## Do Not Break
 

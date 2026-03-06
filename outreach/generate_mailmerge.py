@@ -4,6 +4,7 @@ import hashlib
 import html as _html
 import json
 import os
+import re
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -47,6 +48,18 @@ DEFAULT_SAMPLE_FEED_URL = "https://microflowops.com/sample"
 ERR_ONE_CLICK_REQUIRED = "ERR_ONE_CLICK_REQUIRED"
 ERR_SUPPRESSION_REQUIRED = "ERR_SUPPRESSION_REQUIRED"
 ET_TZ = ZoneInfo("America/New_York")
+UPPERCASE_COMPANY_TOKENS = {
+    "LLC",
+    "LLP",
+    "LP",
+    "INC",
+    "CO",
+    "LTD",
+    "USA",
+    "OSHA",
+    "EHS",
+    "HSE",
+}
 
 
 def _utc_now_iso() -> str:
@@ -216,6 +229,64 @@ def _truncate_text(s: str, max_len: int) -> str:
     return text[: max(0, max_len - 1)].rstrip() + "…"
 
 
+def _split_trailing_punct(token: str) -> tuple[str, str]:
+    end = len(token)
+    while end > 0 and token[end - 1] in ",.;:":
+        end -= 1
+    return token[:end], token[end:]
+
+
+def _is_shouty_text(value: str) -> bool:
+    letters = [ch for ch in str(value or "") if ch.isalpha()]
+    return bool(letters) and all(ch.isupper() for ch in letters)
+
+
+def _fix_mc_prefix(value: str) -> str:
+    return re.sub(r"^Mc([a-z])", lambda m: f"Mc{m.group(1).upper()}", value)
+
+
+def _preserve_upper_company_token(core: str) -> bool:
+    token = str(core or "")
+    letters = "".join(ch for ch in token if ch.isalpha())
+    if not letters:
+        return False
+    if any(ch.isdigit() for ch in token):
+        return True
+    if "&" in token or "/" in token:
+        return True
+    return letters.upper() in UPPERCASE_COMPANY_TOKENS
+
+
+def _smart_company_case(value: str) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    parts: list[str] = []
+    for token in text.split(" "):
+        core, tail = _split_trailing_punct(token)
+        if not core:
+            parts.append(token)
+            continue
+        if _preserve_upper_company_token(core):
+            normalized_core = core.upper()
+        else:
+            normalized_core = _fix_mc_prefix(core.title())
+            if normalized_core.upper() in UPPERCASE_COMPANY_TOKENS:
+                normalized_core = normalized_core.upper()
+        parts.append(normalized_core + tail)
+    return " ".join(parts)
+
+
+def _clean_first_name(value: str) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    text = text.rstrip(",;:")
+    if _is_shouty_text(text):
+        text = _fix_mc_prefix(text.title())
+    return text
+
+
 STATE_FULL_NAMES = {
     "TX": "Texas",
     "CA": "California",
@@ -303,6 +374,8 @@ def _clean_company_name(value: str) -> str:
     normalized_token = "".join(ch for ch in normalized if ch.isalnum())
     if normalized_token in suffix_only:
         return ""
+    if _is_shouty_text(text):
+        return _smart_company_case(text)
     return text
 
 
@@ -318,34 +391,33 @@ def _build_copy_tokens(
 ) -> dict[str, str]:
     signal_count = len(list(recent_leads or []))
     segment_desc = _segment_descriptor(segment=segment, role_or_title=role_or_title)
-    clean_first = str(first_name or "").strip()
+    clean_first = _clean_first_name(first_name)
     clean_firm = _clean_company_name(firm_name)
     low_signal = signal_count == 1
 
     if clean_first:
         greeting_text = f"Hi {clean_first},"
         count_phrase = "a new OSHA inspection" if low_signal else "a few new OSHA inspections"
-        opened_phrase = "opened recently" if low_signal else "most opened in the last two weeks"
         team_phrase = f"your team at {clean_firm}" if clean_firm else "your team"
         intro_text = (
-            f"I spotted {count_phrase} in {state_full_name} that {team_phrase} might want to know about — "
-            f"{opened_phrase} and none have citations yet:"
+            f"I spotted {count_phrase} in {state_full_name} that {team_phrase} might want to know about. "
+            "Recently observed in public OSHA data; opened dates are listed below and none have citations yet:"
         )
         post_cards_text = ""
         trial_text = (
             "I track these daily across every state using public OSHA data. "
-            "Happy to set up a short trial feed for whatever metros matter to you — just reply with the cities."
+            "If useful, I can set up a short trial feed for the metros you care about — just reply with the cities."
         )
     elif clean_firm:
         greeting_text = f"Hi - saw a few things {clean_firm} should probably have on their radar:"
         intro_text = ""
         post_cards_text = (
-            f"These are new OSHA inspections opened in {state_full_name} in the last two weeks — "
-            "none have citations yet."
+            f"Recently observed in public OSHA data across {state_full_name}; "
+            "opened dates are listed above and none have citations yet."
         )
         trial_text = (
             "I track these daily across every state using public OSHA data. "
-            "Happy to set up a trial feed for whatever metros matter to you — just reply with the cities."
+            "If useful, I can set up a short trial feed for the metros you care about — just reply with the cities."
         )
     else:
         greeting_text = (
@@ -354,14 +426,10 @@ def _build_copy_tokens(
             else f"Hi - saw a few new OSHA inspections in {state_full_name} that might be relevant to your team:"
         )
         intro_text = ""
-        post_cards_text = (
-            "Opened recently and none have citations yet."
-            if low_signal
-            else "Most opened in the last two weeks and none have citations yet."
-        )
+        post_cards_text = "Recently observed in public OSHA data. Opened dates are listed above and none have citations yet."
         trial_text = (
             "I track these daily across every state using public OSHA data. "
-            "Happy to set up a trial feed for whatever metros matter to you — just reply with the cities."
+            "If useful, I can set up a short trial feed for the metros you care about — just reply with the cities."
         )
 
     return {
@@ -712,19 +780,17 @@ def _truncate_subject(subject: str, max_len: int = 64) -> str:
 def _subject_for_multi_signal(*, signal_count: int, state_abbrev: str, primary_type: str) -> str:
     type_part = f" {primary_type}" if primary_type else ""
     candidates = [
-        f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections opened this month",
-        f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections opened",
+        f"Quick heads up — {signal_count} recent {state_abbrev}{type_part} inspections",
         f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections",
     ]
     if primary_type:
         candidates.extend(
             [
-                f"Quick heads up — {signal_count} new {state_abbrev} inspections opened this month",
-                f"Quick heads up — {signal_count} new {state_abbrev} inspections opened",
+                f"Quick heads up — {signal_count} recent {state_abbrev} inspections",
                 f"Quick heads up — {signal_count} new {state_abbrev} inspections",
             ]
         )
-    candidates.append(f"Heads up — {signal_count} new {state_abbrev} inspections")
+    candidates.append(f"Heads up — {signal_count} recent {state_abbrev} inspections")
     for candidate in candidates:
         if len(candidate) <= 64:
             return candidate
@@ -1156,8 +1222,10 @@ def _render_preview(args: argparse.Namespace) -> int:
     microflowops_url = (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
 
     for idx, row in enumerate(rows, start=1):
-        first_name = _row_text_value(row, ["first_name", "contact_name"])
+        first_name_raw = _row_text_value(row, ["first_name", "contact_name"])
+        first_name = _clean_first_name(first_name_raw)
         firm_name_raw = _row_text_value(row, ["firm"])
+        clean_firm = _clean_company_name(firm_name_raw)
         segment = _row_text_value(row, ["segment", "buyer_segment"])
         role_or_title = _row_text_value(row, ["role_or_title", "role", "contact_role", "title"])
         copy_tokens = _build_copy_tokens(
@@ -1181,7 +1249,7 @@ def _render_preview(args: argparse.Namespace) -> int:
             template_text,
             {
                 "FIRST_NAME": first_name,
-                "FIRM": firm_name_raw or "your firm",
+                "FIRM": clean_firm or "your firm",
                 "STATE": state_filter,
                 "STATE_FULL_NAME": signal_tokens["STATE_FULL_NAME"],
                 "STATE_METRO_EXAMPLES": signal_tokens["STATE_METRO_EXAMPLES"],
@@ -1211,7 +1279,7 @@ def _render_preview(args: argparse.Namespace) -> int:
                 html_template_text,
                 {
                     "{{FIRST_NAME}}": _html_escape(first_name),
-                    "{{FIRM}}": _html_escape(firm_name_raw or "your firm"),
+                    "{{FIRM}}": _html_escape(clean_firm or "your firm"),
                     "{{STATE}}": _html_escape(state_filter),
                     "{{STATE_FULL_NAME}}": _html_escape(signal_tokens["STATE_FULL_NAME"]),
                     "{{STATE_METRO_EXAMPLES}}": _html_escape(signal_tokens["STATE_METRO_EXAMPLES"]),
@@ -1486,9 +1554,9 @@ def main() -> int:
                 return 2
             raise
 
-        first_name = (r.get("first_name") or "").strip()
+        first_name = _clean_first_name((r.get("first_name") or "").strip())
         firm_name_raw = _row_text_value(r, ["firm"])
-        firm = firm_name_raw or "your firm"
+        firm = _clean_company_name(firm_name_raw) or "your firm"
         segment = _row_text_value(r, ["segment", "buyer_segment"])
         role_or_title = _row_text_value(r, ["role_or_title", "role", "contact_role", "title"])
         prefs_link = prefs_url or unsub_url or ""

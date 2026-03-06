@@ -20,6 +20,15 @@ function Resolve-DefaultRunSummaryRoot {
   return (Join-Path $RepoRoot 'out\run_summaries')
 }
 
+function _Write-TextUtf8NoBom {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Content
+  )
+  $enc = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($Path, $Content, $enc)
+}
+
 function _Collect-TokenLists {
   param([string[]]$Lines)
   $pass = New-Object System.Collections.Generic.List[string]
@@ -177,9 +186,15 @@ function Write-RuntimeRunSummary {
   }
 
   $artifactPaths = New-Object System.Collections.Generic.List[string]
-  if ($TaskLogPath) { [void]$artifactPaths.Add($TaskLogPath) }
-  [void]$artifactPaths.AddRange(@($parsed.artifacts))
-  [void]$artifactPaths.AddRange(@($ExtraArtifactPaths | Where-Object { ([string]$_).Trim() }))
+  if ($TaskLogPath) { [void]$artifactPaths.Add([string]$TaskLogPath) }
+  foreach ($artifact in @($parsed.artifacts)) {
+    $value = ([string]$artifact).Trim()
+    if ($value) { [void]$artifactPaths.Add($value) }
+  }
+  foreach ($artifact in @($ExtraArtifactPaths)) {
+    $value = ([string]$artifact).Trim()
+    if ($value) { [void]$artifactPaths.Add($value) }
+  }
 
   $summary = [ordered]@{
     schema = 'runtime_run_summary_v1'
@@ -209,7 +224,7 @@ function Write-RuntimeRunSummary {
     }
   }
 
-  ($summary | ConvertTo-Json -Depth 10) + "`n" | Set-Content -Path $summaryJsonPath -Encoding UTF8
+  _Write-TextUtf8NoBom -Path $summaryJsonPath -Content (($summary | ConvertTo-Json -Depth 10) + "`n")
 
   $textLines = @(
     ('RUNTIME_RUN_SUMMARY wrapper=' + $WrapperName + ' exit_code=' + [int]$ExitCode + ' mode=' + $Mode + ' intent=' + $Intent + ' dry_run=' + ($(if($DryRun){'YES'}else{'NO'}))),
@@ -222,11 +237,11 @@ function Write-RuntimeRunSummary {
     ('RUNTIME_RUN_SUMMARY_PASS_TOKENS=' + (@($tokens.pass | Sort-Object) -join ',')),
     ('RUNTIME_RUN_SUMMARY_ERR_TOKENS=' + (@($tokens.err | Sort-Object) -join ','))
   )
-  $textLines -join "`r`n" | Set-Content -Path $summaryTextPath -Encoding UTF8
+  _Write-TextUtf8NoBom -Path $summaryTextPath -Content ($textLines -join "`r`n")
 
   $synced = _Sync-Artifacts -TaskLogPath $TaskLogPath -SummaryJsonPath $summaryJsonPath -SummaryTextPath $summaryTextPath -EmitLine $EmitLine
   $summary.artifacts.synced = @($synced)
-  ($summary | ConvertTo-Json -Depth 10) + "`n" | Set-Content -Path $summaryJsonPath -Encoding UTF8
+  _Write-TextUtf8NoBom -Path $summaryJsonPath -Content (($summary | ConvertTo-Json -Depth 10) + "`n")
 
   if ($EmitLine) {
     & $EmitLine ('RUN_SUMMARY_JSON_PATH=' + $summaryJsonPath)

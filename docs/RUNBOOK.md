@@ -5,6 +5,43 @@
 `AGENTS.md` at repo root is the canonical operator + Codex instruction contract.
 Use this runbook for executable commands, but resolve policy conflicts in favor of `AGENTS.md`.
 
+## Centralized Runtime Operations
+
+Runtime model:
+
+- Canonical PC is the only live writer/sender for `osha.sqlite`, `crm.sqlite`, `crm_light.sqlite`, and live email sends.
+- Laptop/dev clients are limited to `--print-config`, `--doctor`, `--dry-run`, and artifact review.
+- GitHub Actions is control-plane visibility only and must invoke repo wrappers on the canonical self-hosted runner (`self-hosted`, `windows`, `osha-pc-canonical`).
+
+Primary wrappers:
+
+- `scripts\scheduled\run_trial_facs_daily.ps1`
+- `scripts\scheduled\run_outreach_auto.ps1`
+- `scripts\scheduled\run_osha_ingest_daily.ps1`
+- `scripts\scheduled\run_osha_ingest_evening.ps1`
+- `scripts\scheduled\backup_runtime_state.ps1`
+
+Artifact locations:
+
+- Task logs: `${TASK_LOG_ROOT}` or `.\out\task_logs`
+- Run summaries: `${RUN_SUMMARY_ROOT}` or `.\out\run_summaries`
+- Backup snapshots/manifests: `${BACKUP_ROOT}` or `.\out\backups`
+- Optional cloud mirror root: `${ARTIFACT_SYNC_DIR}` (artifacts/backups only; never live DB path)
+
+Triage ladder:
+
+1. Open run summary (`runtime_run_summary_v1` JSON + text).
+2. Open referenced task log.
+3. Validate runtime fingerprint block (`RUNTIME_HOSTNAME`, `RUNTIME_ROLE`, `RUNTIME_DATA_DIR`, `MFO_RUNTIME_MODE`, `MFO_TRUSTED_SCHEDULED`).
+4. Resolve host/path mismatch (`ERR_RUNTIME_*`) before rerun.
+5. Reconcile state if needed (for example trial ledger reconcile), then rerun wrapper.
+
+Runner-offline behavior:
+
+- If the canonical PC/self-hosted runner is offline, scheduled GitHub workflows will queue/fail visibly.
+- Treat this as expected telemetry; do not reroute live writes/sends to laptop.
+- Recovery is: restore runner availability on PC, validate guard/paths with `--print-config` and dry-run, then rerun wrapper/workflow.
+
 ## WIP Autosave Discipline
 
 Rules:
@@ -1054,7 +1091,7 @@ schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:30 /TN "OSHA_Prospe
 
 ```powershell
 schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 08:00 /TN "OSHA_Outreach_Auto" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_outreach_auto.py" `
+  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_outreach_auto.ps1" `
   /RL HIGHEST
 ```
 

@@ -276,3 +276,34 @@ Prospect autogrow is expanding to browser-backed scraping sources (for example B
 - Operators must perform a one-time `crawl4ai-setup` when enabling OSHA_NEWS in production.
 - Generator output now includes additional readiness/availability tokens in `--print-config` and `--doctor` paths.
 
+## ADR-0010: Centralized Runtime Writer + GitHub Actions Self-Hosted Control Plane
+
+Date: 2026-03-05
+Status: Accepted
+
+### Context
+
+Multiple machines were able to run write/send paths, creating split-brain risk for SQLite runtime state and send ledgers.
+Operators also needed remote visibility into scheduled outcomes without touching live databases.
+
+### Decision
+
+- Enforce a canonical runtime model:
+  - Canonical PC is the only live writer/sender.
+  - Runtime preflight guard validates host, role, data-root, and required artifact directories before writes/sends.
+- Add deterministic runtime fingerprints and summary artifacts to scheduled/manual wrappers.
+- Use GitHub Actions only as control plane visibility, with workflows pinned to a self-hosted Windows runner label on the canonical PC.
+- Publish logs/summaries/backups as artifacts for remote inspection.
+- Keep backups as snapshot/copy artifacts only; no live DB synchronization.
+
+### Rationale
+
+- Removes split-brain live-write/send failure mode.
+- Preserves existing outreach/compliance behavior while improving operability and incident triage.
+- Gives laptop operators near-real-time observability through workflow/artifact telemetry without direct DB access.
+
+### Consequences
+
+- Non-canonical live attempts fail fast with deterministic `ERR_RUNTIME_*` tokens.
+- Manual live sends now require explicit `--confirm-live-send` unless running in trusted scheduled context.
+- Offline self-hosted runner state is visible as queued/failed workflow telemetry and treated as an ops signal.

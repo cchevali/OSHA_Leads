@@ -197,8 +197,9 @@ def run_runtime_preflight(
         errors.append(f"{ERR_RUNTIME_ROLE_INVALID} value={fingerprint.runtime_role}")
 
     if _canonical_host_required(fingerprint):
-        if (not fingerprint.canonical_hostname) and (not _running_under_unittest()):
-            errors.append(ERR_RUNTIME_CANONICAL_HOSTNAME_REQUIRED)
+        if not fingerprint.canonical_hostname:
+            if not _running_under_unittest():
+                errors.append(ERR_RUNTIME_CANONICAL_HOSTNAME_REQUIRED)
         elif not fingerprint.canonical_host_match:
             errors.append(
                 f"{ERR_RUNTIME_HOST_MISMATCH} expected={fingerprint.canonical_hostname} actual={fingerprint.hostname}"

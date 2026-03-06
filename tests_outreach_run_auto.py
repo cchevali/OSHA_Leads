@@ -696,7 +696,11 @@ class TestOutreachRunAuto(unittest.TestCase):
                 ), mock.patch.object(
                     roa, "_has_prior_sent_event", return_value=True
                 ):
-                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--for-date", "2026-02-24"]):
+                    with mock.patch.object(
+                        sys,
+                        "argv",
+                        ["run_outreach_auto.py", "--confirm-live-send", "--for-date", "2026-02-24"],
+                    ):
                         out = io.StringIO()
                         err = io.StringIO()
                         with redirect_stdout(out), redirect_stderr(err):
@@ -757,7 +761,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 with mock.patch.object(roa, "_outreach_local_now", return_value=weekday_now), mock.patch.object(
                     roa, "_select_candidates", side_effect=AssertionError("selection should not run on same-day guard")
                 ):
-                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py"]):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--confirm-live-send"]):
                         out = io.StringIO()
                         err = io.StringIO()
                         with redirect_stdout(out), redirect_stderr(err):
@@ -810,7 +814,9 @@ class TestOutreachRunAuto(unittest.TestCase):
                     roa, "_select_candidates", side_effect=RuntimeError("after_same_day_guard")
                 ):
                     with mock.patch.object(
-                        sys, "argv", ["run_outreach_auto.py", "--allow-second-live-run-same-day"]
+                        sys,
+                        "argv",
+                        ["run_outreach_auto.py", "--confirm-live-send", "--allow-second-live-run-same-day"],
                     ):
                         with self.assertRaisesRegex(RuntimeError, "after_same_day_guard"):
                             roa.main()
@@ -841,7 +847,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
             }
-            p = self._run(["--allow-weekend-send", "--to", "wrong@example.com"], env)
+            p = self._run(["--allow-weekend-send", "--confirm-live-send", "--to", "wrong@example.com"], env)
             self.assertNotEqual(p.returncode, 0)
             self.assertIn("ERR_AUTO_SUMMARY_TO_MISMATCH", (p.stderr or "") + (p.stdout or ""))
 
@@ -956,7 +962,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 ), mock.patch.object(
                     roa, "_send_outreach_email", side_effect=_fake_send
                 ), mock.patch.object(roa, "_write_events_and_status_updates", side_effect=_fake_write):
-                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py"]):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--confirm-live-send"]):
                         out = io.StringIO()
                         err = io.StringIO()
                         with redirect_stdout(out), redirect_stderr(err):
@@ -1176,7 +1182,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 ), mock.patch.object(
                     roa, "_send_summary_email", side_effect=_fake_summary_send
                 ):
-                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py"]):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--confirm-live-send"]):
                         out = io.StringIO()
                         err = io.StringIO()
                         with redirect_stdout(out), redirect_stderr(err):
@@ -1652,7 +1658,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("batch=2001-01-02_CA", dry_run.stdout or "")
             self.assertIn("would_contact_prospect_ids=p_ca", dry_run.stdout or "")
 
-            live = self._run(["--allow-weekend-send", "--for-date", "2001-01-02"], env)
+            live = self._run(["--allow-weekend-send", "--confirm-live-send", "--for-date", "2001-01-02"], env)
             self.assertNotEqual(live.returncode, 0)
             self.assertIn("ERR_AUTO_FOR_DATE_LIVE_SEND_BLOCKED", (live.stderr or "") + (live.stdout or ""))
 
@@ -1790,8 +1796,14 @@ class TestOutreachRunAuto(unittest.TestCase):
                             )
                             self.assertEqual(subject, expected_subject)
                             self.assertIn("I spotted a new OSHA inspection", text_body)
-                            self.assertIn("opened recently and none have citations yet", text_body)
-                            self.assertIn("Happy to set up a short trial feed", text_body)
+                            self.assertIn(
+                                "Recently observed in public OSHA data; opened dates are listed below and none have citations yet",
+                                text_body,
+                            )
+                            self.assertIn(
+                                "If useful, I can set up a short trial feed for the metros you care about",
+                                text_body,
+                            )
                             self.assertEqual(html_body.count(">Unsubscribe</a>"), 1)
                             self.assertEqual(html_body.count(">Manage preferences</a>"), 0)
                             self.assertEqual(html_body.count("unsubscribe.example/u"), 1)
@@ -1868,7 +1880,69 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "Hi - saw a new OSHA inspection in California that might be relevant to your team:",
                 text_body,
             )
-            self.assertIn("Opened recently and none have citations yet.", text_body)
+            self.assertIn(
+                "Recently observed in public OSHA data. Opened dates are listed above and none have citations yet.",
+                text_body,
+            )
+        finally:
+            conn.close()
+
+    def test_render_payload_normalizes_shouty_name_and_company(self):
+        template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt")
+        html_template_text = roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html")
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                """
+                CREATE TABLE prospect_preview (
+                    prospect_id TEXT,
+                    contact_name TEXT,
+                    firm TEXT,
+                    email TEXT,
+                    title TEXT
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO prospect_preview(prospect_id, contact_name, firm, email, title) VALUES(?, ?, ?, ?, ?)",
+                ("p1", "ALONSO,", "TEMPERATURE PRO WEST AUSTIN", "alonso@example.com", "Owner"),
+            )
+            row = conn.execute("SELECT * FROM prospect_preview").fetchone()
+            self.assertIsNotNone(row)
+            with mock.patch.object(
+                roa.gm,
+                "_build_urls",
+                return_value=("https://unsubscribe.example/u", "https://unsubscribe.example/prefs"),
+            ):
+                _subject, text_body, _html_body, _unsub = roa._render_outreach_payload(
+                    row=row,
+                    state="TX",
+                    batch="2026-03-05_TX",
+                    template_text=template_text,
+                    html_template_text=html_template_text,
+                    recent_signals_lines="- Metro Safety Co (Austin, TX) | Complaint | Opened 2026-03-04 | Observed 2026-03-05",
+                    recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-03-05</div>",
+                    last_refresh_et="2026-03-05 08:00 ET",
+                    signal_tokens={
+                        "STATE_FULL_NAME": "Texas",
+                        "STATE_METRO_EXAMPLES": "Austin, Houston",
+                        "SIGNALS_WINDOW_NOTE_TEXT": "",
+                        "SIGNALS_WINDOW_NOTE_HTML": "",
+                        "SIGNALS_FALLBACK_TEXT": "",
+                        "SIGNALS_FALLBACK_HTML": "",
+                    },
+                    recent_leads=[
+                        {
+                            "date_opened": "2026-03-04",
+                            "first_seen_at": "2026-03-05T12:00:00Z",
+                            "site_state": "TX",
+                        }
+                    ],
+                )
+            self.assertIn("Hi Alonso,", text_body)
+            self.assertNotIn("Hi Alonso,,", text_body)
+            self.assertIn("your team at Temperature Pro West Austin", text_body)
         finally:
             conn.close()
 

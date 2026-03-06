@@ -65,7 +65,7 @@ finally {
 Write-TaskLine ("TASK_LOG_PATH=" + $taskLogPath)
 Write-TaskLine ("TRIAL_SUBSCRIBER_KEY=" + $trialSubscriberKey)
 Write-TaskLine ("TRIAL_EXIT_CODE=" + $trialExitCode)
-Write-RuntimeRunSummary `
+$summaryResult = Write-RuntimeRunSummary `
   -RepoRoot $repoRoot `
   -WrapperName 'OSHA_Trial_FACS_Daily' `
   -CommandLine $commandInvoked `
@@ -79,7 +79,8 @@ Write-RuntimeRunSummary `
   -TaskLogRoot $taskLogDir `
   -RunSummaryRoot $runSummaryRoot `
   -Fingerprint $(if ($preflight) { [hashtable]$preflight.Values } else { @{} }) `
-  -EmitLine ${function:Write-TaskLine} | Out-Null
+  -EmitLine ${function:Write-TaskLine}
+# RUN_SUMMARY_JSON_PATH= / RUN_SUMMARY_TEXT_PATH= emitted above via Write-RuntimeRunSummary.
 
 if ($trialExitCode -ne 0) {
   exit 1

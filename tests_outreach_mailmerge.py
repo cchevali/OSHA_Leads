@@ -345,7 +345,7 @@ class TestOutreachMailmerge(unittest.TestCase):
             state_full_name="California",
             signal_count=3,
         )
-        self.assertIn("Quick heads up — 3 new CA complaint inspections", subject)
+        self.assertIn("Quick heads up — 3 recent CA complaint inspections", subject)
         self.assertLess(len(subject), 65)
 
     def test_build_outreach_subject_omits_type_when_mixed(self):
@@ -361,7 +361,7 @@ class TestOutreachMailmerge(unittest.TestCase):
             state_full_name="California",
             signal_count=2,
         )
-        self.assertIn("Quick heads up — 2 new CA inspections", subject)
+        self.assertIn("Quick heads up — 2 recent CA inspections", subject)
         self.assertNotIn("complaint", subject.lower())
         self.assertNotIn("accident", subject.lower())
         self.assertLess(len(subject), 65)
@@ -868,6 +868,8 @@ class TestOutreachMailmerge(unittest.TestCase):
 
         self.assertEqual(gm._clean_company_name("Inc."), "")
         self.assertEqual(gm._clean_company_name("Precision Environmental Inc."), "Precision Environmental Inc.")
+        self.assertEqual(gm._clean_company_name("TEMPERATURE PRO WEST AUSTIN"), "Temperature Pro West Austin")
+        self.assertEqual(gm._clean_first_name("ALONSO,"), "Alonso")
 
     def test_outreach_overlay_flag_off_keeps_mailmerge_schema_without_ai_columns(self):
         with tempfile.TemporaryDirectory() as d:

@@ -98,7 +98,7 @@ if ($dumpOutreachMatched) {
 if ($dumpSubscribersMatched) {
   Write-TaskLine ("AI_REVIEW_DUMP_SUBSCRIBERS_MATCHED_TOTAL=" + $dumpSubscribersMatched)
 }
-Write-RuntimeRunSummary `
+$summaryResult = Write-RuntimeRunSummary `
   -RepoRoot $repoRoot `
   -WrapperName 'OSHA_Osha_Ingest_Evening' `
   -CommandLine $commandInvoked `
@@ -113,7 +113,8 @@ Write-RuntimeRunSummary `
   -RunSummaryRoot $runSummaryRoot `
   -Fingerprint $(if ($preflight) { [hashtable]$preflight.Values } else { @{} }) `
   -ExtraArtifactPaths @($dumpOutputPath) `
-  -EmitLine ${function:Write-TaskLine} | Out-Null
+  -EmitLine ${function:Write-TaskLine}
+# RUN_SUMMARY_JSON_PATH= / RUN_SUMMARY_TEXT_PATH= emitted above via Write-RuntimeRunSummary.
 
 if ($ingestExitCode -ne 0 -or $dumpExitCode -ne 0) {
   exit 1

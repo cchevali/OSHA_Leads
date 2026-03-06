@@ -34,7 +34,7 @@ function Invoke-RuntimePreflight {
   foreach ($line in @($output)) {
     $text = [string]$line
     if ($EmitLine) {
-      & $EmitLine $text
+      & $EmitLine $text | Out-Null
     } else {
       Write-Output $text
     }

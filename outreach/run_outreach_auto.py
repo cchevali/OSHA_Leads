@@ -1519,7 +1519,8 @@ def _render_outreach_payload(
     signal_tokens: dict[str, str] | None = None,
     recent_leads: list[dict] | None = None,
 ) -> tuple[str, str, str, str]:
-    first_name = (str(row["contact_name"] or "").split(" ")[:1] or [""])[0].strip()
+    first_name_raw = (str(row["contact_name"] or "").split(" ")[:1] or [""])[0].strip()
+    first_name = gm._clean_first_name(first_name_raw)
     firm_name_raw = str(row["firm"] or "").strip()
     clean_firm = gm._clean_company_name(firm_name_raw)
     firm = clean_firm or "your team"
@@ -1556,7 +1557,7 @@ def _render_outreach_payload(
         state_full_name=state_full_name,
         state_metro_examples=state_metro_examples,
         first_name=first_name,
-        firm_name=firm_name_raw,
+        firm_name=clean_firm,
         segment=segment,
         role_or_title=role_or_title,
         recent_leads=recent_leads,
