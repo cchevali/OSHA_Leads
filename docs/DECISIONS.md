@@ -342,3 +342,34 @@ The runtime hardening work introduced a single orchestrator (`run_runtime_tick.p
 - Operator docs and runbooks must treat runtime tick as the default daily path.
 - Workflow enablement on the default branch becomes part of runtime cutover.
 - Task Scheduler credentials and installers remain supported only for recovery scenarios, not as standard daily operations.
+
+## ADR-0012: Runtime Tick Failure Alerts With Slot Dedupe
+
+Date: 2026-03-06
+Status: Accepted
+
+### Context
+
+Runtime tick centralized scheduling and status artifacts, but operators still had to poll logs to detect failures or missed morning windows. The system needed high-signal alerts without adding new infrastructure or introducing send loops.
+
+### Decision
+
+- Runtime tick evaluates alert candidates after each run.
+- Live-mode SMTP alerts are sent to `RUNTIME_ALERT_RECIPIENT` or fallback `OSHA_SMOKE_TO`.
+- Alert categories:
+  - `job_failure`: any failed runtime job.
+  - `missed_window`: `window_closed_*` skips for `ingest_daily`, `prospect_replenish_daily`, `outreach_auto`, and `trial_facs_daily`.
+- Per-slot dedupe markers are written under `${DATA_DIR}\runtime\status\alerts\*.json`.
+- Doctor/dry-run modes never send alerts.
+
+### Rationale
+
+- Reuses existing SMTP and operator mailbox setup.
+- Avoids duplicate paging every 15 minutes after a window closes.
+- Keeps runtime tick failures visible without changing send/prospect business behavior.
+
+### Consequences
+
+- Runtime status artifacts now include alert summary fields.
+- Operators can monitor alert state from `runtime_latest.json` plus alert dedupe records.
+- Missing SMTP or recipient configuration degrades to non-fatal skipped-alert tokens.

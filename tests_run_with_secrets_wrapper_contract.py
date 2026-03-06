@@ -40,13 +40,34 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         self.assertIn("MFO_DATA_DIR_SOURCE", target_text)
         self.assertIn("PYTHONWARNINGS", target_text)
         self.assertIn("ignore:urllib3", target_text)
+        self.assertIn("OSHA_Leads\\python\\python.exe", target_text)
+        self.assertIn("OSHA_Leads\\Python313\\python.exe", target_text)
+        self.assertIn("OSHA_Leads\\secrets\\.env.sops", target_text)
+        self.assertIn("ENV_SOPS_PATH", target_text)
+        self.assertLess(
+            target_text.index("OSHA_Leads\\python\\python.exe"),
+            target_text.index("Get-Command -Name 'python'")
+        )
         self.assertIn("WARN_ENV_CONFLICT=1 key=DATA_DIR", tooling_text)
         self.assertIn("WARN_DATA_DIR_NOT_ABSOLUTE=1", tooling_text)
+        self.assertIn("OSHA_Leads\\keys\\age\\keys.txt", tooling_text)
+        self.assertIn("OSHA_Leads\\tools\\sops.exe", tooling_text)
+        self.assertIn("OSHA_Leads\\tools\\age.exe", tooling_text)
+        self.assertIn("sops_start_failed file=", tooling_text)
+        self.assertIn("$env:ProgramData", tooling_text)
+        self.assertIn("WinGet\\Packages", tooling_text)
+        self.assertIn("WinGet\\Links", tooling_text)
+        self.assertLess(tooling_text.index("WinGet\\Packages"), tooling_text.index("Get-Command $ToolName"))
 
     def test_target_wrapper_check_decrypt_uses_direct_sops_invocation(self):
         self.assertTrue(TARGET_SCRIPT.exists(), msg=f"missing script: {TARGET_SCRIPT}")
         target_text = TARGET_SCRIPT.read_text(encoding="utf-8")
         self.assertIn("Invoke-NativeAllowStderr -FilePath $sopsExe", target_text)
+        self.assertIn("native_start_failed file=", target_text)
+        self.assertIn("& $FilePath @ArgumentList 2>&1", target_text)
+        self.assertIn("$ErrorActionPreference = 'Continue'", target_text)
+        self.assertIn("$ErrorActionPreference = $previousErrorActionPreference", target_text)
+        self.assertNotIn("Start-Process -FilePath $FilePath", target_text)
         self.assertNotIn("-FilePath 'cmd' -ArgumentList @('/c', $cmdLine)", target_text)
 
     def test_wrapper_sets_context_pack_sentinel_before_payload(self):

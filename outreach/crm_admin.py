@@ -34,6 +34,7 @@ PASS_CRM_MARK = "PASS_CRM_MARK"
 VERIFY_IMPORT_SAMPLE_SIZE = 25
 BLANK_SOURCE_LABEL = "(blank)"
 EMAIL_SCAN_RE = re.compile(r"[^\s,;<>\"']+@[^\s,;<>\"']+")
+VALID_SOURCE_FIT_TIERS = {"core_consultant", "recoverable_consultant", "adjacent_contractor"}
 
 
 def _norm_email(value: str) -> str:
@@ -42,6 +43,44 @@ def _norm_email(value: str) -> str:
 
 def _norm_state(value: str) -> str:
     return (value or "").strip().upper()
+
+
+def _norm_source(value: str) -> str:
+    return (value or "").strip()
+
+
+def _coerce_boolish_int(value: str, default: int = 1) -> int:
+    text = (value or "").strip().lower()
+    if not text:
+        return 1 if int(default) else 0
+    if text in {"1", "true", "yes", "on"}:
+        return 1
+    if text in {"0", "false", "no", "off"}:
+        return 0
+    try:
+        return 1 if int(text) != 0 else 0
+    except Exception:
+        return 1 if int(default) else 0
+
+
+def _source_fit_defaults(source: str) -> tuple[str, int]:
+    source_norm = _norm_source(source).lower()
+    if source_norm.startswith("state_lic"):
+        return "adjacent_contractor", 0
+    if source_norm.startswith("apollo"):
+        return "core_consultant", 1
+    if source_norm.startswith("aiha_consultants_listing:"):
+        return "recoverable_consultant", 1
+    if source_norm.startswith("ohs_buyers_guide:"):
+        return "recoverable_consultant", 1
+    return "recoverable_consultant", 1
+
+
+def _coerce_source_fit_tier(value: str, source: str) -> str:
+    tier = (value or "").strip().lower()
+    if tier in VALID_SOURCE_FIT_TIERS:
+        return tier
+    return _source_fit_defaults(source)[0]
 
 
 def _title_score(title: str) -> int:
@@ -299,6 +338,8 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
             created_at = (row.get("created_at") or "").strip() or ts
             last_contacted_at = (row.get("last_contacted_at") or "").strip() or None
 
+            source = _norm_source(row.get("source") or "csv_seed")
+            source_fit_default, sendable_default = _source_fit_defaults(source)
             payload = {
                 "prospect_id": prospect_id,
                 "firm": firm,
@@ -308,7 +349,12 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                 "city": (row.get("city") or "").strip(),
                 "state": _norm_state(row.get("state", "")),
                 "website": (row.get("website") or "").strip(),
-                "source": (row.get("source") or "csv_seed").strip(),
+                "source": source,
+                "source_fit_tier": _coerce_source_fit_tier(row.get("source_fit_tier") or "", source),
+                "default_send_eligible": _coerce_boolish_int(
+                    row.get("default_send_eligible") or "",
+                    default=sendable_default,
+                ),
                 "score": _coerce_score(row.get("score", ""), title),
                 "status": status,
                 "created_at": created_at,
@@ -330,10 +376,10 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                 """
                 INSERT INTO prospects(
                     prospect_id, firm, contact_name, email, title, city, state, website, source,
-                    score, status, created_at, last_contacted_at
+                    source_fit_tier, default_send_eligible, score, status, created_at, last_contacted_at
                 ) VALUES (
                     :prospect_id, :firm, :contact_name, :email, :title, :city, :state, :website, :source,
-                    :score, :status, :created_at, :last_contacted_at
+                    :source_fit_tier, :default_send_eligible, :score, :status, :created_at, :last_contacted_at
                 )
                 ON CONFLICT(prospect_id) DO UPDATE SET
                     firm = excluded.firm,
@@ -344,6 +390,8 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                     state = excluded.state,
                     website = excluded.website,
                     source = excluded.source,
+                    source_fit_tier = excluded.source_fit_tier,
+                    default_send_eligible = excluded.default_send_eligible,
                     score = excluded.score,
                     status = excluded.status,
                     last_contacted_at = COALESCE(excluded.last_contacted_at, prospects.last_contacted_at)

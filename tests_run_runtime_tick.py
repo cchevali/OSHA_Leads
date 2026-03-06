@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import subprocess
 import tempfile
@@ -133,6 +134,117 @@ class TestRunRuntimeTick(unittest.TestCase):
                 rc = tick.main(["--dry-run", "--job", "ingest_daily", "--force"])
         self.assertEqual(rc, 2)
         self.assertIn("ERR_RUNTIME_TICK_STAGE", err_buf.getvalue())
+
+    def test_live_failure_alert_sends_once_and_dedupes(self):
+        send_calls: list[dict[str, str]] = []
+
+        def _run(_cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            return self._proc(1, stdout="", stderr="ERR_STAGE_FAILED\n")
+
+        def _send_alert(*, recipient: str, subject: str, body: str, env):  # type: ignore[no-untyped-def]
+            send_calls.append({"recipient": recipient, "subject": subject, "body": body})
+
+        env = {
+            "OSHA_SMOKE_TO": "ops@example.com",
+            "SMTP_HOST": "smtp.example.com",
+            "SMTP_PORT": "587",
+            "SMTP_USER": "bot@example.com",
+            "SMTP_PASS": "secret",
+        }
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d, **env}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick.subprocess, "run", side_effect=_run),
+            mock.patch.object(tick, "send_plain_text_alert", side_effect=_send_alert),
+        ):
+            out_first = io.StringIO()
+            err_first = io.StringIO()
+            with redirect_stdout(out_first), redirect_stderr(err_first):
+                rc1 = tick.main(["--job", "ingest_daily", "--force", "--now-local", "2026-03-09T06:50", "--mode", "scheduled"])
+            self.assertEqual(rc1, 2, msg=out_first.getvalue() + "\n" + err_first.getvalue())
+            self.assertIn("RUNTIME_TICK_ALERT_SENT=count=1 recipient=ops@example.com", out_first.getvalue())
+
+            out_second = io.StringIO()
+            err_second = io.StringIO()
+            with redirect_stdout(out_second), redirect_stderr(err_second):
+                rc2 = tick.main(["--job", "ingest_daily", "--force", "--now-local", "2026-03-09T06:50", "--mode", "scheduled"])
+            self.assertEqual(rc2, 2, msg=out_second.getvalue() + "\n" + err_second.getvalue())
+            self.assertIn("RUNTIME_TICK_ALERT_SKIPPED=name=ingest_daily category=job_failure reason=duplicate", out_second.getvalue())
+
+            status_path = Path(d) / "runtime" / "status" / "runtime_latest.json"
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertIn("alerts", payload)
+            self.assertEqual(int(payload["alerts"]["alerts_sent"]), 0)
+            self.assertGreaterEqual(int(payload["alerts"]["alerts_skipped"]), 1)
+
+        self.assertEqual(len(send_calls), 1)
+
+    def test_missed_window_alert_sends_for_critical_daily_job(self):
+        sent: list[dict[str, str]] = []
+
+        def _send_alert(*, recipient: str, subject: str, body: str, env):  # type: ignore[no-untyped-def]
+            sent.append({"recipient": recipient, "subject": subject, "body": body})
+
+        env = {
+            "OSHA_SMOKE_TO": "ops@example.com",
+            "SMTP_HOST": "smtp.example.com",
+            "SMTP_PORT": "587",
+            "SMTP_USER": "bot@example.com",
+            "SMTP_PASS": "secret",
+        }
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d, **env}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick, "send_plain_text_alert", side_effect=_send_alert),
+        ):
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                rc = tick.main(["--job", "outreach_auto", "--now-local", "2026-03-09T12:30", "--mode", "scheduled"])
+        self.assertEqual(rc, 0, msg=out_buf.getvalue() + "\n" + err_buf.getvalue())
+        out = out_buf.getvalue()
+        self.assertIn("RUNTIME_TICK_JOB_RESULT=name=outreach_auto result=skipped exit_code=0 reason=window_closed_180m", out)
+        self.assertIn("RUNTIME_TICK_ALERT_CANDIDATE=name=outreach_auto category=missed_window send=1 reason=ready_to_send", out)
+        self.assertEqual(len(sent), 1)
+
+    def test_dry_run_failure_alert_is_non_live_candidate_only(self):
+        def _run(_cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            return self._proc(1, stdout="", stderr="ERR_STAGE_FAILED\n")
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(
+                os.environ,
+                {
+                    "DATA_DIR": d,
+                    "OSHA_SMOKE_TO": "ops@example.com",
+                    "SMTP_HOST": "smtp.example.com",
+                    "SMTP_PORT": "587",
+                    "SMTP_USER": "bot@example.com",
+                    "SMTP_PASS": "secret",
+                },
+                clear=False,
+            ),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick.subprocess, "run", side_effect=_run),
+            mock.patch.object(tick, "send_plain_text_alert") as send_mock,
+        ):
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                rc = tick.main(["--dry-run", "--job", "ingest_daily", "--force"])
+        self.assertEqual(rc, 2)
+        out = out_buf.getvalue()
+        self.assertIn("RUNTIME_TICK_ALERT_CANDIDATE=name=ingest_daily category=job_failure send=0 reason=non_live_mode", out)
+        self.assertIn("RUNTIME_TICK_ALERT_SKIPPED=name=ingest_daily category=job_failure reason=non_live_mode", out)
+        send_mock.assert_not_called()
 
 
 if __name__ == "__main__":

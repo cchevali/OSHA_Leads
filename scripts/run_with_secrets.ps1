@@ -26,35 +26,61 @@ function Set-PythonWarningsFilter {
   }
 }
 
+function Resolve-EnvSopsPath {
+  param(
+    [Parameter(Mandatory = $true)] [string]$RepoRoot
+  )
+
+  $forced = ([string]$env:ENV_SOPS_PATH).Trim()
+  if ($forced -and (Test-Path -LiteralPath $forced)) {
+    try { return (Resolve-Path -LiteralPath $forced).Path } catch { return $forced }
+  }
+
+  $programData = ([string]$env:ProgramData).Trim()
+  if ($programData) {
+    $machinePath = Join-Path $programData 'OSHA_Leads\secrets\.env.sops'
+    if (Test-Path -LiteralPath $machinePath) {
+      try { return (Resolve-Path -LiteralPath $machinePath).Path } catch { return $machinePath }
+    }
+  }
+
+  return (Join-Path $RepoRoot '.env.sops')
+}
+
 function Invoke-NativeAllowStderr {
   param(
     [string]$FilePath,
     [string[]]$ArgumentList = @()
   )
 
-  $stdoutPath = [System.IO.Path]::GetTempFileName()
-  $stderrPath = [System.IO.Path]::GetTempFileName()
+  $previousErrorActionPreference = $ErrorActionPreference
   try {
-    $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-    $stdoutLines = @()
-    $stderrLines = @()
-    if (Test-Path -LiteralPath $stdoutPath) {
-      $stdoutLines = @(Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue)
+    $ErrorActionPreference = 'Continue'
+    $output = @(& $FilePath @ArgumentList 2>&1)
+  } catch {
+    $nativePath = [string]$FilePath
+    $nativeArgs = ''
+    if ($ArgumentList -and $ArgumentList.Count -gt 0) {
+      $nativeArgs = ($ArgumentList | ForEach-Object { [string]$_ }) -join ' '
     }
-    if (Test-Path -LiteralPath $stderrPath) {
-      $stderrLines = @(Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue)
-    }
-    return @{
-      Output = @($stdoutLines + $stderrLines)
-      ExitCode = [int]$proc.ExitCode
-    }
+    throw ("native_start_failed file=" + $nativePath + " args=" + $nativeArgs + " err=" + $_.Exception.Message)
   } finally {
-    if (Test-Path -LiteralPath $stdoutPath) {
-      Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  $exitCode = 0
+  if ($null -ne $LASTEXITCODE) {
+    $exitCode = [int]$LASTEXITCODE
+  }
+  $outputLines = @()
+  foreach ($line in @($output)) {
+    if ($null -eq $line) {
+      continue
     }
-    if (Test-Path -LiteralPath $stderrPath) {
-      Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
-    }
+    $outputLines += [string]$line
+  }
+  return @{
+    Output = @($outputLines)
+    ExitCode = $exitCode
   }
 }
 
@@ -64,13 +90,13 @@ function Resolve-PythonExePath {
     try { return (Resolve-Path -LiteralPath $forced).Path } catch { return $forced }
   }
 
-  $pythonCmd = Get-Command -Name 'python' -ErrorAction SilentlyContinue
-  if ($pythonCmd -and $pythonCmd.Source -and (Test-Path -LiteralPath $pythonCmd.Source)) {
-    try { return (Resolve-Path -LiteralPath $pythonCmd.Source).Path } catch { return $pythonCmd.Source }
-  }
-
   $candidates = New-Object System.Collections.Generic.List[string]
   $localAppData = ([string]$env:LOCALAPPDATA).Trim()
+  $programData = ([string]$env:ProgramData).Trim()
+  if ($programData) {
+    [void]$candidates.Add((Join-Path $programData 'OSHA_Leads\python\python.exe'))
+    [void]$candidates.Add((Join-Path $programData 'OSHA_Leads\Python313\python.exe'))
+  }
   if ($localAppData) {
     [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python313\python.exe'))
     [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python312\python.exe'))
@@ -90,6 +116,11 @@ function Resolve-PythonExePath {
     if (Test-Path -LiteralPath $candidate) {
       try { return (Resolve-Path -LiteralPath $candidate).Path } catch { return $candidate }
     }
+  }
+
+  $pythonCmd = Get-Command -Name 'python' -ErrorAction SilentlyContinue
+  if ($pythonCmd -and $pythonCmd.Source -and (Test-Path -LiteralPath $pythonCmd.Source)) {
+    try { return (Resolve-Path -LiteralPath $pythonCmd.Source).Path } catch { return $pythonCmd.Source }
   }
 
   $userRoots = @('C:\Users\lever', 'C:\Users\Public')
@@ -169,7 +200,7 @@ try {
   }
 
   $repoRoot = Resolve-RepoRoot
-  $envSopsPath = Join-Path $repoRoot '.env.sops'
+  $envSopsPath = Resolve-EnvSopsPath -RepoRoot $repoRoot
   $ageKeysPath = Get-AgeKeyFilePath
 
   # Make behavior independent of the caller's current working directory (Task Scheduler often starts in System32).
@@ -186,7 +217,7 @@ try {
     $keysExists = Test-Path $ageKeysPath
     if (-not $keysExists) { Fail ("Missing age key file at " + $ageKeysPath) }
     $envSopsExists = Test-Path $envSopsPath
-    if (-not $envSopsExists) { Fail "Missing repo .env.sops" }
+    if (-not $envSopsExists) { Fail ("Missing .env.sops at " + $envSopsPath) }
 
     if ($CheckDecrypt) {
       # Sanity check: ensure this machine can decrypt .env.sops (discard plaintext; no temp files).
@@ -217,7 +248,7 @@ try {
     }
 
     $decryptBit = if ($CheckDecrypt) { '; decrypt_ok=True' } else { '' }
-    Write-Output ("PASS: sops_exe=" + $sopsExe + "; age_exe=" + $ageExe + "; keys_exists=True; env_sops_exists=True" + $decryptBit)
+    Write-Output ("PASS: sops_exe=" + $sopsExe + "; age_exe=" + $ageExe + "; keys_exists=True; env_sops_exists=True; env_sops_path=" + $envSopsPath + $decryptBit)
     exit 0
   }
 
@@ -225,7 +256,7 @@ try {
     Fail "No command provided. Usage: scripts\\run_with_secrets.ps1 [--diagnostics] <cmd> [args...]"
   }
 
-  if (-not (Test-Path $envSopsPath)) { Fail "Missing repo .env.sops at $envSopsPath" }
+  if (-not (Test-Path $envSopsPath)) { Fail "Missing .env.sops at $envSopsPath" }
   if (-not (Test-Path $ageKeysPath)) { Fail ("Missing age key file at " + $ageKeysPath) }
 
   $sopsExe = Resolve-SopsExe

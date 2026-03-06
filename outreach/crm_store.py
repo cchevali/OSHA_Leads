@@ -11,6 +11,10 @@ OUTREACH_EVENTS_MIGRATION_COLUMNS = {
     "attributed_state_at_send": "TEXT",
     "attributed_model": "TEXT",
 }
+PROSPECTS_MIGRATION_COLUMNS = {
+    "source_fit_tier": "TEXT NOT NULL DEFAULT 'recoverable_consultant'",
+    "default_send_eligible": "INTEGER NOT NULL DEFAULT 1",
+}
 
 
 def data_dir_resolution() -> DataDirResolution:
@@ -60,6 +64,16 @@ def ensure_outreach_events_columns(conn: sqlite3.Connection) -> None:
         conn.execute(f"ALTER TABLE outreach_events ADD COLUMN {name} {col_type}")
 
 
+def ensure_prospect_columns(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "prospects"):
+        return
+    existing = _table_columns(conn, "prospects")
+    for name, col_type in PROSPECTS_MIGRATION_COLUMNS.items():
+        if name in existing:
+            continue
+        conn.execute(f"ALTER TABLE prospects ADD COLUMN {name} {col_type}")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -73,6 +87,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
             state TEXT NOT NULL DEFAULT '',
             website TEXT NOT NULL DEFAULT '',
             source TEXT NOT NULL DEFAULT '',
+            source_fit_tier TEXT NOT NULL DEFAULT 'recoverable_consultant',
+            default_send_eligible INTEGER NOT NULL DEFAULT 1,
             score INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'new',
             created_at TEXT NOT NULL,
@@ -124,6 +140,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_prospects_state ON prospects(state);
         CREATE INDEX IF NOT EXISTS idx_prospects_status ON prospects(status);
+        CREATE INDEX IF NOT EXISTS idx_prospects_send_eligible ON prospects(default_send_eligible);
         CREATE INDEX IF NOT EXISTS idx_events_prospect ON outreach_events(prospect_id);
         CREATE INDEX IF NOT EXISTS idx_events_type_ts ON outreach_events(event_type, ts);
         CREATE INDEX IF NOT EXISTS idx_trials_status ON trials(status);
@@ -132,6 +149,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_bounce_events_class ON bounce_events(bounce_class);
         """
     )
+    ensure_prospect_columns(conn)
     ensure_outreach_events_columns(conn)
     conn.commit()
 

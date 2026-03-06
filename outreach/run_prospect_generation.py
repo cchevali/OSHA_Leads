@@ -205,6 +205,10 @@ def _normalize_text(value: str) -> str:
     return (value or "").strip()
 
 
+def _ascii_safe_text(value: str) -> str:
+    return _normalize_text(value).encode("ascii", "backslashreplace").decode("ascii")
+
+
 def _email_domain(email: str) -> str:
     e = _normalize_email(email)
     if "@" not in e:
@@ -926,7 +930,7 @@ def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str]) ->
             "WARN_DOCTOR_CRAWL4AI "
             f"crawl4ai_installed={'YES' if crawl_probe.get('crawl4ai_installed') else 'NO'} "
             f"playwright_browsers_installed={'YES' if crawl_probe.get('playwright_browsers_installed') else 'NO'} "
-            f"reason={crawl_probe.get('error_reason') or 'unknown'}"
+            f"reason={_ascii_safe_text(str(crawl_probe.get('error_reason') or 'unknown'))}"
         )
         warn_count += 1
 
@@ -941,7 +945,10 @@ def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str]) ->
             sources_checked += 1
             avail = scraper_engine.probe_source_availability("BCSP")
             if not avail.get("available"):
-                print(f"WARN_DOCTOR_BCSP available=NO reason={avail.get('reason') or 'unknown'}")
+                print(
+                    "WARN_DOCTOR_BCSP "
+                    f"available=NO reason={_ascii_safe_text(str(avail.get('reason') or 'unknown'))}"
+                )
                 warn_count += 1
                 continue
             probe = prospect_sources_bcsp.doctor_probe_bcsp()
@@ -951,14 +958,18 @@ def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str]) ->
             else:
                 print(
                     f"WARN_DOCTOR_BCSP status={int(probe.get('status') or 0)} "
-                    f"url={probe.get('url') or ''} err={probe.get('error') or 'unreachable'}"
+                    f"url={probe.get('url') or ''} "
+                    f"err={_ascii_safe_text(str(probe.get('error') or 'unreachable'))}"
                 )
                 warn_count += 1
         elif token == "OSHA_NEWS":
             sources_checked += 1
             avail = scraper_engine.probe_source_availability("OSHA_NEWS")
             if not avail.get("available"):
-                print(f"WARN_DOCTOR_OSHA_NEWS available=NO reason={avail.get('reason') or 'unknown'}")
+                print(
+                    "WARN_DOCTOR_OSHA_NEWS "
+                    f"available=NO reason={_ascii_safe_text(str(avail.get('reason') or 'unknown'))}"
+                )
                 warn_count += 1
                 continue
             probe = prospect_sources_osha_news.doctor_probe_osha_news()
@@ -968,7 +979,8 @@ def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str]) ->
             else:
                 print(
                     f"WARN_DOCTOR_OSHA_NEWS status={int(probe.get('status') or 0)} "
-                    f"url={probe.get('url') or ''} err={probe.get('error') or 'unreachable'}"
+                    f"url={probe.get('url') or ''} "
+                    f"err={_ascii_safe_text(str(probe.get('error') or 'unreachable'))}"
                 )
                 warn_count += 1
         elif token == "STATE_LIC":
@@ -980,7 +992,8 @@ def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str]) ->
             else:
                 print(
                     f"WARN_DOCTOR_STATE_LIC status={int(probe.get('status') or 0)} "
-                    f"url={probe.get('url') or ''} err={probe.get('error') or 'unreachable'}"
+                    f"url={probe.get('url') or ''} "
+                    f"err={_ascii_safe_text(str(probe.get('error') or 'unreachable'))}"
                 )
                 warn_count += 1
         elif token == "APOLLO":
@@ -993,7 +1006,7 @@ def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str]) ->
                     diagnostics_dir=diagnostics_dir,
                 )
             except Exception as exc:
-                print(f"WARN_DOCTOR_APOLLO err={exc}")
+                print(f"WARN_DOCTOR_APOLLO err={_ascii_safe_text(str(exc))}")
                 warn_count += 1
                 continue
             if doctor.get("forbidden"):
@@ -1005,7 +1018,7 @@ def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str]) ->
             else:
                 print(
                     f"WARN_DOCTOR_APOLLO status={int(doctor.get('status') or 0)} "
-                    f"err={doctor.get('error') or 'http_error'}"
+                    f"err={_ascii_safe_text(str(doctor.get('error') or 'http_error'))}"
                 )
                 warn_count += 1
 

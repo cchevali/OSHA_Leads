@@ -78,6 +78,16 @@ Status artifacts:
 - `${DATA_DIR}\runtime\status\runtime_latest.json`
 - `${DATA_DIR}\runtime\status\runtime_latest.md`
 - `${DATA_DIR}\runtime\status\jobs\<job>.json`
+- `${DATA_DIR}\runtime\status\alerts\*.json` (dedupe markers for sent runtime alerts)
+
+Runtime tick operator alerts:
+
+- Recipient resolution: `RUNTIME_ALERT_RECIPIENT` -> `OSHA_SMOKE_TO`.
+- Enablement: `RUNTIME_ALERTS_ENABLED` (`1|0`), default on when a recipient is resolvable.
+- Alert categories:
+  - `job_failure` for any failed runtime tick job.
+  - `missed_window` for skipped `window_closed_*` on `ingest_daily`, `prospect_replenish_daily`, `outreach_auto`, and `trial_facs_daily`.
+- Alerts are live-mode only; `--doctor` and `--dry-run` emit candidate/skipped tokens but do not send email.
 
 ## Runtime State Migration
 

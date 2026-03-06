@@ -17,33 +17,25 @@ function Resolve-ExternalExe {
     [string[]] $ExtraAbsoluteCandidates = @()
   )
 
-  # 1) First: whatever is already resolvable via Get-Command.
-  $cmd = Get-Command $ToolName -ErrorAction SilentlyContinue
-  if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source)) {
-    return (Resolve-Path $cmd.Source).Path
-  }
-
-  # 2) WinGet Links shims (commonly missing from PATH in scheduler contexts).
-  $linksDir = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links'
-  if (Test-Path $linksDir) {
-    foreach ($exe in $WinGetLinkExeNames) {
-      $p = Join-Path $linksDir $exe
-      if (Test-Path $p) {
-        return (Resolve-Path $p).Path
-      }
-    }
-  }
-
-  # 3) Common absolute installs.
+  # 1) Common absolute installs.
   foreach ($p in $ExtraAbsoluteCandidates) {
     if ($p -and (Test-Path $p)) {
       return (Resolve-Path $p).Path
     }
   }
 
-  # 4) WinGet Packages directory (matches are versioned in the folder name).
-  $pkgRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
-  if (Test-Path $pkgRoot) {
+  # 2) Prefer real machine/user package binaries before WinGet shim links.
+  $packageRoots = New-Object System.Collections.Generic.List[string]
+  if ([string]$env:ProgramFiles) {
+    [void]$packageRoots.Add((Join-Path $env:ProgramFiles 'WinGet\Packages'))
+  }
+  if ([string]$env:LOCALAPPDATA) {
+    [void]$packageRoots.Add((Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'))
+  }
+  foreach ($pkgRoot in @($packageRoots)) {
+    if (-not $pkgRoot -or -not (Test-Path $pkgRoot)) {
+      continue
+    }
     foreach ($prefix in $WinGetPackagePrefixes) {
       $dirs =
         Get-ChildItem -LiteralPath $pkgRoot -Directory -ErrorAction SilentlyContinue |
@@ -61,6 +53,32 @@ function Resolve-ExternalExe {
     }
   }
 
+  # 3) Then whatever is already resolvable via Get-Command.
+  $cmd = Get-Command $ToolName -ErrorAction SilentlyContinue
+  if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source)) {
+    return (Resolve-Path $cmd.Source).Path
+  }
+
+  # 4) WinGet Links shims remain a last-resort fallback.
+  $linksDirs = New-Object System.Collections.Generic.List[string]
+  if ([string]$env:ProgramFiles) {
+    [void]$linksDirs.Add((Join-Path $env:ProgramFiles 'WinGet\Links'))
+  }
+  if ([string]$env:LOCALAPPDATA) {
+    [void]$linksDirs.Add((Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links'))
+  }
+  foreach ($linksDir in @($linksDirs)) {
+    if (-not $linksDir -or -not (Test-Path $linksDir)) {
+      continue
+    }
+    foreach ($exe in $WinGetLinkExeNames) {
+      $p = Join-Path $linksDir $exe
+      if (Test-Path $p) {
+        return (Resolve-Path $p).Path
+      }
+    }
+  }
+
   return $null
 }
 
@@ -71,6 +89,7 @@ function Resolve-SopsExe {
     -WinGetPackagePrefixes @('Mozilla.SOPS_') `
     -WinGetPackageRelativeCandidates @('sops.exe') `
     -ExtraAbsoluteCandidates @(
+      (Join-Path $env:ProgramData 'OSHA_Leads\tools\sops.exe'),
       (Join-Path $env:ProgramFiles 'sops\sops.exe'),
       (Join-Path $env:ProgramFiles 'SOPS\sops.exe')
     )
@@ -83,6 +102,7 @@ function Resolve-AgeExe {
     -WinGetPackagePrefixes @('FiloSottile.age_') `
     -WinGetPackageRelativeCandidates @('age\age.exe','age.exe') `
     -ExtraAbsoluteCandidates @(
+      (Join-Path $env:ProgramData 'OSHA_Leads\tools\age.exe'),
       (Join-Path $env:ProgramFiles 'age\age.exe'),
       (Join-Path $env:ProgramFiles 'Age\age.exe')
     )
@@ -95,6 +115,7 @@ function Resolve-AgeKeygenExe {
     -WinGetPackagePrefixes @('FiloSottile.age_') `
     -WinGetPackageRelativeCandidates @('age\age-keygen.exe','age-keygen.exe') `
     -ExtraAbsoluteCandidates @(
+      (Join-Path $env:ProgramData 'OSHA_Leads\tools\age-keygen.exe'),
       (Join-Path $env:ProgramFiles 'age\age-keygen.exe'),
       (Join-Path $env:ProgramFiles 'Age\age-keygen.exe')
     )
@@ -114,6 +135,16 @@ function Get-AgeKeyFilePath {
     # Make sops behavior deterministic for the remainder of this session/process.
     $env:SOPS_AGE_KEY_FILE = $repoKeys
     return $repoKeys
+  }
+
+  # Machine-wide canonical location for service identities that do not have a user profile key.
+  $programDataRoot = [string]$env:ProgramData
+  if ($programDataRoot.Trim().Length -gt 0) {
+    $sharedKeys = Join-Path $programDataRoot 'OSHA_Leads\keys\age\keys.txt'
+    if (Test-Path -LiteralPath $sharedKeys) {
+      $env:SOPS_AGE_KEY_FILE = $sharedKeys
+      return $sharedKeys
+    }
   }
 
   # Default SOPS age key location on Windows.
@@ -306,7 +337,11 @@ function Decrypt-DotenvSopsFile {
 
   $p = New-Object System.Diagnostics.Process
   $p.StartInfo = $psi
-  [void]$p.Start()
+  try {
+    [void]$p.Start()
+  } catch {
+    throw ("sops_start_failed file=" + $SopsExe + " err=" + $_.Exception.Message)
+  }
   $stdout = $p.StandardOutput.ReadToEnd()
   $stderr = $p.StandardError.ReadToEnd()
   $p.WaitForExit()
