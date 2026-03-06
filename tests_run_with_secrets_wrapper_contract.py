@@ -40,6 +40,8 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         self.assertIn("MFO_DATA_DIR_SOURCE", target_text)
         self.assertIn("PYTHONWARNINGS", target_text)
         self.assertIn("ignore:urllib3", target_text)
+        self.assertIn("OSHA_Leads\\python\\python.exe", target_text)
+        self.assertIn("OSHA_Leads\\Python313\\python.exe", target_text)
         self.assertIn("WARN_ENV_CONFLICT=1 key=DATA_DIR", tooling_text)
         self.assertIn("WARN_DATA_DIR_NOT_ABSOLUTE=1", tooling_text)
         self.assertIn("OSHA_Leads\\keys\\age\\keys.txt", tooling_text)

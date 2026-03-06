@@ -71,6 +71,11 @@ function Resolve-PythonExePath {
 
   $candidates = New-Object System.Collections.Generic.List[string]
   $localAppData = ([string]$env:LOCALAPPDATA).Trim()
+  $programData = ([string]$env:ProgramData).Trim()
+  if ($programData) {
+    [void]$candidates.Add((Join-Path $programData 'OSHA_Leads\python\python.exe'))
+    [void]$candidates.Add((Join-Path $programData 'OSHA_Leads\Python313\python.exe'))
+  }
   if ($localAppData) {
     [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python313\python.exe'))
     [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python312\python.exe'))
