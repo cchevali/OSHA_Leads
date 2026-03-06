@@ -63,6 +63,8 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         self.assertIn("Invoke-NativeAllowStderr -FilePath $sopsExe", target_text)
         self.assertIn("native_start_failed file=", target_text)
         self.assertIn("& $FilePath @ArgumentList 2>&1", target_text)
+        self.assertIn("$ErrorActionPreference = 'Continue'", target_text)
+        self.assertIn("$ErrorActionPreference = $previousErrorActionPreference", target_text)
         self.assertNotIn("Start-Process -FilePath $FilePath", target_text)
         self.assertNotIn("-FilePath 'cmd' -ArgumentList @('/c', $cmdLine)", target_text)
 
