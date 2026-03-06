@@ -4,9 +4,10 @@ import hashlib
 import html as _html
 import json
 import os
+import re
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
@@ -44,9 +45,33 @@ REQUIRED_INPUT_COLUMNS = [
 
 DEFAULT_REPLY_TO_EMAIL = "support@microflowops.com"
 DEFAULT_SAMPLE_FEED_URL = "https://microflowops.com/sample"
+DEFAULT_CONTACT_URL = "https://microflowops.com/contact"
 ERR_ONE_CLICK_REQUIRED = "ERR_ONE_CLICK_REQUIRED"
 ERR_SUPPRESSION_REQUIRED = "ERR_SUPPRESSION_REQUIRED"
 ET_TZ = ZoneInfo("America/New_York")
+OUTREACH_SIGNAL_FETCH_LIMIT = 50
+OUTREACH_RECENT_OPENED_DAYS = 10
+UPPERCASE_COMPANY_TOKENS = {
+    "LLC",
+    "LLP",
+    "LP",
+    "INC",
+    "CO",
+    "LTD",
+    "USA",
+    "OSHA",
+    "EHS",
+    "HSE",
+}
+ESTABLISHMENT_SUFFIX_DISPLAY_FORMS = {
+    "LLC": "LLC",
+    "LLP": "LLP",
+    "LP": "LP",
+    "INC": "Inc.",
+    "LTD": "Ltd.",
+    "CORP": "Corp.",
+    "CO": "Co.",
+}
 
 
 def _utc_now_iso() -> str:
@@ -216,6 +241,93 @@ def _truncate_text(s: str, max_len: int) -> str:
     return text[: max(0, max_len - 1)].rstrip() + "…"
 
 
+def _split_trailing_punct(token: str) -> tuple[str, str]:
+    end = len(token)
+    while end > 0 and token[end - 1] in ",.;:":
+        end -= 1
+    return token[:end], token[end:]
+
+
+def _is_shouty_text(value: str) -> bool:
+    letters = [ch for ch in str(value or "") if ch.isalpha()]
+    return bool(letters) and all(ch.isupper() for ch in letters)
+
+
+def _fix_mc_prefix(value: str) -> str:
+    return re.sub(r"^Mc([a-z])", lambda m: f"Mc{m.group(1).upper()}", value)
+
+
+def _preserve_upper_company_token(core: str) -> bool:
+    token = str(core or "")
+    letters = "".join(ch for ch in token if ch.isalpha())
+    if not letters:
+        return False
+    if any(ch.isdigit() for ch in token):
+        return True
+    if "&" in token or "/" in token:
+        return True
+    return letters.upper() in UPPERCASE_COMPANY_TOKENS
+
+
+def _smart_company_case(value: str) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    parts: list[str] = []
+    for token in text.split(" "):
+        core, tail = _split_trailing_punct(token)
+        if not core:
+            parts.append(token)
+            continue
+        if _preserve_upper_company_token(core):
+            normalized_core = core.upper()
+        else:
+            normalized_core = _fix_mc_prefix(core.title())
+            if normalized_core.upper() in UPPERCASE_COMPANY_TOKENS:
+                normalized_core = normalized_core.upper()
+        parts.append(normalized_core + tail)
+    return " ".join(parts)
+
+
+def _clean_first_name(value: str) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    text = text.rstrip(",;:")
+    if _is_shouty_text(text):
+        text = _fix_mc_prefix(text.title())
+    return text
+
+
+def _normalize_establishment_suffix(core: str, tail: str) -> str | None:
+    letters = "".join(ch for ch in str(core or "") if ch.isalpha()).upper()
+    if not letters:
+        return None
+    display = ESTABLISHMENT_SUFFIX_DISPLAY_FORMS.get(letters)
+    if not display:
+        return None
+    normalized_tail = str(tail or "")
+    if display.endswith(".") and normalized_tail.startswith("."):
+        normalized_tail = normalized_tail[1:]
+    return display + normalized_tail
+
+
+def _clean_establishment_name(value: str) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    normalized_text = _smart_company_case(text) if _is_shouty_text(text) else text
+    parts: list[str] = []
+    for token in normalized_text.split(" "):
+        core, tail = _split_trailing_punct(token)
+        if not core:
+            parts.append(token)
+            continue
+        suffix_token = _normalize_establishment_suffix(core, tail)
+        parts.append(suffix_token if suffix_token is not None else (core + tail))
+    return " ".join(parts)
+
+
 STATE_FULL_NAMES = {
     "TX": "Texas",
     "CA": "California",
@@ -303,7 +415,31 @@ def _clean_company_name(value: str) -> str:
     normalized_token = "".join(ch for ch in normalized if ch.isalnum())
     if normalized_token in suffix_only:
         return ""
+    if _is_shouty_text(text):
+        return _smart_company_case(text)
     return text
+
+
+def _contact_url() -> str:
+    configured = (os.getenv("MICROFLOWOPS_CONTACT_URL") or "").strip()
+    if configured:
+        return configured
+    return DEFAULT_CONTACT_URL
+
+
+def _trial_cta_lines() -> tuple[str, str]:
+    url = _contact_url()
+    text_line = (
+        "I track these daily across every state using public OSHA data. "
+        f"If useful, you can reply with the metros you care about, or request a short trial feed here: {url}"
+    )
+    safe_url = _html_escape(url)
+    html_line = (
+        "I track these daily across every state using public OSHA data. "
+        "If useful, you can reply with the metros you care about, or request a short trial feed here: "
+        f"<a href=\"{safe_url}\" target=\"_blank\" rel=\"noopener noreferrer\">{safe_url}</a>"
+    )
+    return text_line, html_line
 
 
 def _build_copy_tokens(
@@ -318,51 +454,35 @@ def _build_copy_tokens(
 ) -> dict[str, str]:
     signal_count = len(list(recent_leads or []))
     segment_desc = _segment_descriptor(segment=segment, role_or_title=role_or_title)
-    clean_first = str(first_name or "").strip()
+    clean_first = _clean_first_name(first_name)
     clean_firm = _clean_company_name(firm_name)
     low_signal = signal_count == 1
+    trial_text, trial_html = _trial_cta_lines()
 
     if clean_first:
         greeting_text = f"Hi {clean_first},"
-        count_phrase = "a new OSHA inspection" if low_signal else "a few new OSHA inspections"
-        opened_phrase = "opened recently" if low_signal else "most opened in the last two weeks"
+        count_phrase = "a recent OSHA inspection" if low_signal else "a few recent OSHA inspections"
         team_phrase = f"your team at {clean_firm}" if clean_firm else "your team"
         intro_text = (
-            f"I spotted {count_phrase} in {state_full_name} that {team_phrase} might want to know about — "
-            f"{opened_phrase} and none have citations yet:"
+            f"I spotted {count_phrase} in {state_full_name} that may be relevant to {team_phrase}. "
+            "Recently observed in public OSHA data; opened dates are listed below and none have citations yet:"
         )
         post_cards_text = ""
-        trial_text = (
-            "I track these daily across every state using public OSHA data. "
-            "Happy to set up a short trial feed for whatever metros matter to you — just reply with the cities."
-        )
     elif clean_firm:
         greeting_text = f"Hi - saw a few things {clean_firm} should probably have on their radar:"
         intro_text = ""
         post_cards_text = (
-            f"These are new OSHA inspections opened in {state_full_name} in the last two weeks — "
-            "none have citations yet."
-        )
-        trial_text = (
-            "I track these daily across every state using public OSHA data. "
-            "Happy to set up a trial feed for whatever metros matter to you — just reply with the cities."
+            f"Recently observed in public OSHA data across {state_full_name}; "
+            "opened dates are listed above and none have citations yet."
         )
     else:
         greeting_text = (
-            f"Hi - saw a new OSHA inspection in {state_full_name} that might be relevant to your team:"
+            f"Hi - saw a recent OSHA inspection in {state_full_name} that may be relevant to your team:"
             if low_signal
-            else f"Hi - saw a few new OSHA inspections in {state_full_name} that might be relevant to your team:"
+            else f"Hi - saw a few recent OSHA inspections in {state_full_name} that may be relevant to your team:"
         )
         intro_text = ""
-        post_cards_text = (
-            "Opened recently and none have citations yet."
-            if low_signal
-            else "Most opened in the last two weeks and none have citations yet."
-        )
-        trial_text = (
-            "I track these daily across every state using public OSHA data. "
-            "Happy to set up a trial feed for whatever metros matter to you — just reply with the cities."
-        )
+        post_cards_text = "Recently observed in public OSHA data. Opened dates are listed above and none have citations yet."
 
     return {
         "SIGNAL_COUNT": str(max(0, signal_count)),
@@ -374,14 +494,14 @@ def _build_copy_tokens(
         "POST_CARDS_LINE_TEXT": post_cards_text,
         "POST_CARDS_LINE_HTML": _html_escape(post_cards_text),
         "TRIAL_LINE_TEXT": trial_text,
-        "TRIAL_LINE_HTML": _html_escape(trial_text),
+        "TRIAL_LINE_HTML": trial_html,
         # Legacy keys retained to avoid breaking custom templates.
         "OPENING_LINE_TEXT": intro_text,
         "OPENING_LINE_HTML": _html_escape(intro_text),
         "RELEVANCE_LINE_TEXT": "",
         "RELEVANCE_LINE_HTML": "",
         "CTA_LINE_TEXT": trial_text,
-        "CTA_LINE_HTML": _html_escape(trial_text),
+        "CTA_LINE_HTML": trial_html,
         "TRUST_LINE_TEXT": "",
         "TRUST_LINE_HTML": "",
         "COMPANY_INTRO_TEXT": "",
@@ -442,8 +562,143 @@ def _subject_opened_or_observed_date(lead: dict) -> str:
     return observed or "recently"
 
 
+def _parse_datetime_utc(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    parsed: datetime | None = None
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except Exception:
+        try:
+            parsed = datetime.strptime(text[:10], "%Y-%m-%d")
+        except Exception:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _inspection_type_rank_for_outreach(value: object) -> int:
+    text = str(value or "").strip().lower()
+    if "accident" in text:
+        return 3
+    if "referral" in text:
+        return 2
+    if "complaint" in text:
+        return 2
+    if "inspection" in text:
+        return 1
+    if "planned" in text:
+        return 0
+    if "prog related" in text:
+        return 0
+    return 0
+
+
+def _coerce_outreach_priority_label(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"HIGH", "MEDIUM", "LOW", "SUPPRESS"}:
+        return text
+    return ""
+
+
+def _display_priority_label(label: str) -> str:
+    normalized = _coerce_outreach_priority_label(label)
+    if normalized in {"HIGH", "MEDIUM", "LOW"}:
+        return normalized.title()
+    return ""
+
+
+def _priority_label_from_score(lead: dict) -> str:
+    try:
+        score = int(lead.get("lead_score") or 0)
+    except Exception:
+        score = 0
+    if score >= 10:
+        return "HIGH"
+    if score >= 6:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _resolve_outreach_priority_label(lead: dict) -> str:
+    for key in ("_outreach_priority", "final_priority", "current_priority"):
+        label = _coerce_outreach_priority_label(lead.get(key))
+        if label:
+            return label
+    display_label = _coerce_outreach_priority_label(lead.get("display_priority_label"))
+    if display_label:
+        return display_label
+    return _priority_label_from_score(lead)
+
+
+def _priority_rank_from_label(label: str) -> int:
+    normalized = _coerce_outreach_priority_label(label)
+    if normalized == "HIGH":
+        return 2
+    if normalized == "MEDIUM":
+        return 1
+    return 0
+
+
+def _annotate_lead_with_outreach_priority(lead: dict, label: str) -> dict:
+    row = dict(lead or {})
+    normalized = _coerce_outreach_priority_label(label) or _resolve_outreach_priority_label(row)
+    row["_outreach_priority"] = normalized
+    row["_outreach_priority_rank"] = _priority_rank_from_label(normalized)
+    display_label = _display_priority_label(normalized)
+    if display_label:
+        row["display_priority_label"] = display_label
+    return row
+
+
+def _priority_rank_for_outreach(lead: dict) -> int:
+    return _priority_rank_from_label(_resolve_outreach_priority_label(lead))
+
+
+def _select_outreach_card_examples(rows: list[dict], limit: int = 5) -> list[dict]:
+    try:
+        max_items = max(0, int(limit))
+    except Exception:
+        max_items = 0
+    if max_items <= 0:
+        return []
+    candidates = list(rows or [])
+    if not candidates:
+        return []
+
+    today_utc = datetime.now(timezone.utc).date()
+    opened_cutoff = today_utc - timedelta(days=OUTREACH_RECENT_OPENED_DAYS)
+
+    def _sort_key(lead: dict) -> tuple:
+        opened_dt = _parse_datetime_utc(lead.get("date_opened"))
+        opened_ts = opened_dt.timestamp() if opened_dt is not None else 0.0
+        priority_rank = _priority_rank_for_outreach(lead)
+        type_rank = _inspection_type_rank_for_outreach(lead.get("inspection_type"))
+        try:
+            score = int(lead.get("lead_score") or 0)
+        except Exception:
+            score = 0
+        key = str(lead.get("activity_nr") or lead.get("lead_key") or lead.get("lead_id") or "")
+        return (-priority_rank, -opened_ts, -type_rank, -score, key)
+
+    fresh_opened: list[dict] = []
+    for lead in candidates:
+        annotated = _annotate_lead_with_outreach_priority(lead, "")
+        if _priority_rank_for_outreach(annotated) <= 0:
+            continue
+        opened_dt = _parse_datetime_utc(annotated.get("date_opened"))
+        if opened_dt is not None and opened_dt.date() >= opened_cutoff:
+            fresh_opened.append(annotated)
+
+    return sorted(fresh_opened, key=_sort_key)[:max_items]
+
+
 def _format_recent_signal_line(lead: dict) -> str:
-    est = _truncate_text((lead.get("establishment_name") or "").strip() or "Unknown establishment", 52)
+    est = _clean_establishment_name((lead.get("establishment_name") or "").strip()) or "Unknown establishment"
+    est = _truncate_text(est, 52)
     city = (lead.get("site_city") or "").strip()
     state = (lead.get("site_state") or "").strip()
     itype = (lead.get("inspection_type") or "").strip()
@@ -577,7 +832,14 @@ def _recent_signals_html_from_leads(leads: list[dict]) -> str:
     try:
         import outbound_cold_email as oce
 
-        parts = [oce.format_lead_for_html(lead) for lead in leads]
+        parts = []
+        for lead in leads:
+            rendered = dict(lead or {})
+            rendered["establishment_name"] = (
+                _clean_establishment_name((rendered.get("establishment_name") or "").strip())
+                or "Unknown establishment"
+            )
+            parts.append(oce.format_lead_for_html(rendered))
         html = "\n".join([p for p in parts if (p or "").strip()]).strip()
         return html or "<div></div>"
     except Exception:
@@ -712,19 +974,17 @@ def _truncate_subject(subject: str, max_len: int = 64) -> str:
 def _subject_for_multi_signal(*, signal_count: int, state_abbrev: str, primary_type: str) -> str:
     type_part = f" {primary_type}" if primary_type else ""
     candidates = [
-        f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections opened this month",
-        f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections opened",
+        f"Quick heads up — {signal_count} recent {state_abbrev}{type_part} inspections",
         f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections",
     ]
     if primary_type:
         candidates.extend(
             [
-                f"Quick heads up — {signal_count} new {state_abbrev} inspections opened this month",
-                f"Quick heads up — {signal_count} new {state_abbrev} inspections opened",
+                f"Quick heads up — {signal_count} recent {state_abbrev} inspections",
                 f"Quick heads up — {signal_count} new {state_abbrev} inspections",
             ]
         )
-    candidates.append(f"Heads up — {signal_count} new {state_abbrev} inspections")
+    candidates.append(f"Heads up — {signal_count} recent {state_abbrev} inspections")
     for candidate in candidates:
         if len(candidate) <= 64:
             return candidate
@@ -733,9 +993,10 @@ def _subject_for_multi_signal(*, signal_count: int, state_abbrev: str, primary_t
 
 def _subject_for_single_signal(*, state_abbrev: str, opened_label: str) -> str:
     candidates = [
-        f"Quick heads up — new {state_abbrev} inspection opened {opened_label}",
-        f"Quick heads up — new {state_abbrev} inspection opened recently",
-        f"Heads up — new {state_abbrev} inspection opened recently",
+        f"Quick heads up — {state_abbrev} inspection opened {opened_label}",
+        f"Quick heads up — recent {state_abbrev} inspection",
+        f"Quick heads up — {state_abbrev} inspection opened recently",
+        f"Heads up — {state_abbrev} inspection opened recently",
     ]
     for candidate in candidates:
         if len(candidate) <= 64:
@@ -839,27 +1100,22 @@ def _triage_recent_signals_for_outreach(
                 current_hint = str(d.get("current_priority") or "").strip().upper()
                 if current_hint in {"HIGH", "MEDIUM", "LOW"}:
                     final_priority = current_hint
+        final_priority = _coerce_outreach_priority_label(final_priority)
+        if not final_priority:
+            final_priority = _priority_label_from_score(row)
+
         if final_priority == "SUPPRESS":
             suppressed += 1
             continue
+        rendered_row = _annotate_lead_with_outreach_priority(row, final_priority)
         if final_priority == "HIGH":
-            high_rows.append(row)
+            high_rows.append(rendered_row)
         elif final_priority == "MEDIUM":
-            medium_rows.append(row)
+            medium_rows.append(rendered_row)
         elif final_priority == "LOW":
-            low_rows.append(row)
+            low_rows.append(rendered_row)
         else:
-            # Fallback to score tier when decision missing.
-            try:
-                score = int(row.get("lead_score") or 0)
-            except Exception:
-                score = 0
-            if score >= 10:
-                high_rows.append(row)
-            elif score >= 6:
-                medium_rows.append(row)
-            else:
-                low_rows.append(row)
+            low_rows.append(rendered_row)
 
     # Outreach examples are HIGH-first with MEDIUM backfill; LOW never shown.
     filtered = list(high_rows) + list(medium_rows)
@@ -1108,7 +1364,7 @@ def _render_preview(args: argparse.Namespace) -> int:
     recent_leads, last_refresh_et = _best_effort_recent_leads_and_refresh(
         db_path=str(args.db),
         state=state_filter,
-        limit=12,
+        limit=OUTREACH_SIGNAL_FETCH_LIMIT,
     )
     preview_batch = f"PREVIEW_{state_filter}"
     recent_leads, _preview_triage_ctx = _triage_recent_signals_for_outreach(
@@ -1116,7 +1372,7 @@ def _render_preview(args: argparse.Namespace) -> int:
         recent_leads=list(recent_leads or []),
         dry_run_suffix="preview",
     )
-    recent_leads = list(recent_leads[:5])
+    recent_leads = _select_outreach_card_examples(list(recent_leads or []), limit=5)
     signal_tokens = _build_signal_template_tokens(
         db_path=str(args.db),
         state=state_filter,
@@ -1156,8 +1412,10 @@ def _render_preview(args: argparse.Namespace) -> int:
     microflowops_url = (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
 
     for idx, row in enumerate(rows, start=1):
-        first_name = _row_text_value(row, ["first_name", "contact_name"])
+        first_name_raw = _row_text_value(row, ["first_name", "contact_name"])
+        first_name = _clean_first_name(first_name_raw)
         firm_name_raw = _row_text_value(row, ["firm"])
+        clean_firm = _clean_company_name(firm_name_raw)
         segment = _row_text_value(row, ["segment", "buyer_segment"])
         role_or_title = _row_text_value(row, ["role_or_title", "role", "contact_role", "title"])
         copy_tokens = _build_copy_tokens(
@@ -1181,7 +1439,7 @@ def _render_preview(args: argparse.Namespace) -> int:
             template_text,
             {
                 "FIRST_NAME": first_name,
-                "FIRM": firm_name_raw or "your firm",
+                "FIRM": clean_firm or "your firm",
                 "STATE": state_filter,
                 "STATE_FULL_NAME": signal_tokens["STATE_FULL_NAME"],
                 "STATE_METRO_EXAMPLES": signal_tokens["STATE_METRO_EXAMPLES"],
@@ -1211,7 +1469,7 @@ def _render_preview(args: argparse.Namespace) -> int:
                 html_template_text,
                 {
                     "{{FIRST_NAME}}": _html_escape(first_name),
-                    "{{FIRM}}": _html_escape(firm_name_raw or "your firm"),
+                    "{{FIRM}}": _html_escape(clean_firm or "your firm"),
                     "{{STATE}}": _html_escape(state_filter),
                     "{{STATE_FULL_NAME}}": _html_escape(signal_tokens["STATE_FULL_NAME"]),
                     "{{STATE_METRO_EXAMPLES}}": _html_escape(signal_tokens["STATE_METRO_EXAMPLES"]),
@@ -1333,7 +1591,7 @@ def main() -> int:
     except Exception:
         html_template_text = ""
 
-    signal_fetch_limit = 12
+    signal_fetch_limit = OUTREACH_SIGNAL_FETCH_LIMIT
 
     # Precompute state-level snippets for template rendering.
     recent_leads, last_refresh_et = _best_effort_recent_leads_and_refresh(
@@ -1347,7 +1605,7 @@ def main() -> int:
         recent_leads=recent_leads,
         dry_run_suffix="export",
     )
-    recent_leads = list(recent_leads[:5])
+    recent_leads = _select_outreach_card_examples(list(recent_leads or []), limit=5)
     signal_tokens = _build_signal_template_tokens(
         db_path=str(args.db),
         state=state_filter,
@@ -1486,9 +1744,9 @@ def main() -> int:
                 return 2
             raise
 
-        first_name = (r.get("first_name") or "").strip()
+        first_name = _clean_first_name((r.get("first_name") or "").strip())
         firm_name_raw = _row_text_value(r, ["firm"])
-        firm = firm_name_raw or "your firm"
+        firm = _clean_company_name(firm_name_raw) or "your firm"
         segment = _row_text_value(r, ["segment", "buyer_segment"])
         role_or_title = _row_text_value(r, ["role_or_title", "role", "contact_role", "title"])
         prefs_link = prefs_url or unsub_url or ""

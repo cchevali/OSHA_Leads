@@ -4,12 +4,15 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
 from scoring import osha_detail_cache as odc
 from scoring import paths as scoring_paths
 from tools import cache_osha_inspection_detail as cli
+
+FIXED_NOW_UTC = datetime(2026, 3, 6, 0, 0, 0, tzinfo=timezone.utc)
 
 
 def _seed_leads_db(path: Path, rows: list[dict]) -> None:
@@ -67,27 +70,40 @@ class _FakeSession:
         return _FakeResp(self._text, url, 200)
 
 
+def _iso_utc(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _recent_seed_values() -> tuple[str, str]:
+    recent_seen = _iso_utc(FIXED_NOW_UTC - timedelta(days=1))
+    recent_opened = (FIXED_NOW_UTC - timedelta(days=2)).date().isoformat()
+    return recent_seen, recent_opened
+
+
 class TestOshaDetailCache(unittest.TestCase):
     def test_cli_dry_run_prints_markers_and_no_writes(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             leads_db = tmp / "osha.sqlite"
+            recent_seen, recent_opened = _recent_seed_values()
             _seed_leads_db(
                 leads_db,
                 [
                     {
                         "activity_nr": "1234",
                         "source_url": "",
-                        "first_seen_at": "2026-02-20T00:00:00Z",
-                        "changed_at": "2026-02-20T00:00:00Z",
-                        "last_seen_at": "2026-02-20T00:00:00Z",
-                        "date_opened": "2026-02-19",
+                        "first_seen_at": recent_seen,
+                        "changed_at": recent_seen,
+                        "last_seen_at": recent_seen,
+                        "date_opened": recent_opened,
                     }
                 ],
             )
             data_dir = tmp / "runtime"
             out = io.StringIO()
-            with mock.patch.dict(os.environ, {"DATA_DIR": str(data_dir)}, clear=False):
+            with mock.patch.object(odc, "utc_now", return_value=FIXED_NOW_UTC), mock.patch.dict(
+                os.environ, {"DATA_DIR": str(data_dir)}, clear=False
+            ):
                 with redirect_stdout(out):
                     code = cli.main(["--db", str(leads_db), "--dry-run"])
             self.assertEqual(code, 0)
@@ -109,16 +125,17 @@ class TestOshaDetailCache(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             leads_db = tmp / "osha.sqlite"
+            recent_seen, recent_opened = _recent_seed_values()
             _seed_leads_db(
                 leads_db,
                 [
                     {
                         "activity_nr": "5555",
                         "source_url": "https://www.osha.gov/ords/imis/establishment.inspection_detail?id=5555",
-                        "first_seen_at": "2026-02-20T00:00:00Z",
-                        "changed_at": "2026-02-20T00:00:00Z",
-                        "last_seen_at": "2026-02-20T00:00:00Z",
-                        "date_opened": "2026-02-19",
+                        "first_seen_at": recent_seen,
+                        "changed_at": recent_seen,
+                        "last_seen_at": recent_seen,
+                        "date_opened": recent_opened,
                     }
                 ],
             )
@@ -133,7 +150,9 @@ class TestOshaDetailCache(unittest.TestCase):
             </body></html>
             """
             fake_session = _FakeSession(html)
-            with mock.patch.object(odc.ingest_osha, "get_session", return_value=fake_session), mock.patch.object(
+            with mock.patch.object(odc, "utc_now", return_value=FIXED_NOW_UTC), mock.patch.object(
+                odc.ingest_osha, "get_session", return_value=fake_session
+            ), mock.patch.object(
                 odc.ingest_osha,
                 "parse_inspection_detail",
                 return_value={
@@ -194,20 +213,22 @@ class TestOshaDetailCache(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             leads_db = tmp / "osha.sqlite"
+            recent_seen, recent_opened = _recent_seed_values()
             rows = []
             for i in range(5):
                 rows.append(
                     {
                         "activity_nr": str(7000 + i),
                         "source_url": "",
-                        "first_seen_at": "2026-02-20T00:00:00Z",
-                        "changed_at": "2026-02-20T00:00:00Z",
-                        "last_seen_at": "2026-02-20T00:00:00Z",
-                        "date_opened": "2026-02-19",
+                        "first_seen_at": recent_seen,
+                        "changed_at": recent_seen,
+                        "last_seen_at": recent_seen,
+                        "date_opened": recent_opened,
                     }
                 )
             _seed_leads_db(leads_db, rows)
-            selected = odc.select_candidates_from_leads_db(leads_db, since_days=14, limit=2)
+            with mock.patch.object(odc, "utc_now", return_value=FIXED_NOW_UTC):
+                selected = odc.select_candidates_from_leads_db(leads_db, since_days=14, limit=2)
             self.assertEqual(len(selected), 2)
 
     def test_non_federal_activity_is_skipped_with_token(self):
@@ -254,4 +275,3 @@ class TestOshaDetailCache(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -43,6 +43,12 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         self.assertIn("WARN_ENV_CONFLICT=1 key=DATA_DIR", tooling_text)
         self.assertIn("WARN_DATA_DIR_NOT_ABSOLUTE=1", tooling_text)
 
+    def test_target_wrapper_check_decrypt_uses_direct_sops_invocation(self):
+        self.assertTrue(TARGET_SCRIPT.exists(), msg=f"missing script: {TARGET_SCRIPT}")
+        target_text = TARGET_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("Invoke-NativeAllowStderr -FilePath $sopsExe", target_text)
+        self.assertNotIn("-FilePath 'cmd' -ArgumentList @('/c', $cmdLine)", target_text)
+
     def test_wrapper_sets_context_pack_sentinel_before_payload(self):
         self.assertTrue(SCRIPT.exists(), msg=f"missing script: {SCRIPT}")
         text = SCRIPT.read_text(encoding="utf-8")
