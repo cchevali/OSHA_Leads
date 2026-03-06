@@ -42,6 +42,8 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         self.assertIn("ignore:urllib3", target_text)
         self.assertIn("OSHA_Leads\\python\\python.exe", target_text)
         self.assertIn("OSHA_Leads\\Python313\\python.exe", target_text)
+        self.assertIn("OSHA_Leads\\secrets\\.env.sops", target_text)
+        self.assertIn("ENV_SOPS_PATH", target_text)
         self.assertLess(
             target_text.index("OSHA_Leads\\python\\python.exe"),
             target_text.index("Get-Command -Name 'python'")

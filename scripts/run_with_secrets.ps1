@@ -26,6 +26,27 @@ function Set-PythonWarningsFilter {
   }
 }
 
+function Resolve-EnvSopsPath {
+  param(
+    [Parameter(Mandatory = $true)] [string]$RepoRoot
+  )
+
+  $forced = ([string]$env:ENV_SOPS_PATH).Trim()
+  if ($forced -and (Test-Path -LiteralPath $forced)) {
+    try { return (Resolve-Path -LiteralPath $forced).Path } catch { return $forced }
+  }
+
+  $programData = ([string]$env:ProgramData).Trim()
+  if ($programData) {
+    $machinePath = Join-Path $programData 'OSHA_Leads\secrets\.env.sops'
+    if (Test-Path -LiteralPath $machinePath) {
+      try { return (Resolve-Path -LiteralPath $machinePath).Path } catch { return $machinePath }
+    }
+  }
+
+  return (Join-Path $RepoRoot '.env.sops')
+}
+
 function Invoke-NativeAllowStderr {
   param(
     [string]$FilePath,
@@ -179,7 +200,7 @@ try {
   }
 
   $repoRoot = Resolve-RepoRoot
-  $envSopsPath = Join-Path $repoRoot '.env.sops'
+  $envSopsPath = Resolve-EnvSopsPath -RepoRoot $repoRoot
   $ageKeysPath = Get-AgeKeyFilePath
 
   # Make behavior independent of the caller's current working directory (Task Scheduler often starts in System32).
@@ -196,7 +217,7 @@ try {
     $keysExists = Test-Path $ageKeysPath
     if (-not $keysExists) { Fail ("Missing age key file at " + $ageKeysPath) }
     $envSopsExists = Test-Path $envSopsPath
-    if (-not $envSopsExists) { Fail "Missing repo .env.sops" }
+    if (-not $envSopsExists) { Fail ("Missing .env.sops at " + $envSopsPath) }
 
     if ($CheckDecrypt) {
       # Sanity check: ensure this machine can decrypt .env.sops (discard plaintext; no temp files).
@@ -227,7 +248,7 @@ try {
     }
 
     $decryptBit = if ($CheckDecrypt) { '; decrypt_ok=True' } else { '' }
-    Write-Output ("PASS: sops_exe=" + $sopsExe + "; age_exe=" + $ageExe + "; keys_exists=True; env_sops_exists=True" + $decryptBit)
+    Write-Output ("PASS: sops_exe=" + $sopsExe + "; age_exe=" + $ageExe + "; keys_exists=True; env_sops_exists=True; env_sops_path=" + $envSopsPath + $decryptBit)
     exit 0
   }
 
@@ -235,7 +256,7 @@ try {
     Fail "No command provided. Usage: scripts\\run_with_secrets.ps1 [--diagnostics] <cmd> [args...]"
   }
 
-  if (-not (Test-Path $envSopsPath)) { Fail "Missing repo .env.sops at $envSopsPath" }
+  if (-not (Test-Path $envSopsPath)) { Fail "Missing .env.sops at $envSopsPath" }
   if (-not (Test-Path $ageKeysPath)) { Fail ("Missing age key file at " + $ageKeysPath) }
 
   $sopsExe = Resolve-SopsExe
