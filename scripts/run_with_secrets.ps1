@@ -64,11 +64,6 @@ function Resolve-PythonExePath {
     try { return (Resolve-Path -LiteralPath $forced).Path } catch { return $forced }
   }
 
-  $pythonCmd = Get-Command -Name 'python' -ErrorAction SilentlyContinue
-  if ($pythonCmd -and $pythonCmd.Source -and (Test-Path -LiteralPath $pythonCmd.Source)) {
-    try { return (Resolve-Path -LiteralPath $pythonCmd.Source).Path } catch { return $pythonCmd.Source }
-  }
-
   $candidates = New-Object System.Collections.Generic.List[string]
   $localAppData = ([string]$env:LOCALAPPDATA).Trim()
   $programData = ([string]$env:ProgramData).Trim()
@@ -95,6 +90,11 @@ function Resolve-PythonExePath {
     if (Test-Path -LiteralPath $candidate) {
       try { return (Resolve-Path -LiteralPath $candidate).Path } catch { return $candidate }
     }
+  }
+
+  $pythonCmd = Get-Command -Name 'python' -ErrorAction SilentlyContinue
+  if ($pythonCmd -and $pythonCmd.Source -and (Test-Path -LiteralPath $pythonCmd.Source)) {
+    try { return (Resolve-Path -LiteralPath $pythonCmd.Source).Path } catch { return $pythonCmd.Source }
   }
 
   $userRoots = @('C:\Users\lever', 'C:\Users\Public')
