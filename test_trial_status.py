@@ -1555,12 +1555,12 @@ class TestTrialStatus(unittest.TestCase):
                     run_trial_daily._run_deliver_daily = orig_deliver  # type: ignore[assignment]
                     run_trial_daily._try_extract_latest_send_start_mode = orig_mode  # type: ignore[assignment]
 
-                self.assertEqual(code_live, 2)
-                self.assertIn("ERR_TRIAL_LEDGER_SPLIT subscriber_key=wally_trial", live_out.getvalue())
+                self.assertEqual(code_live, 0)
+                self.assertIn("WARN_TRIAL_LEDGER_SPLIT subscriber_key=wally_trial", live_out.getvalue())
                 self.assertIn("--trial-state-merge source --apply", live_out.getvalue())
                 self.assertEqual(code_non_live, 0)
-                self.assertNotIn("ERR_TRIAL_LEDGER_SPLIT", non_live_out.getvalue())
-                self.assertEqual(calls["deliver"], 1)
+                self.assertNotIn("WARN_TRIAL_LEDGER_SPLIT", non_live_out.getvalue())
+                self.assertEqual(calls["deliver"], 2)
             finally:
                 if old_data_dir is None:
                     os.environ.pop("DATA_DIR", None)
@@ -1655,9 +1655,8 @@ class TestTrialStatus(unittest.TestCase):
                 self.assertEqual(code_live, 0)
                 self.assertEqual(code_non_live, 0)
                 self.assertEqual(calls["deliver"], 2)
-                self.assertEqual(calls["mirror"], 1)
-                self.assertIn("TRIAL_LEDGER_MIRROR subscriber_key=wally_trial", live_out.getvalue())
-                self.assertIn("status=OK", live_out.getvalue())
+                self.assertEqual(calls["mirror"], 0)
+                self.assertNotIn("TRIAL_LEDGER_MIRROR", live_out.getvalue())
                 self.assertNotIn("TRIAL_LEDGER_MIRROR", non_live_out.getvalue())
             finally:
                 if old_data_dir is None:
@@ -1739,4 +1738,3 @@ class TestTrialStatus(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

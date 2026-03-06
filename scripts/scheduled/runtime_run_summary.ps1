@@ -8,6 +8,10 @@ function Resolve-DefaultTaskLogRoot {
   if ($override) {
     return $override
   }
+  $effectiveDataDir = ([string]$env:MFO_DATA_DIR_EFFECTIVE).Trim()
+  if ($effectiveDataDir -and [System.IO.Path]::IsPathRooted($effectiveDataDir)) {
+    return (Join-Path (Join-Path $effectiveDataDir 'out') 'task_logs')
+  }
   return (Join-Path $RepoRoot 'out\task_logs')
 }
 
@@ -16,6 +20,10 @@ function Resolve-DefaultRunSummaryRoot {
   $override = ([string]$env:RUN_SUMMARY_ROOT).Trim()
   if ($override) {
     return $override
+  }
+  $effectiveDataDir = ([string]$env:MFO_DATA_DIR_EFFECTIVE).Trim()
+  if ($effectiveDataDir -and [System.IO.Path]::IsPathRooted($effectiveDataDir)) {
+    return (Join-Path (Join-Path $effectiveDataDir 'out') 'run_summaries')
   }
   return (Join-Path $RepoRoot 'out\run_summaries')
 }

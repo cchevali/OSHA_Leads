@@ -2,9 +2,6 @@ name: Ingest Evening + AI Review Dump (Self-Hosted)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 9 * * 1-5"
-    - cron: "0 10 * * 1-5"
 
 jobs:
   ingest_evening_ai:

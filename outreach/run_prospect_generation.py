@@ -83,20 +83,16 @@ ROLE_INBOX_LOCALS = {
     "hr",
 }
 APOLLO_DEFAULT_PERSON_TITLES = [
-    "labor and employment attorney",
-    "employment attorney",
-    "osha attorney",
-    "workplace safety attorney",
-    "litigation attorney",
-    "partner",
-    "counsel",
-    "ehs consultant",
-    "safety consultant",
-    "industrial hygienist",
-    "safety director",
-    "ehs director",
-    "principal consultant",
     "owner",
+    "founder",
+    "co-founder",
+    "president",
+    "principal",
+    "managing partner",
+    "partner",
+    "practice lead",
+    "senior consultant",
+    "principal consultant",
 ]
 TDLR_STATE_LIC_SOURCE_KEY = "STATE_LIC"
 GENERATOR_FILTER_KEYS = (

@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=5b94de155296aec8dc8b79994483889626b49581
-PACK_BUILD_UTC=2026-03-04T05:07:07Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=571f7725c9cb37514561ef8a49b43e7a9b9301fbb90553d7a1bf24576d6a80a5 docs/DECISIONS.md=3c192b59bf9b4428d8bf646e5bd66558436423955fc5251ad3f47a8681bf394e docs/PROJECT_BRIEF.md=b84b5158fb800ba8662cf37e3202e5cebe5c49da2b3430bfd9bb3e12cfda4adf docs/RUNBOOK.md=6c5a5835c51ddc112056950b26e9ae989380298fcb5f0898c683781a4eabcc05 docs/TODO.md=1e458627936fdbc52d694247fd6590dbddbeb58f75baf1a7352a9f7e71db7eb1 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=9510c4ba8da37ec28ab279afd0753d67587f2cd06a04a75612bec83bf0245eae
+PACK_GIT_SHA=e809bd7e27304bf2f0d694a027df9bba113dcd7d
+PACK_BUILD_UTC=2026-03-06T01:39:21Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=edbbd93c214cef8e7911f52bf05bb205368e93e3ca79b09a0bdfe950018baa93 docs/DECISIONS.md=c39bc7b1615bbbd884d0fa591685468b7a5b92cf479c03c4d39c84d6213e9e3a docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=8c959088aeaa345516d2882d6182e6bd3f82104b92e38cf72d3f12ca51efd404 docs/TODO.md=b65594bda87950dd7c8d44c97d8b414e324f5b8fa2ff1bb8fdf2d5af05205318 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=41402a6c0a74d68a914f0e36cdfb93b81d3055e915ada0e2d23fafa1d2703b79
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -104,18 +104,39 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Outreach operations (this repo): SQLite CRM-lite (`out/crm.sqlite`) for prospect selection, sending, and lifecycle tracking
 - Outreach debug export: optional CSV outbox generation for QA/debug only
 
+## Centralized Runtime Control Plane
+
+- Single-writer rule: the canonical Windows PC is the only runtime that may perform live SQLite writes and live sends.
+- Runtime guard layer (`runtime_guard.py` + `scripts/scheduled/runtime_guard.ps1`) enforces host/data-root policy before write/send paths.
+- Primary scheduled control plane: GitHub Actions workflows run on a label-pinned self-hosted Windows runner (`self-hosted`, `windows`, `osha-pc-canonical`) on the canonical PC.
+- Primary scheduler entrypoint: `run_runtime_tick.py`, invoked by `.github/workflows/runtime-tick-selfhosted.yml` every 15 minutes and fanning into due jobs by local time.
+- Windows Task Scheduler wrappers are retained only as manual break-glass fallbacks and must not remain enabled in parallel with runtime tick once cutover is complete.
+- Wrappers emit deterministic run summaries (`runtime_run_summary_v1`) plus task logs and optional backup manifests.
+- Artifact roots:
+  - Task logs: `${TASK_LOG_ROOT}` or `${DATA_DIR}\out\task_logs` or `<repo>\out\task_logs`
+  - Run summaries: `${RUN_SUMMARY_ROOT}` or `${DATA_DIR}\out\run_summaries` or `<repo>\out\run_summaries`
+  - Backup metadata/snapshots: `${BACKUP_ROOT}` or `${DATA_DIR}\out\backups` or `<repo>\out\backups`
+  - Optional mirror: `${ARTIFACT_SYNC_DIR}` (artifacts/backups only; never live DB)
+- Runtime tick status artifacts live under `${DATA_DIR}\runtime\status\` and include `runtime_latest.json`, `runtime_latest.md`, and per-job status JSON files.
+- Laptop/dev clients are read-only operationally: print-config, doctor, dry-run, and artifact inspection.
+
 ## Outreach CRM Auto-Run Data Flow
 
-1. Upstream prospect generation: `run_prospect_generation.py` prepares deterministic discovery input at `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (fallback: `./out/prospect_discovery/prospects_latest.csv`).
-   - Optional env-gated auto-growth sources: AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+1. Daily prospect replenishment: `run_prospect_replenish_daily.py` runs deterministic pipeline stages in order:
+   - `run_prospect_generation.py --doctor`
+   - `run_prospect_generation.py`
+   - `run_prospect_discovery.py`
+   - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1` when these keys are unset.
+   - Optional env-gated auto-growth sources remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
    - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
+   - APOLLO remains opt-in/overflow and is not in default replenishment sources.
    - BCSP uses plain HTTP parsing (`search_results.php`) and is maintained as a future enrichment input (contact/location only; not directly sendable without employer/domain resolution).
    - OSHA_NEWS uses a lazy-loaded Crawl4AI wrapper (`outreach/scraper_engine.py`) with warning-level degradation when Crawl4AI/Playwright browsers are unavailable.
    - STATE_LIC Phase 1 uses the Texas TDLR public Socrata dataset (`7358-krk7`) and provides licensed-business metadata including address/phone/county fields.
    - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering to populate existing `website`/`email` fields via domain resolution + pattern guesses.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
-2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts the generated CSV into `crm.sqlite`.
+2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts `${DATA_DIR}/prospect_discovery/prospects_latest.csv` into `crm.sqlite`.
 3. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
 4. Daily run: `outreach/run_outreach_auto.py`
    - Resolves weekday rotation-selected state from `OUTREACH_STATES`, emits `OUTREACH_STATE_ROTATION_SELECTED` / `OUTREACH_STATE_EFFECTIVE_SEND`, and uses effective send-state batch id `<YYYY-MM-DD>_<STATE>` (optional fallback override via `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` when the rotation-selected state is depleted/below floor)
@@ -346,7 +367,7 @@ Adopt a single upstream feed path:
 
 ### Consequences
 
-- Daily scheduler flow becomes generation -> discovery -> outreach.
+- Daily scheduler flow becomes ingest -> prospect replenishment (doctor + generation + discovery) -> outreach.
 - Operators now monitor both `GENERATOR_*` and `DISCOVERY_*` machine-readable outputs.
 - Suppression and campaign tracking artifacts remain separate from the discovery feed.
 
@@ -442,6 +463,73 @@ Prospect autogrow is expanding to browser-backed scraping sources (for example B
 
 - Operators must perform a one-time `crawl4ai-setup` when enabling OSHA_NEWS in production.
 - Generator output now includes additional readiness/availability tokens in `--print-config` and `--doctor` paths.
+
+## ADR-0010: Centralized Runtime Writer + GitHub Actions Self-Hosted Control Plane
+
+Date: 2026-03-05
+Status: Accepted
+
+### Context
+
+Multiple machines were able to run write/send paths, creating split-brain risk for SQLite runtime state and send ledgers.
+Operators also needed remote visibility into scheduled outcomes without touching live databases.
+
+### Decision
+
+- Enforce a canonical runtime model:
+  - Canonical PC is the only live writer/sender.
+  - Runtime preflight guard validates host, role, data-root, and required artifact directories before writes/sends.
+- Add deterministic runtime fingerprints and summary artifacts to scheduled/manual wrappers.
+- Use GitHub Actions only as control plane visibility, with workflows pinned to a self-hosted Windows runner label on the canonical PC.
+- Publish logs/summaries/backups as artifacts for remote inspection.
+- Keep backups as snapshot/copy artifacts only; no live DB synchronization.
+
+### Rationale
+
+- Removes split-brain live-write/send failure mode.
+- Preserves existing outreach/compliance behavior while improving operability and incident triage.
+- Gives laptop operators near-real-time observability through workflow/artifact telemetry without direct DB access.
+
+### Consequences
+
+- Non-canonical live attempts fail fast with deterministic `ERR_RUNTIME_*` tokens.
+- Manual live sends now require explicit `--confirm-live-send` unless running in trusted scheduled context.
+- Offline self-hosted runner state is visible as queued/failed workflow telemetry and treated as an ops signal.
+
+## ADR-0011: Runtime Tick Workflow Is The Primary Scheduler; Task Scheduler Is Break-Glass Only
+
+Date: 2026-03-06
+Status: Accepted
+
+### Context
+
+Keeping both GitHub Actions and Windows Task Scheduler as active schedulers left the system vulnerable to drift in task actions, runtime accounts, Python resolution, and split job ownership.
+The runtime hardening work introduced a single orchestrator (`run_runtime_tick.py`) and canonical status artifacts, but the docs still described GitHub Actions as visibility-only.
+
+### Decision
+
+- Make `.github/workflows/runtime-tick-selfhosted.yml` the primary scheduled control plane for live operations on the canonical self-hosted runner.
+- Use `run_runtime_tick.py` as the only scheduled orchestrator for:
+  - inbound triage
+  - AI review dump
+  - OSHA ingest
+  - prospect replenishment
+  - outreach auto-send
+  - FACS daily trial send
+- Keep Windows Task Scheduler wrappers and installers only for manual break-glass recovery on the canonical PC.
+- Do not run Task Scheduler and runtime tick as parallel daily schedulers after cutover.
+
+### Rationale
+
+- One scheduler removes action drift and overlapping ownership of the same live jobs.
+- The GitHub workflow gives remote visibility, durable artifacts, and explicit runner health while still executing on the canonical PC.
+- Retaining local wrappers preserves a recovery path without keeping two live schedulers in competition.
+
+### Consequences
+
+- Operator docs and runbooks must treat runtime tick as the default daily path.
+- Workflow enablement on the default branch becomes part of runtime cutover.
+- Task Scheduler credentials and installers remain supported only for recovery scenarios, not as standard daily operations.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -475,6 +563,9 @@ Success metric (funnel): **reply -> call -> paid** (track conversion per batch).
 - All outreach exports/sends must include an opt-out mechanism.
 - Suppression must be enforced for all exports and sends (email and, where available, domain).
 - Trial and paid onboarding must capture structured recipient data (`recipients[]`) so recipient-aware delivery is configured deterministically.
+- Single-writer runtime invariant: the canonical PC is the only live writer/sender for SQLite state and outbound sends.
+- Non-canonical clients (for example laptop) are limited to inspection, dry-run, and artifact review workflows.
+- Scheduled execution visibility is provided by GitHub Actions using a self-hosted runner on the canonical PC; actions are control-plane only.
 
 ## Do Not Break
 
@@ -495,6 +586,92 @@ Success metric (funnel): **reply -> call -> paid** (track conversion per batch).
 
 `AGENTS.md` at repo root is the canonical operator + Codex instruction contract.
 Use this runbook for executable commands, but resolve policy conflicts in favor of `AGENTS.md`.
+
+## Centralized Runtime Operations
+
+Runtime model:
+
+- Canonical PC is the only live writer/sender for `osha.sqlite`, `crm.sqlite`, `crm_light.sqlite`, and live email sends.
+- Laptop/dev clients are limited to `--print-config`, `--doctor`, `--dry-run`, and artifact review.
+- GitHub Actions on the label-pinned self-hosted runner (`self-hosted`, `windows`, `osha-pc-canonical`) is the primary scheduled control plane.
+- Windows Task Scheduler wrappers remain available for manual break-glass recovery only and must not stay enabled as a parallel daily scheduler once runtime tick is live.
+
+Primary entrypoints:
+
+- `run_runtime_tick.py`
+- `run_runtime_state_migrate.py`
+- `scripts\scheduled\run_trial_facs_daily.ps1`
+- `scripts\scheduled\run_outreach_auto.ps1`
+- `scripts\scheduled\run_osha_ingest_daily.ps1`
+- `scripts\scheduled\run_osha_ingest_evening.ps1`
+- `scripts\scheduled\run_prospect_replenish_daily.ps1`
+- `scripts\scheduled\backup_runtime_state.ps1`
+
+Artifact locations:
+
+- Task logs: `${TASK_LOG_ROOT}` or `${DATA_DIR}\out\task_logs` or `.\out\task_logs`
+- Run summaries: `${RUN_SUMMARY_ROOT}` or `${DATA_DIR}\out\run_summaries` or `.\out\run_summaries`
+- Backup snapshots/manifests: `${BACKUP_ROOT}` or `${DATA_DIR}\out\backups` or `.\out\backups`
+- Optional cloud mirror root: `${ARTIFACT_SYNC_DIR}` (artifacts/backups only; never live DB path)
+
+Triage ladder:
+
+1. Open run summary (`runtime_run_summary_v1` JSON + text).
+2. Open referenced task log.
+3. Validate runtime fingerprint block (`RUNTIME_HOSTNAME`, `RUNTIME_ROLE`, `RUNTIME_DATA_DIR`, `MFO_RUNTIME_MODE`, `MFO_TRUSTED_SCHEDULED`).
+4. Resolve host/path mismatch (`ERR_RUNTIME_*`) before rerun.
+5. Reconcile state if needed (for example trial ledger reconcile), then rerun wrapper.
+
+Runner-offline behavior:
+
+- If the canonical PC/self-hosted runner is offline, scheduled GitHub workflows will queue/fail visibly.
+- Treat this as expected telemetry; do not reroute live writes/sends to laptop.
+- Recovery is: restore runner availability on PC, validate guard/paths with `--print-config` and dry-run, then rerun wrapper/workflow.
+
+## Runtime Tick (Primary Scheduler)
+
+Primary scheduled workflow:
+
+- `.github\workflows\runtime-tick-selfhosted.yml`
+- Executes `run_runtime_tick.py` on the canonical self-hosted runner every 15 minutes
+- Writes status artifacts under `${DATA_DIR}\runtime\status\`
+
+Operator commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+gh workflow view runtime-tick-selfhosted.yml
+gh workflow enable runtime-tick-selfhosted.yml
+gh workflow run runtime-tick-selfhosted.yml -f mode=doctor -f job=all
+gh run list --workflow "Runtime Tick (Self-Hosted)" --limit 5
+```
+
+Direct wrapper commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --print-config
+.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --doctor
+.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --dry-run
+```
+
+Status artifacts:
+
+- `${DATA_DIR}\runtime\status\runtime_latest.json`
+- `${DATA_DIR}\runtime\status\runtime_latest.md`
+- `${DATA_DIR}\runtime\status\jobs\<job>.json`
+
+## Runtime State Migration
+
+Use the migration entrypoint before cutting live runtime state fully into `${DATA_DIR}`:
+
+```powershell
+cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --print-config
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --doctor
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --dry-run
+.\run_with_secrets.ps1 -- py -3 run_runtime_state_migrate.py --apply
+```
 
 ## WIP Autosave Discipline
 
@@ -767,7 +944,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachSkipRoleInboxes 1 `
   -ProspectAutoGrowEnabled 1 `
   -ProspectAutoGrowSafetyNetEnabled 1 `
-  -ProspectAutoGrowSources AIHA,OHS_BG,APOLLO `
+  -ProspectAutoGrowSources AIHA,OHS_BG `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
@@ -818,13 +995,28 @@ Use these commands instead of inline `py -3 -c "..."` one-liners. PowerShell quo
 .\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py verify-import --csv .\apollo_export.csv
 ```
 
-### Prospect Generation (Scheduled First)
+### Prospect Replenishment (Scheduled First)
 
-Run canonical prospect generation first each day. This writes the discovery feed CSV that discovery imports into CRM:
+`run_runtime_tick.py` runs replenishment automatically at the daily due window. Use the canonical replenishment wrapper directly only for manual break-glass execution. It runs generation doctor -> generation -> discovery in order:
 
 ```powershell
 cd C:\dev\OSHA_Leads
+.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py
+```
+
+Replenishment dry-run and print-config:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py --dry-run
+.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py --print-config
+```
+
+Direct generation/discovery commands remain available for troubleshooting:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --doctor
 .\run_with_secrets.ps1 -- py -3 run_prospect_generation.py
+.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
 ```
 
 No-arg generation output path:
@@ -1011,9 +1203,8 @@ Legacy `PASS_DISCOVERY_*` / `ERR_DISCOVERY_*` tokens remain supported for compat
 Canonical daily sequence:
 
 1. `.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py`
-2. `.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py`
-3. `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py`
-4. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
+2. `.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py`
+3. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
 
 ### OSHA Ingest Scope Modes (Operator Truth)
 
@@ -1520,54 +1711,34 @@ Idempotency and state behavior:
 - Does **not** mutate IMAP flags/folders (`Seen`/move is not used).
 - Emits `BOUNCE_IMPORT_MODERATION_NOTICE_SEEN=1` when a moderation notice is parsed as a hard bounce.
 
-### Task Scheduler (PC)
+### Task Scheduler (Break-Glass Only)
 
-Create/update weekday-only tasks (Mon-Fri) (OSHA ingest first, then generation, discovery, outreach).
-Operational expectation is America/New_York local time:
+Do not keep Windows Task Scheduler as an active parallel scheduler once `runtime-tick-selfhosted.yml` is live on the canonical runner.
+Use Task Scheduler only for temporary local recovery when GitHub Actions on the canonical PC is unavailable.
 
-```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 06:45 /TN "OSHA_Osha_Ingest_Daily" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_osha_ingest_daily.ps1" `
-  /RL HIGHEST
-```
-
-```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:15 /TN "OSHA_Prospect_Generation" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_generation.ps1" `
-  /RL HIGHEST
-```
-
-```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 07:30 /TN "OSHA_Prospect_Discovery" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_prospect_discovery.py" `
-  /RL HIGHEST
-```
-
-```powershell
-schtasks /Create /F /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 08:00 /TN "OSHA_Outreach_Auto" `
-  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\OSHA_Leads\run_with_secrets.ps1 -- py -3 C:\dev\OSHA_Leads\run_outreach_auto.py" `
-  /RL HIGHEST
-```
-
-Deterministic installer (preferred):
+Break-glass installer commands:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --print-config
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --dry-run
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
 ```
 
-Rerun `.\scripts\install_scheduled_tasks.ps1 --apply` to update existing tasks to weekday-only schedules.
+Verification:
 
-### Logged-Off Execution Enforcement (All `OSHA*` Tasks)
+```powershell
+.\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --verify
+```
 
-Set scheduler credentials in secrets-managed env (password is never printed by `--print-config`):
+### Logged-Off Execution Enforcement (Break-Glass Tasks Only)
+
+Only required when using Task Scheduler as a temporary recovery path. Set scheduler credentials in secrets-managed env (password is never printed by `--print-config`):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -TaskSchedUser "DESKTOP-Q8QM4N9\lever" -TaskSchedPassword "<TASK_SCHED_PASSWORD>"
 ```
 
-Apply installers via secrets wrapper so `TASK_SCHED_USER` / `TASK_SCHED_PASSWORD` are loaded:
+Apply break-glass installers via secrets wrapper so `TASK_SCHED_USER` / `TASK_SCHED_PASSWORD` are loaded:
 
 ```powershell
 .\run_with_secrets.ps1 -- powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --apply
@@ -1975,6 +2146,9 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 ## Human-only (UI/credentials)
 
 - [ ] After any PR/commit that changes docs/contracts/templates/workflow (or any time `WARN_CONTEXT_PACK_STALE` appears): run build + fingerprint + upload + mark-uploaded + check (in that order).
+- [ ] Configure/verify GitHub self-hosted runner on canonical PC with labels `self-hosted`, `windows`, `osha-pc-canonical` and repository permissions for workflow execution.
+- [ ] Set runtime role keys on canonical PC via `scripts\set_outreach_env.ps1` (`RUNTIME_ROLE=canonical_scheduler`, `CANONICAL_HOSTNAME=<pc-hostname>`) and verify with wrapper `--print-config` paths.
+- [ ] Set optional `ARTIFACT_SYNC_DIR` (for example OneDrive artifacts folder) via `scripts\set_outreach_env.ps1` and confirm mirrors for task logs/run summaries/backups.
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
 - [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
 - [ ] If enabling AI triage, set `AI_TRIAGE_ENABLED` / `AI_TRIAGE_OPENAI_MODEL` via `scripts\set_outreach_env.ps1` and load `OPENAI_API_KEY` in the shell first (no manual `.env` / `.env.sops` edits).
@@ -1984,6 +2158,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 ## Codex-owned engineering backlog
 
 - [ ] Add follow-on autogrow sources on top of `outreach/scraper_engine.py` foundation: `AGC`, `BLUEBOOK`, `THOMASNET`, `BBB` (source modules + fixtures + generator tests).
+- [ ] Add integration test coverage that validates workflow artifact upload path patterns against generated wrapper outputs (`out/task_logs`, `out/run_summaries`, `out/backups`).
 - [ ] Wire landing page conversion CTA references to paid path after Stripe link is set.
   Reference points: `web/config/site.json`, `web/components/CTAButtons.tsx`, `web/app/pricing/page.tsx`, `web/app/contact/page.tsx`.
 - [ ] Define trial -> paid email-only sequence using existing lifecycle states (`replied`, `trial_started`, `converted`) and conversion artifacts in `run_trial_daily.py`.
