@@ -45,6 +45,8 @@ class TestProspectSourcesOhsBg(unittest.TestCase):
                 "fetched_at_utc": fetched_at,
                 "pages_fetched": 1,
                 "parse_mode": "TEXT",
+                "parse_counters": {"fetched_pages": 1},
+                "parse_reasons": {"selector_missing": 0},
                 "rows": [{"email": "cache@example.com", "state": "CA"}],
             }
             cache_path = ohs_bg._cache_path(cache_dir, "CA")
@@ -66,7 +68,59 @@ class TestProspectSourcesOhsBg(unittest.TestCase):
             self.assertTrue(result["cache_used"])
             self.assertEqual(result["rows"][0]["email"], "cache@example.com")
 
-    def test_fetch_follows_next_page_and_returns_rows(self):
+    def test_fetch_browser_primary_parses_company_and_recovers_email(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cache_dir = root / "cache"
+            diagnostics_dir = root / "diagnostics"
+
+            category_url = ohs_bg.BROWSER_CATEGORY_URL
+            company_101 = "https://buyersguide.ohsonline.com/company/alpha-safety-partners/101/"
+            company_202 = "https://buyersguide.ohsonline.com/company/bravo-risk-consulting/202/"
+
+            def browser_fetcher(url: str) -> dict:
+                if url == category_url:
+                    return {"ok": True, "status": 200, "html": self._read("buyersguide_category_page1.html")}
+                if url == company_101:
+                    return {"ok": True, "status": 200, "html": self._read("buyersguide_company_101.html")}
+                if url == company_202:
+                    return {"ok": True, "status": 200, "html": self._read("buyersguide_company_202_missing_firm.html")}
+                return {"ok": False, "status": 404, "html": "", "error": "not_found"}
+
+            def contact_fetcher(url: str):
+                if url.endswith("/contact"):
+                    return 200, "<html><body>Contact us: team@alpha-safety.example</body></html>"
+                return 200, "<html><body>No contact email</body></html>"
+
+            result = ohs_bg.fetch_ohs_bg_state_rows(
+                state="TX",
+                run_date=date(2026, 3, 6),
+                max_pages=1,
+                sleep_ms=0,
+                cache_dir=cache_dir,
+                diagnostics_dir=diagnostics_dir,
+                allow_cache_write=False,
+                browser_fetcher=browser_fetcher,
+                contact_fetcher=contact_fetcher,
+            )
+            self.assertEqual(result["parse_mode"], "BROWSER")
+            self.assertEqual(result.get("fetch_strategy"), "HYBRID_BROWSER_PRIMARY")
+            rows = list(result.get("rows") or [])
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["firm"], "Alpha Safety Partners")
+            self.assertEqual(row["state"], "TX")
+            self.assertEqual(row["source"], "ohs_buyers_guide:company-101")
+            self.assertEqual(row["email"], "team@alpha-safety.example")
+            parse_counters = dict(result.get("parse_counters") or {})
+            parse_reasons = dict(result.get("parse_reasons") or {})
+            self.assertEqual(int(parse_counters.get("candidate_rows_seen") or 0), 2)
+            self.assertEqual(int(parse_counters.get("parsed_rows_accepted") or 0), 1)
+            self.assertEqual(int(parse_counters.get("parsed_rows_rejected") or 0), 1)
+            self.assertEqual(int(parse_reasons.get("missing_firm") or 0), 1)
+            self.assertTrue(Path(result["diagnostics_path"]).exists())
+
+    def test_fetch_browser_failure_falls_back_to_legacy_http_parser(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             cache_dir = root / "cache"
@@ -75,7 +129,10 @@ class TestProspectSourcesOhsBg(unittest.TestCase):
             page1_url = "https://www.ohsonline.com/Directory/SearchResults.aspx?state=CA"
             page2_url = "https://www.ohsonline.com/Directory/SearchResults.aspx?state=CA&page=2"
 
-            def fetcher(url: str):
+            def browser_fetcher(_url: str) -> dict:
+                return {"ok": False, "status": 503, "html": "", "error": "browser_unavailable"}
+
+            def legacy_fetcher(url: str):
                 if url == page1_url:
                     return 200, self._read("page_ca_1.html")
                 if url == page2_url:
@@ -84,43 +141,48 @@ class TestProspectSourcesOhsBg(unittest.TestCase):
 
             result = ohs_bg.fetch_ohs_bg_state_rows(
                 state="CA",
-                run_date=date(2026, 2, 24),
+                run_date=date(2026, 3, 6),
                 max_pages=3,
                 sleep_ms=0,
                 cache_dir=cache_dir,
                 diagnostics_dir=diagnostics_dir,
-                fetcher=fetcher,
+                fetcher=legacy_fetcher,
                 allow_cache_write=False,
+                browser_fetcher=browser_fetcher,
             )
-            self.assertFalse(result["cache_used"])
-            self.assertEqual(int(result.get("pages_fetched") or 0), 2)
-            self.assertIn(result.get("parse_mode"), {"MULTI", "TEXT"})
+            self.assertTrue(str(result.get("parse_mode") or "").startswith("LEGACY_"))
+            self.assertEqual(result.get("fetch_strategy"), "HYBRID_FALLBACK_LEGACY")
             emails = sorted([str(r.get("email") or "") for r in (result.get("rows") or [])])
             self.assertEqual(
                 emails,
                 ["jane@acmesafetyca.com", "ops@bravoehsca.com", "team@coastalrisk.example"],
             )
 
-    def test_fetch_failed_writes_diagnostics(self):
+    def test_fetch_failed_emits_deterministic_reason_bucket(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             cache_dir = root / "cache"
             diagnostics_dir = root / "diagnostics"
 
-            def bad_fetcher(_url: str):
+            def browser_fetcher(_url: str) -> dict:
+                return {"ok": True, "status": 200, "html": self._read("buyersguide_category_selector_missing.html")}
+
+            def bad_legacy_fetcher(_url: str):
                 return 500, "error"
 
             result = ohs_bg.fetch_ohs_bg_state_rows(
                 state="TX",
-                run_date=date(2026, 2, 24),
-                max_pages=2,
+                run_date=date(2026, 3, 6),
+                max_pages=1,
                 sleep_ms=0,
                 cache_dir=cache_dir,
                 diagnostics_dir=diagnostics_dir,
-                fetcher=bad_fetcher,
+                fetcher=bad_legacy_fetcher,
                 allow_cache_write=False,
+                browser_fetcher=browser_fetcher,
             )
             self.assertEqual(result["parse_mode"], "FAILED")
+            self.assertGreaterEqual(int((result.get("parse_reasons") or {}).get("selector_missing") or 0), 1)
             self.assertTrue(Path(result["diagnostics_path"]).exists())
 
 

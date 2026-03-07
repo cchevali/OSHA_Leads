@@ -1,7 +1,9 @@
 import asyncio
+import io
 import os
 import re
 import time
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -74,6 +76,11 @@ def _probe_playwright_browser_launch() -> tuple[bool, str]:
         return True, ""
     except Exception as exc:
         return False, f"chromium_launch_failed:{type(exc).__name__}:{exc}"
+
+
+def _quiet_browser_logs_enabled() -> bool:
+    raw = _normalize_text(os.getenv("SCRAPER_ENGINE_QUIET_BROWSER_LOGS", "1")).lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def probe_crawl4ai_runtime() -> dict[str, Any]:
@@ -210,12 +217,21 @@ def crawl_page(
             "warn_token": WARN_PLAYWRIGHT_BROWSERS_MISSING,
         }
 
+    quiet_logs = _quiet_browser_logs_enabled()
     try:
-        result = asyncio.run(_crawl_with_crawl4ai_async(url, headless=headless))
+        if quiet_logs:
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                result = asyncio.run(_crawl_with_crawl4ai_async(url, headless=headless))
+        else:
+            result = asyncio.run(_crawl_with_crawl4ai_async(url, headless=headless))
     except RuntimeError:
         loop = asyncio.new_event_loop()
         try:
-            result = loop.run_until_complete(_crawl_with_crawl4ai_async(url, headless=headless))
+            if quiet_logs:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    result = loop.run_until_complete(_crawl_with_crawl4ai_async(url, headless=headless))
+            else:
+                result = loop.run_until_complete(_crawl_with_crawl4ai_async(url, headless=headless))
         finally:
             loop.close()
     if result.get("ok"):

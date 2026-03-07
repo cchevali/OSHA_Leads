@@ -1743,6 +1743,153 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("WARN_APOLLO_FREE_TIER_API_BLOCKED state=TX", buf.getvalue())
 
+    def test_ohs_parse_counters_and_reason_tokens_emitted(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            ohs_bg_cache = data_dir / "prospect_generation" / "cache" / "ohs_bg" / "state_TX.json"
+            ohs_result = {
+                "rows": [
+                    {
+                        "email": "owner@ohsfirm.com",
+                        "state": "TX",
+                        "firm": "OHS Firm",
+                        "source": "ohs_buyers_guide:company-101",
+                        "title": "Safety Consultant",
+                    }
+                ],
+                "cache_path": ohs_bg_cache,
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 3,
+                "parse_mode": "BROWSER",
+                "diagnostics_path": None,
+                "parse_counters": {
+                    "fetched_pages": 3,
+                    "candidate_rows_seen": 4,
+                    "parsed_rows_accepted": 1,
+                    "parsed_rows_rejected": 3,
+                    "hard_parse_failures": 0,
+                },
+                "parse_reasons": {
+                    "selector_missing": 1,
+                    "empty_listing": 0,
+                    "missing_firm": 2,
+                    "invalid_city_state": 0,
+                    "missing_contact_fields": 0,
+                },
+            }
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "OHS_BG",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_ohs_bg.fetch_ohs_bg_state_rows",
+                    return_value=ohs_result,
+                ):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_OHS_BG_PARSE_FETCHED_PAGES=3", out)
+            self.assertIn("GENERATOR_OHS_BG_PARSE_CANDIDATE_ROWS_SEEN=4", out)
+            self.assertIn("GENERATOR_OHS_BG_PARSE_PARSED_ROWS_ACCEPTED=1", out)
+            self.assertIn("GENERATOR_OHS_BG_PARSE_REASON_MISSING_FIRM=2", out)
+            self.assertIn("GENERATOR_OHS_BG_ROWS_ACCEPTED=1", out)
+
+    def test_aiha_loss_reason_tokens_emitted(self):
+        from outreach import crm_store
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO prospects(
+                      prospect_id, firm, contact_name, email, title, city, state, website, source,
+                      score, status, created_at, last_contacted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "existing_1",
+                        "Known Co",
+                        "",
+                        "known@known.com",
+                        "Owner",
+                        "Austin",
+                        "TX",
+                        "https://known.com",
+                        "seed",
+                        0,
+                        "new",
+                        now,
+                        None,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            aiha_cache = data_dir / "prospect_generation" / "cache" / "aiha" / "state_TX.json"
+            aiha_result = {
+                "rows": [
+                    {"email": "known@known.com", "state": "TX", "source": "aiha_consultants_listing:10-11"},
+                    {"email": "alpha@dup.com", "state": "TX", "source": "aiha_consultants_listing:10-11"},
+                    {"email": "beta@dup.com", "state": "TX", "source": "aiha_consultants_listing:10-11"},
+                    {"email": "alpha@dup.com", "state": "TX", "source": "aiha_consultants_listing:10-11"},
+                    {"email": "free@gmail.com", "state": "TX", "source": "aiha_consultants_listing:10-11"},
+                    {"email": "outside@outside.com", "state": "CA", "source": "aiha_consultants_listing:10-11"},
+                    {
+                        "email": "nosend@nosend.com",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:10-11",
+                        "default_send_eligible": "0",
+                    },
+                ],
+                "cache_path": aiha_cache,
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "TEXT_CONTAINER",
+                "diagnostics_path": None,
+            }
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
+                    return_value=aiha_result,
+                ):
+                    with redirect_stdout(buf):
+                        rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AIHA_LOSS_DUPLICATE_EMAIL=1", out)
+            self.assertIn("GENERATOR_AIHA_LOSS_DUPLICATE_DOMAIN=3", out)
+            self.assertIn("GENERATOR_AIHA_LOSS_STATE_OUT_OF_SCOPE=1", out)
+            self.assertIn("GENERATOR_AIHA_LOSS_FREE_DOMAIN=1", out)
+            self.assertIn("GENERATOR_AIHA_LOSS_ALREADY_KNOWN_CRM=1", out)
+            self.assertIn("GENERATOR_AIHA_LOSS_DEFAULT_SEND_INELIGIBLE=1", out)
+
     def test_generator_doctor_aggregate_warning_level(self):
         from outreach import run_prospect_generation as generator
 

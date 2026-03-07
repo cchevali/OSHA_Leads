@@ -9,6 +9,7 @@ import tempfile
 from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:  # pragma: no cover
     from dotenv import load_dotenv
@@ -69,6 +70,28 @@ AUTOGROW_REJECT_KEYS = (
     "role_mismatch",
     "role_inbox",
     "fit_mismatch",
+)
+AIHA_NET_NEW_LOSS_KEYS = (
+    "duplicate_email",
+    "duplicate_domain",
+    "state_out_of_scope",
+    "free_domain",
+    "already_known_crm",
+    "default_send_ineligible",
+)
+OHS_PARSE_COUNTER_KEYS = (
+    "fetched_pages",
+    "candidate_rows_seen",
+    "parsed_rows_accepted",
+    "parsed_rows_rejected",
+    "hard_parse_failures",
+)
+OHS_PARSE_REASON_KEYS = (
+    "selector_missing",
+    "empty_listing",
+    "missing_firm",
+    "invalid_city_state",
+    "missing_contact_fields",
 )
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
 ROLE_INBOX_LOCALS = {
@@ -280,6 +303,30 @@ def _email_domain(email: str) -> str:
     return e.split("@", 1)[1].strip().lower()
 
 
+def _domain_from_website(value: str) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    try:
+        parsed = urlparse(text if "://" in text else f"https://{text}")
+    except Exception:
+        return ""
+    host = _normalize_text(parsed.netloc or parsed.path).lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def _row_domain_value(row: dict[str, str], email: str) -> str:
+    explicit = _normalize_text(row.get("domain") or "").lower()
+    if explicit:
+        return explicit
+    via_email = _email_domain(email)
+    if via_email:
+        return via_email
+    return _domain_from_website(row.get("website") or "")
+
+
 def _source_fit_defaults(source: str) -> tuple[str, int]:
     source_norm = _normalize_text(source).lower()
     if source_norm.startswith("state_lic"):
@@ -378,6 +425,10 @@ def _generator_row_observability(rows: list[dict[str, str]]) -> dict[str, object
         "tier_counts": dict(tier_counts),
         "default_send_eligible_total": int(default_send_eligible_total),
     }
+
+
+def _default_aiha_loss_counters() -> Counter:
+    return Counter({key: 0 for key in AIHA_NET_NEW_LOSS_KEYS})
 
 
 def _output_path(data_dir: Path) -> Path:
@@ -772,6 +823,28 @@ def _existing_crm_emails(conn: sqlite3.Connection | None) -> set[str]:
     return out
 
 
+def _existing_crm_domains(conn: sqlite3.Connection | None) -> set[str]:
+    if conn is None or not _table_exists(conn, "prospects"):
+        return set()
+    out: set[str] = set()
+    try:
+        rows = conn.execute("SELECT email, website FROM prospects").fetchall()
+        for row in rows:
+            email = _normalize_email(str(row[0] or ""))
+            if _valid_email(email):
+                domain = _email_domain(email)
+                if domain:
+                    out.add(domain)
+            website = _normalize_text(str(row[1] or ""))
+            if website:
+                website_domain = _domain_from_website(website)
+                if website_domain:
+                    out.add(website_domain)
+    except Exception:
+        return out
+    return out
+
+
 def _fetch_prior_sent_ids(conn: sqlite3.Connection | None) -> set[str]:
     if conn is None or not _table_exists(conn, "outreach_events"):
         return set()
@@ -1059,6 +1132,49 @@ def _filter_autogrow_candidates(
     return accepted, counters
 
 
+def _aiha_loss_counters_from_candidates(
+    rows: list[dict[str, str]],
+    target_state: str,
+    existing_crm_emails: set[str],
+    existing_crm_domains: set[str],
+    preseen_batch_emails: set[str] | None = None,
+    preseen_batch_domains: set[str] | None = None,
+) -> Counter:
+    target = _normalize_us_state(target_state)
+    counters = _default_aiha_loss_counters()
+    seen_emails: set[str] = set(preseen_batch_emails or set())
+    seen_domains: set[str] = set(preseen_batch_domains or set())
+
+    for row in list(rows or []):
+        email = _normalize_email(row.get("email") or row.get("contact_email") or "")
+        if _valid_email(email):
+            if email in seen_emails:
+                counters["duplicate_email"] += 1
+            seen_emails.add(email)
+            if email in existing_crm_emails:
+                counters["already_known_crm"] += 1
+            if _email_domain(email) in pools.FREE_EMAIL_DOMAINS:
+                counters["free_domain"] += 1
+
+        state = _normalize_us_state(row.get("state") or "")
+        if not state or (target and state != target):
+            counters["state_out_of_scope"] += 1
+
+        source = _normalize_text(row.get("source") or "")
+        _source_fit_default, sendable_default = _source_fit_defaults(source)
+        sendable = _coerce_boolish_int(row.get("default_send_eligible") or "", sendable_default)
+        if sendable != 1:
+            counters["default_send_ineligible"] += 1
+
+        domain = _row_domain_value(row, email)
+        if domain:
+            if domain in seen_domains or domain in existing_crm_domains:
+                counters["duplicate_domain"] += 1
+            seen_domains.add(domain)
+
+    return counters
+
+
 def _default_apollo_result(cache_root_dir: Path, selected_state: str, *, sources_empty: bool) -> dict[str, object]:
     return {
         "cache_path": _source_cache_path_for_state(cache_root_dir, "APOLLO", selected_state),
@@ -1292,6 +1408,7 @@ def _print_tokens(
     enrich_metrics: dict,
     aiha_result: dict,
     aiha_rejected: Counter,
+    aiha_loss_counters: Counter,
     ohs_bg_result: dict,
     ohs_bg_rejected: Counter,
     apollo_cfg: dict,
@@ -1464,6 +1581,11 @@ def _print_tokens(
     print(f"GENERATOR_AIHA_REJECTED_MISSING_STATE={int(aiha_rejected.get('missing_state', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_STATE_MISMATCH={int(aiha_rejected.get('state_mismatch', 0))}")
     print(f"GENERATOR_AIHA_REJECTED_DUPLICATE_IN_BATCH={int(aiha_rejected.get('duplicate_in_batch', 0))}")
+    for loss_key in AIHA_NET_NEW_LOSS_KEYS:
+        print(
+            f"GENERATOR_AIHA_LOSS_{loss_key.upper()}="
+            f"{int(aiha_loss_counters.get(loss_key, 0))}"
+        )
 
     print(f"GENERATOR_OHS_BG_CACHE_PATH={Path(ohs_bg_result['cache_path']).resolve()}")
     print(f"GENERATOR_OHS_BG_CACHE_USED={'YES' if ohs_bg_result.get('cache_used') else 'NO'}")
@@ -1480,6 +1602,12 @@ def _print_tokens(
     print(f"GENERATOR_OHS_BG_REJECTED_MISSING_STATE={int(ohs_bg_rejected.get('missing_state', 0))}")
     print(f"GENERATOR_OHS_BG_REJECTED_STATE_MISMATCH={int(ohs_bg_rejected.get('state_mismatch', 0))}")
     print(f"GENERATOR_OHS_BG_REJECTED_DUPLICATE_IN_BATCH={int(ohs_bg_rejected.get('duplicate_in_batch', 0))}")
+    ohs_parse_counters = dict(ohs_bg_result.get("parse_counters") or {})
+    ohs_parse_reasons = dict(ohs_bg_result.get("parse_reasons") or {})
+    for key in OHS_PARSE_COUNTER_KEYS:
+        print(f"GENERATOR_OHS_BG_PARSE_{key.upper()}={int(ohs_parse_counters.get(key, 0))}")
+    for key in OHS_PARSE_REASON_KEYS:
+        print(f"GENERATOR_OHS_BG_PARSE_REASON_{key.upper()}={int(ohs_parse_reasons.get(key, 0))}")
 
     print(f"GENERATOR_APOLLO_ENABLED={1 if apollo_cfg.get('source_enabled') else 0}")
     print(f"GENERATOR_APOLLO_ENRICH_ENABLED={1 if apollo_cfg.get('enrich_enabled') else 0}")
@@ -1549,6 +1677,8 @@ def _default_autogrow_source_result(cache_path: Path, enabled: bool, sources_emp
         "parse_mode": ("SKIP_NO_SOURCES" if enabled and sources_empty else "FAILED"),
         "rows_candidate": 0,
         "rows_accepted": 0,
+        "parse_counters": {k: 0 for k in OHS_PARSE_COUNTER_KEYS},
+        "parse_reasons": {k: 0 for k in OHS_PARSE_REASON_KEYS},
     }
 
 
@@ -1703,10 +1833,13 @@ def main(argv: list[str] | None = None) -> int:
     safety_net_forced_states: list[str] = []
     safety_net_forced_state_details: list[str] = []
     cohort_summary: dict[str, object] = _default_input_cohort()
+    existing_crm_emails: set[str] = set()
+    existing_crm_domains: set[str] = set()
     try:
         suppressed_emails = _load_suppression_set(data_dir=data_dir, conn=conn)
         cohort_summary = _compute_input_cohort(conn=conn, states_scope=effective_states, suppressed_emails=suppressed_emails)
         existing_crm_emails = _existing_crm_emails(conn)
+        existing_crm_domains = _existing_crm_domains(conn)
         skip_role_inboxes = _bool_env(os.getenv("OUTREACH_SKIP_ROLE_INBOXES", "1"))
         safety_net_floor = 3
         for state_item in autogrow_states:
@@ -1784,6 +1917,7 @@ def main(argv: list[str] | None = None) -> int:
         sources_empty=sources_empty,
     )
     aiha_rejected: Counter = Counter()
+    aiha_loss_counters: Counter = _default_aiha_loss_counters()
     ohs_bg_result = _default_autogrow_source_result(
         cache_path=_source_cache_path_for_state(cache_root_dir, "OHS_BG", selected_state),
         enabled=bool(autogrow_cfg["enabled"]),
@@ -1823,6 +1957,7 @@ def main(argv: list[str] | None = None) -> int:
     apollo_enrich_remaining = int(apollo_cfg.get("enrich_max_per_run") or 0)
     diagnostics_path: Path | None = None
     autogrow_rows: list[dict[str, str]] = []
+    autogrow_seen_domains: set[str] = set()
     enrich_metrics = _default_generator_enrich_metrics()
 
     if args.print_config:
@@ -1843,6 +1978,7 @@ def main(argv: list[str] | None = None) -> int:
             enrich_metrics=enrich_metrics,
             aiha_result=aiha_result,
             aiha_rejected=aiha_rejected,
+            aiha_loss_counters=aiha_loss_counters,
             ohs_bg_result=ohs_bg_result,
             ohs_bg_rejected=ohs_bg_rejected,
             apollo_cfg=apollo_cfg,
@@ -1918,6 +2054,17 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 rows_candidate = list(enrich_out.get("rows") or rows_candidate)
                 _merge_generator_enrich_metrics(enrich_metrics, enrich_out.get("metrics"))
+            if source_token == "AIHA":
+                aiha_loss_counters.update(
+                    _aiha_loss_counters_from_candidates(
+                        rows=rows_candidate,
+                        target_state=state_detail,
+                        existing_crm_emails=set(existing_crm_emails),
+                        existing_crm_domains=set(existing_crm_domains),
+                        preseen_batch_emails=set(autogrow_seen_emails),
+                        preseen_batch_domains=set(autogrow_seen_domains),
+                    )
+                )
             filtered_rows, rejected = _filter_autogrow_candidates(
                 rows=rows_candidate,
                 target_state=state_detail,
@@ -1984,6 +2131,9 @@ def main(argv: list[str] | None = None) -> int:
                 email = _normalize_email(row.get("contact_email") or row.get("email") or "")
                 if email:
                     autogrow_seen_emails.add(email)
+                domain = _row_domain_value(row, email)
+                if domain:
+                    autogrow_seen_domains.add(domain)
 
             diag = result.get("diagnostics_path")
             resolved_diag: Path | None = diag if isinstance(diag, Path) else (Path(str(diag)) if diag else None)
@@ -2060,6 +2210,7 @@ def main(argv: list[str] | None = None) -> int:
             enrich_metrics=enrich_metrics,
             aiha_result=aiha_result,
             aiha_rejected=aiha_rejected,
+            aiha_loss_counters=aiha_loss_counters,
             ohs_bg_result=ohs_bg_result,
             ohs_bg_rejected=ohs_bg_rejected,
             apollo_cfg=apollo_cfg,
@@ -2093,6 +2244,7 @@ def main(argv: list[str] | None = None) -> int:
         enrich_metrics=enrich_metrics,
         aiha_result=aiha_result,
         aiha_rejected=aiha_rejected,
+        aiha_loss_counters=aiha_loss_counters,
         ohs_bg_result=ohs_bg_result,
         ohs_bg_rejected=ohs_bg_rejected,
         apollo_cfg=apollo_cfg,
