@@ -1,7 +1,9 @@
 import asyncio
+import io
 import os
 import re
 import time
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -74,6 +76,11 @@ def _probe_playwright_browser_launch() -> tuple[bool, str]:
         return True, ""
     except Exception as exc:
         return False, f"chromium_launch_failed:{type(exc).__name__}:{exc}"
+
+
+def _quiet_browser_logs_enabled() -> bool:
+    raw = _normalize_text(os.getenv("SCRAPER_ENGINE_QUIET_BROWSER_LOGS", "1")).lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def probe_crawl4ai_runtime() -> dict[str, Any]:
@@ -210,12 +217,21 @@ def crawl_page(
             "warn_token": WARN_PLAYWRIGHT_BROWSERS_MISSING,
         }
 
+    quiet_logs = _quiet_browser_logs_enabled()
     try:
-        result = asyncio.run(_crawl_with_crawl4ai_async(url, headless=headless))
+        if quiet_logs:
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                result = asyncio.run(_crawl_with_crawl4ai_async(url, headless=headless))
+        else:
+            result = asyncio.run(_crawl_with_crawl4ai_async(url, headless=headless))
     except RuntimeError:
         loop = asyncio.new_event_loop()
         try:
-            result = loop.run_until_complete(_crawl_with_crawl4ai_async(url, headless=headless))
+            if quiet_logs:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    result = loop.run_until_complete(_crawl_with_crawl4ai_async(url, headless=headless))
+            else:
+                result = loop.run_until_complete(_crawl_with_crawl4ai_async(url, headless=headless))
         finally:
             loop.close()
     if result.get("ok"):
@@ -236,6 +252,53 @@ def crawl_page(
                 "warn_token": str(result.get("warn_token") or ""),
             }
     return result
+
+
+def crawl_page_with_storage_state(
+    url: str,
+    *,
+    storage_state_path: str,
+    headless: bool = True,
+    sleep_ms: int = 0,
+) -> dict[str, Any]:
+    if sleep_ms > 0:
+        time.sleep(float(sleep_ms) / 1000.0)
+    state_file = Path(str(storage_state_path or "")).expanduser()
+    if not str(state_file):
+        return {"ok": False, "url": url, "status": 0, "html": "", "error": "missing_storage_state_path"}
+    if not state_file.exists():
+        return {"ok": False, "url": url, "status": 0, "html": "", "error": "missing_storage_state_file"}
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        return {"ok": False, "url": url, "status": 0, "html": "", "error": f"playwright_import_failed:{type(exc).__name__}:{exc}"}
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=headless)
+            context = browser.new_context(storage_state=str(state_file))
+            page = context.new_page()
+            response = page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=45000)
+            except Exception:
+                pass
+            html = str(page.content() or "")
+            status = int(response.status) if response is not None else 0
+            final_url = str(page.url or url)
+            title = str(page.title() or "")
+            context.close()
+            browser.close()
+        return {
+            "ok": bool(html),
+            "url": url,
+            "final_url": final_url,
+            "status": status,
+            "html": html,
+            "title": title,
+        }
+    except Exception as exc:
+        return {"ok": False, "url": url, "status": 0, "html": "", "error": f"playwright_fetch_failed:{type(exc).__name__}:{exc}"}
 
 
 def extract_contacts_regex(text_or_html: str) -> dict[str, list[str]]:

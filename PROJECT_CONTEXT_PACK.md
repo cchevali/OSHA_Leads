@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=5f9a35159c2d04c04e7ec3fc5421edbb2d1a6a59
-PACK_BUILD_UTC=2026-03-06T15:46:59Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=26a00c72663c2703259bc704d1d2c06d7ddfc41455464cfa874ed37efd2ada53 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=bfc1ccc593b2acf4ada5a73a310f72deb368b34e83dac96817ddd135a39dbba2 docs/TODO.md=806e22e4a1a4e86b1ceb13a879e72f0a04e450847c3d72da5de8ec9a5064abfe docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=5ad632276abc6a5083e86b47e2b3ac5db21338fbd34dd5ce0e790a10b3f28ed9
+PACK_GIT_SHA=d1682092cda74f79177c3c28a447ca81f3130d05
+PACK_BUILD_UTC=2026-03-06T20:53:06Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=26a00c72663c2703259bc704d1d2c06d7ddfc41455464cfa874ed37efd2ada53 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=61e7966107bd946ef0d0a1b241334cb5cff4bd864a70aff5a1df9a5dff142b75 docs/TODO.md=81924f7ffb5e39f27384b64ccb9e3ef161f71bf1c5a7079ab64d6846d1ed0d31 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=8dc9949232d56a3b63f82060676a81a72a15374ee279e0cc34a3de719c1722b8
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1071,6 +1071,7 @@ Auto-growth (env-gated, optional):
 
 - Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_STATES`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`.
 - Crawl4AI runtime keys (optional, default zero-cost): `PROSPECT_AUTOGROW_LLM_ENABLED` (default `0`), `PROSPECT_AUTOGROW_BCSP_CREDENTIALS`, `PROSPECT_AUTOGROW_BCSP_INDUSTRY`, `PROSPECT_AUTOGROW_STATE_LIC_TX_LICENSE_TYPES`.
+- OHS optional auth key (only if buyersguide pagination is work-email gated): `OHS_BG_STORAGE_STATE_PATH` (Playwright storage state JSON path).
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
 - Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_ALLOW_ROLE_INBOX` (default `0`), `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_MAX_PAGES_PER_SITE` (default `5`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (default `750`; when unset, falls back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`).
 - Source scope: `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG,BCSP,STATE_LIC`).
@@ -2194,6 +2195,7 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
 - [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
 - [ ] If enabling AI triage, set `AI_TRIAGE_ENABLED` / `AI_TRIAGE_OPENAI_MODEL` via `scripts\set_outreach_env.ps1` and load `OPENAI_API_KEY` in the shell first (no manual `.env` / `.env.sops` edits).
+- [ ] If OHS buyersguide multi-page replenishment is needed, refresh a valid Playwright storage-state file and set `OHS_BG_STORAGE_STATE_PATH` via `scripts\set_outreach_env.ps1`.
 
 - [ ] Ensure email provider account/sender credentials are configured for production and validated with daily doctor checks (`run_outreach_auto.py --doctor`).
 

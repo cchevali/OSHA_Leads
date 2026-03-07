@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -1255,8 +1255,10 @@ class TestOutreachMailmerge(unittest.TestCase):
                     "site_state": "TX",
                     "inspection_type": "Complaint",
                     "lead_score": 6,
-                    "date_opened": "2026-02-24",
-                    "first_seen_at": "2026-02-24T00:00:00Z",
+                    "date_opened": (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat(),
+                    "first_seen_at": (
+                        datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=1)
+                    ).isoformat(),
                 },
                 {
                     "activity_nr": "1002",
@@ -1265,8 +1267,10 @@ class TestOutreachMailmerge(unittest.TestCase):
                     "site_state": "TX",
                     "inspection_type": "Referral",
                     "lead_score": 6,
-                    "date_opened": "2026-02-23",
-                    "first_seen_at": "2026-02-23T00:00:00Z",
+                    "date_opened": (datetime.now(timezone.utc).date() - timedelta(days=2)).isoformat(),
+                    "first_seen_at": (
+                        datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=2)
+                    ).isoformat(),
                 },
             ]
             triage_decisions = [

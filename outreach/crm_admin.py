@@ -1,12 +1,14 @@
 import argparse
 import csv
 import json
+import os
 import re
 import shutil
 import sqlite3
 import sys
 from collections import Counter
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:  # pragma: no cover
     from dotenv import load_dotenv
@@ -21,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from outreach import crm_store
+import seed_recipients_pools as pools
 
 
 ERR_CRM_INPUT_MISSING = "ERR_CRM_INPUT_MISSING"
@@ -36,6 +39,14 @@ VERIFY_IMPORT_SAMPLE_SIZE = 25
 BLANK_SOURCE_LABEL = "(blank)"
 EMAIL_SCAN_RE = re.compile(r"[^\s,;<>\"']+@[^\s,;<>\"']+")
 VALID_SOURCE_FIT_TIERS = {"core_consultant", "recoverable_consultant", "adjacent_contractor"}
+AIHA_NET_NEW_LOSS_KEYS = (
+    "duplicate_email",
+    "duplicate_domain",
+    "state_out_of_scope",
+    "free_domain",
+    "already_known_crm",
+    "default_send_ineligible",
+)
 
 
 def _norm_email(value: str) -> str:
@@ -48,6 +59,43 @@ def _norm_state(value: str) -> str:
 
 def _norm_source(value: str) -> str:
     return (value or "").strip()
+
+
+def _email_domain(email: str) -> str:
+    value = _norm_email(email)
+    if "@" not in value:
+        return ""
+    return value.split("@", 1)[1].strip().lower()
+
+
+def _domain_from_website(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urlparse(text if "://" in text else f"https://{text}")
+    except Exception:
+        return ""
+    host = (parsed.netloc or parsed.path or "").strip().lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def _row_domain_value(email: str, website: str) -> str:
+    from_email = _email_domain(email)
+    if from_email:
+        return from_email
+    return _domain_from_website(website)
+
+
+def _parse_scope_states(raw: str) -> set[str]:
+    states: set[str] = set()
+    for token in str(raw or "").split(","):
+        state = _norm_state(token)
+        if len(state) == 2 and state.isalpha():
+            states.add(state)
+    return states
 
 
 def _coerce_boolish_int(value: str, default: int = 1) -> int:
@@ -342,6 +390,10 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
     default_send_eligible_total = 0
     unknown_source_backfill_count = 0
     unknown_source_samples: list[str] = []
+    aiha_loss_counters: Counter = Counter({key: 0 for key in AIHA_NET_NEW_LOSS_KEYS})
+    aiha_seen_emails: set[str] = set()
+    aiha_seen_domains: set[str] = set()
+    outreach_scope_states = _parse_scope_states(os.getenv("OUTREACH_STATES", ""))
 
     with open(input_path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -356,6 +408,23 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
     with crm_store.connect(db_path) as conn:
         crm_store.init_schema(conn)
         cur = conn.cursor()
+        existing_emails: set[str] = set()
+        existing_domains: set[str] = set()
+        try:
+            existing_rows = cur.execute("SELECT email, website FROM prospects").fetchall()
+            for existing_email_raw, existing_website_raw in existing_rows:
+                existing_email = _norm_email(str(existing_email_raw or ""))
+                if existing_email and "@" in existing_email:
+                    existing_emails.add(existing_email)
+                    existing_domain = _email_domain(existing_email)
+                    if existing_domain:
+                        existing_domains.add(existing_domain)
+                existing_website_domain = _domain_from_website(str(existing_website_raw or ""))
+                if existing_website_domain:
+                    existing_domains.add(existing_website_domain)
+        except Exception:
+            existing_emails = set()
+            existing_domains = set()
         for i, row in enumerate(rows, start=1):
             prospect_id = (row.get("prospect_id") or f"seed_{i}").strip()
             email = _norm_email(row.get("email", ""))
@@ -402,6 +471,24 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
             tier_counts[str(payload["source_fit_tier"] or "")] += 1
             if int(payload["default_send_eligible"] or 0) == 1:
                 default_send_eligible_total += 1
+            if source_family == "AIHA":
+                if email in aiha_seen_emails:
+                    aiha_loss_counters["duplicate_email"] += 1
+                aiha_seen_emails.add(email)
+                if email in existing_emails:
+                    aiha_loss_counters["already_known_crm"] += 1
+                if _email_domain(email) in pools.FREE_EMAIL_DOMAINS:
+                    aiha_loss_counters["free_domain"] += 1
+                domain = _row_domain_value(email=email, website=str(payload.get("website") or ""))
+                if domain and (domain in aiha_seen_domains or domain in existing_domains):
+                    aiha_loss_counters["duplicate_domain"] += 1
+                if domain:
+                    aiha_seen_domains.add(domain)
+                state_norm = _norm_state(str(payload.get("state") or ""))
+                if outreach_scope_states and (state_norm not in outreach_scope_states):
+                    aiha_loss_counters["state_out_of_scope"] += 1
+                if int(payload.get("default_send_eligible") or 0) != 1:
+                    aiha_loss_counters["default_send_ineligible"] += 1
             if source_fit_backfilled or sendable_backfilled:
                 backfill_source_counts[source_family] += 1
                 if source_family == "UNKNOWN":
@@ -451,6 +538,10 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                 updated += 1
             else:
                 inserted += 1
+                existing_emails.add(email)
+                new_domain = _row_domain_value(email=email, website=str(payload.get("website") or ""))
+                if new_domain:
+                    existing_domains.add(new_domain)
         conn.commit()
 
     archived_to = ""
@@ -474,6 +565,8 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
         "DISCOVERY_BACKFILL_UNKNOWN_SOURCE_SAMPLE="
         f"{'|'.join(unknown_source_samples) if unknown_source_samples else 'none'}"
     )
+    for key in AIHA_NET_NEW_LOSS_KEYS:
+        print(f"DISCOVERY_AIHA_LOSS_{key.upper()}={int(aiha_loss_counters.get(key, 0))}")
     if archived_to:
         print(f"{PASS_CRM_SEED} archived_to={archived_to}")
     return 0

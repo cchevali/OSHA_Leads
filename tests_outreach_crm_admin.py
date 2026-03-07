@@ -424,6 +424,136 @@ class TestOutreachCrmAdmin(unittest.TestCase):
             self.assertEqual(normalized["u1"], ("recoverable_consultant", 1))
             self.assertEqual(normalized["s1"], ("adjacent_contractor", 0))
 
+    def test_seed_emits_aiha_loss_reason_tokens(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            seed_existing = tmp / "existing.csv"
+            aiha_csv = tmp / "aiha.csv"
+            _write_csv(
+                seed_existing,
+                ["prospect_id", "email", "firm", "title", "state", "city", "source"],
+                [
+                    {
+                        "prospect_id": "existing_1",
+                        "email": "known@known.com",
+                        "firm": "Known",
+                        "title": "Owner",
+                        "state": "TX",
+                        "city": "Austin",
+                        "source": "seed",
+                    }
+                ],
+            )
+            first = self._run(["seed", "--input", str(seed_existing), "--no-archive"], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(first.returncode, 0, msg=first.stderr + "\n" + first.stdout)
+
+            _write_csv(
+                aiha_csv,
+                [
+                    "prospect_id",
+                    "email",
+                    "firm",
+                    "title",
+                    "state",
+                    "city",
+                    "source",
+                    "default_send_eligible",
+                    "website",
+                ],
+                [
+                    {
+                        "prospect_id": "a1",
+                        "email": "known@known.com",
+                        "firm": "Known",
+                        "title": "Consultant",
+                        "state": "TX",
+                        "city": "Austin",
+                        "source": "aiha_consultants_listing:10-11",
+                        "default_send_eligible": "1",
+                        "website": "https://known.com",
+                    },
+                    {
+                        "prospect_id": "a2",
+                        "email": "alpha@dup.com",
+                        "firm": "Dup",
+                        "title": "Consultant",
+                        "state": "TX",
+                        "city": "Austin",
+                        "source": "aiha_consultants_listing:10-11",
+                        "default_send_eligible": "1",
+                        "website": "https://dup.com",
+                    },
+                    {
+                        "prospect_id": "a3",
+                        "email": "beta@dup.com",
+                        "firm": "Dup",
+                        "title": "Consultant",
+                        "state": "TX",
+                        "city": "Austin",
+                        "source": "aiha_consultants_listing:10-11",
+                        "default_send_eligible": "1",
+                        "website": "https://dup.com",
+                    },
+                    {
+                        "prospect_id": "a4",
+                        "email": "alpha@dup.com",
+                        "firm": "Dup",
+                        "title": "Consultant",
+                        "state": "TX",
+                        "city": "Austin",
+                        "source": "aiha_consultants_listing:10-11",
+                        "default_send_eligible": "1",
+                        "website": "https://dup.com",
+                    },
+                    {
+                        "prospect_id": "a5",
+                        "email": "free@gmail.com",
+                        "firm": "Free",
+                        "title": "Consultant",
+                        "state": "TX",
+                        "city": "Austin",
+                        "source": "aiha_consultants_listing:10-11",
+                        "default_send_eligible": "1",
+                        "website": "",
+                    },
+                    {
+                        "prospect_id": "a6",
+                        "email": "outside@outside.com",
+                        "firm": "Outside",
+                        "title": "Consultant",
+                        "state": "CA",
+                        "city": "San Diego",
+                        "source": "aiha_consultants_listing:10-11",
+                        "default_send_eligible": "1",
+                        "website": "",
+                    },
+                    {
+                        "prospect_id": "a7",
+                        "email": "nosend@nosend.com",
+                        "firm": "No Send",
+                        "title": "Consultant",
+                        "state": "TX",
+                        "city": "Austin",
+                        "source": "aiha_consultants_listing:10-11",
+                        "default_send_eligible": "0",
+                        "website": "",
+                    },
+                ],
+            )
+            p = self._run(
+                ["seed", "--input", str(aiha_csv), "--no-archive"],
+                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"},
+            )
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_AIHA_LOSS_DUPLICATE_EMAIL"), "1")
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_AIHA_LOSS_DUPLICATE_DOMAIN"), "3")
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_AIHA_LOSS_STATE_OUT_OF_SCOPE"), "1")
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_AIHA_LOSS_FREE_DOMAIN"), "1")
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_AIHA_LOSS_ALREADY_KNOWN_CRM"), "2")
+            self.assertEqual(self._stdout_value(out, "DISCOVERY_AIHA_LOSS_DEFAULT_SEND_INELIGIBLE"), "1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,14 @@ class TestScraperEngine(unittest.TestCase):
         self.assertEqual(out[0]["email_status"], "pattern_generated")
         self.assertIn("@example.com", out[0]["email"])
 
+    def test_crawl_page_with_storage_state_requires_existing_file(self):
+        result = scraper_engine.crawl_page_with_storage_state(
+            "https://buyersguide.ohsonline.com/",
+            storage_state_path="C:\\nonexistent\\storage_state.json",
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "missing_storage_state_file")
+
 
 if __name__ == "__main__":
     unittest.main()
