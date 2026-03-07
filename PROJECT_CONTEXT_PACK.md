@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=d1682092cda74f79177c3c28a447ca81f3130d05
-PACK_BUILD_UTC=2026-03-06T20:53:06Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=26a00c72663c2703259bc704d1d2c06d7ddfc41455464cfa874ed37efd2ada53 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=61e7966107bd946ef0d0a1b241334cb5cff4bd864a70aff5a1df9a5dff142b75 docs/TODO.md=81924f7ffb5e39f27384b64ccb9e3ef161f71bf1c5a7079ab64d6846d1ed0d31 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=8dc9949232d56a3b63f82060676a81a72a15374ee279e0cc34a3de719c1722b8
+PACK_GIT_SHA=ee94224d19da7a4c44822ad548a41c31776dce00
+PACK_BUILD_UTC=2026-03-07T03:17:39Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=26a00c72663c2703259bc704d1d2c06d7ddfc41455464cfa874ed37efd2ada53 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=b20b1d1d0ae03fe1824cf13ba5342d9ca7d901794a5467c5630deea3cbbdec5f docs/TODO.md=40fedbbabf1a962e37456e39d967daf00f2686c92f9a294d233c141f78eff8fd docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=edbaa71cf7dfb6c90cbb3e0555f493741c10c96f0274db3af159583cd519a6f7
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -846,6 +846,39 @@ Open a test email in Gmail → "Show original" (or equivalent) and verify:
 | `From` / `Return-Path` | Both use `@microflowops.com` (domain alignment) |
 
 If any field shows `fail` or `none`, re-check the DNS records above and the SMTP provider's domain verification panel before sending live outreach.
+
+## Travel / Remote Operations
+
+Primary travel operating model:
+
+- Use the laptop local clone for development, tests, `--print-config`, `--doctor`, `--dry-run`, GitHub Actions review, and artifact inspection only.
+- Use a Windows-native RDP session into the canonical PC for any live rerun, live send, or break-glass recovery.
+- Treat Google Remote Desktop as fallback only; do not rely on it as the primary path if resolution/performance is already unreliable.
+- Do not expose raw RDP directly to the public internet; use an existing secure access layer.
+
+Travel preflight command (single entrypoint):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_travel_readiness.ps1 --print-config
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_travel_readiness.ps1 --dry-run
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_travel_readiness.ps1 --dry-run --target laptop
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_travel_readiness.ps1 --dry-run --target pc
+```
+
+Script behavior:
+
+- `--print-config` prints the exact laptop/PC preflight commands and manual checks without executing them.
+- `--dry-run` executes the laptop-safe checks (`project_context_pack`, secrets decrypt diagnostics, runtime tick `--print-config`, `--doctor`, `--dry-run`, GitHub workflow list, and optional unit tests).
+- `--target laptop` limits the run to laptop validation.
+- `--target pc` limits the run to PC-side runtime/GitHub checks and emits the remote-session manual checks.
+- `--skip-tests` omits `py -3 -m unittest -q` when you only want the shorter operational checks.
+
+Required manual travel checks:
+
+- From the laptop, open an RDP session to the canonical PC, disconnect, reconnect, and confirm the session is still usable at your normal working resolution.
+- Confirm the canonical PC stays awake, network-connected, and reachable after disconnect/reconnect.
+- From the remote PC session, inspect the latest runtime run summary/task log and confirm you can rerun the GitHub workflow if real recovery is needed.
 
 ## Switch machines: laptop -> PC
 
@@ -2198,6 +2231,9 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 - [ ] If OHS buyersguide multi-page replenishment is needed, refresh a valid Playwright storage-state file and set `OHS_BG_STORAGE_STATE_PATH` via `scripts\set_outreach_env.ps1`.
 
 - [ ] Ensure email provider account/sender credentials are configured for production and validated with daily doctor checks (`run_outreach_auto.py --doctor`).
+- [ ] Before travel, verify the Windows-native RDP path from the laptop to the canonical PC over the existing secure access layer; disconnect, reconnect, and confirm usable resolution/performance.
+- [ ] Before travel, confirm the canonical PC stays awake, network-connected, and reachable after disconnect/reconnect.
+- [ ] Before travel, run `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_travel_readiness.ps1 --dry-run` on the laptop and resolve any failing step before leaving.
 
 ## Codex-owned engineering backlog
 

@@ -233,6 +233,39 @@ Open a test email in Gmail → "Show original" (or equivalent) and verify:
 
 If any field shows `fail` or `none`, re-check the DNS records above and the SMTP provider's domain verification panel before sending live outreach.
 
+## Travel / Remote Operations
+
+Primary travel operating model:
+
+- Use the laptop local clone for development, tests, `--print-config`, `--doctor`, `--dry-run`, GitHub Actions review, and artifact inspection only.
+- Use a Windows-native RDP session into the canonical PC for any live rerun, live send, or break-glass recovery.
+- Treat Google Remote Desktop as fallback only; do not rely on it as the primary path if resolution/performance is already unreliable.
+- Do not expose raw RDP directly to the public internet; use an existing secure access layer.
+
+Travel preflight command (single entrypoint):
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_travel_readiness.ps1 --print-config
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_travel_readiness.ps1 --dry-run
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_travel_readiness.ps1 --dry-run --target laptop
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_travel_readiness.ps1 --dry-run --target pc
+```
+
+Script behavior:
+
+- `--print-config` prints the exact laptop/PC preflight commands and manual checks without executing them.
+- `--dry-run` executes the laptop-safe checks (`project_context_pack`, secrets decrypt diagnostics, runtime tick `--print-config`, `--doctor`, `--dry-run`, GitHub workflow list, and optional unit tests).
+- `--target laptop` limits the run to laptop validation.
+- `--target pc` limits the run to PC-side runtime/GitHub checks and emits the remote-session manual checks.
+- `--skip-tests` omits `py -3 -m unittest -q` when you only want the shorter operational checks.
+
+Required manual travel checks:
+
+- From the laptop, open an RDP session to the canonical PC, disconnect, reconnect, and confirm the session is still usable at your normal working resolution.
+- Confirm the canonical PC stays awake, network-connected, and reachable after disconnect/reconnect.
+- From the remote PC session, inspect the latest runtime run summary/task log and confirm you can rerun the GitHub workflow if real recovery is needed.
+
 ## Switch machines: laptop -> PC
 
 Commands:
