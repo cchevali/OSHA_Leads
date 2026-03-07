@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import time
 from collections import Counter
@@ -16,6 +17,7 @@ SEARCH_URL_TEMPLATE = "https://www.ohsonline.com/Directory/SearchResults.aspx?st
 BROWSER_CATEGORY_URL = "https://buyersguide.ohsonline.com/category/consulting/consulting-occupational-health-safety/"
 USER_AGENT = "OSHA_Leads/1.0 (+https://microflowops.com)"
 CACHE_MAX_AGE_DAYS = 7
+CACHE_SCHEMA_VERSION = 2
 ALLOWLIST_TERMS = (
     "consult",
     "consulting",
@@ -35,7 +37,41 @@ OHS_PARSE_REASON_KEYS = (
     "missing_firm",
     "invalid_city_state",
     "missing_contact_fields",
+    "state_filtered_out",
 )
+OHS_RESOURCE_SEGMENTS = {
+    "products",
+    "product",
+    "reviews",
+    "review",
+    "news",
+    "whitepapers",
+    "whitepaper",
+    "videos",
+    "video",
+    "events",
+}
+TRACKER_OR_AD_DOMAINS = {
+    "topprovider.com",
+    "mediabrains.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "googleadservices.com",
+}
+SOCIAL_DOMAINS = {
+    "linkedin.com",
+    "facebook.com",
+    "instagram.com",
+    "twitter.com",
+    "x.com",
+    "youtube.com",
+}
+BLOCKED_EMAIL_DOMAINS = {
+    "sentry.io",
+    "ingest.sentry.io",
+    "mediabrains.com",
+}
+OHS_BG_STORAGE_STATE_PATH_ENV = "OHS_BG_STORAGE_STATE_PATH"
 
 
 def _utc_now_iso() -> str:
@@ -78,6 +114,13 @@ def _cache_is_fresh(payload: dict, as_of: datetime | None = None) -> bool:
     return age < CACHE_MAX_AGE_DAYS
 
 
+def _cache_schema_compatible(payload: dict) -> bool:
+    try:
+        return int(payload.get("cache_schema_version") or 0) == CACHE_SCHEMA_VERSION
+    except Exception:
+        return False
+
+
 def _read_cache(path: Path) -> dict | None:
     if not path.exists():
         return None
@@ -97,14 +140,23 @@ def _default_fetcher(url: str) -> tuple[int, str]:
     return int(resp.status_code), str(resp.text or "")
 
 
-def _default_browser_fetcher(url: str) -> dict:
-    page = scraper_engine.crawl_page(url, mode="browser", headless=True)
+def _default_browser_fetcher(url: str, storage_state_path: str = "") -> dict:
+    if storage_state_path:
+        page = scraper_engine.crawl_page_with_storage_state(
+            url,
+            storage_state_path=storage_state_path,
+            headless=True,
+        )
+    else:
+        page = scraper_engine.crawl_page(url, mode="browser", headless=True)
     status = int(page.get("status") or (200 if page.get("ok") else 0))
     html = str(page.get("html") or page.get("markdown") or "")
     return {
         "ok": bool(page.get("ok")) and bool(html),
         "status": status,
         "html": html,
+        "final_url": str(page.get("final_url") or page.get("url") or url),
+        "title": str(page.get("title") or ""),
         "error": str(page.get("error") or ""),
         "warn_token": str(page.get("warn_token") or ""),
     }
@@ -151,6 +203,53 @@ def _domain_from_website(value: str) -> str:
     return host
 
 
+def _email_domain(value: str) -> str:
+    email = _normalize_email(value)
+    if "@" not in email:
+        return ""
+    return email.split("@", 1)[1]
+
+
+def _domain_matches_any(host: str, domains: set[str]) -> bool:
+    token = _normalize_text(host).lower()
+    if not token:
+        return False
+    for suffix in domains:
+        if token == suffix or token.endswith(f".{suffix}"):
+            return True
+    return False
+
+
+def _website_allowed(website: str) -> bool:
+    host = _domain_from_website(website)
+    if not host:
+        return False
+    if host == "buyersguide.ohsonline.com" or host == "ohsonline.com" or host.endswith(".ohsonline.com"):
+        return False
+    if _domain_matches_any(host, TRACKER_OR_AD_DOMAINS):
+        return False
+    if _domain_matches_any(host, SOCIAL_DOMAINS):
+        return False
+    return True
+
+
+def _email_allowed(email: str) -> bool:
+    if not _valid_email(email):
+        return False
+    host = _email_domain(email)
+    if not host:
+        return False
+    return not _domain_matches_any(host, BLOCKED_EMAIL_DOMAINS)
+
+
+def _email_matches_website(email: str, website: str) -> bool:
+    email_host = _email_domain(email)
+    website_host = _domain_from_website(website)
+    if not email_host or not website_host:
+        return False
+    return email_host == website_host or email_host.endswith(f".{website_host}")
+
+
 def _extract_emails(text: str) -> list[str]:
     emails = re.findall(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", text, flags=re.I)
     out: list[str] = []
@@ -164,12 +263,23 @@ def _extract_emails(text: str) -> list[str]:
 
 
 def _extract_city_state(text: str) -> tuple[str, str]:
-    match = re.search(r"([A-Za-z .'-]+),\s*([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?", text)
-    if not match:
+    blob = _normalize_text(text)
+    if not blob:
         return "", ""
-    city = _normalize_text(match.group(1))
-    state = _normalize_state(match.group(2))
-    return city, state
+    patterns = (
+        r"([A-Za-z][A-Za-z .'\-]{1,80})\s*,\s*([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?",
+        r"([A-Za-z][A-Za-z .'\-]{1,80})\s+([A-Z]{2})\s+\d{5}(?:-\d{4})?",
+    )
+    for pattern in patterns:
+        matches = list(re.finditer(pattern, blob))
+        if not matches:
+            continue
+        match = matches[-1]
+        city = _normalize_text(match.group(1).strip(" ,"))
+        state = _normalize_state(match.group(2))
+        if city and state:
+            return city, state
+    return "", ""
 
 
 def _allowlisted(text: str) -> bool:
@@ -375,6 +485,8 @@ def _empty_parse_counters() -> dict[str, int]:
         "parsed_rows_accepted": 0,
         "parsed_rows_rejected": 0,
         "hard_parse_failures": 0,
+        "auth_gated_pages": 0,
+        "non_profile_links_filtered": 0,
     }
 
 
@@ -410,36 +522,142 @@ def _extract_jsonld_objects(soup: BeautifulSoup) -> list[dict]:
     return out
 
 
-def _extract_company_links(category_html: str, page_url: str) -> tuple[list[str], str]:
+def _current_page_number(url: str) -> int:
+    text = _normalize_text(url)
+    match = re.search(r"[?&](?:page|Page)=(\d+)", text)
+    if not match:
+        return 1
+    try:
+        value = int(match.group(1))
+    except Exception:
+        return 1
+    return value if value > 0 else 1
+
+
+def _company_id_from_tracking(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        match = re.search(r'"company_id"\s*:\s*(\d+)', raw)
+        return match.group(1) if match else ""
+    if not isinstance(payload, dict):
+        return ""
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return ""
+    try:
+        company_id = int(data.get("company_id") or 0)
+    except Exception:
+        company_id = 0
+    return str(company_id) if company_id > 0 else ""
+
+
+def _company_identity_from_url(company_url: str, fallback_index: int) -> tuple[str, str]:
+    text = _normalize_text(company_url)
+    parsed = urlparse(text)
+    parts = [part for part in str(parsed.path or "").split("/") if part]
+    if "company" not in parts:
+        fallback = str(max(1, int(fallback_index)))
+        return fallback, f"https://buyersguide.ohsonline.com/company/{fallback}/profile"
+    idx = parts.index("company")
+    tail = parts[idx + 1 :]
+    company_id = ""
+    slug = ""
+    if len(tail) >= 2:
+        first = _normalize_text(tail[0]).lower()
+        second = _normalize_text(tail[1]).lower()
+        if first.isdigit():
+            company_id = first
+            slug = second
+        elif second.isdigit():
+            company_id = second
+            slug = first
+    if not company_id:
+        fallback = str(max(1, int(fallback_index)))
+        company_id = fallback
+    slug_norm = re.sub(r"[^a-z0-9\-]+", "-", slug).strip("-") or "profile"
+    base = "https://buyersguide.ohsonline.com"
+    return company_id, f"{base}/company/{company_id}/{slug_norm}"
+
+
+def _extract_auth_gated_page_urls(soup: BeautifulSoup, page_url: str) -> list[str]:
+    current_page = _current_page_number(page_url)
+    out: list[str] = []
+    seen: set[str] = set()
+    for button in soup.select("button[data-auth-continuation-redirect]"):
+        target = _normalize_text(button.get("data-auth-continuation-redirect") or "")
+        if not target:
+            continue
+        full = urljoin(page_url, target)
+        page_num = _current_page_number(full)
+        if page_num <= current_page:
+            continue
+        if full in seen:
+            continue
+        seen.add(full)
+        out.append(full)
+    return out
+
+
+def _extract_company_links(category_html: str, page_url: str) -> tuple[list[str], str, dict]:
     soup = BeautifulSoup(category_html or "", "html.parser")
     urls: list[str] = []
-    seen: set[str] = set()
+    seen_company_ids: set[str] = set()
+    non_profile_links_filtered = 0
+    auth_gated_page_urls = _extract_auth_gated_page_urls(soup, page_url=page_url)
     for a in soup.select("a[href*='/company/']"):
         href = _normalize_text(a.get("href") or "")
         if not href:
             continue
         full_url = urljoin(page_url, href)
         parsed = urlparse(full_url)
-        if "/company/" not in parsed.path:
+        parts = [part for part in str(parsed.path or "").split("/") if part]
+        if "company" not in parts:
             continue
-        normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        if normalized not in seen:
-            seen.add(normalized)
-            urls.append(normalized)
+        idx = parts.index("company")
+        tail = parts[idx + 1 :]
+        tracking = _normalize_text(a.get("data-ga4-tracking") or "")
+        action_is_profile = "company profile click" in tracking.lower()
+        if len(tail) != 2:
+            non_profile_links_filtered += 1
+            continue
+        first = _normalize_text(tail[0]).lower()
+        second = _normalize_text(tail[1]).lower()
+        has_numeric_id = first.isdigit() or second.isdigit()
+        if not has_numeric_id:
+            non_profile_links_filtered += 1
+            continue
+        if first in OHS_RESOURCE_SEGMENTS or second in OHS_RESOURCE_SEGMENTS:
+            non_profile_links_filtered += 1
+            continue
+        tracked_company_id = _company_id_from_tracking(tracking)
+        company_id, normalized = _company_identity_from_url(full_url, fallback_index=len(urls) + 1)
+        if tracked_company_id and tracked_company_id != company_id:
+            non_profile_links_filtered += 1
+            continue
+        if tracking and not action_is_profile:
+            non_profile_links_filtered += 1
+            continue
+        if company_id in seen_company_ids:
+            continue
+        seen_company_ids.add(company_id)
+        urls.append(normalized)
     if urls:
-        return urls, ""
+        return urls, "", {
+            "non_profile_links_filtered": int(non_profile_links_filtered),
+            "auth_gated_page_urls": auth_gated_page_urls,
+        }
     has_listing_scaffold = bool(
         soup.select(".supplier-listing, .listing, .result, .search-result, article, [data-company-id]")
     )
-    return [], ("empty_listing" if has_listing_scaffold else "selector_missing")
-
-
-def _company_id_from_url(company_url: str, fallback_index: int) -> str:
-    text = _normalize_text(company_url)
-    match = re.search(r"/company/[^/]+/(\d+)(?:/|$)", text)
-    if match:
-        return match.group(1)
-    return str(max(1, int(fallback_index)))
+    reason = "empty_listing" if has_listing_scaffold else "selector_missing"
+    return [], reason, {
+        "non_profile_links_filtered": int(non_profile_links_filtered),
+        "auth_gated_page_urls": auth_gated_page_urls,
+    }
 
 
 def _extract_contact_name(text: str) -> str:
@@ -454,6 +672,35 @@ def _extract_contact_name(text: str) -> str:
 
 
 def _extract_website_from_company(soup: BeautifulSoup, jsonld_objects: list[dict]) -> str:
+    for item in soup.select(".company-details .detail-item"):
+        label = _normalize_text(item.select_one(".detail-label").get_text(" ", strip=True) if item.select_one(".detail-label") else "").lower()
+        if "website" not in label:
+            continue
+        for a in item.select("a[href]"):
+            href = _normalize_text(a.get("href") or "")
+            onclick = _normalize_text(a.get("onclick") or "")
+            if onclick:
+                match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", onclick)
+                if match:
+                    website = _normalize_website(match.group(1))
+                    if _website_allowed(website):
+                        return website
+            if href.lower().startswith(("http://", "https://")):
+                website = _normalize_website(href)
+                if _website_allowed(website):
+                    return website
+        text_value = _normalize_text(item.get_text(" ", strip=True))
+        domain_match = re.search(r"\b(?:https?://)?(?:www\.)?[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9][a-z0-9\-]*)+\b", text_value, flags=re.I)
+        if domain_match:
+            website = _normalize_website(domain_match.group(0))
+            if _website_allowed(website):
+                return website
+    for a in soup.select("a[data-ga4-tracking*='company external click'][href]"):
+        href = _normalize_text(a.get("href") or "")
+        if href.lower().startswith(("http://", "https://")):
+            website = _normalize_website(href)
+            if _website_allowed(website):
+                return website
     for a in soup.select("a.action-btn--website, a[href*='http://'], a[href*='https://']"):
         href = _normalize_text(a.get("href") or "")
         onclick = _normalize_text(a.get("onclick") or "")
@@ -461,22 +708,28 @@ def _extract_website_from_company(soup: BeautifulSoup, jsonld_objects: list[dict
             match = re.search(r"window\.open\(['\"]([^'\"]+)['\"]", onclick)
             if match:
                 website = _normalize_website(match.group(1))
-                if _domain_from_website(website) and "buyersguide.ohsonline.com" not in website.lower():
+                if _website_allowed(website):
                     return website
         if href.lower().startswith(("http://", "https://")):
-            if "buyersguide.ohsonline.com" in href.lower():
-                continue
             website = _normalize_website(href)
-            if _domain_from_website(website):
+            if _website_allowed(website):
                 return website
     for item in jsonld_objects:
         website = _normalize_website(item.get("url") or "")
-        if _domain_from_website(website):
+        if _website_allowed(website):
             return website
     return ""
 
 
 def _extract_city_state_from_company(soup: BeautifulSoup, jsonld_objects: list[dict], fallback_text: str) -> tuple[str, str]:
+    for item in soup.select(".company-details .detail-item"):
+        label = _normalize_text(item.select_one(".detail-label").get_text(" ", strip=True) if item.select_one(".detail-label") else "").lower()
+        if "address" not in label:
+            continue
+        value = _normalize_text(item.get_text(" ", strip=True))
+        city, state = _extract_city_state(value)
+        if city and state:
+            return city, state
     for selector in (
         ".listing-header__address",
         ".supplier-location",
@@ -523,11 +776,11 @@ def _extract_emails_from_company(company_html: str, soup: BeautifulSoup) -> list
         href = _normalize_text(a.get("href") or "")
         if href.lower().startswith("mailto:"):
             candidate = _normalize_email(href.split(":", 1)[1].split("?", 1)[0])
-            if _valid_email(candidate) and candidate not in seen:
+            if _email_allowed(candidate) and candidate not in seen:
                 seen.add(candidate)
                 out.append(candidate)
     for item in _extract_emails(f"{company_html}\n{soup.get_text(' ', strip=True)}"):
-        if item not in seen:
+        if _email_allowed(item) and item not in seen:
             seen.add(item)
             out.append(item)
     return out
@@ -542,7 +795,7 @@ def _parse_company_profile(
     soup = BeautifulSoup(company_html or "", "html.parser")
     all_text = _normalize_text(soup.get_text(" ", strip=True))
     jsonld_objects = _extract_jsonld_objects(soup)
-    company_id = _company_id_from_url(company_url, fallback_index=company_index)
+    company_id, canonical_url = _company_identity_from_url(company_url, fallback_index=company_index)
     diag = {
         "company_url": company_url,
         "company_id": company_id,
@@ -560,12 +813,20 @@ def _parse_company_profile(
         diag["reason"] = "invalid_city_state"
         return None, "invalid_city_state", diag
     if state_filter and state != state_filter:
-        diag["reason"] = "invalid_city_state"
-        return None, "invalid_city_state", diag
+        diag["reason"] = "state_filtered_out"
+        diag["state_found"] = state
+        return None, "state_filtered_out", diag
 
     website = _extract_website_from_company(soup, jsonld_objects)
     emails = _extract_emails_from_company(company_html, soup)
-    email = emails[0] if emails else ""
+    email = ""
+    if website:
+        for candidate in emails:
+            if _email_matches_website(candidate, website):
+                email = candidate
+                break
+    if not email and emails:
+        email = emails[0]
     contact_name = _extract_contact_name(all_text)
 
     if not website and not email and not contact_name:
@@ -586,6 +847,7 @@ def _parse_company_profile(
         "state": state,
         "website": website,
         "source": source,
+        "source_url": canonical_url,
     }
     diag["status"] = "accepted"
     diag["reason"] = ""
@@ -628,6 +890,9 @@ def _recover_missing_site_email(
         website = _normalize_text(row.get("website") or "")
         if not website:
             continue
+        website_host = _domain_from_website(website)
+        if not website_host:
+            continue
         if attempts >= max_attempts:
             break
         attempts += 1
@@ -642,7 +907,7 @@ def _recover_missing_site_email(
             contacts = dict(item.get("contacts") or {})
             for candidate in list(contacts.get("emails") or []):
                 email_candidate = _normalize_email(candidate)
-                if _valid_email(email_candidate):
+                if _email_allowed(email_candidate) and _email_matches_website(email_candidate, website):
                     found = email_candidate
                     break
             if found:
@@ -660,6 +925,7 @@ def _fetch_browser_rows(
     sleep_ms: int,
     browser_fetcher,
     contact_fetcher,
+    auth_enabled: bool,
     parse_counters: dict[str, int],
     parse_reasons: Counter,
 ) -> tuple[list[dict[str, str]], list[dict], list[dict], str]:
@@ -670,15 +936,23 @@ def _fetch_browser_rows(
     company_urls: list[str] = []
     seen_company_urls: set[str] = set()
 
-    for page_idx in range(max_pages):
-        if page_idx > 0 and sleep_ms > 0:
+    category_url = BROWSER_CATEGORY_URL
+    visited_category_pages: set[str] = set()
+    queued_category_pages: list[str] = [category_url]
+    scanned_category_pages = 0
+    while queued_category_pages and scanned_category_pages < max_pages:
+        page_url = queued_category_pages.pop(0)
+        if page_url in visited_category_pages:
+            continue
+        visited_category_pages.add(page_url)
+        scanned_category_pages += 1
+        if scanned_category_pages > 1 and sleep_ms > 0:
             time.sleep(float(sleep_ms) / 1000.0)
-        page_url = BROWSER_CATEGORY_URL if page_idx == 0 else f"{BROWSER_CATEGORY_URL}?Page={page_idx + 1}"
         page = browser_fetcher(page_url)
         parse_counters["fetched_pages"] += 1
         status = int(page.get("status") or 0)
         html = str(page.get("html") or "")
-        if status != 200 or not html:
+        if not html:
             parse_counters["hard_parse_failures"] += 1
             parse_reasons["selector_missing"] += 1
             page_diagnostics.append(
@@ -692,8 +966,9 @@ def _fetch_browser_rows(
             browser_error = str(page.get("error") or f"http_status={status}")
             break
 
-        links, reason = _extract_company_links(html, page_url=page_url)
+        links, reason, meta = _extract_company_links(html, page_url=page_url)
         parse_counters["candidate_rows_seen"] += int(len(links))
+        parse_counters["non_profile_links_filtered"] += int(meta.get("non_profile_links_filtered") or 0)
         if not links:
             parse_counters["parsed_rows_rejected"] += 1
             parse_reasons[reason or "empty_listing"] += 1
@@ -705,6 +980,24 @@ def _fetch_browser_rows(
                 continue
             seen_company_urls.add(link)
             company_urls.append(link)
+        auth_gated_page_urls = list(meta.get("auth_gated_page_urls") or [])
+        pending_auth_pages = [u for u in auth_gated_page_urls if u not in visited_category_pages]
+        if pending_auth_pages:
+            if auth_enabled:
+                for gated_url in pending_auth_pages:
+                    if gated_url not in queued_category_pages:
+                        queued_category_pages.append(gated_url)
+            else:
+                parse_counters["auth_gated_pages"] += int(len(pending_auth_pages))
+                page_diagnostics.append(
+                    {
+                        "url": page_url,
+                        "status": status,
+                        "reason": "auth_gated",
+                        "auth_gated_pages": len(pending_auth_pages),
+                    }
+                )
+                break
 
     max_company_pages = max(1, int(max_pages) * 20)
     for company_idx, company_url in enumerate(company_urls[:max_company_pages], start=1):
@@ -714,7 +1007,7 @@ def _fetch_browser_rows(
         parse_counters["fetched_pages"] += 1
         status = int(page.get("status") or 0)
         html = str(page.get("html") or "")
-        if status != 200 or not html:
+        if not html:
             parse_counters["hard_parse_failures"] += 1
             parse_counters["parsed_rows_rejected"] += 1
             parse_reasons["selector_missing"] += 1
@@ -833,7 +1126,7 @@ def fetch_ohs_bg_state_rows(
     parse_reasons = Counter(_empty_parse_reasons())
     cache_path = _cache_path(cache_dir, state_norm)
     cached_payload = _read_cache(cache_path)
-    if cached_payload and _cache_is_fresh(cached_payload):
+    if cached_payload and _cache_is_fresh(cached_payload) and _cache_schema_compatible(cached_payload):
         rows = list(cached_payload.get("rows") or [])
         cached_parse_counters = dict(cached_payload.get("parse_counters") or {})
         cached_parse_reasons = dict(cached_payload.get("parse_reasons") or {})
@@ -852,11 +1145,20 @@ def fetch_ohs_bg_state_rows(
             "parse_counters": counters_out,
             "parse_reasons": reasons_out,
             "fetch_strategy": str(cached_payload.get("fetch_strategy") or ""),
+            "auth_mode": str(cached_payload.get("auth_mode") or "PUBLIC"),
         }
 
     fetch = fetcher or _default_fetcher
     use_browser = not (fetcher is not None and browser_fetcher is None)
-    browser_fetch = browser_fetcher or _default_browser_fetcher
+    storage_state_path_raw = _normalize_text(os.getenv(OHS_BG_STORAGE_STATE_PATH_ENV, ""))
+    storage_state_path = Path(storage_state_path_raw) if storage_state_path_raw else None
+    auth_enabled = bool(storage_state_path and storage_state_path.exists())
+    if browser_fetcher is not None:
+        browser_fetch = browser_fetcher
+    elif auth_enabled and storage_state_path is not None:
+        browser_fetch = lambda url: _default_browser_fetcher(url, storage_state_path=str(storage_state_path))  # noqa: E731
+    else:
+        browser_fetch = _default_browser_fetcher
     contact_fetch = contact_fetcher or _default_fetcher
 
     rows: list[dict[str, str]] = []
@@ -877,6 +1179,7 @@ def fetch_ohs_bg_state_rows(
                 sleep_ms=sleep_ms,
                 browser_fetcher=browser_fetch,
                 contact_fetcher=contact_fetch,
+                auth_enabled=auth_enabled,
                 parse_counters=parse_counters,
                 parse_reasons=parse_reasons,
             )
@@ -919,10 +1222,12 @@ def fetch_ohs_bg_state_rows(
             "source": "ohs_buyers_guide",
             "state": state_norm,
             "fetched_at_utc": _utc_now_iso(),
+            "cache_schema_version": CACHE_SCHEMA_VERSION,
             "cache_max_age_days": CACHE_MAX_AGE_DAYS,
             "pages_fetched": int(parse_counters.get("fetched_pages") or 0),
             "parse_mode": parse_mode,
             "fetch_strategy": fetch_strategy,
+            "auth_mode": "AUTHENTICATED" if auth_enabled else "PUBLIC",
             "page_urls": legacy_page_urls,
             "diag_counts": legacy_diag_counts,
             "parse_counters": dict(parse_counters),
@@ -938,6 +1243,7 @@ def fetch_ohs_bg_state_rows(
             "generated_at_utc": _utc_now_iso(),
             "fetch_strategy": fetch_strategy,
             "parse_mode": parse_mode,
+            "auth_mode": "AUTHENTICATED" if auth_enabled else "PUBLIC",
             "cache_path": str(cache_path),
             "parse_counters": dict(parse_counters),
             "parse_reasons": {k: int(parse_reasons.get(k, 0)) for k in OHS_PARSE_REASON_KEYS},
@@ -958,6 +1264,7 @@ def fetch_ohs_bg_state_rows(
             "parse_counters": dict(parse_counters),
             "parse_reasons": {k: int(parse_reasons.get(k, 0)) for k in OHS_PARSE_REASON_KEYS},
             "fetch_strategy": fetch_strategy,
+            "auth_mode": "AUTHENTICATED" if auth_enabled else "PUBLIC",
         }
     except Exception as exc:
         diagnostics_payload = {
@@ -968,6 +1275,7 @@ def fetch_ohs_bg_state_rows(
             "cache_path": str(cache_path),
             "fetch_strategy": fetch_strategy,
             "parse_mode": "FAILED",
+            "auth_mode": "AUTHENTICATED" if auth_enabled else "PUBLIC",
             "parse_counters": dict(parse_counters),
             "parse_reasons": {k: int(parse_reasons.get(k, 0)) for k in OHS_PARSE_REASON_KEYS},
             "page_diagnostics": list(page_diagnostics)[:40],
@@ -988,4 +1296,5 @@ def fetch_ohs_bg_state_rows(
             "parse_counters": dict(parse_counters),
             "parse_reasons": {k: int(parse_reasons.get(k, 0)) for k in OHS_PARSE_REASON_KEYS},
             "fetch_strategy": fetch_strategy,
+            "auth_mode": "AUTHENTICATED" if auth_enabled else "PUBLIC",
         }

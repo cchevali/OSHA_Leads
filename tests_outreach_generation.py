@@ -1766,6 +1766,7 @@ class TestProspectGeneration(unittest.TestCase):
                 "cache_age_days": 0,
                 "pages_fetched": 3,
                 "parse_mode": "BROWSER",
+                "auth_mode": "PUBLIC",
                 "diagnostics_path": None,
                 "parse_counters": {
                     "fetched_pages": 3,
@@ -1801,6 +1802,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_OHS_BG_PARSE_FETCHED_PAGES=3", out)
             self.assertIn("GENERATOR_OHS_BG_PARSE_CANDIDATE_ROWS_SEEN=4", out)
             self.assertIn("GENERATOR_OHS_BG_PARSE_PARSED_ROWS_ACCEPTED=1", out)
+            self.assertIn("GENERATOR_OHS_BG_AUTH_MODE=PUBLIC", out)
             self.assertIn("GENERATOR_OHS_BG_PARSE_REASON_MISSING_FIRM=2", out)
             self.assertIn("GENERATOR_OHS_BG_ROWS_ACCEPTED=1", out)
 

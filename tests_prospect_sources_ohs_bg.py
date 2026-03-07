@@ -43,6 +43,7 @@ class TestProspectSourcesOhsBg(unittest.TestCase):
                 "source": "ohs_buyers_guide",
                 "state": "CA",
                 "fetched_at_utc": fetched_at,
+                "cache_schema_version": ohs_bg.CACHE_SCHEMA_VERSION,
                 "pages_fetched": 1,
                 "parse_mode": "TEXT",
                 "parse_counters": {"fetched_pages": 1},
@@ -68,6 +69,42 @@ class TestProspectSourcesOhsBg(unittest.TestCase):
             self.assertTrue(result["cache_used"])
             self.assertEqual(result["rows"][0]["email"], "cache@example.com")
 
+    def test_fetch_ignores_cache_when_schema_is_incompatible(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cache_dir = root / "cache"
+            diagnostics_dir = root / "diagnostics"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            fetched_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            cache_payload = {
+                "source": "ohs_buyers_guide",
+                "state": "TX",
+                "fetched_at_utc": fetched_at,
+                "cache_schema_version": 1,
+                "rows": [{"email": "stale@example.com", "state": "TX"}],
+            }
+            cache_path = ohs_bg._cache_path(cache_dir, "TX")
+            cache_path.write_text(json.dumps(cache_payload), encoding="utf-8")
+
+            calls = {"count": 0}
+
+            def browser_fetcher(_url: str) -> dict:
+                calls["count"] += 1
+                return {"ok": True, "status": 200, "html": self._read("buyersguide_category_selector_missing.html")}
+
+            result = ohs_bg.fetch_ohs_bg_state_rows(
+                state="TX",
+                run_date=date(2026, 3, 7),
+                max_pages=1,
+                sleep_ms=0,
+                cache_dir=cache_dir,
+                diagnostics_dir=diagnostics_dir,
+                allow_cache_write=False,
+                browser_fetcher=browser_fetcher,
+            )
+            self.assertFalse(result["cache_used"])
+            self.assertGreaterEqual(calls["count"], 1)
+
     def test_fetch_browser_primary_parses_company_and_recovers_email(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -75,8 +112,8 @@ class TestProspectSourcesOhsBg(unittest.TestCase):
             diagnostics_dir = root / "diagnostics"
 
             category_url = ohs_bg.BROWSER_CATEGORY_URL
-            company_101 = "https://buyersguide.ohsonline.com/company/alpha-safety-partners/101/"
-            company_202 = "https://buyersguide.ohsonline.com/company/bravo-risk-consulting/202/"
+            company_101 = "https://buyersguide.ohsonline.com/company/101/alpha-safety-partners"
+            company_202 = "https://buyersguide.ohsonline.com/company/202/bravo-risk-consulting"
 
             def browser_fetcher(url: str) -> dict:
                 if url == category_url:
@@ -117,6 +154,8 @@ class TestProspectSourcesOhsBg(unittest.TestCase):
             self.assertEqual(int(parse_counters.get("candidate_rows_seen") or 0), 2)
             self.assertEqual(int(parse_counters.get("parsed_rows_accepted") or 0), 1)
             self.assertEqual(int(parse_counters.get("parsed_rows_rejected") or 0), 1)
+            self.assertGreaterEqual(int(parse_counters.get("non_profile_links_filtered") or 0), 1)
+            self.assertGreaterEqual(int(parse_counters.get("auth_gated_pages") or 0), 1)
             self.assertEqual(int(parse_reasons.get("missing_firm") or 0), 1)
             self.assertTrue(Path(result["diagnostics_path"]).exists())
 

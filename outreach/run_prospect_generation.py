@@ -85,6 +85,8 @@ OHS_PARSE_COUNTER_KEYS = (
     "parsed_rows_accepted",
     "parsed_rows_rejected",
     "hard_parse_failures",
+    "auth_gated_pages",
+    "non_profile_links_filtered",
 )
 OHS_PARSE_REASON_KEYS = (
     "selector_missing",
@@ -92,6 +94,7 @@ OHS_PARSE_REASON_KEYS = (
     "missing_firm",
     "invalid_city_state",
     "missing_contact_fields",
+    "state_filtered_out",
 )
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
 ROLE_INBOX_LOCALS = {
@@ -1593,6 +1596,7 @@ def _print_tokens(
     print(f"GENERATOR_OHS_BG_CACHE_AGE_DAYS={ohs_cache_age if ohs_cache_age is not None else -1}")
     print(f"GENERATOR_OHS_BG_PAGES_FETCHED={int(ohs_bg_result.get('pages_fetched') or 0)}")
     print(f"GENERATOR_OHS_BG_PAGE_PARSE_MODE={ohs_bg_result.get('parse_mode') or 'FAILED'}")
+    print(f"GENERATOR_OHS_BG_AUTH_MODE={ohs_bg_result.get('auth_mode') or 'PUBLIC'}")
     print(f"GENERATOR_OHS_BG_ROWS_CANDIDATE={int(ohs_bg_result.get('rows_candidate') or 0)}")
     print(f"GENERATOR_OHS_BG_ROWS_ACCEPTED={int(ohs_bg_result.get('rows_accepted') or 0)}")
     print(f"GENERATOR_OHS_BG_REJECTED_INVALID_EMAIL={int(ohs_bg_rejected.get('invalid_email', 0))}")
@@ -1675,6 +1679,7 @@ def _default_autogrow_source_result(cache_path: Path, enabled: bool, sources_emp
         "cache_age_days": None,
         "pages_fetched": 0,
         "parse_mode": ("SKIP_NO_SOURCES" if enabled and sources_empty else "FAILED"),
+        "auth_mode": "PUBLIC",
         "rows_candidate": 0,
         "rows_accepted": 0,
         "parse_counters": {k: 0 for k in OHS_PARSE_COUNTER_KEYS},
