@@ -108,6 +108,15 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_APOLLO_ENABLED=0", out)
             self.assertFalse(out_path.exists(), msg="--print-config must not write output")
 
+    def test_print_config_defaults_autogrow_states_to_tx_ca_fl(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            p = self._run(["--print-config", "--for-date", "2026-02-18"], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": None})
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL", out)
+
     def test_apollo_default_titles_are_consultant_firm_buyer_focused(self):
         from outreach import run_prospect_generation as generator
 
@@ -802,7 +811,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("ohs_bg_accepted=1", out)
             self.assertIn("GENERATOR_AUTOGROW_TOTAL_ACCEPTED=3", out)
 
-    def test_autogrow_states_decouple_inventory_build_from_send_rotation(self):
+    def test_autogrow_states_follow_outreach_send_rotation(self):
         from outreach import run_prospect_generation as generator
 
         with tempfile.TemporaryDirectory() as d:
@@ -851,12 +860,11 @@ class TestProspectGeneration(unittest.TestCase):
                         rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
 
             self.assertEqual(rc, 0)
-            self.assertEqual([c.kwargs.get("state") for c in mocked_aiha.call_args_list], ["TX", "FL"])
+            self.assertEqual([c.kwargs.get("state") for c in mocked_aiha.call_args_list], ["CA"])
             out = buf.getvalue()
-            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
-            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,FL", out)
-            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=TX rows_candidate=1 rows_accepted=1", out)
-            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=FL rows_candidate=1 rows_accepted=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=CA rows_candidate=1 rows_accepted=1", out)
 
     def test_depleted_state_can_be_refilled_via_second_source_with_autogrow_states(self):
         from outreach import crm_store
@@ -880,13 +888,13 @@ class TestProspectGeneration(unittest.TestCase):
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        "crm_fl_contacted",
-                        "Existing FL Contacted",
+                        "crm_ca_contacted",
+                        "Existing CA Contacted",
                         "",
-                        "crmdup@examplefl.com",
+                        "crmdup@exampleca.com",
                         "Owner",
-                        "Tampa",
-                        "FL",
+                        "Los Angeles",
+                        "CA",
                         "",
                         "seed",
                         0,
@@ -899,12 +907,12 @@ class TestProspectGeneration(unittest.TestCase):
             finally:
                 conn.close()
 
-            aiha_cache = data_dir / "prospect_generation" / "cache" / "aiha" / "state_FL.json"
-            ohs_cache = data_dir / "prospect_generation" / "cache" / "ohs_bg" / "state_FL.json"
+            aiha_cache = data_dir / "prospect_generation" / "cache" / "aiha" / "state_CA.json"
+            ohs_cache = data_dir / "prospect_generation" / "cache" / "ohs_bg" / "state_CA.json"
             aiha_result = {
                 "rows": [
-                    {"email": "crmdup@examplefl.com", "state": "FL", "firm": "CRM Dup", "source": "aiha_consultants_listing:1"},
-                    {"email": "bad-email", "state": "FL", "firm": "Bad", "source": "aiha_consultants_listing:2"},
+                    {"email": "crmdup@exampleca.com", "state": "CA", "firm": "CRM Dup", "source": "aiha_consultants_listing:1"},
+                    {"email": "bad-email", "state": "CA", "firm": "Bad", "source": "aiha_consultants_listing:2"},
                     {"email": "txperson@exampletx.com", "state": "TX", "firm": "TX", "source": "aiha_consultants_listing:3"},
                 ],
                 "cache_used": False,
@@ -916,11 +924,11 @@ class TestProspectGeneration(unittest.TestCase):
             }
             ohs_result = {
                 "rows": [
-                    {"email": "bravo@examplefl.com", "state": "FL", "firm": "Bravo", "source": "ohs_buyers_guide:1"},
-                    {"email": "crmdup@examplefl.com", "state": "FL", "firm": "CRM Dup", "source": "ohs_buyers_guide:2"},
-                    {"email": "bad-email", "state": "FL", "firm": "Bad", "source": "ohs_buyers_guide:3"},
+                    {"email": "bravo@exampleca.com", "state": "CA", "firm": "Bravo", "source": "ohs_buyers_guide:1"},
+                    {"email": "crmdup@exampleca.com", "state": "CA", "firm": "CRM Dup", "source": "ohs_buyers_guide:2"},
+                    {"email": "bad-email", "state": "CA", "firm": "Bad", "source": "ohs_buyers_guide:3"},
                     {"email": "txperson@exampletx.com", "state": "TX", "firm": "TX Person", "source": "ohs_buyers_guide:4"},
-                    {"email": "bravo@examplefl.com", "state": "FL", "firm": "Bravo Dup", "source": "ohs_buyers_guide:5"},
+                    {"email": "bravo@exampleca.com", "state": "CA", "firm": "Bravo Dup", "source": "ohs_buyers_guide:5"},
                 ],
                 "cache_used": False,
                 "cache_age_days": 0,
@@ -957,17 +965,17 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(rc, 0)
             mocked_aiha.assert_called_once()
             mocked_ohs.assert_called_once()
-            self.assertEqual(mocked_aiha.call_args.kwargs["state"], "FL")
-            self.assertEqual(mocked_ohs.call_args.kwargs["state"], "FL")
+            self.assertEqual(mocked_aiha.call_args.kwargs["state"], "CA")
+            self.assertEqual(mocked_ohs.call_args.kwargs["state"], "CA")
 
             out = buf.getvalue()
-            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
-            self.assertIn("GENERATOR_AUTOGROW_STATES=FL", out)
-            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=FL rows_candidate=3 rows_accepted=0", out)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=CA rows_candidate=3 rows_accepted=0", out)
             self.assertIn("rejected_invalid_email=1", out)
             self.assertIn("rejected_already_in_crm=1", out)
             self.assertIn("rejected_state_mismatch=1", out)
-            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=OHS_BG state=FL rows_candidate=5 rows_accepted=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=OHS_BG state=CA rows_candidate=5 rows_accepted=1", out)
             self.assertIn("rejected_duplicate_in_batch=1", out)
 
             out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
@@ -975,7 +983,7 @@ class TestProspectGeneration(unittest.TestCase):
             with open(out_path, "r", newline="", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
             emails = {(row.get("email") or "").strip().lower() for row in rows}
-            self.assertIn("bravo@examplefl.com", emails)
+            self.assertIn("bravo@exampleca.com", emails)
 
     def test_apollo_source_emits_deterministic_tokens(self):
         from outreach import run_prospect_generation as generator
@@ -1230,11 +1238,11 @@ class TestProspectGeneration(unittest.TestCase):
             data_dir = Path(d) / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
             (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
-            aiha_cache = data_dir / "prospect_generation" / "cache" / "aiha" / "state_FL.json"
-            ohs_cache = data_dir / "prospect_generation" / "cache" / "ohs_bg" / "state_FL.json"
-            apollo_cache = data_dir / "prospect_generation" / "cache" / "apollo" / "state_FL.json"
+            aiha_cache = data_dir / "prospect_generation" / "cache" / "aiha" / "state_CA.json"
+            ohs_cache = data_dir / "prospect_generation" / "cache" / "ohs_bg" / "state_CA.json"
+            apollo_cache = data_dir / "prospect_generation" / "cache" / "apollo" / "state_CA.json"
             aiha_result = {
-                "rows": [{"email": "bad-email", "state": "FL", "firm": "Bad", "source": "aiha_consultants_listing:1"}],
+                "rows": [{"email": "bad-email", "state": "CA", "firm": "Bad", "source": "aiha_consultants_listing:1"}],
                 "cache_used": False,
                 "cache_age_days": 0,
                 "cache_path": aiha_cache,
@@ -1254,8 +1262,8 @@ class TestProspectGeneration(unittest.TestCase):
             apollo_result = {
                 "rows": [
                     {
-                        "email": "apollorefill@examplefl.com",
-                        "state": "FL",
+                        "email": "apollorefill@exampleca.com",
+                        "state": "CA",
                         "company_name": "Apollo Safety Refill",
                         "title": "Founder",
                         "source": "apollo:bulk_match:abc",
@@ -1298,15 +1306,15 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(rc, 0)
             out = buf.getvalue()
             self.assertIn("GENERATOR_AUTOGROW_SOURCES=AIHA,OHS_BG,APOLLO", out)
-            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=FL rows_candidate=1 rows_accepted=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=CA rows_candidate=1 rows_accepted=1", out)
             self.assertIn("GENERATOR_APOLLO_ENRICHED=1", out)
 
             out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
             with open(out_path, "r", newline="", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
-            self.assertIn("apollorefill@examplefl.com", {(r.get("email") or "").strip().lower() for r in rows})
+            self.assertIn("apollorefill@exampleca.com", {(r.get("email") or "").strip().lower() for r in rows})
 
-    def test_apollo_autogrow_states_decouple_inventory_build_from_send_rotation(self):
+    def test_apollo_autogrow_states_follow_outreach_send_rotation(self):
         from outreach import run_prospect_generation as generator
 
         with tempfile.TemporaryDirectory() as d:
@@ -1363,12 +1371,11 @@ class TestProspectGeneration(unittest.TestCase):
                     with redirect_stdout(buf):
                         rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
             self.assertEqual(rc, 0)
-            self.assertEqual(calls, ["TX", "FL"])
+            self.assertEqual(calls, ["CA"])
             out = buf.getvalue()
-            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
-            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,FL", out)
-            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=TX rows_candidate=1 rows_accepted=1", out)
-            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=FL rows_candidate=1 rows_accepted=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=CA", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=APOLLO state=CA rows_candidate=1 rows_accepted=1", out)
 
     def test_invalid_autogrow_source_fails_fast(self):
         p = self._run(

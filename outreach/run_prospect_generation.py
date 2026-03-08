@@ -32,6 +32,7 @@ from outreach import prospect_sources_ohs_bg
 from outreach import prospect_sources_osha_news
 from outreach import prospect_sources_state_lic
 from outreach import scraper_engine
+from outreach import us_state
 import seed_recipients_pools as pools
 
 
@@ -161,60 +162,8 @@ GENERATOR_FILTER_KEYS = (
 )
 DEFAULT_STATE_SCOPE_ALL = ("TX", "CA", "FL")
 VALID_SOURCE_FIT_TIERS = {"core_consultant", "recoverable_consultant", "adjacent_contractor"}
-US_STATE_NAME_TO_ABBR = {
-    "alabama": "AL",
-    "alaska": "AK",
-    "arizona": "AZ",
-    "arkansas": "AR",
-    "california": "CA",
-    "colorado": "CO",
-    "connecticut": "CT",
-    "delaware": "DE",
-    "district of columbia": "DC",
-    "florida": "FL",
-    "georgia": "GA",
-    "hawaii": "HI",
-    "idaho": "ID",
-    "illinois": "IL",
-    "indiana": "IN",
-    "iowa": "IA",
-    "kansas": "KS",
-    "kentucky": "KY",
-    "louisiana": "LA",
-    "maine": "ME",
-    "maryland": "MD",
-    "massachusetts": "MA",
-    "michigan": "MI",
-    "minnesota": "MN",
-    "mississippi": "MS",
-    "missouri": "MO",
-    "montana": "MT",
-    "nebraska": "NE",
-    "nevada": "NV",
-    "new hampshire": "NH",
-    "new jersey": "NJ",
-    "new mexico": "NM",
-    "new york": "NY",
-    "north carolina": "NC",
-    "north dakota": "ND",
-    "ohio": "OH",
-    "oklahoma": "OK",
-    "oregon": "OR",
-    "pennsylvania": "PA",
-    "rhode island": "RI",
-    "south carolina": "SC",
-    "south dakota": "SD",
-    "tennessee": "TN",
-    "texas": "TX",
-    "utah": "UT",
-    "vermont": "VT",
-    "virginia": "VA",
-    "washington": "WA",
-    "west virginia": "WV",
-    "wisconsin": "WI",
-    "wyoming": "WY",
-}
-US_STATE_ABBREVIATIONS = set(US_STATE_NAME_TO_ABBR.values())
+US_STATE_NAME_TO_ABBR = dict(us_state.US_STATE_NAME_TO_ABBR)
+US_STATE_ABBREVIATIONS = set(us_state.US_STATE_ABBREVIATIONS)
 
 
 def _valid_email(value: str) -> bool:
@@ -248,25 +197,11 @@ def _is_role_inbox_email(email: str) -> bool:
 
 
 def _normalize_state(value: str) -> str:
-    text = (value or "").strip()
-    if not text:
-        return ""
-    direct = text.upper()
-    if len(direct) == 2 and direct.isalpha():
-        return direct
-    normalized_name = " ".join(text.lower().split())
-    return US_STATE_NAME_TO_ABBR.get(normalized_name, direct)
+    return us_state.normalize_state_token(value)
 
 
 def _normalize_us_state(value: str) -> str:
-    text = (value or "").strip()
-    if not text:
-        return ""
-    upper = text.upper()
-    if len(upper) == 2 and upper in US_STATE_ABBREVIATIONS:
-        return upper
-    normalized_name = " ".join(text.lower().split())
-    return US_STATE_NAME_TO_ABBR.get(normalized_name, "")
+    return us_state.normalize_us_state(value)
 
 
 def _normalize_text(value: str) -> str:
@@ -534,14 +469,7 @@ def _parse_for_date(raw: str) -> date:
 
 
 def _parse_states(raw: str) -> list[str]:
-    states: list[str] = []
-    for token in str(raw or "").split(","):
-        state = _normalize_state(token)
-        if not state:
-            continue
-        if state not in states:
-            states.append(state)
-    return states
+    return us_state.parse_state_csv(raw, strict_us=True)
 
 
 def _resolve_state_scope(override_raw: str, env_states_default: list[str]) -> list[str] | None:
@@ -1795,9 +1723,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.apollo_doctor:
         return _run_apollo_doctor_only(diagnostics_dir=diagnostics_dir)
 
-    env_states_default = _parse_states(os.getenv("PROSPECT_AUTOGROW_STATES", "")) or _parse_states(
-        os.getenv("OUTREACH_STATES", "TX")
-    )
+    env_states_default = _parse_states(os.getenv("OUTREACH_STATES", "")) or list(DEFAULT_STATE_SCOPE_ALL)
     if not env_states_default:
         print(f"{ERR_GENERATOR_FAILED} stage=states err=state_scope_default empty", file=sys.stderr)
         return 2

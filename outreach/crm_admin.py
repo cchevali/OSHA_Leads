@@ -23,6 +23,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from outreach import crm_store
+from outreach import prospect_sources_ohs_bg
+from outreach import us_state
 import seed_recipients_pools as pools
 
 
@@ -32,8 +34,10 @@ ERR_CRM_STATS_DB_UNREADABLE = "ERR_CRM_STATS_DB_UNREADABLE"
 ERR_CRM_VERIFY_INPUT_MISSING = "ERR_CRM_VERIFY_INPUT_MISSING"
 ERR_CRM_VERIFY_INPUT_UNREADABLE = "ERR_CRM_VERIFY_INPUT_UNREADABLE"
 ERR_CRM_VERIFY_DB_UNREADABLE = "ERR_CRM_VERIFY_DB_UNREADABLE"
+ERR_CRM_REPAIR_DB_UNREADABLE = "ERR_CRM_REPAIR_DB_UNREADABLE"
 PASS_CRM_SEED = "PASS_CRM_SEED"
 PASS_CRM_MARK = "PASS_CRM_MARK"
+PASS_CRM_REPAIR = "PASS_CRM_REPAIR"
 
 VERIFY_IMPORT_SAMPLE_SIZE = 25
 BLANK_SOURCE_LABEL = "(blank)"
@@ -54,7 +58,11 @@ def _norm_email(value: str) -> str:
 
 
 def _norm_state(value: str) -> str:
-    return (value or "").strip().upper()
+    return us_state.normalize_state_token(value).upper()
+
+
+def _norm_us_state(value: str) -> str:
+    return us_state.normalize_us_state(value)
 
 
 def _norm_source(value: str) -> str:
@@ -90,12 +98,20 @@ def _row_domain_value(email: str, website: str) -> str:
 
 
 def _parse_scope_states(raw: str) -> set[str]:
-    states: set[str] = set()
-    for token in str(raw or "").split(","):
-        state = _norm_state(token)
-        if len(state) == 2 and state.isalpha():
-            states.add(state)
-    return states
+    return set(us_state.parse_state_csv(raw, strict_us=True))
+
+
+def _domain_matches_any(host: str, domains: set[str]) -> bool:
+    token = (host or "").strip().lower()
+    if not token:
+        return False
+    for suffix in domains:
+        normalized = str(suffix or "").strip().lower()
+        if not normalized:
+            continue
+        if token == normalized or token.endswith(f".{normalized}"):
+            return True
+    return False
 
 
 def _coerce_boolish_int(value: str, default: int = 1) -> int:
@@ -572,6 +588,122 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
     return 0
 
 
+def _is_bad_ohs_bg_tracker_or_ad(email: str, website: str) -> bool:
+    email_host = _email_domain(email)
+    website_host = _domain_from_website(website)
+    if _domain_matches_any(website_host, set(prospect_sources_ohs_bg.TRACKER_OR_AD_DOMAINS)):
+        return True
+    if _domain_matches_any(email_host, set(prospect_sources_ohs_bg.TRACKER_OR_AD_DOMAINS)):
+        return True
+    if _domain_matches_any(email_host, set(prospect_sources_ohs_bg.BLOCKED_EMAIL_DOMAINS)):
+        return True
+    return False
+
+
+def _repair_prospects(apply: bool) -> int:
+    db_path = crm_store.crm_db_path()
+    if not db_path.exists():
+        print(f"{ERR_CRM_REPAIR_DB_UNREADABLE} path={db_path.resolve()} err=missing_db", file=sys.stderr)
+        return 2
+    try:
+        conn = crm_store.connect(db_path)
+    except sqlite3.Error as exc:
+        print(f"{ERR_CRM_REPAIR_DB_UNREADABLE} path={db_path.resolve()} err={exc}", file=sys.stderr)
+        return 2
+
+    counters: Counter = Counter(
+        {
+            "state_canonicalized": 0,
+            "source_fit_repaired": 0,
+            "default_send_repaired": 0,
+            "bad_ohs_bg_quarantined": 0,
+        }
+    )
+    updates: list[tuple[str, str, int, str]] = []
+    try:
+        if not _prospects_table_exists(conn):
+            print(f"{PASS_CRM_REPAIR} mode={'apply' if apply else 'dry_run'} changed=0")
+            print("state_canonicalized=0")
+            print("source_fit_repaired=0")
+            print("default_send_repaired=0")
+            print("bad_ohs_bg_quarantined=0")
+            return 0
+
+        rows = conn.execute(
+            """
+            SELECT prospect_id, state, source, source_fit_tier, default_send_eligible, email, website
+            FROM prospects
+            """
+        ).fetchall()
+        target_families = {"STATE_LIC", "APOLLO", "AIHA", "OHS_BG"}
+        for row in rows:
+            prospect_id = str(row["prospect_id"] or "").strip()
+            if not prospect_id:
+                continue
+
+            state_raw = str(row["state"] or "")
+            source_raw = str(row["source"] or "")
+            source_family = _source_family(source_raw)
+            current_state = state_raw.strip()
+            current_tier = str(row["source_fit_tier"] or "").strip().lower()
+            send_raw = row["default_send_eligible"]
+            current_send = _coerce_boolish_int("" if send_raw is None else str(send_raw), default=1)
+            email = _norm_email(str(row["email"] or ""))
+            website = str(row["website"] or "")
+
+            repaired_state = _norm_us_state(current_state) or current_state
+            if repaired_state != current_state:
+                counters["state_canonicalized"] += 1
+
+            repaired_tier = current_tier
+            repaired_send = int(current_send)
+            if source_family in target_families:
+                default_tier, default_send = _source_fit_defaults(source_raw)
+                repaired_tier = str(default_tier or "").strip().lower()
+                repaired_send = int(default_send)
+
+            quarantine_row = source_family == "OHS_BG" and _is_bad_ohs_bg_tracker_or_ad(email=email, website=website)
+            if quarantine_row and repaired_send != 0 and int(current_send) != 0:
+                counters["bad_ohs_bg_quarantined"] += 1
+            if quarantine_row:
+                repaired_send = 0
+
+            if repaired_tier != current_tier:
+                counters["source_fit_repaired"] += 1
+            if int(repaired_send) != int(current_send):
+                counters["default_send_repaired"] += 1
+
+            if (
+                repaired_state != current_state
+                or repaired_tier != current_tier
+                or int(repaired_send) != int(current_send)
+            ):
+                updates.append((repaired_state, repaired_tier, int(repaired_send), prospect_id))
+
+        if apply and updates:
+            conn.executemany(
+                """
+                UPDATE prospects
+                SET state = ?, source_fit_tier = ?, default_send_eligible = ?
+                WHERE prospect_id = ?
+                """,
+                updates,
+            )
+            conn.commit()
+    except sqlite3.Error as exc:
+        print(f"{ERR_CRM_REPAIR_DB_UNREADABLE} path={db_path.resolve()} err={exc}", file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+
+    print(f"{PASS_CRM_REPAIR} mode={'apply' if apply else 'dry_run'} changed={len(updates)}")
+    print(f"state_canonicalized={int(counters.get('state_canonicalized', 0))}")
+    print(f"source_fit_repaired={int(counters.get('source_fit_repaired', 0))}")
+    print(f"default_send_repaired={int(counters.get('default_send_repaired', 0))}")
+    print(f"bad_ohs_bg_quarantined={int(counters.get('bad_ohs_bg_quarantined', 0))}")
+    return 0
+
+
 def _mark_event(prospect_id: str, event: str, territory_code: str, note: str) -> int:
     db_path = crm_store.ensure_database()
     ts = crm_store.utc_now_iso()
@@ -678,6 +810,14 @@ def main(argv: list[str] | None = None) -> int:
     ap_verify = sub.add_parser("verify-import", help="Read-only sample check that import CSV emails exist in CRM.")
     ap_verify.add_argument("--csv", required=True, help="Path to CSV to sample for email/import verification.")
 
+    ap_repair = sub.add_parser(
+        "repair-prospects",
+        help="Repair prospect state/source-fit/sendability drift with optional apply mode.",
+    )
+    mode = ap_repair.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true", help="Compute and print repair counts without writing.")
+    mode.add_argument("--apply", action="store_true", help="Apply repair updates.")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "seed":
@@ -694,6 +834,8 @@ def main(argv: list[str] | None = None) -> int:
         return _stats()
     if args.cmd == "verify-import":
         return _verify_import(Path(str(args.csv)))
+    if args.cmd == "repair-prospects":
+        return _repair_prospects(apply=bool(args.apply))
     return 2
 
 

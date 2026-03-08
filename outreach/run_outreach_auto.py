@@ -41,6 +41,7 @@ if str(REPO_ROOT) not in sys.path:
 from outreach import crm_store
 from outreach import generate_mailmerge as gm
 from outreach import run_prospect_generation as prospect_generation
+from outreach import us_state
 from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict
 
 
@@ -176,14 +177,15 @@ def _doctor_error(token: str, detail: str = "") -> tuple[bool, str]:
 
 
 def _parse_states(raw: str) -> list[str]:
-    states = []
-    for token in (raw or "").split(","):
-        s = token.strip().upper()
-        if not s:
-            continue
-        if s not in states:
-            states.append(s)
-    return states
+    return us_state.parse_state_csv(raw, strict_us=True)
+
+
+def _normalize_us_state(value: str) -> str:
+    return us_state.normalize_us_state(value)
+
+
+def _normalize_state_token(value: str) -> str:
+    return us_state.normalize_state_token(value).upper()
 
 
 def _bool_env(value: str) -> bool:
@@ -299,7 +301,7 @@ def _empty_state_fallback_decision(
     daily_limit: int,
     enabled: bool,
 ) -> dict[str, object]:
-    rotation = str(rotation_state or "").strip().upper()
+    rotation = _normalize_us_state(rotation_state)
     final_state = rotation
     selected_sendable = max(0, int(sendable_by_state.get(rotation, 0)))
     floor = max(0, int(daily_limit))
@@ -323,7 +325,7 @@ def _empty_state_fallback_decision(
     best_state = rotation
     best_sendable = selected_sendable
     for item in states:
-        s = str(item or "").strip().upper()
+        s = _normalize_us_state(item)
         if not s:
             continue
         c = max(0, int(sendable_by_state.get(s, 0)))
@@ -352,7 +354,7 @@ def _ramp_readiness_decision(
     ordered_states: list[str] = []
     ready_states: list[str] = []
     for item in states:
-        state = str(item or "").strip().upper()
+        state = _normalize_us_state(item)
         if not state or state in ordered_states:
             continue
         ordered_states.append(state)
@@ -371,7 +373,11 @@ def _ramp_readiness_decision(
 
 
 def _print_ramp_ready_token(decision: dict[str, object]) -> None:
-    ready_states = [str(s or "").strip().upper() for s in list(decision.get("ready_states") or []) if str(s or "").strip()]
+    ready_states = [
+        _normalize_us_state(s)
+        for s in list(decision.get("ready_states") or [])
+        if _normalize_us_state(s)
+    ]
     print(
         f"OUTREACH_RAMP_READY={1 if bool(decision.get('ready')) else 0} "
         f"desired_daily_limit={max(0, int(decision.get('desired_daily_limit') or 0))} "
@@ -516,6 +522,15 @@ def _safe_csv_value(value: str) -> str:
 
 
 def _source_fit_tier(row: sqlite3.Row) -> str:
+    source_text = _safe_text(str(row["source"] or "") if "source" in row.keys() else "").lower()
+    if source_text.startswith("state_lic"):
+        return "adjacent_contractor"
+    if source_text.startswith("apollo"):
+        return "core_consultant"
+    if source_text.startswith("aiha_consultants_listing:"):
+        return "recoverable_consultant"
+    if source_text.startswith("ohs_buyers_guide:"):
+        return "recoverable_consultant"
     if "source_fit_tier" not in row.keys():
         return ""
     raw = row["source_fit_tier"]
@@ -523,6 +538,15 @@ def _source_fit_tier(row: sqlite3.Row) -> str:
 
 
 def _default_send_eligible(row: sqlite3.Row) -> int:
+    source_text = _safe_text(str(row["source"] or "") if "source" in row.keys() else "").lower()
+    if source_text.startswith("state_lic"):
+        return 0
+    if source_text.startswith("apollo"):
+        return 1
+    if source_text.startswith("aiha_consultants_listing:"):
+        return 1
+    if source_text.startswith("ohs_buyers_guide:"):
+        return 1
     if "default_send_eligible" not in row.keys():
         return 1
     raw = row["default_send_eligible"]
@@ -603,10 +627,13 @@ def _extract_segment(row: sqlite3.Row) -> str:
 
 def _extract_state_pref(row: sqlite3.Row) -> str:
     if "state_pref" in row.keys():
-        value = _safe_text(str(row["state_pref"] or "")).upper()
+        value = _normalize_us_state(str(row["state_pref"] or ""))
         if value:
             return value
-    return _safe_text(str(row["state"] or "")).upper()
+    state_value = _normalize_us_state(str(row["state"] or ""))
+    if state_value:
+        return state_value
+    return _normalize_state_token(str(row["state"] or ""))
 
 
 def _role_priority(role_or_title: str) -> tuple[int, str]:
@@ -786,9 +813,24 @@ def _select_candidates(
     skip_role_inboxes: bool,
     include_adjacent_contractors: bool,
 ) -> tuple[list[dict], Counter, list[dict], dict[str, object]]:
+    selected_state = _normalize_us_state(state)
+    if not selected_state:
+        return [], Counter(), [], {
+            "pool_total_selected_state": 0,
+            "eligible": 0,
+            "role_inbox_penalty": 0,
+            "missing_state_pref": 0,
+            "eligible_by_tier": {
+                "core_consultant": 0,
+                "recoverable_consultant": 0,
+                "adjacent_contractor": 0,
+            },
+            "excluded_adjacent_contractor_total": 0,
+        }
     cols = _prospect_select_columns(conn)
-    query = "SELECT " + ", ".join(cols) + " FROM prospects WHERE UPPER(COALESCE(state, '')) = ?"
-    rows = conn.execute(query, ((state or "").upper(),)).fetchall()
+    query = "SELECT " + ", ".join(cols) + " FROM prospects"
+    raw_rows = conn.execute(query).fetchall()
+    rows = [row for row in raw_rows if _normalize_us_state(str(row["state"] or "")) == selected_state]
 
     sent_ids = _fetch_prior_sent_ids(conn)
 
@@ -913,6 +955,9 @@ def _count_real_signals_for_state_window(
     run_date: date,
     window_days: int,
 ) -> int:
+    target_state = _normalize_us_state(state)
+    if not target_state:
+        return 0
     path = Path(str(db_path or "").strip())
     if not path.exists():
         return 0
@@ -935,17 +980,21 @@ def _count_real_signals_for_state_window(
             return 0
         cutoff = (run_date - timedelta(days=max(1, int(window_days)))).isoformat()
         parse_invalid_clause = " AND COALESCE(parse_invalid, 0) = 0" if "parse_invalid" in cols else ""
-        row = conn.execute(
+        rows = conn.execute(
             f"""
-            SELECT COUNT(*)
+            SELECT COALESCE({state_col}, '')
             FROM inspections
-            WHERE UPPER(COALESCE({state_col}, '')) = ?
-              AND {date_expr} >= ?
+            WHERE {date_expr} >= ?
               {parse_invalid_clause}
             """,
-            (_safe_text(state).upper(), cutoff),
-        ).fetchone()
-        return max(0, int((row[0] if row else 0) or 0))
+            (cutoff,),
+        ).fetchall()
+        count = 0
+        for row in rows:
+            row_state = _normalize_us_state(str((row[0] if row else "") or ""))
+            if row_state == target_state:
+                count += 1
+        return max(0, int(count))
     except Exception:
         return 0
     finally:
@@ -986,27 +1035,29 @@ def _crm_uncontacted_by_state(
     skip_role_inboxes: bool,
     include_adjacent_contractors: bool,
 ) -> dict[str, int]:
-    normalized_states = [str(s or "").strip().upper() for s in states if str(s or "").strip()]
+    normalized_states: list[str] = []
+    for item in states:
+        state = _normalize_us_state(item)
+        if not state or state in normalized_states:
+            continue
+        normalized_states.append(state)
     counts: dict[str, int] = {s: 0 for s in normalized_states}
     if not normalized_states:
         return counts
 
-    placeholders = ",".join("?" for _ in normalized_states)
     try:
         rows = conn.execute(
-            f"""
+            """
             SELECT prospect_id, email, status, last_contacted_at, state
             FROM prospects
-            WHERE UPPER(TRIM(state)) IN ({placeholders})
             """,
-            tuple(normalized_states),
         ).fetchall()
     except Exception:
         return counts
 
     sent_ids = _fetch_prior_sent_ids(conn)
     for row in rows:
-        row_state = _safe_text(str(row["state"] or "")).upper()
+        row_state = _normalize_us_state(str(row["state"] or ""))
         if row_state not in counts:
             continue
         reason = _skip_reason(
@@ -1032,7 +1083,12 @@ def _crm_funnel_breakdown_for_summary(
     include_adjacent_contractors: bool,
     selected_state: str,
 ) -> dict:
-    normalized_states = [str(s or "").strip().upper() for s in states if str(s or "").strip()]
+    normalized_states: list[str] = []
+    for item in states:
+        state_value = _normalize_us_state(item)
+        if not state_value or state_value in normalized_states:
+            continue
+        normalized_states.append(state_value)
     pool_total_by_state: dict[str, int] = {s: 0 for s in normalized_states}
     uncontacted_sendable_by_state: dict[str, int] = {s: 0 for s in normalized_states}
     uncontacted_raw_by_state: dict[str, int] = {s: 0 for s in normalized_states}
@@ -1057,10 +1113,10 @@ def _crm_funnel_breakdown_for_summary(
     except Exception:
         return out
 
-    selected_state_norm = str(selected_state or "").strip().upper()
+    selected_state_norm = _normalize_us_state(selected_state)
     sent_ids = _fetch_prior_sent_ids(conn)
     for row in rows:
-        row_state = _safe_text(str(row["state"] or "")).upper()
+        row_state = _normalize_us_state(str(row["state"] or ""))
         if not row_state:
             out["missing_state_count"] = int(out["missing_state_count"]) + 1
         if row_state in pool_total_by_state:
@@ -1110,7 +1166,7 @@ def _generator_autogrow_disabled_backlog_gap_line(
     gap_states: list[str] = []
     if not enabled:
         for state in states:
-            state_norm = str(state or "").strip().upper()
+            state_norm = _normalize_us_state(state)
             if not state_norm:
                 continue
             backlog_current = prospect_generation.compute_uncontacted_backlog(
@@ -1131,7 +1187,7 @@ def _generator_autogrow_disabled_backlog_gap_line(
 def _format_state_counts(states: list[str], counts: dict[str, int]) -> str:
     ordered: list[str] = []
     for state in states:
-        s = str(state or "").strip().upper()
+        s = _normalize_us_state(state)
         if not s:
             continue
         ordered.append(f"{s}={max(0, int(counts.get(s, 0)))}")
@@ -1149,7 +1205,7 @@ def _outreach_state_inventory_health_lines(
     lines: list[str] = []
     floor = max(0, int(daily_limit))
     for state in states:
-        s = str(state or "").strip().upper()
+        s = _normalize_us_state(state)
         if not s:
             continue
         total = max(0, int(pool_total_by_state.get(s, 0)))
@@ -1162,13 +1218,13 @@ def _outreach_state_inventory_health_lines(
 
 
 def _state_rotation_hint(state: str, states: list[str], counts: dict[str, int]) -> str:
-    selected_state = str(state or "").strip().upper()
+    selected_state = _normalize_us_state(state)
     if max(0, int(counts.get(selected_state, 0))) > 0:
         return ""
 
     other_with_backlog: list[str] = []
     for item in states:
-        s = str(item or "").strip().upper()
+        s = _normalize_us_state(item)
         if not s or s == selected_state:
             continue
         c = max(0, int(counts.get(s, 0)))
@@ -2178,22 +2234,37 @@ def _doctor_state_signal_snapshot(
     run_date: date,
     lookback_days: int,
 ) -> tuple[int, str]:
+    target_state = _normalize_us_state(state)
+    if not target_state:
+        return 0, "NONE"
+    cols = _table_columns(conn, "inspections")
+    state_col = "site_state" if "site_state" in cols else ("state" if "state" in cols else "")
+    if not state_col:
+        return 0, "NONE"
+    date_col = "date_opened" if "date_opened" in cols else ("first_seen_at" if "first_seen_at" in cols else ("last_seen_at" if "last_seen_at" in cols else ""))
+    if not date_col:
+        return 0, "NONE"
     max_date_value = "NONE"
-    try:
-        row = conn.execute(
-            """
-            SELECT COALESCE(MAX(date_opened), '')
-            FROM inspections
-            WHERE UPPER(COALESCE(site_state, '')) = ?
-              AND COALESCE(parse_invalid, 0) = 0
-            """,
-            ((state or "").upper(),),
-        ).fetchone()
-        max_raw = str((row[0] if row else "") or "").strip()
-        if max_raw:
-            max_date_value = max_raw
-    except Exception:
-        max_date_value = "NONE"
+    row_clause = "COALESCE(parse_invalid, 0) = 0" if "parse_invalid" in cols else "1 = 1"
+    rows = conn.execute(
+        f"""
+        SELECT COALESCE({state_col}, ''), substr(COALESCE({date_col}, ''), 1, 10)
+        FROM inspections
+        WHERE {row_clause}
+        """
+    ).fetchall()
+    cutoff = (run_date - timedelta(days=int(lookback_days))).isoformat()
+    fallback_recent_count = 0
+    for row in rows:
+        row_state = _normalize_us_state(str((row[0] if row else "") or ""))
+        if row_state != target_state:
+            continue
+        row_date = str((row[1] if row else "") or "").strip()[:10]
+        if row_date:
+            if max_date_value == "NONE" or row_date > max_date_value:
+                max_date_value = row_date
+            if row_date >= cutoff:
+                fallback_recent_count += 1
 
     try:
         import send_digest_email as sde
@@ -2201,7 +2272,7 @@ def _doctor_state_signal_snapshot(
         window_start = datetime.combine(run_date, datetime.min.time()) - timedelta(days=int(lookback_days))
         leads, low_fallback, _stats = sde.get_leads_for_period(
             conn=conn,
-            states=[state],
+            states=[target_state],
             since_days=int(lookback_days),
             new_only_days=36500,
             skip_first_seen_filter=True,
@@ -2216,23 +2287,16 @@ def _doctor_state_signal_snapshot(
         shown = leads if leads else low_fallback
         return int(len(shown)), max_date_value
     except Exception:
-        cutoff = (run_date - timedelta(days=int(lookback_days))).isoformat()
-        row = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM inspections
-            WHERE UPPER(COALESCE(site_state, '')) = ?
-              AND COALESCE(parse_invalid, 0) = 0
-              AND COALESCE(date_opened, '') >= ?
-            """,
-            ((state or "").upper(), cutoff),
-        ).fetchone()
-        count = int((row[0] if row else 0) or 0)
-        return count, max_date_value
+        return int(fallback_recent_count), max_date_value
 
 
 def _doctor_check_signal_freshness(ctx: dict[str, object], run_date: date) -> tuple[bool, str]:
-    states = [str(s or "").strip().upper() for s in (ctx.get("states") or []) if str(s or "").strip()]
+    states: list[str] = []
+    for item in (ctx.get("states") or []):
+        normalized = _normalize_us_state(item)
+        if not normalized or normalized in states:
+            continue
+        states.append(normalized)
     db_path = _doctor_signal_db_path()
     print(f"DOCTOR_SIGNALS_DB_PATH={db_path.resolve()}")
     print(f"DOCTOR_SIGNALS_LOOKBACK_DAYS={DOCTOR_SIGNALS_LOOKBACK_DAYS}")
@@ -2572,7 +2636,7 @@ def main() -> int:
             daily_limit=limit,
             enabled=bool(fallback_on_empty_state),
         )
-        state = str(fallback_decision.get("to_state") or rotation_state).strip().upper() or rotation_state
+        state = _normalize_us_state(str(fallback_decision.get("to_state") or rotation_state)) or rotation_state
         batch = _batch_id(state, run_date)
 
         if is_live_send and (not bool(args.allow_second_live_run_same_day)):
