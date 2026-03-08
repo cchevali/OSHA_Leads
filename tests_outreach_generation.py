@@ -977,6 +977,13 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("rejected_state_mismatch=1", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=OHS_BG state=CA rows_candidate=5 rows_accepted=1", out)
             self.assertIn("rejected_duplicate_in_batch=1", out)
+            self.assertIn("ohs_bg_base_max_pages=6", out)
+            self.assertIn("ohs_bg_effective_max_pages=12", out)
+            self.assertIn("ohs_bg_deeper_enabled=1", out)
+            self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=OHS_BG state=CA", out)
+            self.assertIn("max_fetch_pages=12", out)
+            self.assertIn("pages_fetched=2", out)
+            self.assertIn("backlog_credit=1", out)
 
             out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
             self.assertTrue(out_path.exists(), msg=f"missing output: {out_path}")

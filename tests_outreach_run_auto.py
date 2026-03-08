@@ -157,6 +157,69 @@ class TestOutreachRunAuto(unittest.TestCase):
             text=True,
         )
 
+    def test_write_events_persists_source_metadata_for_ops_cohorts(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "Owner One",
+                        "firm": "Firm One",
+                        "email": "owner@firmone.com",
+                        "title": "Owner",
+                        "state": "CALIFORNIA",
+                        "source": "apollo_export_csv",
+                    }
+                ],
+            )
+            conn = sqlite3.connect(str(crm_db))
+            conn.row_factory = sqlite3.Row
+            try:
+                roa._write_events_and_status_updates(
+                    conn,
+                    batch="2026-02-24_CA",
+                    results=[
+                        {
+                            "prospect_id": "p1",
+                            "email": "owner@firmone.com",
+                            "ok": True,
+                            "message_id": "<m1>",
+                            "error": "",
+                            "subject": "Subject",
+                            "state": "California",
+                            "source": "apollo_export_csv",
+                            "source_family": "APOLLO",
+                            "source_fit_tier": "core_consultant",
+                            "default_send_eligible": 1,
+                            "email_status": "hunter_verified",
+                            "enrichment_lane": "provider_hunter",
+                        }
+                    ],
+                )
+                row = conn.execute(
+                    "SELECT event_type, metadata_json FROM outreach_events WHERE prospect_id = 'p1' ORDER BY event_id DESC LIMIT 1"
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertEqual(str(row["event_type"] or ""), "sent")
+                metadata = json.loads(str(row["metadata_json"] or "{}"))
+                self.assertEqual(str(metadata.get("state") or ""), "CA")
+                self.assertEqual(str(metadata.get("source_family") or ""), "APOLLO")
+                self.assertEqual(str(metadata.get("source_fit_tier") or ""), "core_consultant")
+                self.assertEqual(int(metadata.get("default_send_eligible") or 0), 1)
+                self.assertEqual(str(metadata.get("email_status") or ""), "hunter_verified")
+                self.assertEqual(str(metadata.get("enrichment_lane") or ""), "provider_hunter")
+                status_row = conn.execute(
+                    "SELECT status, COALESCE(last_contacted_at, '') FROM prospects WHERE prospect_id = 'p1'"
+                ).fetchone()
+                self.assertEqual(str(status_row[0] or ""), "contacted")
+                self.assertTrue(str(status_row[1] or "").strip())
+            finally:
+                conn.close()
+
     def test_dry_run_prints_selected_ids_and_writes_no_db_changes(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

@@ -41,14 +41,14 @@ def source_family(source: str) -> str:
         return "OSHA_NEWS"
     if text.startswith("state_lic"):
         return "STATE_LIC"
-    if text.startswith("seed_recipients_pools"):
+    if text == "seed" or text.startswith("seed_recipients_pools"):
         return "SEED"
     return "UNKNOWN"
 
 
 def source_family_from_token(token: str) -> str:
     text = normalize_source_token(token)
-    if text in {"AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC"}:
+    if text in {"SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC"}:
         return text
     return "UNKNOWN"
 

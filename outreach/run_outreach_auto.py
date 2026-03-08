@@ -1811,6 +1811,7 @@ def _send_outreach_email(
     last_refresh_et: str,
     signal_tokens: dict[str, str] | None = None,
     recent_leads: list[dict] | None = None,
+    candidate_ctx: dict[str, object] | None = None,
 ) -> dict:
     import send_digest_email as sde
 
@@ -1846,6 +1847,31 @@ def _send_outreach_email(
         list_unsub_post=list_unsub_post,
         label="outreach_auto_campaign",
     )
+    candidate = dict(candidate_ctx or {})
+    source = _safe_text(str(candidate.get("source") or ""))
+    if not source and "source" in row.keys():
+        source = _safe_text(str(row["source"] or ""))
+    source_fit_tier = _safe_text(str(candidate.get("source_fit_tier") or "")).lower()
+    if not source_fit_tier:
+        source_fit_tier = _source_fit_tier(row)
+    default_send_eligible_raw = candidate.get("default_send_eligible")
+    if default_send_eligible_raw is None:
+        default_send_eligible = int(_default_send_eligible(row))
+    else:
+        try:
+            default_send_eligible = 1 if int(default_send_eligible_raw) else 0
+        except Exception:
+            default_send_eligible = int(_default_send_eligible(row))
+    email_status = _safe_text(str(candidate.get("email_status") or ""))
+    if not email_status and "email_status" in row.keys():
+        email_status = _safe_text(str(row["email_status"] or ""))
+    enrichment_lane = _safe_text(str(candidate.get("enrichment_lane") or ""))
+    if not enrichment_lane and "enrichment_lane" in row.keys():
+        enrichment_lane = _safe_text(str(row["enrichment_lane"] or ""))
+    if not enrichment_lane:
+        enrichment_lane = _enrichment_lane_from_status(email_status)
+    send_state = _normalize_us_state(state) or _normalize_state_token(state)
+    source_family = source_policy.source_family(source)
     return {
         "prospect_id": str(row["prospect_id"]),
         "email": _norm_email(str(row["email"] or "")),
@@ -1853,6 +1879,13 @@ def _send_outreach_email(
         "message_id": message_id or "",
         "error": err or "",
         "subject": subject,
+        "state": send_state,
+        "source": source,
+        "source_family": source_family,
+        "source_fit_tier": source_fit_tier,
+        "default_send_eligible": int(default_send_eligible),
+        "email_status": email_status,
+        "enrichment_lane": enrichment_lane,
     }
 
 
@@ -1867,6 +1900,13 @@ def _write_events_and_status_updates(conn: sqlite3.Connection, batch: str, resul
             "message_id": item.get("message_id", ""),
             "error": item.get("error", ""),
             "subject": item.get("subject", ""),
+            "state": _normalize_us_state(str(item.get("state") or "")),
+            "source": _safe_text(str(item.get("source") or "")),
+            "source_family": _safe_text(str(item.get("source_family") or "")),
+            "source_fit_tier": _safe_text(str(item.get("source_fit_tier") or "")).lower(),
+            "default_send_eligible": 1 if int(item.get("default_send_eligible") or 0) else 0,
+            "email_status": _safe_text(str(item.get("email_status") or "")).lower(),
+            "enrichment_lane": _safe_text(str(item.get("enrichment_lane") or "")).lower(),
         }
         cur.execute(
             """
@@ -2516,7 +2556,7 @@ def main() -> int:
             return 2
         return 0
 
-    states = _parse_states(os.getenv("OUTREACH_STATES", "TX"))
+    states = _parse_states(os.getenv("OUTREACH_STATES", "TX,CA,FL"))
     if not states:
         print(f"{ERR_AUTO_ENV} OUTREACH_STATES missing", file=sys.stderr)
         return 2
@@ -2866,6 +2906,7 @@ def main() -> int:
                     last_refresh_et=last_refresh_et,
                     signal_tokens=signal_tokens,
                     recent_leads=recent_leads,
+                    candidate_ctx=selected_candidate,
                 )
             )
         if duplicate_guard_dropped > 0:
