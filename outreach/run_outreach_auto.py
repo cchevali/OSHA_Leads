@@ -41,6 +41,7 @@ if str(REPO_ROOT) not in sys.path:
 from outreach import crm_store
 from outreach import generate_mailmerge as gm
 from outreach import run_prospect_generation as prospect_generation
+from outreach import source_policy
 from outreach import us_state
 from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict
 
@@ -125,6 +126,8 @@ OPTIONAL_PROSPECT_COLUMNS = (
     "buyer_segment",
     "source_fit_tier",
     "default_send_eligible",
+    "email_status",
+    "enrichment_lane",
 )
 FILTER_BREAKDOWN_FILTER_KEYS = (
     "suppressed",
@@ -522,33 +525,28 @@ def _safe_csv_value(value: str) -> str:
 
 
 def _source_fit_tier(row: sqlite3.Row) -> str:
-    source_text = _safe_text(str(row["source"] or "") if "source" in row.keys() else "").lower()
-    if source_text.startswith("state_lic"):
-        return "adjacent_contractor"
-    if source_text.startswith("apollo"):
-        return "core_consultant"
-    if source_text.startswith("aiha_consultants_listing:"):
-        return "recoverable_consultant"
-    if source_text.startswith("ohs_buyers_guide:"):
-        return "recoverable_consultant"
+    source_text = _safe_text(str(row["source"] or "") if "source" in row.keys() else "")
+    source_family = source_policy.source_family(source_text)
+    default_tier, _default_send = source_policy.source_fit_defaults(source_text)
+    if source_family in {"STATE_LIC", "APOLLO", "AIHA", "OHS_BG"}:
+        return str(default_tier or "").strip().lower()
     if "source_fit_tier" not in row.keys():
-        return ""
+        return str(default_tier or "").strip().lower()
     raw = row["source_fit_tier"]
-    return _safe_text("" if raw is None else str(raw)).lower()
+    value = _safe_text("" if raw is None else str(raw)).lower()
+    if value in {"core_consultant", "recoverable_consultant", "adjacent_contractor"}:
+        return value
+    return str(default_tier or "").strip().lower()
 
 
 def _default_send_eligible(row: sqlite3.Row) -> int:
-    source_text = _safe_text(str(row["source"] or "") if "source" in row.keys() else "").lower()
-    if source_text.startswith("state_lic"):
-        return 0
-    if source_text.startswith("apollo"):
-        return 1
-    if source_text.startswith("aiha_consultants_listing:"):
-        return 1
-    if source_text.startswith("ohs_buyers_guide:"):
-        return 1
+    source_text = _safe_text(str(row["source"] or "") if "source" in row.keys() else "")
+    source_family = source_policy.source_family(source_text)
+    _default_tier, default_send = source_policy.source_fit_defaults(source_text)
+    if source_family in {"STATE_LIC", "APOLLO", "AIHA", "OHS_BG"}:
+        return int(default_send)
     if "default_send_eligible" not in row.keys():
-        return 1
+        return int(default_send)
     raw = row["default_send_eligible"]
     text = _safe_text("" if raw is None else str(raw)).lower()
     if text in {"1", "true", "yes", "on"}:
@@ -634,6 +632,15 @@ def _extract_state_pref(row: sqlite3.Row) -> str:
     if state_value:
         return state_value
     return _normalize_state_token(str(row["state"] or ""))
+
+
+def _enrichment_lane_from_status(email_status: str) -> str:
+    status = _safe_text(email_status).lower()
+    if status.startswith("hunter_"):
+        return "provider_hunter"
+    if status in {"pattern_generated", "scraped_from_site", "scraped_from_source"}:
+        return "pattern_or_site"
+    return "unknown"
 
 
 def _role_priority(role_or_title: str) -> tuple[int, str]:
@@ -745,6 +752,14 @@ def _skip_reason(
 def _candidate_from_row(row: sqlite3.Row) -> dict:
     prospect_id = _safe_text(str(row["prospect_id"] or ""))
     email = _norm_email(str(row["email"] or ""))
+    source = _safe_text(str(row["source"] or "")) if "source" in row.keys() else ""
+    source_family = source_policy.source_family(source)
+    source_fit_tier = _source_fit_tier(row)
+    default_send_eligible = _default_send_eligible(row)
+    email_status = _safe_text(str(row["email_status"] or "")) if "email_status" in row.keys() else ""
+    enrichment_lane = _safe_text(str(row["enrichment_lane"] or "")) if "enrichment_lane" in row.keys() else ""
+    if not enrichment_lane:
+        enrichment_lane = _enrichment_lane_from_status(email_status)
     role_or_title = _extract_role_or_title(row)
     segment = _extract_segment(row)
     state_pref = _extract_state_pref(row)
@@ -783,6 +798,12 @@ def _candidate_from_row(row: sqlite3.Row) -> dict:
         "segment": segment,
         "role_or_title": role_or_title,
         "state_pref": state_pref,
+        "source": source,
+        "source_family": source_family,
+        "source_fit_tier": source_fit_tier,
+        "default_send_eligible": int(default_send_eligible),
+        "email_status": email_status,
+        "enrichment_lane": enrichment_lane,
         "score": int(score),
         "created_at": created_at,
         "rank_tuple": rank_tuple,

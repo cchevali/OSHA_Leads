@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from outreach import crm_store
 from outreach import prospect_sources_ohs_bg
+from outreach import source_policy
 from outreach import us_state
 import seed_recipients_pools as pools
 
@@ -129,16 +130,7 @@ def _coerce_boolish_int(value: str, default: int = 1) -> int:
 
 
 def _source_fit_defaults(source: str) -> tuple[str, int]:
-    source_norm = _norm_source(source).lower()
-    if source_norm.startswith("state_lic"):
-        return "adjacent_contractor", 0
-    if source_norm.startswith("apollo"):
-        return "core_consultant", 1
-    if source_norm.startswith("aiha_consultants_listing:"):
-        return "recoverable_consultant", 1
-    if source_norm.startswith("ohs_buyers_guide:"):
-        return "recoverable_consultant", 1
-    return "recoverable_consultant", 1
+    return source_policy.source_fit_defaults(source)
 
 
 def _coerce_source_fit_tier(value: str, source: str) -> str:
@@ -149,24 +141,7 @@ def _coerce_source_fit_tier(value: str, source: str) -> str:
 
 
 def _source_family(source: str) -> str:
-    text = _norm_source(source).lower()
-    if not text:
-        return "UNKNOWN"
-    if text.startswith("aiha_consultants_listing"):
-        return "AIHA"
-    if text.startswith("ohs_buyers_guide"):
-        return "OHS_BG"
-    if text.startswith("apollo"):
-        return "APOLLO"
-    if text.startswith("bcsp"):
-        return "BCSP"
-    if text.startswith("osha_news"):
-        return "OSHA_NEWS"
-    if text.startswith("state_lic"):
-        return "STATE_LIC"
-    if text.startswith("seed_recipients_pools"):
-        return "SEED"
-    return "UNKNOWN"
+    return source_policy.source_family(source)
 
 
 def _is_valid_boolish(value: str) -> bool:
@@ -235,6 +210,10 @@ def _prospects_table_exists(conn: sqlite3.Connection) -> bool:
     return bool(row)
 
 
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table_name})") if len(r) > 1}
+
+
 def _stats() -> int:
     db_path = crm_store.crm_db_path()
     print(f"CRM_DB_PATH={db_path.resolve()}")
@@ -291,6 +270,49 @@ def _stats() -> int:
             print(
                 f"CRM_BY_SOURCE source={row['source_norm']} total={int(row['total'] or 0)} "
                 f"has_email={int(row['has_email'] or 0)} has_website={int(row['has_website'] or 0)}"
+            )
+
+        columns = _table_columns(conn, "prospects")
+        default_send_select = (
+            "CAST(COALESCE(default_send_eligible, 1) AS TEXT) AS default_send_eligible"
+            if "default_send_eligible" in columns
+            else "'1' AS default_send_eligible"
+        )
+        family_rows = conn.execute(
+            f"""
+            SELECT
+                state,
+                source,
+                email,
+                {default_send_select}
+            FROM prospects
+            """
+        ).fetchall()
+        family_counts: dict[tuple[str, str], dict[str, int]] = {}
+        target_states = {"TX", "CA", "FL"}
+        for row in family_rows:
+            state_norm = _norm_us_state(str(row["state"] or ""))
+            if state_norm not in target_states:
+                continue
+            family = _source_family(str(row["source"] or ""))
+            key = (state_norm, family)
+            bucket = family_counts.setdefault(
+                key,
+                {"total": 0, "has_email": 0, "default_send_eligible": 0},
+            )
+            bucket["total"] += 1
+            email_norm = _norm_email(str(row["email"] or ""))
+            if email_norm:
+                bucket["has_email"] += 1
+            if _coerce_boolish_int(str(row["default_send_eligible"] or ""), default=1) == 1:
+                bucket["default_send_eligible"] += 1
+        for state_norm, family in sorted(family_counts.keys()):
+            bucket = dict(family_counts.get((state_norm, family)) or {})
+            print(
+                "CRM_BY_STATE_SOURCE_FAMILY "
+                f"state={state_norm} source_family={family} total={int(bucket.get('total', 0))} "
+                f"has_email={int(bucket.get('has_email', 0))} "
+                f"default_send_eligible={int(bucket.get('default_send_eligible', 0))}"
             )
 
         empty_by_source_rows = conn.execute(
@@ -478,6 +500,8 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                     row.get("default_send_eligible") or "",
                     default=sendable_default,
                 ),
+                "email_status": (row.get("email_status") or "").strip(),
+                "enrichment_lane": (row.get("enrichment_lane") or "").strip(),
                 "score": _coerce_score(row.get("score", ""), title),
                 "status": status,
                 "created_at": created_at,
@@ -528,10 +552,12 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                 """
                 INSERT INTO prospects(
                     prospect_id, firm, contact_name, email, title, city, state, website, source,
-                    source_fit_tier, default_send_eligible, score, status, created_at, last_contacted_at
+                    source_fit_tier, default_send_eligible, email_status, enrichment_lane,
+                    score, status, created_at, last_contacted_at
                 ) VALUES (
                     :prospect_id, :firm, :contact_name, :email, :title, :city, :state, :website, :source,
-                    :source_fit_tier, :default_send_eligible, :score, :status, :created_at, :last_contacted_at
+                    :source_fit_tier, :default_send_eligible, :email_status, :enrichment_lane,
+                    :score, :status, :created_at, :last_contacted_at
                 )
                 ON CONFLICT(prospect_id) DO UPDATE SET
                     firm = excluded.firm,
@@ -544,6 +570,8 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                     source = excluded.source,
                     source_fit_tier = excluded.source_fit_tier,
                     default_send_eligible = excluded.default_send_eligible,
+                    email_status = excluded.email_status,
+                    enrichment_lane = excluded.enrichment_lane,
                     score = excluded.score,
                     status = excluded.status,
                     last_contacted_at = COALESCE(excluded.last_contacted_at, prospects.last_contacted_at)

@@ -14,6 +14,8 @@ OUTREACH_EVENTS_MIGRATION_COLUMNS = {
 PROSPECTS_MIGRATION_COLUMNS = {
     "source_fit_tier": "TEXT NOT NULL DEFAULT 'recoverable_consultant'",
     "default_send_eligible": "INTEGER NOT NULL DEFAULT 1",
+    "email_status": "TEXT NOT NULL DEFAULT ''",
+    "enrichment_lane": "TEXT NOT NULL DEFAULT ''",
 }
 VALID_SOURCE_FIT_TIERS = ("core_consultant", "recoverable_consultant", "adjacent_contractor")
 
@@ -166,6 +168,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
             source TEXT NOT NULL DEFAULT '',
             source_fit_tier TEXT NOT NULL DEFAULT 'recoverable_consultant',
             default_send_eligible INTEGER NOT NULL DEFAULT 1,
+            email_status TEXT NOT NULL DEFAULT '',
+            enrichment_lane TEXT NOT NULL DEFAULT '',
             score INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'new',
             created_at TEXT NOT NULL,
