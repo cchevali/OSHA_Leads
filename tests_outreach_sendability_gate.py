@@ -53,6 +53,19 @@ class TestOutreachSendabilityGate(unittest.TestCase):
                 0,
             ),
             (
+                "p_adj_legacy_sendable",
+                "Adj Legacy Contractor",
+                "Adj Legacy Owner",
+                "adjlegacy@adj-legacy-contractor.com",
+                "Owner",
+                "Austin",
+                "TX",
+                "https://adj-legacy-contractor.com",
+                "STATE_LIC",
+                "core_consultant",
+                1,
+            ),
+            (
                 "p_not_sendable_recover",
                 "Recover Blocked",
                 "Blocked Owner",
@@ -127,13 +140,13 @@ class TestOutreachSendabilityGate(unittest.TestCase):
 
             selected_ids = {str(item.get("prospect_id") or "") for item in selected}
             self.assertEqual(selected_ids, {"p_core", "p_recover"})
-            self.assertEqual(int(skipped.get("not_default_send_eligible", 0)), 2)
+            self.assertEqual(int(skipped.get("not_default_send_eligible", 0)), 3)
             self.assertEqual(int(stats.get("eligible", 0)), 2)
             eligible_by_tier = dict(stats.get("eligible_by_tier") or {})
             self.assertEqual(int(eligible_by_tier.get("core_consultant", 0)), 1)
             self.assertEqual(int(eligible_by_tier.get("recoverable_consultant", 0)), 1)
             self.assertEqual(int(eligible_by_tier.get("adjacent_contractor", 0)), 0)
-            self.assertEqual(int(stats.get("excluded_adjacent_contractor_total", 0)), 1)
+            self.assertEqual(int(stats.get("excluded_adjacent_contractor_total", 0)), 2)
 
     def test_override_includes_adjacent_contractors(self):
         with tempfile.TemporaryDirectory() as d:
@@ -155,11 +168,11 @@ class TestOutreachSendabilityGate(unittest.TestCase):
                 conn.close()
 
             selected_ids = {str(item.get("prospect_id") or "") for item in selected}
-            self.assertEqual(selected_ids, {"p_core", "p_recover", "p_adj"})
+            self.assertEqual(selected_ids, {"p_core", "p_recover", "p_adj", "p_adj_legacy_sendable"})
             self.assertEqual(int(skipped.get("not_default_send_eligible", 0)), 1)
-            self.assertEqual(int(stats.get("eligible", 0)), 3)
+            self.assertEqual(int(stats.get("eligible", 0)), 4)
             eligible_by_tier = dict(stats.get("eligible_by_tier") or {})
-            self.assertEqual(int(eligible_by_tier.get("adjacent_contractor", 0)), 1)
+            self.assertEqual(int(eligible_by_tier.get("adjacent_contractor", 0)), 2)
             self.assertEqual(int(stats.get("excluded_adjacent_contractor_total", 0)), 0)
 
     def test_plan_selection_counters_emit_adjacent_exclusion_tokens(self):

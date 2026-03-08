@@ -157,6 +157,120 @@ def _seed_stats_rows(db_path: Path) -> None:
         conn.close()
 
 
+def _seed_repair_rows(db_path: Path) -> None:
+    crm_store.ensure_database(db_path)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = [
+            (
+                "state_lic_bad",
+                "State Lic Bad",
+                "Owner",
+                "lic@vendor.com",
+                "Owner",
+                "Austin",
+                "TEXAS",
+                "https://vendor.com",
+                "STATE_LIC",
+                "core_consultant",
+                1,
+            ),
+            (
+                "apollo_bad",
+                "Apollo Bad",
+                "Owner",
+                "apollo@vendor.com",
+                "Owner",
+                "Los Angeles",
+                "CALIFORNIA",
+                "https://vendor.com",
+                "apollo_export_csv",
+                "adjacent_contractor",
+                0,
+            ),
+            (
+                "aiha_bad",
+                "AIHA Bad",
+                "Owner",
+                "aiha@vendor.com",
+                "Owner",
+                "Miami",
+                "FLORIDA",
+                "https://vendor.com",
+                "aiha_consultants_listing:1",
+                "adjacent_contractor",
+                0,
+            ),
+            (
+                "ohs_tracker_bad",
+                "OHS Tracker",
+                "Owner",
+                "lead@topprovider.com",
+                "Owner",
+                "San Diego",
+                "CA",
+                "https://topprovider.com/ad/landing",
+                "ohs_buyers_guide:company-10",
+                "recoverable_consultant",
+                1,
+            ),
+            (
+                "seed_unchanged",
+                "Seed Keep",
+                "Owner",
+                "seed@seedfirm.com",
+                "Owner",
+                "Orlando",
+                "FLORIDA",
+                "https://seedfirm.com",
+                "seed_recipients_pools",
+                "core_consultant",
+                1,
+            ),
+        ]
+        for (
+            prospect_id,
+            firm,
+            contact_name,
+            email,
+            title,
+            city,
+            state,
+            website,
+            source,
+            source_fit_tier,
+            default_send_eligible,
+        ) in rows:
+            conn.execute(
+                """
+                INSERT INTO prospects(
+                    prospect_id, firm, contact_name, email, title, city, state, website, source,
+                    source_fit_tier, default_send_eligible, score, status, created_at, last_contacted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    prospect_id,
+                    firm,
+                    contact_name,
+                    email,
+                    title,
+                    city,
+                    state,
+                    website,
+                    source,
+                    source_fit_tier,
+                    int(default_send_eligible),
+                    7,
+                    "new",
+                    "2026-01-01T00:00:00+00:00",
+                    None,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 class TestOutreachCrmAdmin(unittest.TestCase):
     def _stdout_value(self, stdout: str, token: str) -> str:
         prefix = f"{token}="
@@ -553,6 +667,76 @@ class TestOutreachCrmAdmin(unittest.TestCase):
             self.assertEqual(self._stdout_value(out, "DISCOVERY_AIHA_LOSS_FREE_DOMAIN"), "1")
             self.assertEqual(self._stdout_value(out, "DISCOVERY_AIHA_LOSS_ALREADY_KNOWN_CRM"), "2")
             self.assertEqual(self._stdout_value(out, "DISCOVERY_AIHA_LOSS_DEFAULT_SEND_INELIGIBLE"), "1")
+
+    def test_repair_prospects_dry_run_and_apply_are_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            db_path = data_dir / "crm.sqlite"
+            _seed_repair_rows(db_path)
+
+            preview = self._run(["repair-prospects", "--dry-run"], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(preview.returncode, 0, msg=preview.stderr + "\n" + preview.stdout)
+            out_preview = preview.stdout or ""
+            self.assertEqual(self._stdout_value(out_preview, "state_canonicalized"), "4")
+            self.assertEqual(self._stdout_value(out_preview, "source_fit_repaired"), "3")
+            self.assertEqual(self._stdout_value(out_preview, "default_send_repaired"), "4")
+            self.assertEqual(self._stdout_value(out_preview, "bad_ohs_bg_quarantined"), "1")
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                before = {
+                    str(row[0]): (str(row[1] or ""), str(row[2] or ""), int(row[3] or 0))
+                    for row in conn.execute(
+                        """
+                        SELECT prospect_id, state, source_fit_tier, default_send_eligible
+                        FROM prospects
+                        ORDER BY prospect_id
+                        """
+                    ).fetchall()
+                }
+            finally:
+                conn.close()
+            self.assertEqual(before["state_lic_bad"], ("TEXAS", "core_consultant", 1))
+            self.assertEqual(before["apollo_bad"], ("CALIFORNIA", "adjacent_contractor", 0))
+            self.assertEqual(before["seed_unchanged"], ("FLORIDA", "core_consultant", 1))
+
+            apply_run = self._run(["repair-prospects", "--apply"], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(apply_run.returncode, 0, msg=apply_run.stderr + "\n" + apply_run.stdout)
+            out_apply = apply_run.stdout or ""
+            self.assertEqual(self._stdout_value(out_apply, "state_canonicalized"), "4")
+            self.assertEqual(self._stdout_value(out_apply, "source_fit_repaired"), "3")
+            self.assertEqual(self._stdout_value(out_apply, "default_send_repaired"), "4")
+            self.assertEqual(self._stdout_value(out_apply, "bad_ohs_bg_quarantined"), "1")
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                after = {
+                    str(row[0]): (str(row[1] or ""), str(row[2] or ""), int(row[3] or 0))
+                    for row in conn.execute(
+                        """
+                        SELECT prospect_id, state, source_fit_tier, default_send_eligible
+                        FROM prospects
+                        ORDER BY prospect_id
+                        """
+                    ).fetchall()
+                }
+            finally:
+                conn.close()
+
+            self.assertEqual(after["state_lic_bad"], ("TX", "adjacent_contractor", 0))
+            self.assertEqual(after["apollo_bad"], ("CA", "core_consultant", 1))
+            self.assertEqual(after["aiha_bad"], ("FL", "recoverable_consultant", 1))
+            self.assertEqual(after["ohs_tracker_bad"], ("CA", "recoverable_consultant", 0))
+            self.assertEqual(after["seed_unchanged"], ("FL", "core_consultant", 1))
+
+            apply_again = self._run(["repair-prospects", "--apply"], {"DATA_DIR": str(data_dir)})
+            self.assertEqual(apply_again.returncode, 0, msg=apply_again.stderr + "\n" + apply_again.stdout)
+            out_again = apply_again.stdout or ""
+            self.assertEqual(self._stdout_value(out_again, "state_canonicalized"), "0")
+            self.assertEqual(self._stdout_value(out_again, "source_fit_repaired"), "0")
+            self.assertEqual(self._stdout_value(out_again, "default_send_repaired"), "0")
+            self.assertEqual(self._stdout_value(out_again, "bad_ohs_bg_quarantined"), "0")
 
 
 if __name__ == "__main__":

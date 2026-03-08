@@ -32,6 +32,8 @@ from outreach import prospect_sources_ohs_bg
 from outreach import prospect_sources_osha_news
 from outreach import prospect_sources_state_lic
 from outreach import scraper_engine
+from outreach import source_policy
+from outreach import us_state
 import seed_recipients_pools as pools
 
 
@@ -161,60 +163,8 @@ GENERATOR_FILTER_KEYS = (
 )
 DEFAULT_STATE_SCOPE_ALL = ("TX", "CA", "FL")
 VALID_SOURCE_FIT_TIERS = {"core_consultant", "recoverable_consultant", "adjacent_contractor"}
-US_STATE_NAME_TO_ABBR = {
-    "alabama": "AL",
-    "alaska": "AK",
-    "arizona": "AZ",
-    "arkansas": "AR",
-    "california": "CA",
-    "colorado": "CO",
-    "connecticut": "CT",
-    "delaware": "DE",
-    "district of columbia": "DC",
-    "florida": "FL",
-    "georgia": "GA",
-    "hawaii": "HI",
-    "idaho": "ID",
-    "illinois": "IL",
-    "indiana": "IN",
-    "iowa": "IA",
-    "kansas": "KS",
-    "kentucky": "KY",
-    "louisiana": "LA",
-    "maine": "ME",
-    "maryland": "MD",
-    "massachusetts": "MA",
-    "michigan": "MI",
-    "minnesota": "MN",
-    "mississippi": "MS",
-    "missouri": "MO",
-    "montana": "MT",
-    "nebraska": "NE",
-    "nevada": "NV",
-    "new hampshire": "NH",
-    "new jersey": "NJ",
-    "new mexico": "NM",
-    "new york": "NY",
-    "north carolina": "NC",
-    "north dakota": "ND",
-    "ohio": "OH",
-    "oklahoma": "OK",
-    "oregon": "OR",
-    "pennsylvania": "PA",
-    "rhode island": "RI",
-    "south carolina": "SC",
-    "south dakota": "SD",
-    "tennessee": "TN",
-    "texas": "TX",
-    "utah": "UT",
-    "vermont": "VT",
-    "virginia": "VA",
-    "washington": "WA",
-    "west virginia": "WV",
-    "wisconsin": "WI",
-    "wyoming": "WY",
-}
-US_STATE_ABBREVIATIONS = set(US_STATE_NAME_TO_ABBR.values())
+US_STATE_NAME_TO_ABBR = dict(us_state.US_STATE_NAME_TO_ABBR)
+US_STATE_ABBREVIATIONS = set(us_state.US_STATE_ABBREVIATIONS)
 
 
 def _valid_email(value: str) -> bool:
@@ -248,25 +198,11 @@ def _is_role_inbox_email(email: str) -> bool:
 
 
 def _normalize_state(value: str) -> str:
-    text = (value or "").strip()
-    if not text:
-        return ""
-    direct = text.upper()
-    if len(direct) == 2 and direct.isalpha():
-        return direct
-    normalized_name = " ".join(text.lower().split())
-    return US_STATE_NAME_TO_ABBR.get(normalized_name, direct)
+    return us_state.normalize_state_token(value)
 
 
 def _normalize_us_state(value: str) -> str:
-    text = (value or "").strip()
-    if not text:
-        return ""
-    upper = text.upper()
-    if len(upper) == 2 and upper in US_STATE_ABBREVIATIONS:
-        return upper
-    normalized_name = " ".join(text.lower().split())
-    return US_STATE_NAME_TO_ABBR.get(normalized_name, "")
+    return us_state.normalize_us_state(value)
 
 
 def _normalize_text(value: str) -> str:
@@ -331,16 +267,7 @@ def _row_domain_value(row: dict[str, str], email: str) -> str:
 
 
 def _source_fit_defaults(source: str) -> tuple[str, int]:
-    source_norm = _normalize_text(source).lower()
-    if source_norm.startswith("state_lic"):
-        return "adjacent_contractor", 0
-    if source_norm.startswith("apollo"):
-        return "core_consultant", 1
-    if source_norm.startswith("aiha_consultants_listing:"):
-        return "recoverable_consultant", 1
-    if source_norm.startswith("ohs_buyers_guide:"):
-        return "recoverable_consultant", 1
-    return "recoverable_consultant", 1
+    return source_policy.source_fit_defaults(source)
 
 
 def _coerce_boolish_int(value: str, default: int) -> int:
@@ -390,29 +317,13 @@ def _contains_any_token(text: str, tokens: tuple[str, ...]) -> bool:
 
 
 def _source_family(source: str) -> str:
-    text = _normalize_text(source).lower()
-    if not text:
-        return "UNKNOWN"
-    if text.startswith("aiha_consultants_listing"):
-        return "AIHA"
-    if text.startswith("ohs_buyers_guide"):
-        return "OHS_BG"
-    if text.startswith("apollo"):
-        return "APOLLO"
-    if text.startswith("bcsp"):
-        return "BCSP"
-    if text.startswith("osha_news"):
-        return "OSHA_NEWS"
-    if text.startswith("state_lic"):
-        return "STATE_LIC"
-    if text.startswith("seed_recipients_pools"):
-        return "SEED"
-    return "UNKNOWN"
+    return source_policy.source_family(source)
 
 
 def _generator_row_observability(rows: list[dict[str, str]]) -> dict[str, object]:
     source_counts: Counter = Counter()
     tier_counts: Counter = Counter()
+    email_status_counts: Counter = Counter()
     default_send_eligible_total = 0
     for row in list(rows or []):
         source = _normalize_text(row.get("source") or "")
@@ -423,9 +334,12 @@ def _generator_row_observability(rows: list[dict[str, str]]) -> dict[str, object
         default_send = _coerce_boolish_int(row.get("default_send_eligible") or "", _source_fit_defaults(source)[1])
         if default_send == 1:
             default_send_eligible_total += 1
+        status = _normalize_text(row.get("email_status") or "").lower() or "blank"
+        email_status_counts[status] += 1
     return {
         "source_counts": dict(source_counts),
         "tier_counts": dict(tier_counts),
+        "email_status_counts": dict(email_status_counts),
         "default_send_eligible_total": int(default_send_eligible_total),
     }
 
@@ -489,9 +403,22 @@ def _discovery_fields() -> list[str]:
         "source",
         "source_fit_tier",
         "default_send_eligible",
+        "email_status",
+        "enrichment_lane",
         "contact_name",
         "website",
     ]
+
+
+def _enrichment_lane_from_status(email_status: str) -> str:
+    status = _normalize_text(email_status).lower()
+    if not status:
+        return "unknown"
+    if status.startswith("hunter_"):
+        return "provider_hunter"
+    if status in {"pattern_generated", "scraped_from_site", "scraped_from_source"}:
+        return "pattern_or_site"
+    return "unknown"
 
 
 def _prospect_id(state: str, domain: str, email: str) -> str:
@@ -534,14 +461,7 @@ def _parse_for_date(raw: str) -> date:
 
 
 def _parse_states(raw: str) -> list[str]:
-    states: list[str] = []
-    for token in str(raw or "").split(","):
-        state = _normalize_state(token)
-        if not state:
-            continue
-        if state not in states:
-            states.append(state)
-    return states
+    return us_state.parse_state_csv(raw, strict_us=True)
 
 
 def _resolve_state_scope(override_raw: str, env_states_default: list[str]) -> list[str] | None:
@@ -724,6 +644,8 @@ def _to_discovery_rows(input_rows: list[dict[str, str]]) -> list[dict[str, str]]
 
         source = _normalize_text(row.get("source") or "seed_recipients_pools")
         _source_fit_default, sendable_default = _source_fit_defaults(source)
+        email_status = _normalize_text(row.get("email_status") or "")
+        enrichment_lane = _normalize_text(row.get("enrichment_lane") or "") or _enrichment_lane_from_status(email_status)
         state = _normalize_us_state(row.get("state") or "")
         domain = _normalize_text(row.get("domain") or "").lower() or _email_domain(email)
         prospect_id = _normalize_text(row.get("prospect_id") or "")
@@ -742,6 +664,8 @@ def _to_discovery_rows(input_rows: list[dict[str, str]]) -> list[dict[str, str]]
                 "default_send_eligible": str(
                     _coerce_boolish_int(row.get("default_send_eligible") or "", sendable_default)
                 ),
+                "email_status": email_status,
+                "enrichment_lane": enrichment_lane,
                 "contact_name": _normalize_text(row.get("contact_name") or ""),
                 "website": _normalize_text(row.get("website") or ""),
             }
@@ -1204,7 +1128,10 @@ def _default_generator_enrich_metrics() -> dict[str, int]:
         "attempted": 0,
         "domain_resolved": 0,
         "email_guessed": 0,
+        "hunter_attempted": 0,
         "hunter_verified": 0,
+        "hunter_no_match": 0,
+        "hunter_error": 0,
         "still_no_email": 0,
         "hunter_skipped_cap": 0,
     }
@@ -1212,7 +1139,17 @@ def _default_generator_enrich_metrics() -> dict[str, int]:
 
 def _merge_generator_enrich_metrics(dest: dict[str, int], src: dict | None) -> None:
     source = dict(src or {})
-    for key in ("attempted", "domain_resolved", "email_guessed", "hunter_verified", "still_no_email", "hunter_skipped_cap"):
+    for key in (
+        "attempted",
+        "domain_resolved",
+        "email_guessed",
+        "hunter_attempted",
+        "hunter_verified",
+        "hunter_no_match",
+        "hunter_error",
+        "still_no_email",
+        "hunter_skipped_cap",
+    ):
         dest[key] = int(dest.get(key, 0)) + int(source.get(key, 0) or 0)
 
 
@@ -1434,6 +1371,20 @@ def _print_tokens(
     print(f"GENERATOR_STATE_SCOPE={_state_scope_token(raw_scope)}")
     print(f"GENERATOR_AUTOGROW_ENABLED={1 if autogrow['enabled'] else 0}")
     print(f"GENERATOR_AUTOGROW_SOURCES={','.join(autogrow['sources'])}")
+    print("GENERATOR_SOURCE_POLICY=CONSULTANT_FIRST")
+    print(
+        "GENERATOR_SOURCE_POLICY_PRIMARY="
+        f"{','.join(list(source_policy.CONSULTANT_PRIMARY_SOURCES))}"
+    )
+    print(
+        "GENERATOR_SOURCE_POLICY_OVERFLOW="
+        f"{','.join(list(source_policy.CONSULTANT_OVERFLOW_SOURCES))}"
+    )
+    print(
+        "GENERATOR_SOURCE_POLICY_SECONDARY="
+        f"{','.join(list(source_policy.CONSULTANT_SECONDARY_SOURCES))}"
+    )
+    print("GENERATOR_APOLLO_OVERFLOW_ONLY=1")
     autogrow_states = [str(s or "").strip().upper() for s in list(autogrow.get("states") or []) if str(s or "").strip()]
     print(f"GENERATOR_AUTOGROW_STATES={','.join(autogrow_states)}")
     print(f"GENERATOR_AUTOGROW_SOURCES_EMPTY={1 if autogrow.get('sources_empty') else 0}")
@@ -1484,15 +1435,29 @@ def _print_tokens(
     observability = dict(row_observability or {})
     source_counts = dict(observability.get("source_counts") or {})
     tier_counts = dict(observability.get("tier_counts") or {})
+    email_status_counts = dict(observability.get("email_status_counts") or {})
     for family in ("SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC", "UNKNOWN"):
         print(f"GENERATOR_SOURCE_COUNT_{family}={int(source_counts.get(family, 0))}")
     for tier in ("core_consultant", "recoverable_consultant", "adjacent_contractor"):
         print(f"GENERATOR_TIER_COUNT_{tier.upper()}={int(tier_counts.get(tier, 0))}")
+    print(f"GENERATOR_EMAIL_STATUS_PATTERN_GENERATED={int(email_status_counts.get('pattern_generated', 0))}")
+    print(f"GENERATOR_EMAIL_STATUS_HUNTER_VERIFIED={int(email_status_counts.get('hunter_verified', 0))}")
+    print(f"GENERATOR_EMAIL_STATUS_SCRAPED_FROM_SITE={int(email_status_counts.get('scraped_from_site', 0))}")
+    print(f"GENERATOR_EMAIL_STATUS_SCRAPED_FROM_SOURCE={int(email_status_counts.get('scraped_from_source', 0))}")
+    print(f"GENERATOR_EMAIL_STATUS_BLANK={int(email_status_counts.get('blank', 0))}")
     print(f"GENERATOR_DEFAULT_SEND_ELIGIBLE_TOTAL={int(observability.get('default_send_eligible_total') or 0)}")
+    provider_lane_enabled = bool(enrich_cfg.get("hunter_enabled")) and bool(_normalize_text(enrich_cfg.get("hunter_api_key") or ""))
+    print(
+        "GENERATOR_ENRICH_MODE="
+        f"{'dual_mode_provider_fallback' if provider_lane_enabled else 'pattern_only'}"
+    )
     print(f"GENERATOR_ENRICH_ATTEMPTED={int(enrich_metrics.get('attempted') or 0)}")
     print(f"GENERATOR_ENRICH_DOMAIN_RESOLVED={int(enrich_metrics.get('domain_resolved') or 0)}")
     print(f"GENERATOR_ENRICH_EMAIL_GUESSED={int(enrich_metrics.get('email_guessed') or 0)}")
+    print(f"GENERATOR_ENRICH_HUNTER_ATTEMPTED={int(enrich_metrics.get('hunter_attempted') or 0)}")
     print(f"GENERATOR_ENRICH_HUNTER_VERIFIED={int(enrich_metrics.get('hunter_verified') or 0)}")
+    print(f"GENERATOR_ENRICH_HUNTER_NO_MATCH={int(enrich_metrics.get('hunter_no_match') or 0)}")
+    print(f"GENERATOR_ENRICH_HUNTER_ERROR={int(enrich_metrics.get('hunter_error') or 0)}")
     print(f"GENERATOR_ENRICH_STILL_NO_EMAIL={int(enrich_metrics.get('still_no_email') or 0)}")
     print(f"GENERATOR_ENRICH_HUNTER_SKIPPED_CAP={int(enrich_metrics.get('hunter_skipped_cap') or 0)}")
     if print_availability:
@@ -1523,7 +1488,10 @@ def _print_tokens(
             f"ohs_bg_candidate={int(detail.get('ohs_bg_candidate') or 0)} "
             f"ohs_bg_accepted={int(detail.get('ohs_bg_accepted') or 0)} "
             f"apollo_candidate={int(detail.get('apollo_candidate') or 0)} "
-            f"apollo_accepted={int(detail.get('apollo_accepted') or 0)}"
+            f"apollo_accepted={int(detail.get('apollo_accepted') or 0)} "
+            f"ohs_bg_base_max_pages={int(detail.get('ohs_bg_base_max_pages') or 0)} "
+            f"ohs_bg_effective_max_pages={int(detail.get('ohs_bg_effective_max_pages') or 0)} "
+            f"ohs_bg_deeper_enabled={int(detail.get('ohs_bg_deeper_enabled') or 0)}"
         )
         for source_label, prefix in AUTOGROW_SOURCE_PREFIX.items():
             print(
@@ -1538,7 +1506,10 @@ def _print_tokens(
                 f"rejected_already_in_crm={int(detail.get(f'{prefix}_rejected_already_in_crm') or 0)} "
                 f"rejected_missing_state={int(detail.get(f'{prefix}_rejected_missing_state') or 0)} "
                 f"rejected_state_mismatch={int(detail.get(f'{prefix}_rejected_state_mismatch') or 0)} "
-                f"rejected_duplicate_in_batch={int(detail.get(f'{prefix}_rejected_duplicate_in_batch') or 0)}"
+                f"rejected_duplicate_in_batch={int(detail.get(f'{prefix}_rejected_duplicate_in_batch') or 0)} "
+                f"max_fetch_pages={int(detail.get(f'{prefix}_max_fetch_pages') or 0)} "
+                f"pages_fetched={int(detail.get(f'{prefix}_pages_fetched') or 0)} "
+                f"backlog_credit={int(detail.get(f'{prefix}_backlog_credit') or 0)}"
             )
     backlog_target = max(0, int(autogrow.get("backlog_target") or 0))
     for detail in state_details:
@@ -1795,9 +1766,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.apollo_doctor:
         return _run_apollo_doctor_only(diagnostics_dir=diagnostics_dir)
 
-    env_states_default = _parse_states(os.getenv("PROSPECT_AUTOGROW_STATES", "")) or _parse_states(
-        os.getenv("OUTREACH_STATES", "TX")
-    )
+    env_states_default = _parse_states(os.getenv("OUTREACH_STATES", "")) or list(DEFAULT_STATE_SCOPE_ALL)
     if not env_states_default:
         print(f"{ERR_GENERATOR_FAILED} stage=states err=state_scope_default empty", file=sys.stderr)
         return 2
@@ -1877,10 +1846,16 @@ def main(argv: list[str] | None = None) -> int:
                 "safety_net_forced": bool(safety_forced),
                 "safety_net_reason": "SENDABLE_BELOW_FLOOR" if safety_forced else "",
                 "safety_net_floor": int(safety_net_floor),
+                "ohs_bg_base_max_pages": int(autogrow_cfg["max_fetch_pages"]),
+                "ohs_bg_effective_max_pages": int(autogrow_cfg["max_fetch_pages"]),
+                "ohs_bg_deeper_enabled": 0,
             }
             for prefix in AUTOGROW_SOURCE_PREFIX.values():
                 detail[f"{prefix}_candidate"] = 0
                 detail[f"{prefix}_accepted"] = 0
+                detail[f"{prefix}_max_fetch_pages"] = int(autogrow_cfg["max_fetch_pages"])
+                detail[f"{prefix}_pages_fetched"] = 0
+                detail[f"{prefix}_backlog_credit"] = 0
                 for reject_key in AUTOGROW_REJECT_KEYS:
                     detail[f"{prefix}_rejected_{reject_key}"] = 0
             autogrow_state_details.append(detail)
@@ -2016,20 +1991,27 @@ def main(argv: list[str] | None = None) -> int:
         if state_new_needed <= 0:
             continue
 
-        source_order: list[str] = []
-        for source_token in list(autogrow_cfg["sources"]):
-            source_norm = _normalize_state(str(source_token or ""))
-            if source_norm and source_norm not in source_order:
-                source_order.append(source_norm)
+        source_order = source_policy.autogrow_source_order(list(autogrow_cfg["sources"]))
         if bool(detail.get("safety_net_forced")) and "AIHA" not in source_order:
             source_order.insert(0, "AIHA")
 
         remaining_needed = state_new_needed
+        remaining_slots = state_new_needed
         for source_token in source_order:
-            if remaining_needed <= 0:
+            if remaining_slots <= 0:
                 break
             if source_token not in AUTOGROW_ALLOWED_SOURCES:
                 continue
+
+            effective_max_fetch_pages = int(autogrow_cfg["max_fetch_pages"])
+            if source_token == "OHS_BG":
+                is_priority_state = bool(
+                    (state_detail == selected_state_norm) or bool(detail.get("safety_net_forced"))
+                )
+                if is_priority_state and remaining_needed > 0:
+                    effective_max_fetch_pages = min(max(1, effective_max_fetch_pages) * 2, 12)
+                detail["ohs_bg_effective_max_pages"] = int(effective_max_fetch_pages)
+                detail["ohs_bg_deeper_enabled"] = 1 if int(effective_max_fetch_pages) > int(autogrow_cfg["max_fetch_pages"]) else 0
 
             apollo_limit_for_state = 0
             if source_token == "APOLLO":
@@ -2039,7 +2021,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_token=source_token,
                 state=state_detail,
                 run_date=run_date,
-                max_fetch_pages=int(autogrow_cfg["max_fetch_pages"]),
+                max_fetch_pages=int(effective_max_fetch_pages),
                 sleep_ms=int(autogrow_cfg["sleep_ms"]),
                 cache_root_dir=cache_root_dir,
                 diagnostics_dir=diagnostics_dir,
@@ -2079,16 +2061,21 @@ def main(argv: list[str] | None = None) -> int:
                 source_token=source_token,
                 apollo_allow_role_inbox=bool(apollo_cfg.get("allow_role_inbox")),
             )
-            accepted_rows = filtered_rows[:remaining_needed]
+            accepted_rows = filtered_rows[:remaining_slots]
             sendable_accepted = sum(
                 1 for row in accepted_rows if _coerce_boolish_int(row.get("default_send_eligible") or "", 1) == 1
             )
-            remaining_needed = max(0, remaining_needed - int(sendable_accepted))
+            backlog_credit = int(sendable_accepted) if source_policy.counts_toward_consultant_backlog(source_token) else 0
+            remaining_needed = max(0, remaining_needed - int(backlog_credit))
+            remaining_slots = max(0, remaining_slots - int(len(accepted_rows)))
 
             source_prefix = source_prefix_map.get(source_token, "")
             if source_prefix:
                 detail[f"{source_prefix}_candidate"] = len(rows_candidate)
                 detail[f"{source_prefix}_accepted"] = len(accepted_rows)
+                detail[f"{source_prefix}_max_fetch_pages"] = int(effective_max_fetch_pages)
+                detail[f"{source_prefix}_pages_fetched"] = int(result.get("pages_fetched") or 0)
+                detail[f"{source_prefix}_backlog_credit"] = int(backlog_credit)
                 for reject_key in AUTOGROW_REJECT_KEYS:
                     detail[f"{source_prefix}_rejected_{reject_key}"] = int(rejected.get(reject_key, 0))
 

@@ -23,6 +23,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from outreach import crm_store
+from outreach import prospect_sources_ohs_bg
+from outreach import source_policy
+from outreach import us_state
 import seed_recipients_pools as pools
 
 
@@ -32,8 +35,10 @@ ERR_CRM_STATS_DB_UNREADABLE = "ERR_CRM_STATS_DB_UNREADABLE"
 ERR_CRM_VERIFY_INPUT_MISSING = "ERR_CRM_VERIFY_INPUT_MISSING"
 ERR_CRM_VERIFY_INPUT_UNREADABLE = "ERR_CRM_VERIFY_INPUT_UNREADABLE"
 ERR_CRM_VERIFY_DB_UNREADABLE = "ERR_CRM_VERIFY_DB_UNREADABLE"
+ERR_CRM_REPAIR_DB_UNREADABLE = "ERR_CRM_REPAIR_DB_UNREADABLE"
 PASS_CRM_SEED = "PASS_CRM_SEED"
 PASS_CRM_MARK = "PASS_CRM_MARK"
+PASS_CRM_REPAIR = "PASS_CRM_REPAIR"
 
 VERIFY_IMPORT_SAMPLE_SIZE = 25
 BLANK_SOURCE_LABEL = "(blank)"
@@ -54,7 +59,11 @@ def _norm_email(value: str) -> str:
 
 
 def _norm_state(value: str) -> str:
-    return (value or "").strip().upper()
+    return us_state.normalize_state_token(value).upper()
+
+
+def _norm_us_state(value: str) -> str:
+    return us_state.normalize_us_state(value)
 
 
 def _norm_source(value: str) -> str:
@@ -90,12 +99,20 @@ def _row_domain_value(email: str, website: str) -> str:
 
 
 def _parse_scope_states(raw: str) -> set[str]:
-    states: set[str] = set()
-    for token in str(raw or "").split(","):
-        state = _norm_state(token)
-        if len(state) == 2 and state.isalpha():
-            states.add(state)
-    return states
+    return set(us_state.parse_state_csv(raw, strict_us=True))
+
+
+def _domain_matches_any(host: str, domains: set[str]) -> bool:
+    token = (host or "").strip().lower()
+    if not token:
+        return False
+    for suffix in domains:
+        normalized = str(suffix or "").strip().lower()
+        if not normalized:
+            continue
+        if token == normalized or token.endswith(f".{normalized}"):
+            return True
+    return False
 
 
 def _coerce_boolish_int(value: str, default: int = 1) -> int:
@@ -113,16 +130,7 @@ def _coerce_boolish_int(value: str, default: int = 1) -> int:
 
 
 def _source_fit_defaults(source: str) -> tuple[str, int]:
-    source_norm = _norm_source(source).lower()
-    if source_norm.startswith("state_lic"):
-        return "adjacent_contractor", 0
-    if source_norm.startswith("apollo"):
-        return "core_consultant", 1
-    if source_norm.startswith("aiha_consultants_listing:"):
-        return "recoverable_consultant", 1
-    if source_norm.startswith("ohs_buyers_guide:"):
-        return "recoverable_consultant", 1
-    return "recoverable_consultant", 1
+    return source_policy.source_fit_defaults(source)
 
 
 def _coerce_source_fit_tier(value: str, source: str) -> str:
@@ -133,24 +141,7 @@ def _coerce_source_fit_tier(value: str, source: str) -> str:
 
 
 def _source_family(source: str) -> str:
-    text = _norm_source(source).lower()
-    if not text:
-        return "UNKNOWN"
-    if text.startswith("aiha_consultants_listing"):
-        return "AIHA"
-    if text.startswith("ohs_buyers_guide"):
-        return "OHS_BG"
-    if text.startswith("apollo"):
-        return "APOLLO"
-    if text.startswith("bcsp"):
-        return "BCSP"
-    if text.startswith("osha_news"):
-        return "OSHA_NEWS"
-    if text.startswith("state_lic"):
-        return "STATE_LIC"
-    if text.startswith("seed_recipients_pools"):
-        return "SEED"
-    return "UNKNOWN"
+    return source_policy.source_family(source)
 
 
 def _is_valid_boolish(value: str) -> bool:
@@ -219,6 +210,10 @@ def _prospects_table_exists(conn: sqlite3.Connection) -> bool:
     return bool(row)
 
 
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table_name})") if len(r) > 1}
+
+
 def _stats() -> int:
     db_path = crm_store.crm_db_path()
     print(f"CRM_DB_PATH={db_path.resolve()}")
@@ -275,6 +270,49 @@ def _stats() -> int:
             print(
                 f"CRM_BY_SOURCE source={row['source_norm']} total={int(row['total'] or 0)} "
                 f"has_email={int(row['has_email'] or 0)} has_website={int(row['has_website'] or 0)}"
+            )
+
+        columns = _table_columns(conn, "prospects")
+        default_send_select = (
+            "CAST(COALESCE(default_send_eligible, 1) AS TEXT) AS default_send_eligible"
+            if "default_send_eligible" in columns
+            else "'1' AS default_send_eligible"
+        )
+        family_rows = conn.execute(
+            f"""
+            SELECT
+                state,
+                source,
+                email,
+                {default_send_select}
+            FROM prospects
+            """
+        ).fetchall()
+        family_counts: dict[tuple[str, str], dict[str, int]] = {}
+        target_states = {"TX", "CA", "FL"}
+        for row in family_rows:
+            state_norm = _norm_us_state(str(row["state"] or ""))
+            if state_norm not in target_states:
+                continue
+            family = _source_family(str(row["source"] or ""))
+            key = (state_norm, family)
+            bucket = family_counts.setdefault(
+                key,
+                {"total": 0, "has_email": 0, "default_send_eligible": 0},
+            )
+            bucket["total"] += 1
+            email_norm = _norm_email(str(row["email"] or ""))
+            if email_norm:
+                bucket["has_email"] += 1
+            if _coerce_boolish_int(str(row["default_send_eligible"] or ""), default=1) == 1:
+                bucket["default_send_eligible"] += 1
+        for state_norm, family in sorted(family_counts.keys()):
+            bucket = dict(family_counts.get((state_norm, family)) or {})
+            print(
+                "CRM_BY_STATE_SOURCE_FAMILY "
+                f"state={state_norm} source_family={family} total={int(bucket.get('total', 0))} "
+                f"has_email={int(bucket.get('has_email', 0))} "
+                f"default_send_eligible={int(bucket.get('default_send_eligible', 0))}"
             )
 
         empty_by_source_rows = conn.execute(
@@ -462,6 +500,8 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                     row.get("default_send_eligible") or "",
                     default=sendable_default,
                 ),
+                "email_status": (row.get("email_status") or "").strip(),
+                "enrichment_lane": (row.get("enrichment_lane") or "").strip(),
                 "score": _coerce_score(row.get("score", ""), title),
                 "status": status,
                 "created_at": created_at,
@@ -512,10 +552,12 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                 """
                 INSERT INTO prospects(
                     prospect_id, firm, contact_name, email, title, city, state, website, source,
-                    source_fit_tier, default_send_eligible, score, status, created_at, last_contacted_at
+                    source_fit_tier, default_send_eligible, email_status, enrichment_lane,
+                    score, status, created_at, last_contacted_at
                 ) VALUES (
                     :prospect_id, :firm, :contact_name, :email, :title, :city, :state, :website, :source,
-                    :source_fit_tier, :default_send_eligible, :score, :status, :created_at, :last_contacted_at
+                    :source_fit_tier, :default_send_eligible, :email_status, :enrichment_lane,
+                    :score, :status, :created_at, :last_contacted_at
                 )
                 ON CONFLICT(prospect_id) DO UPDATE SET
                     firm = excluded.firm,
@@ -528,6 +570,8 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                     source = excluded.source,
                     source_fit_tier = excluded.source_fit_tier,
                     default_send_eligible = excluded.default_send_eligible,
+                    email_status = excluded.email_status,
+                    enrichment_lane = excluded.enrichment_lane,
                     score = excluded.score,
                     status = excluded.status,
                     last_contacted_at = COALESCE(excluded.last_contacted_at, prospects.last_contacted_at)
@@ -569,6 +613,122 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
         print(f"DISCOVERY_AIHA_LOSS_{key.upper()}={int(aiha_loss_counters.get(key, 0))}")
     if archived_to:
         print(f"{PASS_CRM_SEED} archived_to={archived_to}")
+    return 0
+
+
+def _is_bad_ohs_bg_tracker_or_ad(email: str, website: str) -> bool:
+    email_host = _email_domain(email)
+    website_host = _domain_from_website(website)
+    if _domain_matches_any(website_host, set(prospect_sources_ohs_bg.TRACKER_OR_AD_DOMAINS)):
+        return True
+    if _domain_matches_any(email_host, set(prospect_sources_ohs_bg.TRACKER_OR_AD_DOMAINS)):
+        return True
+    if _domain_matches_any(email_host, set(prospect_sources_ohs_bg.BLOCKED_EMAIL_DOMAINS)):
+        return True
+    return False
+
+
+def _repair_prospects(apply: bool) -> int:
+    db_path = crm_store.crm_db_path()
+    if not db_path.exists():
+        print(f"{ERR_CRM_REPAIR_DB_UNREADABLE} path={db_path.resolve()} err=missing_db", file=sys.stderr)
+        return 2
+    try:
+        conn = crm_store.connect(db_path)
+    except sqlite3.Error as exc:
+        print(f"{ERR_CRM_REPAIR_DB_UNREADABLE} path={db_path.resolve()} err={exc}", file=sys.stderr)
+        return 2
+
+    counters: Counter = Counter(
+        {
+            "state_canonicalized": 0,
+            "source_fit_repaired": 0,
+            "default_send_repaired": 0,
+            "bad_ohs_bg_quarantined": 0,
+        }
+    )
+    updates: list[tuple[str, str, int, str]] = []
+    try:
+        if not _prospects_table_exists(conn):
+            print(f"{PASS_CRM_REPAIR} mode={'apply' if apply else 'dry_run'} changed=0")
+            print("state_canonicalized=0")
+            print("source_fit_repaired=0")
+            print("default_send_repaired=0")
+            print("bad_ohs_bg_quarantined=0")
+            return 0
+
+        rows = conn.execute(
+            """
+            SELECT prospect_id, state, source, source_fit_tier, default_send_eligible, email, website
+            FROM prospects
+            """
+        ).fetchall()
+        target_families = {"STATE_LIC", "APOLLO", "AIHA", "OHS_BG"}
+        for row in rows:
+            prospect_id = str(row["prospect_id"] or "").strip()
+            if not prospect_id:
+                continue
+
+            state_raw = str(row["state"] or "")
+            source_raw = str(row["source"] or "")
+            source_family = _source_family(source_raw)
+            current_state = state_raw.strip()
+            current_tier = str(row["source_fit_tier"] or "").strip().lower()
+            send_raw = row["default_send_eligible"]
+            current_send = _coerce_boolish_int("" if send_raw is None else str(send_raw), default=1)
+            email = _norm_email(str(row["email"] or ""))
+            website = str(row["website"] or "")
+
+            repaired_state = _norm_us_state(current_state) or current_state
+            if repaired_state != current_state:
+                counters["state_canonicalized"] += 1
+
+            repaired_tier = current_tier
+            repaired_send = int(current_send)
+            if source_family in target_families:
+                default_tier, default_send = _source_fit_defaults(source_raw)
+                repaired_tier = str(default_tier or "").strip().lower()
+                repaired_send = int(default_send)
+
+            quarantine_row = source_family == "OHS_BG" and _is_bad_ohs_bg_tracker_or_ad(email=email, website=website)
+            if quarantine_row and repaired_send != 0 and int(current_send) != 0:
+                counters["bad_ohs_bg_quarantined"] += 1
+            if quarantine_row:
+                repaired_send = 0
+
+            if repaired_tier != current_tier:
+                counters["source_fit_repaired"] += 1
+            if int(repaired_send) != int(current_send):
+                counters["default_send_repaired"] += 1
+
+            if (
+                repaired_state != current_state
+                or repaired_tier != current_tier
+                or int(repaired_send) != int(current_send)
+            ):
+                updates.append((repaired_state, repaired_tier, int(repaired_send), prospect_id))
+
+        if apply and updates:
+            conn.executemany(
+                """
+                UPDATE prospects
+                SET state = ?, source_fit_tier = ?, default_send_eligible = ?
+                WHERE prospect_id = ?
+                """,
+                updates,
+            )
+            conn.commit()
+    except sqlite3.Error as exc:
+        print(f"{ERR_CRM_REPAIR_DB_UNREADABLE} path={db_path.resolve()} err={exc}", file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+
+    print(f"{PASS_CRM_REPAIR} mode={'apply' if apply else 'dry_run'} changed={len(updates)}")
+    print(f"state_canonicalized={int(counters.get('state_canonicalized', 0))}")
+    print(f"source_fit_repaired={int(counters.get('source_fit_repaired', 0))}")
+    print(f"default_send_repaired={int(counters.get('default_send_repaired', 0))}")
+    print(f"bad_ohs_bg_quarantined={int(counters.get('bad_ohs_bg_quarantined', 0))}")
     return 0
 
 
@@ -678,6 +838,14 @@ def main(argv: list[str] | None = None) -> int:
     ap_verify = sub.add_parser("verify-import", help="Read-only sample check that import CSV emails exist in CRM.")
     ap_verify.add_argument("--csv", required=True, help="Path to CSV to sample for email/import verification.")
 
+    ap_repair = sub.add_parser(
+        "repair-prospects",
+        help="Repair prospect state/source-fit/sendability drift with optional apply mode.",
+    )
+    mode = ap_repair.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true", help="Compute and print repair counts without writing.")
+    mode.add_argument("--apply", action="store_true", help="Apply repair updates.")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "seed":
@@ -694,6 +862,8 @@ def main(argv: list[str] | None = None) -> int:
         return _stats()
     if args.cmd == "verify-import":
         return _verify_import(Path(str(args.csv)))
+    if args.cmd == "repair-prospects":
+        return _repair_prospects(apply=bool(args.apply))
     return 2
 
 

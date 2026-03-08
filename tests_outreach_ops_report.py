@@ -243,6 +243,17 @@ def _find_cohort(rows: list[dict], batch_id: str, state: str) -> dict | None:
     return None
 
 
+def _find_source_cohort(rows: list[dict], batch_id: str, state: str, source_family: str) -> dict | None:
+    for row in rows:
+        if (
+            (row.get("batch_id") or "") == batch_id
+            and (row.get("state_at_send") or "") == state
+            and (row.get("source_family") or "") == source_family
+        ):
+            return row
+    return None
+
+
 class TestOutreachOpsReport(unittest.TestCase):
     def _run(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:
         env = os.environ.copy()
@@ -265,7 +276,7 @@ class TestOutreachOpsReport(unittest.TestCase):
             data_dir = Path(d) / "data"
             p = self._run(["--print-config"], {"DATA_DIR": str(data_dir)})
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
-            self.assertIn("ops_report_schema_version=v1", p.stdout)
+            self.assertIn("ops_report_schema_version=v2", p.stdout)
             self.assertIn("artifact_path=", p.stdout)
             self.assertIn("dry_run=False", p.stdout)
             self.assertIn("no_write=False", p.stdout)
@@ -319,7 +330,7 @@ class TestOutreachOpsReport(unittest.TestCase):
             lines = (p.stdout or "").splitlines()
             self.assertGreaterEqual(len(lines), 3)
             self.assertTrue(lines[-3].startswith("OPS_REPORT_JSON_PATH="))
-            self.assertEqual(lines[-2], "OPS_REPORT_SCHEMA_VERSION=v1")
+            self.assertEqual(lines[-2], "OPS_REPORT_SCHEMA_VERSION=v2")
             self.assertTrue(lines[-1].startswith("OPS_REPORT_GENERATED_AT_UTC="))
 
             json_path = lines[-3].split("=", 1)[1].strip()
@@ -331,7 +342,7 @@ class TestOutreachOpsReport(unittest.TestCase):
 
             generated_footer = lines[-1].split("=", 1)[1].strip()
             payload = json.loads(artifact.read_text(encoding="utf-8"))
-            self.assertEqual(payload.get("schema_version"), "v1")
+            self.assertEqual(payload.get("schema_version"), "v2")
             self.assertEqual(payload.get("json_path"), str(artifact))
             self.assertEqual(payload.get("generated_at_utc"), generated_footer)
 
@@ -364,7 +375,7 @@ class TestOutreachOpsReport(unittest.TestCase):
             lines = (p_text.stdout or "").splitlines()
             self.assertGreaterEqual(len(lines), 3)
             self.assertEqual(lines[-3], f"OPS_REPORT_JSON_PATH={NO_WRITE_PATH_SENTINEL}")
-            self.assertEqual(lines[-2], "OPS_REPORT_SCHEMA_VERSION=v1")
+            self.assertEqual(lines[-2], "OPS_REPORT_SCHEMA_VERSION=v2")
             self.assertTrue(lines[-1].startswith("OPS_REPORT_GENERATED_AT_UTC="))
             self.assertFalse((data_dir / "outreach" / "ops_reports").exists())
 
@@ -385,7 +396,7 @@ class TestOutreachOpsReport(unittest.TestCase):
             self.assertNotIn("OPS_REPORT_GENERATED_AT_UTC=", p.stdout)
 
             payload = json.loads(p.stdout)
-            self.assertEqual(payload.get("schema_version"), "v1")
+            self.assertEqual(payload.get("schema_version"), "v2")
             self.assertIn("json_path", payload)
             artifact = Path(str(payload.get("json_path") or ""))
             self.assertTrue(artifact.exists())
@@ -398,16 +409,25 @@ class TestOutreachOpsReport(unittest.TestCase):
             self.assertIn("30d", windows)
 
             rows_7d = (windows["7d"] or {}).get("cohorts") or []
+            source_rows_7d = (windows["7d"] or {}).get("source_family_cohorts") or []
             tx1 = _find_cohort(rows_7d, "2026-02-01_TX", "TX")
             self.assertIsNotNone(tx1)
             self.assertEqual(int(tx1["sent"]), 1)
             self.assertEqual(int(tx1["delivered_proxy"]), 1)
             self.assertEqual(int(tx1["replied"]), 1)
+            tx1_seed = _find_source_cohort(source_rows_7d, "2026-02-01_TX", "TX", "SEED")
+            self.assertIsNotNone(tx1_seed)
+            self.assertEqual(int(tx1_seed["sent"]), 1)
+            self.assertEqual(int(tx1_seed["replied"]), 1)
 
             tx2 = _find_cohort(rows_7d, "2026-02-02_TX", "TX")
             self.assertIsNotNone(tx2)
             self.assertEqual(int(tx2["bounced_confirmed"]), 1)
             self.assertEqual(int(tx2["trial_started"]), 1)
+            tx2_seed = _find_source_cohort(source_rows_7d, "2026-02-02_TX", "TX", "SEED")
+            self.assertIsNotNone(tx2_seed)
+            self.assertEqual(int(tx2_seed["bounced_confirmed"]), 1)
+            self.assertEqual(int(tx2_seed["trial_started"]), 1)
 
             tx3 = _find_cohort(rows_7d, "2026-02-03_TX", "TX")
             self.assertIsNotNone(tx3)
@@ -428,6 +448,11 @@ class TestOutreachOpsReport(unittest.TestCase):
             self.assertIsNotNone(unknown_30d)
             self.assertEqual(int(unknown_30d["replied"]), 1)
             self.assertEqual(int(unknown_30d["converted"]), 1)
+            source_rows_30d = (windows["30d"] or {}).get("source_family_cohorts") or []
+            unknown_seed_30d = _find_source_cohort(source_rows_30d, "UNKNOWN", "UNKNOWN", "SEED")
+            self.assertIsNotNone(unknown_seed_30d)
+            self.assertEqual(int(unknown_seed_30d["replied"]), 1)
+            self.assertEqual(int(unknown_seed_30d["converted"]), 1)
 
             q7 = list_quality.get("7d") or {}
             self.assertEqual(int(q7.get("new_prospects_count", -1)), 4)

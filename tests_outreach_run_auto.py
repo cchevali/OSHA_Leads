@@ -157,6 +157,69 @@ class TestOutreachRunAuto(unittest.TestCase):
             text=True,
         )
 
+    def test_write_events_persists_source_metadata_for_ops_cohorts(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "Owner One",
+                        "firm": "Firm One",
+                        "email": "owner@firmone.com",
+                        "title": "Owner",
+                        "state": "CALIFORNIA",
+                        "source": "apollo_export_csv",
+                    }
+                ],
+            )
+            conn = sqlite3.connect(str(crm_db))
+            conn.row_factory = sqlite3.Row
+            try:
+                roa._write_events_and_status_updates(
+                    conn,
+                    batch="2026-02-24_CA",
+                    results=[
+                        {
+                            "prospect_id": "p1",
+                            "email": "owner@firmone.com",
+                            "ok": True,
+                            "message_id": "<m1>",
+                            "error": "",
+                            "subject": "Subject",
+                            "state": "California",
+                            "source": "apollo_export_csv",
+                            "source_family": "APOLLO",
+                            "source_fit_tier": "core_consultant",
+                            "default_send_eligible": 1,
+                            "email_status": "hunter_verified",
+                            "enrichment_lane": "provider_hunter",
+                        }
+                    ],
+                )
+                row = conn.execute(
+                    "SELECT event_type, metadata_json FROM outreach_events WHERE prospect_id = 'p1' ORDER BY event_id DESC LIMIT 1"
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertEqual(str(row["event_type"] or ""), "sent")
+                metadata = json.loads(str(row["metadata_json"] or "{}"))
+                self.assertEqual(str(metadata.get("state") or ""), "CA")
+                self.assertEqual(str(metadata.get("source_family") or ""), "APOLLO")
+                self.assertEqual(str(metadata.get("source_fit_tier") or ""), "core_consultant")
+                self.assertEqual(int(metadata.get("default_send_eligible") or 0), 1)
+                self.assertEqual(str(metadata.get("email_status") or ""), "hunter_verified")
+                self.assertEqual(str(metadata.get("enrichment_lane") or ""), "provider_hunter")
+                status_row = conn.execute(
+                    "SELECT status, COALESCE(last_contacted_at, '') FROM prospects WHERE prospect_id = 'p1'"
+                ).fetchone()
+                self.assertEqual(str(status_row[0] or ""), "contacted")
+                self.assertTrue(str(status_row[1] or "").strip())
+            finally:
+                conn.close()
+
     def test_dry_run_prints_selected_ids_and_writes_no_db_changes(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -1594,6 +1657,151 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("OUTREACH_RAMP_READY=0 desired_daily_limit=2", out)
             self.assertIn("OUTREACH_FALLBACK_TRIGGERED=1 from=CA to=TX reason=SENDABLE_BELOW_FLOOR", out)
             self.assertIn("PASS_AUTO_DRY_RUN state=TX batch=2001-01-02_TX", out)
+
+    def test_selector_normalizes_mixed_state_tokens_and_preserves_ca_fallback_health(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_ca_abbr",
+                        "contact_name": "CA Abbr",
+                        "firm": "CA Co",
+                        "email": "ca.abbr@exampleca.com",
+                        "title": "Owner",
+                        "state": "CA",
+                        "source": "apollo_export_csv",
+                        "score": 9,
+                    },
+                    {
+                        "prospect_id": "p_ca_name",
+                        "contact_name": "CA Name",
+                        "firm": "CA Co",
+                        "email": "ca.name@exampleca2.com",
+                        "title": "Owner",
+                        "state": "CALIFORNIA",
+                        "source": "apollo_export_csv",
+                        "score": 8,
+                    },
+                    {
+                        "prospect_id": "p_tx",
+                        "contact_name": "TX One",
+                        "firm": "TX Co",
+                        "email": "tx.one@exampletx.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "source": "apollo_export_csv",
+                        "score": 7,
+                    },
+                ],
+            )
+            conn = crm_store.connect(crm_db)
+            try:
+                selected, _skipped, _manifest, stats = roa._select_candidates(
+                    conn=conn,
+                    state="CA",
+                    limit=10,
+                    suppressed_emails=set(),
+                    allow_repeat=True,
+                    skip_role_inboxes=True,
+                    include_adjacent_contractors=False,
+                )
+                selected_ids = {str(item.get("prospect_id") or "") for item in selected}
+                self.assertEqual(selected_ids, {"p_ca_abbr", "p_ca_name"})
+                self.assertEqual(int(stats.get("pool_total_selected_state", 0)), 2)
+
+                funnel = roa._crm_funnel_breakdown_for_summary(
+                    conn=conn,
+                    states=["TX", "CA"],
+                    suppressed_emails=set(),
+                    allow_repeat=True,
+                    skip_role_inboxes=True,
+                    include_adjacent_contractors=False,
+                    selected_state="CA",
+                )
+                self.assertEqual(int((funnel.get("pool_total_by_state") or {}).get("CA", 0)), 2)
+                self.assertEqual(int((funnel.get("pool_total_by_state") or {}).get("TX", 0)), 1)
+
+                decision = roa._empty_state_fallback_decision(
+                    states=["TX", "CA"],
+                    rotation_state="CA",
+                    sendable_by_state=dict(funnel.get("uncontacted_sendable_by_state") or {}),
+                    daily_limit=2,
+                    enabled=True,
+                )
+                self.assertFalse(bool(decision.get("triggered")))
+                self.assertEqual(str(decision.get("to_state") or ""), "CA")
+            finally:
+                conn.close()
+
+    def test_dry_run_hidden_ca_name_rows_no_longer_trigger_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            signal_db = tmp / "signals.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_ca_1",
+                        "contact_name": "CA One",
+                        "firm": "CA Co",
+                        "email": "ca.one@exampleca.com",
+                        "title": "Owner",
+                        "state": "CALIFORNIA",
+                        "source": "apollo_export_csv",
+                        "score": 9,
+                    },
+                    {
+                        "prospect_id": "p_ca_2",
+                        "contact_name": "CA Two",
+                        "firm": "CA Co",
+                        "email": "ca.two@exampleca2.com",
+                        "title": "Owner",
+                        "state": "CALIFORNIA",
+                        "source": "apollo_export_csv",
+                        "score": 8,
+                    },
+                    {
+                        "prospect_id": "p_tx_1",
+                        "contact_name": "TX One",
+                        "firm": "TX Co",
+                        "email": "tx.one@exampletx.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "source": "apollo_export_csv",
+                        "score": 7,
+                    },
+                ],
+            )
+            _seed_signal_db(
+                signal_db,
+                [
+                    {"site_state": "CA", "date_opened": "2026-02-24", "parse_invalid": 0},
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA",
+                "OUTREACH_DAILY_LIMIT": "2",
+                "OUTREACH_FALLBACK_ON_EMPTY_STATE": "1",
+                "OUTREACH_SIGNAL_DB": str(signal_db),
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+            p = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", out)
+            self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=CA", out)
+            self.assertNotIn("OUTREACH_FALLBACK_TRIGGERED=1 from=CA to=TX", out)
+            self.assertIn("OUTREACH_RAMP_READY=0 desired_daily_limit=2 states_ready=1 states_total=2 ready_states=CA", out)
+            self.assertIn("would_contact_prospect_ids=p_ca_1,p_ca_2", out)
 
     def test_plan_fallback_enabled_no_better_state_no_switch(self):
         with tempfile.TemporaryDirectory() as d:

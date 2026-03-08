@@ -11,6 +11,7 @@ import requests
 
 USER_AGENT = "OSHA_Leads/1.0 (+https://microflowops.com)"
 HUNTER_FREE_MONTHLY_CAP = 25
+HUNTER_EMAIL_FINDER_ENDPOINT = "https://api.hunter.io/v2/email-finder"
 RESOLVE_OK_STATUSES = {200, 301, 302}
 CORP_SUFFIXES = {
     "LLC",
@@ -178,6 +179,78 @@ def _write_hunter_usage(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(safe, indent=2) + "\n", encoding="utf-8")
 
 
+def _default_hunter_lookup(
+    *,
+    api_key: str,
+    domain: str,
+    contact_name: str,
+    firm: str,
+) -> dict[str, Any]:
+    params: dict[str, str] = {"api_key": _normalize_text(api_key), "domain": _normalize_text(domain).lower()}
+    full_name = _normalize_text(contact_name)
+    first_name, last_name = _name_parts(full_name)
+    if first_name:
+        params["first_name"] = first_name
+    if last_name:
+        params["last_name"] = last_name
+    if full_name and not (first_name or last_name):
+        params["full_name"] = full_name
+    company = _normalize_text(firm)
+    if company:
+        params["company"] = company
+
+    try:
+        resp = requests.get(
+            HUNTER_EMAIL_FINDER_ENDPOINT,
+            params=params,
+            timeout=15,
+            headers={"User-Agent": USER_AGENT},
+        )
+    except Exception as exc:
+        return {"ok": False, "status": 0, "error": f"{type(exc).__name__}:{exc}"}
+
+    status = int(resp.status_code or 0)
+    payload: dict[str, Any] = {}
+    try:
+        parsed = resp.json()
+        if isinstance(parsed, dict):
+            payload = parsed
+    except Exception:
+        payload = {}
+
+    data = payload.get("data")
+    data_map = data if isinstance(data, dict) else {}
+    email = _normalize_email(str(data_map.get("email") or ""))
+    if status == 200 and _valid_email(email):
+        return {
+            "ok": True,
+            "status": status,
+            "email": email,
+            "result": _normalize_text(data_map.get("result") or ""),
+            "confidence": int(data_map.get("score") or 0),
+        }
+
+    errors = payload.get("errors")
+    if isinstance(errors, list) and errors:
+        first_error = errors[0] if isinstance(errors[0], dict) else {}
+        error_text = _normalize_text(str(first_error.get("details") or first_error.get("id") or ""))
+    else:
+        error_text = _normalize_text(str(payload.get("error") or payload.get("message") or ""))
+
+    if status == 200:
+        return {"ok": False, "status": status, "no_match": True, "error": error_text or "no_match"}
+    return {"ok": False, "status": status, "error": error_text or f"http_status_{status}"}
+
+
+def _enrichment_lane(email_status: str) -> str:
+    status = _normalize_text(email_status).lower()
+    if status.startswith("hunter_"):
+        return "provider_hunter"
+    if status in {"pattern_generated", "scraped_from_site", "scraped_from_source"}:
+        return "pattern_or_site"
+    return "unknown"
+
+
 def enrich_autogrow_rows(
     rows: list[dict[str, Any]],
     *,
@@ -187,6 +260,7 @@ def enrich_autogrow_rows(
     sleep_ms: int,
     hunter_usage_path: Path,
     head_fetcher=None,
+    hunter_lookup=None,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     out_rows: list[dict[str, Any]] = [dict(r or {}) for r in list(rows or [])]
@@ -194,7 +268,10 @@ def enrich_autogrow_rows(
         "attempted": 0,
         "domain_resolved": 0,
         "email_guessed": 0,
+        "hunter_attempted": 0,
         "hunter_verified": 0,
+        "hunter_no_match": 0,
+        "hunter_error": 0,
         "still_no_email": 0,
         "hunter_skipped_cap": 0,
     }
@@ -204,8 +281,10 @@ def enrich_autogrow_rows(
         return {"rows": out_rows, "metrics": metrics, "diagnostics": diagnostics}
 
     head = head_fetcher or _default_head_fetcher
+    hunter_fn = hunter_lookup or _default_hunter_lookup
     domain_cache: dict[str, dict[str, Any]] = {}
     head_calls = 0
+    hunter_calls = 0
     hunter_usage = _read_hunter_usage(hunter_usage_path, now_utc=now_utc) if hunter_enabled else {"month": _current_month_key(now_utc), "calls": 0}
     hunter_key_present = bool(_normalize_text(hunter_api_key))
 
@@ -262,6 +341,7 @@ def enrich_autogrow_rows(
                 row["email"] = best
                 row["contact_email"] = best
                 row["email_status"] = _normalize_text(row.get("email_status") or "pattern_generated")
+                row["enrichment_lane"] = _enrichment_lane(str(row.get("email_status") or ""))
                 metrics["email_guessed"] += 1
 
         eligible_for_hunter = bool(hunter_enabled and hunter_key_present and resolved_domain)
@@ -270,11 +350,40 @@ def enrich_autogrow_rows(
                 metrics["hunter_skipped_cap"] += 1
                 diag["hunter_status"] = "skipped_cap"
             else:
-                # Stub-only first pass: keep counter plumbing but do not call live Hunter API yet.
-                diag["hunter_status"] = "stub_not_implemented"
+                if hunter_calls > 0 and sleep_ms > 0:
+                    time.sleep(float(sleep_ms) / 1000.0)
+                hunter_calls += 1
+                metrics["hunter_attempted"] += 1
+                hunter_usage["calls"] = int(hunter_usage.get("calls") or 0) + 1
+                lookup = hunter_fn(
+                    api_key=str(hunter_api_key or ""),
+                    domain=resolved_domain,
+                    contact_name=_normalize_text(row.get("contact_name") or ""),
+                    firm=firm,
+                )
+                hunter_status = int(lookup.get("status") or 0)
                 diag["hunter_domain"] = resolved_domain
+                diag["hunter_http_status"] = hunter_status
+                found_email = _normalize_email(lookup.get("email") or "")
+                if _valid_email(found_email):
+                    row["email"] = found_email
+                    row["contact_email"] = found_email
+                    row["email_status"] = "hunter_verified"
+                    row["enrichment_lane"] = _enrichment_lane("hunter_verified")
+                    metrics["hunter_verified"] += 1
+                    diag["hunter_status"] = "verified"
+                elif bool(lookup.get("no_match")):
+                    metrics["hunter_no_match"] += 1
+                    diag["hunter_status"] = "no_match"
+                    diag["hunter_error"] = _normalize_text(lookup.get("error") or "")
+                else:
+                    metrics["hunter_error"] += 1
+                    diag["hunter_status"] = "error"
+                    diag["hunter_error"] = _normalize_text(lookup.get("error") or "")
 
         final_email = _normalize_email(row.get("email") or row.get("contact_email") or "")
+        if not _normalize_text(row.get("enrichment_lane") or ""):
+            row["enrichment_lane"] = _enrichment_lane(str(row.get("email_status") or ""))
         if not _valid_email(final_email):
             metrics["still_no_email"] += 1
             if "email_candidates" not in diag:

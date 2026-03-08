@@ -22,11 +22,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from outreach import crm_store
+from outreach import source_policy
 
 
-SCHEMA_VERSION = "v1"
+SCHEMA_VERSION = "v2"
 UNKNOWN_BATCH = "UNKNOWN"
 UNKNOWN_STATE = "UNKNOWN"
+UNKNOWN_SOURCE_FAMILY = "UNKNOWN"
 NO_WRITE_PATH_SENTINEL = "(no-write)"
 ERR_OPS_CRM_REQUIRED = "ERR_OPS_CRM_REQUIRED"
 ERR_OPS_CRM_SCHEMA = "ERR_OPS_CRM_SCHEMA"
@@ -140,6 +142,22 @@ def _cohort_key(batch_id: str, state_at_send: str) -> tuple[str, str]:
     return batch, state
 
 
+def _source_family_value(source_family_raw: str, source_raw: str) -> str:
+    source_family = source_policy.source_family_from_token(str(source_family_raw or ""))
+    if source_family != "UNKNOWN":
+        return source_family
+    fallback = source_policy.source_family(str(source_raw or ""))
+    return fallback if fallback != "UNKNOWN" else UNKNOWN_SOURCE_FAMILY
+
+
+def _source_family_key(batch_id: str, state_at_send: str, source_family_raw: str) -> tuple[str, str, str]:
+    batch, state = _cohort_key(batch_id, state_at_send)
+    source_family = source_policy.source_family_from_token(str(source_family_raw or ""))
+    if source_family == "UNKNOWN":
+        source_family = UNKNOWN_SOURCE_FAMILY
+    return batch, state, source_family
+
+
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
@@ -195,7 +213,8 @@ def _load_sent_index(conn: sqlite3.Connection) -> dict:
             e.batch_id,
             e.metadata_json,
             p.email AS prospect_email,
-            p.state AS prospect_state
+            p.state AS prospect_state,
+            p.source AS prospect_source
         FROM outreach_events e
         LEFT JOIN prospects p ON p.prospect_id = e.prospect_id
         WHERE e.event_type = 'sent'
@@ -215,6 +234,11 @@ def _load_sent_index(conn: sqlite3.Connection) -> dict:
         metadata_json = str(row["metadata_json"] or "")
         meta = _safe_json(metadata_json)
         message_id = str(meta.get("message_id") or "").strip()
+        source = str(meta.get("source") or row["prospect_source"] or "").strip()
+        source_family = _source_family_value(
+            source_family_raw=str(meta.get("source_family") or ""),
+            source_raw=source,
+        )
         event = {
             "event_id": int(row["event_id"]),
             "prospect_id": str(row["prospect_id"] or "").strip(),
@@ -227,6 +251,8 @@ def _load_sent_index(conn: sqlite3.Connection) -> dict:
             ),
             "message_id": message_id,
             "email": _norm_email(str(row["prospect_email"] or meta.get("email") or "")),
+            "source": source,
+            "source_family": source_family,
         }
         by_id[event["event_id"]] = event
         if message_id:
@@ -297,54 +323,76 @@ def _resolve_row_cohort(
     has_attr_state_at_send: bool,
     prefer_event_batch: bool,
     lifecycle_persisted_only: bool,
-) -> tuple[tuple[str, str], str]:
+    prospect_source_by_id: dict[str, str],
+) -> tuple[tuple[str, str], str, str]:
     event_ts = _parse_ts(str(row["ts"] or ""))
     metadata = _safe_json(str(row["metadata_json"] or ""))
+    prospect_id = str(row["prospect_id"] or "").strip()
+    source_family_direct = _source_family_value(
+        source_family_raw=str(metadata.get("source_family") or ""),
+        source_raw=str(metadata.get("source") or prospect_source_by_id.get(prospect_id, "")),
+    )
 
     if prefer_event_batch:
         batch_direct = str(row["batch_id"] or "").strip()
         if batch_direct:
             state_direct = str(metadata.get("state") or "").strip().upper() or _state_from_batch(batch_direct)
-            return _cohort_key(batch_direct, state_direct), "event_batch"
+            return _cohort_key(batch_direct, state_direct), "event_batch", source_family_direct
 
     if has_attr_send_event_id:
         attributed_id = _safe_int(row["attributed_send_event_id"])
         if attributed_id > 0:
             sent = sent_index["by_id"].get(attributed_id)
             if sent:
-                return _cohort_key(sent["batch_id"], sent["state_at_send"]), "persisted_send_event_id"
-            return _cohort_key("", ""), "unknown"
+                return (
+                    _cohort_key(sent["batch_id"], sent["state_at_send"]),
+                    "persisted_send_event_id",
+                    str(sent.get("source_family") or UNKNOWN_SOURCE_FAMILY),
+                )
+            return _cohort_key("", ""), "unknown", source_family_direct
 
     if has_attr_batch_id or has_attr_state_at_send:
         attributed_batch = str(row["attributed_batch_id"] or "").strip()
         attributed_state = str(row["attributed_state_at_send"] or "").strip().upper()
         if attributed_batch:
-            return _cohort_key(attributed_batch, attributed_state), "persisted_batch_state"
+            return _cohort_key(attributed_batch, attributed_state), "persisted_batch_state", source_family_direct
 
     if lifecycle_persisted_only:
-        return _cohort_key("", ""), "unknown"
+        return _cohort_key("", ""), "unknown", source_family_direct
 
     msg_id = str(metadata.get("message_id") or metadata.get("send_message_id") or "").strip()
     if msg_id:
         sent = sent_index["by_message_id"].get(msg_id)
         if sent:
-            return _cohort_key(sent["batch_id"], sent["state_at_send"]), "message_id"
+            return (
+                _cohort_key(sent["batch_id"], sent["state_at_send"]),
+                "message_id",
+                str(sent.get("source_family") or UNKNOWN_SOURCE_FAMILY),
+            )
 
     if not event_ts:
         if prefer_event_batch:
-            return _cohort_key(str(row["batch_id"] or ""), _state_from_batch(str(row["batch_id"] or ""))), "event_batch"
-        return _cohort_key("", ""), "unknown"
+            return (
+                _cohort_key(str(row["batch_id"] or ""), _state_from_batch(str(row["batch_id"] or ""))),
+                "event_batch",
+                source_family_direct,
+            )
+        return _cohort_key("", ""), "unknown", source_family_direct
 
     sent = _last_touch_for_prospect(
         sent_index=sent_index,
-        prospect_id=str(row["prospect_id"] or ""),
+        prospect_id=prospect_id,
         event_ts=event_ts,
         attribution_window_days=attribution_window_days,
     )
     if sent:
-        return _cohort_key(sent["batch_id"], sent["state_at_send"]), "last_touch_window"
+        return (
+            _cohort_key(sent["batch_id"], sent["state_at_send"]),
+            "last_touch_window",
+            str(sent.get("source_family") or UNKNOWN_SOURCE_FAMILY),
+        )
 
-    return _cohort_key("", ""), "unknown"
+    return _cohort_key("", ""), "unknown", source_family_direct
 
 
 def _cohort_stats_bucket() -> dict:
@@ -424,6 +472,7 @@ def _load_windows_report(
     notes: list[str] = []
     starts = _window_starts(now_utc)
     window_buckets = {name: defaultdict(_cohort_stats_bucket) for name in WINDOWS}
+    source_family_buckets = {name: defaultdict(_cohort_stats_bucket) for name in WINDOWS}
     confirmed_emails = {name: set() for name in WINDOWS}
 
     event_cols = _table_columns(conn, "outreach_events")
@@ -437,16 +486,28 @@ def _load_windows_report(
     attr_state_select = (
         "attributed_state_at_send" if has_attr_state_at_send else "'' AS attributed_state_at_send"
     )
-    prospect_email_by_id = {
-        str(r["prospect_id"] or "").strip(): _norm_email(str(r["email"] or ""))
-        for r in conn.execute("SELECT prospect_id, email FROM prospects")
-    }
+    prospect_email_by_id: dict[str, str] = {}
+    prospect_source_by_id: dict[str, str] = {}
+    for r in conn.execute("SELECT prospect_id, email, source FROM prospects").fetchall():
+        prospect_id = str(r["prospect_id"] or "").strip()
+        if not prospect_id:
+            continue
+        prospect_email_by_id[prospect_id] = _norm_email(str(r["email"] or ""))
+        prospect_source_by_id[prospect_id] = str(r["source"] or "").strip()
 
     for sent in sent_index["by_id"].values():
         for name, start in starts.items():
             if _in_window(sent["ts"], start_utc=start, end_utc=now_utc):
-                bucket = window_buckets[name][_cohort_key(sent["batch_id"], sent["state_at_send"])]
+                cohort = _cohort_key(sent["batch_id"], sent["state_at_send"])
+                bucket = window_buckets[name][cohort]
+                source_cohort = _source_family_key(
+                    sent["batch_id"],
+                    sent["state_at_send"],
+                    str(sent.get("source_family") or UNKNOWN_SOURCE_FAMILY),
+                )
+                source_bucket = source_family_buckets[name][source_cohort]
                 bucket["sent"] += 1
+                source_bucket["sent"] += 1
 
     all_events = conn.execute(
         f"""
@@ -477,7 +538,7 @@ def _load_windows_report(
 
             prefer_event_batch = event_type in {"delivered", "bounce", "bounced"}
             lifecycle_persisted_only = event_type in lifecycle_types
-            cohort, basis = _resolve_row_cohort(
+            cohort, basis, source_family = _resolve_row_cohort(
                 row=row,
                 sent_index=sent_index,
                 attribution_window_days=attribution_window_days,
@@ -486,16 +547,21 @@ def _load_windows_report(
                 has_attr_state_at_send=has_attr_state_at_send,
                 prefer_event_batch=prefer_event_batch,
                 lifecycle_persisted_only=lifecycle_persisted_only,
+                prospect_source_by_id=prospect_source_by_id,
             )
             bucket = window_buckets[window_name][cohort]
+            source_cohort = _source_family_key(cohort[0], cohort[1], source_family)
+            source_bucket = source_family_buckets[window_name][source_cohort]
             metadata = _safe_json(str(row["metadata_json"] or ""))
 
             if event_type == "delivered":
                 bucket["delivered_events"] += 1
+                source_bucket["delivered_events"] += 1
                 continue
 
             if event_type in {"bounce", "bounced"}:
                 bucket["bounced_confirmed"] += 1
+                source_bucket["bounced_confirmed"] += 1
                 email = _norm_email(
                     str(metadata.get("email") or "")
                     or prospect_email_by_id.get(str(row["prospect_id"] or "").strip(), "")
@@ -506,6 +572,7 @@ def _load_windows_report(
 
             if event_type in lifecycle_types:
                 bucket[event_type] += 1
+                source_bucket[event_type] += 1
                 if basis == "unknown":
                     notes.append(f"unattributed_{event_type}_event_id={row['event_id']}")
 
@@ -540,9 +607,16 @@ def _load_windows_report(
             )
             if sent:
                 cohort = _cohort_key(sent["batch_id"], sent["state_at_send"])
+                source_cohort = _source_family_key(
+                    sent["batch_id"],
+                    sent["state_at_send"],
+                    str(sent.get("source_family") or UNKNOWN_SOURCE_FAMILY),
+                )
             else:
                 cohort = _cohort_key("", "")
+                source_cohort = _source_family_key("", "", UNKNOWN_SOURCE_FAMILY)
             window_buckets[window_name][cohort]["bounced_inferred"] += 1
+            source_family_buckets[window_name][source_cohort]["bounced_inferred"] += 1
             per_window_seen_inferred[window_name].add(email)
 
     if suppression_missing_ts:
@@ -553,14 +627,22 @@ def _load_windows_report(
     windows_out = {}
     for window_name, days in WINDOWS.items():
         rows_out = []
+        source_rows_out = []
         totals = _cohort_stats_bucket()
+        source_totals = _cohort_stats_bucket()
         fallback_used = 0
         delivered_proxy_total = 0
+        source_delivered_proxy_total = 0
 
         def _sort_key(item: tuple[tuple[str, str], dict]) -> tuple[int, str, str]:
             cohort, _stats = item
             unk = 1 if cohort == (UNKNOWN_BATCH, UNKNOWN_STATE) else 0
             return unk, cohort[0], cohort[1]
+
+        def _sort_source_key(item: tuple[tuple[str, str, str], dict]) -> tuple[int, str, str, str]:
+            cohort, _stats = item
+            unk = 1 if cohort[:2] == (UNKNOWN_BATCH, UNKNOWN_STATE) else 0
+            return unk, cohort[0], cohort[1], cohort[2]
 
         for cohort, counts in sorted(window_buckets[window_name].items(), key=_sort_key):
             delivered_proxy = counts["delivered_events"] if counts["delivered_events"] > 0 else counts["sent"]
@@ -593,6 +675,37 @@ def _load_windows_report(
             totals["trial_started"] += counts["trial_started"]
             totals["converted"] += counts["converted"]
 
+        for source_cohort, counts in sorted(source_family_buckets[window_name].items(), key=_sort_source_key):
+            delivered_proxy = counts["delivered_events"] if counts["delivered_events"] > 0 else counts["sent"]
+            bounced_total = counts["bounced_confirmed"] + counts["bounced_inferred"]
+            source_rows_out.append(
+                {
+                    "batch_id": source_cohort[0],
+                    "state_at_send": source_cohort[1],
+                    "source_family": source_cohort[2],
+                    "sent": counts["sent"],
+                    "delivered_proxy": delivered_proxy,
+                    "bounced_confirmed": counts["bounced_confirmed"],
+                    "bounced_inferred": counts["bounced_inferred"],
+                    "bounced_total": bounced_total,
+                    "replied": counts["replied"],
+                    "trial_started": counts["trial_started"],
+                    "converted": counts["converted"],
+                    "reply_rate": round((counts["replied"] / delivered_proxy) if delivered_proxy else 0.0, 4),
+                    "trial_started_rate": round((counts["trial_started"] / delivered_proxy) if delivered_proxy else 0.0, 4),
+                    "converted_rate": round((counts["converted"] / delivered_proxy) if delivered_proxy else 0.0, 4),
+                    "bounce_rate_total": round((bounced_total / delivered_proxy) if delivered_proxy else 0.0, 4),
+                }
+            )
+            source_delivered_proxy_total += delivered_proxy
+            source_totals["sent"] += counts["sent"]
+            source_totals["delivered_events"] += counts["delivered_events"]
+            source_totals["bounced_confirmed"] += counts["bounced_confirmed"]
+            source_totals["bounced_inferred"] += counts["bounced_inferred"]
+            source_totals["replied"] += counts["replied"]
+            source_totals["trial_started"] += counts["trial_started"]
+            source_totals["converted"] += counts["converted"]
+
         bounced_total = totals["bounced_confirmed"] + totals["bounced_inferred"]
         totals_out = {
             "sent": totals["sent"],
@@ -608,6 +721,21 @@ def _load_windows_report(
             "converted_rate": round((totals["converted"] / delivered_proxy_total) if delivered_proxy_total else 0.0, 4),
             "bounce_rate_total": round((bounced_total / delivered_proxy_total) if delivered_proxy_total else 0.0, 4),
         }
+        source_bounced_total = source_totals["bounced_confirmed"] + source_totals["bounced_inferred"]
+        source_totals_out = {
+            "sent": source_totals["sent"],
+            "delivered_proxy": source_delivered_proxy_total,
+            "bounced_confirmed": source_totals["bounced_confirmed"],
+            "bounced_inferred": source_totals["bounced_inferred"],
+            "bounced_total": source_bounced_total,
+            "replied": source_totals["replied"],
+            "trial_started": source_totals["trial_started"],
+            "converted": source_totals["converted"],
+            "reply_rate": round((source_totals["replied"] / source_delivered_proxy_total) if source_delivered_proxy_total else 0.0, 4),
+            "trial_started_rate": round((source_totals["trial_started"] / source_delivered_proxy_total) if source_delivered_proxy_total else 0.0, 4),
+            "converted_rate": round((source_totals["converted"] / source_delivered_proxy_total) if source_delivered_proxy_total else 0.0, 4),
+            "bounce_rate_total": round((source_bounced_total / source_delivered_proxy_total) if source_delivered_proxy_total else 0.0, 4),
+        }
         if fallback_used:
             notes.append(f"{window_name}_delivered_proxy_fallback_cohorts={fallback_used}")
 
@@ -617,6 +745,8 @@ def _load_windows_report(
             "window_end_utc": _iso(now_utc),
             "cohorts": rows_out,
             "totals": totals_out,
+            "source_family_cohorts": source_rows_out,
+            "source_family_totals": source_totals_out,
         }
 
     deduped_notes = []
@@ -702,6 +832,31 @@ def _render_text(report: dict, json_path: str) -> str:
             f"ALL,{t['sent']},{t['delivered_proxy']},{t['bounced_confirmed']},{t['bounced_inferred']},"
             f"{t['bounced_total']},{t['replied']},{t['trial_started']},{t['converted']},"
             f"{t['reply_rate']:.4f},{t['trial_started_rate']:.4f},{t['converted_rate']:.4f},{t['bounce_rate_total']:.4f}"
+        )
+        lines.append("")
+        lines.append(f"[{window_name}_source_family]")
+        lines.append(
+            "batch_id,state_at_send,source_family,sent,delivered_proxy,bounced_confirmed,bounced_inferred,"
+            "bounced_total,replied,trial_started,converted,reply_rate,trial_started_rate,converted_rate,bounce_rate_total"
+        )
+        source_rows = window.get("source_family_cohorts", [])
+        if not source_rows:
+            lines.append("(none)")
+        for row in source_rows:
+            lines.append(
+                f"{row['batch_id']},{row['state_at_send']},{row['source_family']},{row['sent']},{row['delivered_proxy']},"
+                f"{row['bounced_confirmed']},{row['bounced_inferred']},{row['bounced_total']},"
+                f"{row['replied']},{row['trial_started']},{row['converted']},"
+                f"{row['reply_rate']:.4f},{row['trial_started_rate']:.4f},{row['converted_rate']:.4f},{row['bounce_rate_total']:.4f}"
+            )
+        st = window.get("source_family_totals") or {}
+        lines.append(
+            "TOTAL,"
+            f"ALL,ALL,{int(st.get('sent', 0))},{int(st.get('delivered_proxy', 0))},"
+            f"{int(st.get('bounced_confirmed', 0))},{int(st.get('bounced_inferred', 0))},{int(st.get('bounced_total', 0))},"
+            f"{int(st.get('replied', 0))},{int(st.get('trial_started', 0))},{int(st.get('converted', 0))},"
+            f"{float(st.get('reply_rate', 0.0)):.4f},{float(st.get('trial_started_rate', 0.0)):.4f},"
+            f"{float(st.get('converted_rate', 0.0)):.4f},{float(st.get('bounce_rate_total', 0.0)):.4f}"
         )
 
     lines.append("")
