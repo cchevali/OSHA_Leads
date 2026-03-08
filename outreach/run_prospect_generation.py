@@ -320,6 +320,16 @@ def _source_family(source: str) -> str:
     return source_policy.source_family(source)
 
 
+def _effective_default_send_eligible(source: str, sendable_raw: object) -> int:
+    source_text = _normalize_text(source)
+    family = _source_family(source_text)
+    _default_tier, default_send = _source_fit_defaults(source_text)
+    if family in {"STATE_LIC", "APOLLO", "AIHA", "OHS_BG"}:
+        return int(default_send)
+    raw_text = "" if sendable_raw is None else str(sendable_raw)
+    return _coerce_boolish_int(raw_text, default_send)
+
+
 def _generator_row_observability(rows: list[dict[str, str]]) -> dict[str, object]:
     source_counts: Counter = Counter()
     tier_counts: Counter = Counter()
@@ -331,7 +341,7 @@ def _generator_row_observability(rows: list[dict[str, str]]) -> dict[str, object
         source_counts[family] += 1
         tier = _coerce_source_fit_tier(row.get("source_fit_tier") or "", source)
         tier_counts[tier] += 1
-        default_send = _coerce_boolish_int(row.get("default_send_eligible") or "", _source_fit_defaults(source)[1])
+        default_send = _effective_default_send_eligible(source, row.get("default_send_eligible"))
         if default_send == 1:
             default_send_eligible_total += 1
         status = _normalize_text(row.get("email_status") or "").lower() or "blank"
@@ -813,7 +823,7 @@ def compute_uncontacted_backlog(
 
     rows = conn.execute(
         f"""
-        SELECT prospect_id, email, state, {status_col} AS status, {last_contacted_col} AS last_contacted_at,
+        SELECT prospect_id, email, state, source, {status_col} AS status, {last_contacted_col} AS last_contacted_at,
                {default_send_col} AS default_send_eligible
         FROM prospects
         """
@@ -832,8 +842,7 @@ def compute_uncontacted_backlog(
             continue
         if bool(skip_role_inboxes) and _is_role_inbox_email(email):
             continue
-        sendable_raw = row["default_send_eligible"] if row["default_send_eligible"] is not None else ""
-        if _coerce_boolish_int(str(sendable_raw), 1) != 1:
+        if _effective_default_send_eligible(str(row["source"] or ""), row["default_send_eligible"]) != 1:
             continue
 
         status = _normalize_text(str(row["status"] or "")).lower()
@@ -893,7 +902,7 @@ def _compute_input_cohort(
 
     rows = conn.execute(
         f"""
-        SELECT prospect_id, email, state, {status_col} AS status, {last_contacted_col} AS last_contacted_at,
+        SELECT prospect_id, email, state, source, {status_col} AS status, {last_contacted_col} AS last_contacted_at,
                {default_send_col} AS default_send_eligible
         FROM prospects
         """
@@ -921,8 +930,7 @@ def _compute_input_cohort(
         if email in suppressed_emails:
             filtered["suppressed"] += 1
             continue
-        sendable_raw = row["default_send_eligible"] if row["default_send_eligible"] is not None else ""
-        if _coerce_boolish_int(str(sendable_raw), 1) != 1:
+        if _effective_default_send_eligible(str(row["source"] or ""), row["default_send_eligible"]) != 1:
             filtered["already_sent_or_ineligible"] += 1
             continue
 

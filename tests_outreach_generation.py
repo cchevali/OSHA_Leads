@@ -261,6 +261,71 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(eligible + excluded, crm_total)
             self.assertEqual(self._extract_token_int(out, "GENERATOR_ROWS_READ"), eligible)
 
+    def test_backlog_and_input_cohort_ignore_legacy_state_lic_sendable_flags(self):
+        from outreach import crm_store
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                rows = [
+                    ("seed_tx", "seed@exampletx.com", "TX", "seed_recipients_pools", 1),
+                    ("legacy_state_lic_tx", "legacylic@exampletx.com", "TX", "STATE_LIC", 1),
+                ]
+                for prospect_id, email, state, source, default_send_eligible in rows:
+                    conn.execute(
+                        """
+                        INSERT INTO prospects(
+                          prospect_id, firm, contact_name, email, title, city, state, website, source,
+                          source_fit_tier, default_send_eligible, score, status, created_at, last_contacted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            prospect_id,
+                            "Firm",
+                            "",
+                            email,
+                            "Owner",
+                            "City",
+                            state,
+                            "",
+                            source,
+                            "core_consultant",
+                            default_send_eligible,
+                            0,
+                            "new",
+                            now,
+                            None,
+                        ),
+                    )
+                conn.commit()
+
+                backlog = generator.compute_uncontacted_backlog(
+                    conn=conn,
+                    state="TX",
+                    suppressed_emails=set(),
+                    skip_role_inboxes=True,
+                )
+                self.assertEqual(backlog, 1)
+
+                cohort = generator._compute_input_cohort(
+                    conn=conn,
+                    states_scope=["TX"],
+                    suppressed_emails=set(),
+                )
+                self.assertEqual(int(cohort.get("crm_total", -1)), 2)
+                self.assertEqual(int(cohort.get("eligible", -1)), 1)
+                self.assertEqual(int(cohort.get("excluded", -1)), 1)
+                breakdown = dict(cohort.get("filtered") or {})
+                self.assertEqual(int(breakdown.get("already_sent_or_ineligible", 0)), 1)
+            finally:
+                conn.close()
+
     def test_states_cli_scope_applies_to_cohort_and_rows_read_consistently(self):
         from outreach import crm_store
 
