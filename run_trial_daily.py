@@ -18,6 +18,7 @@ from typing import Any
 import crm_light
 import run_trial_admin
 from lead_filters import load_territory_definitions, resolve_territory_code
+from runtime_data_dir import resolve_osha_db_path
 from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict
 
 try:
@@ -962,11 +963,16 @@ def run_trial_daily(
 
 
 def main(argv: list[str] | None = None) -> int:
+    resolved_default_leads_db = str(resolve_osha_db_path(Path(__file__).resolve().parent).effective_path)
     ap = argparse.ArgumentParser(
         description="Run daily trial workflow for a subscriber_key (CRM-light + send ledger)."
     )
     ap.add_argument("--subscriber-key", required=True)
-    ap.add_argument("--db", default="data/osha.sqlite", help="Leads SQLite db (default: data/osha.sqlite)")
+    ap.add_argument(
+        "--db",
+        default=resolved_default_leads_db,
+        help="Leads SQLite db (default: resolved runtime OSHA db path).",
+    )
     ap.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
     ap.add_argument("--customer", default="", help="Optional customer config path to use.")
     ap.add_argument("--send-live", action="store_true", help="Allow live send (passes through existing safety gates).")

@@ -89,7 +89,8 @@ class TestRuntimeGuard(unittest.TestCase):
         self.assertIn("ERR_RUNTIME_LIVE_CONFIRM_REQUIRED", out)
 
     def test_print_context_json_shape(self):
-        proc = self._run(["print-context"], {})
+        with tempfile.TemporaryDirectory() as d:
+            proc = self._run(["print-context"], {"DATA_DIR": str(Path(d).resolve())})
         out = (proc.stdout or "").strip()
         self.assertEqual(proc.returncode, 0, msg=(proc.stderr or "") + "\n" + out)
         payload = json.loads(out)
@@ -97,6 +98,10 @@ class TestRuntimeGuard(unittest.TestCase):
         self.assertIn("runtime_role", payload)
         self.assertIn("repo_root", payload)
         self.assertIn("db_crm", payload)
+        self.assertEqual(
+            payload.get("db_osha"),
+            str((Path(d).resolve() / "osha.sqlite").resolve(strict=False)),
+        )
 
 
 if __name__ == "__main__":
