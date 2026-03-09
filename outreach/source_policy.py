@@ -14,6 +14,8 @@ def normalize_source_token(value: str) -> str:
 
 def source_fit_defaults(source: str) -> tuple[str, int]:
     text = (source or "").strip().lower()
+    if text.startswith("ai_assist_manual"):
+        return "recoverable_consultant", 1
     if text.startswith("state_lic"):
         return "adjacent_contractor", 0
     if text.startswith("apollo"):
@@ -29,6 +31,8 @@ def source_family(source: str) -> str:
     text = (source or "").strip().lower()
     if not text:
         return "UNKNOWN"
+    if text.startswith("ai_assist_manual"):
+        return "AI_ASSIST"
     if text.startswith("aiha_consultants_listing"):
         return "AIHA"
     if text.startswith("ohs_buyers_guide"):
@@ -48,7 +52,7 @@ def source_family(source: str) -> str:
 
 def source_family_from_token(token: str) -> str:
     text = normalize_source_token(token)
-    if text in {"SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC"}:
+    if text in {"SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC", "AI_ASSIST"}:
         return text
     return "UNKNOWN"
 

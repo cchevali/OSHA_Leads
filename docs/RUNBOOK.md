@@ -405,6 +405,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -OutreachSkipRoleInboxes 1 `
   -ProspectAutoGrowEnabled 1 `
   -ProspectAutoGrowSafetyNetEnabled 1 `
+  -ProspectAiAssistReviewEnabled 1 `
   -ProspectAutoGrowSources AIHA,OHS_BG `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
@@ -444,7 +445,7 @@ cd C:\dev\OSHA_Leads
   --input C:\path\to\prospects.csv
 ```
 
-CSV seed is optional bootstrap/debug only. Ongoing intake should run discovery, not CSV imports.
+CSV seed is optional bootstrap/debug only. Ongoing intake should run discovery, not CSV imports. Manual AI-assist review uses the controlled discovery augmentation flow below, not a generic side CSV workflow.
 
 ### CRM Diagnostics (read-only)
 
@@ -458,7 +459,7 @@ Use these commands instead of inline `py -3 -c "..."` one-liners. PowerShell quo
 
 ### Prospect Replenishment (Scheduled First)
 
-`run_runtime_tick.py` runs replenishment automatically at the daily due window. Use the canonical replenishment wrapper directly only for manual break-glass execution. It runs generation doctor -> generation -> discovery in order:
+`run_runtime_tick.py` runs replenishment automatically at the daily due window. Use the canonical replenishment wrapper directly only for manual break-glass execution. It runs generation doctor -> generation -> discovery -> AI-assist dump in order, with the AI-assist stage only writing a manual review packet when post-discovery backlog gap still exists:
 
 ```powershell
 cd C:\dev\OSHA_Leads
@@ -479,6 +480,26 @@ Direct generation/discovery commands remain available for troubleshooting:
 .\run_with_secrets.ps1 -- py -3 run_prospect_generation.py
 .\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
 ```
+
+### Manual AI-Assist Discovery Augmentation
+
+Use this lane only as a controlled source-yield patch when the automatic replenishment run still leaves a thin-state backlog gap. Dump generation is automatic when the gap exists; CRM mutation stays manual-only.
+
+Recommended operator commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1 --dry-run
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\reviewed_ai_assist.csv --batch 2026-03-07_AIASSIST
+```
+
+Operating rules:
+
+- The dump file lives under `${DATA_DIR}\audits\ai_assist\` (or `.\out\audits\ai_assist\`) and contains the exact CSV schema to return.
+- Review happens outside the repo; only the reviewed CSV is imported.
+- Import verifies domain/email shape, blocks free personal domains, enforces suppression and `do_not_contact`, dedupes against CRM and within the batch, audits every row, and only upserts verified accepts through the existing discovery/CRM contract.
+- This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
 
 No-arg generation output path:
 
@@ -1255,8 +1276,9 @@ schtasks.exe /Query /TN \OSHA_Osha_Ingest_Daily /V /FO LIST
 1. Update `suppression.csv` with yesterday's unsubscribes/bounces.
 2. Confirm generation run produced `${DATA_DIR}\prospect_discovery\prospects_latest.csv` (or `.\out\prospect_discovery\prospects_latest.csv`).
 3. Confirm discovery run populated/updated prospects in `crm.sqlite`.
-4. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with contacted/skipped/new-replies-trials-conversions.
-5. Use `outreach\crm_admin.py mark` to record `replied`, `trial_started`, `converted`, or `do_not_contact`.
+4. If replenishment emitted an AI-assist dump under `${DATA_DIR}\audits\ai_assist\`, review it and import verified accepts before the next business-day send pool.
+5. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with contacted/skipped/new-replies-trials-conversions.
+6. Use `outreach\crm_admin.py mark` to record `replied`, `trial_started`, `converted`, or `do_not_contact`.
 
 ## Wally Trial Missed 9:00 AM Catch-Up (SAFE_MODE)
 

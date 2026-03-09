@@ -139,6 +139,38 @@ class TestCrmStoreProspectMetadataMigration(unittest.TestCase):
             self.assertEqual(normalized["p_invalid"], ("recoverable_consultant", 1))
             self.assertEqual(normalized["p_adj"], ("adjacent_contractor", 0))
 
+    def test_ai_assist_audit_table_is_created_idempotently(self):
+        with tempfile.TemporaryDirectory() as d:
+            db_path = Path(d) / "crm.sqlite"
+
+            crm_store.ensure_database(db_path)
+            crm_store.ensure_database(db_path)
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                table_row = conn.execute(
+                    """
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type='table' AND name=?
+                    LIMIT 1
+                    """,
+                    (crm_store.AI_ASSIST_CANDIDATE_TABLE,),
+                ).fetchone()
+                self.assertIsNotNone(table_row)
+
+                cols = {
+                    str(row[1]): {"notnull": int(row[3] or 0), "default": str(row[4] or "")}
+                    for row in conn.execute(f"PRAGMA table_info({crm_store.AI_ASSIST_CANDIDATE_TABLE})").fetchall()
+                }
+                self.assertIn("batch_id", cols)
+                self.assertIn("candidate_key", cols)
+                self.assertIn("verification_status", cols)
+                self.assertEqual(cols["batch_id"]["notnull"], 1)
+                self.assertEqual(cols["candidate_key"]["notnull"], 1)
+            finally:
+                conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
