@@ -17,6 +17,7 @@ PROSPECTS_MIGRATION_COLUMNS = {
     "email_status": "TEXT NOT NULL DEFAULT ''",
     "enrichment_lane": "TEXT NOT NULL DEFAULT ''",
 }
+AI_ASSIST_CANDIDATE_TABLE = "ai_assist_candidates"
 VALID_SOURCE_FIT_TIERS = ("core_consultant", "recoverable_consultant", "adjacent_contractor")
 
 
@@ -153,6 +154,39 @@ def ensure_prospect_indexes(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_prospects_send_eligible ON prospects(default_send_eligible);")
 
 
+def ensure_ai_assist_candidate_table(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        f"""
+        CREATE TABLE IF NOT EXISTS {AI_ASSIST_CANDIDATE_TABLE} (
+            candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL,
+            candidate_key TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT '',
+            decision TEXT NOT NULL DEFAULT '',
+            firm TEXT NOT NULL DEFAULT '',
+            website TEXT NOT NULL DEFAULT '',
+            domain TEXT NOT NULL DEFAULT '',
+            contact_name TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            source_urls_json TEXT NOT NULL DEFAULT '[]',
+            confidence INTEGER NOT NULL DEFAULT 0,
+            evidence_snippet TEXT NOT NULL DEFAULT '',
+            verification_status TEXT NOT NULL DEFAULT '',
+            rejection_reason TEXT NOT NULL DEFAULT '',
+            prospect_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(batch_id, candidate_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_assist_candidates_batch_state
+            ON {AI_ASSIST_CANDIDATE_TABLE}(batch_id, state);
+        CREATE INDEX IF NOT EXISTS idx_ai_assist_candidates_batch_status
+            ON {AI_ASSIST_CANDIDATE_TABLE}(batch_id, verification_status);
+        """
+    )
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -233,6 +267,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     ensure_prospect_metadata_defaults(conn)
     ensure_prospect_indexes(conn)
     ensure_outreach_events_columns(conn)
+    ensure_ai_assist_candidate_table(conn)
     conn.commit()
 
 

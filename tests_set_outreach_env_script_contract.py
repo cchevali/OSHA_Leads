@@ -39,6 +39,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "OutreachSkipRoleInboxes",
             "ProspectAutoGrowEnabled",
             "ProspectAutoGrowSafetyNetEnabled",
+            "ProspectAiAssistReviewEnabled",
             "ProspectAutoGrowSources",
             "ProspectAutoGrowBacklogTarget",
             "ProspectAutoGrowMaxFetchPagesPerRun",
@@ -93,11 +94,13 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("ERR_ENV_SOPS_STAGED", text)
         self.assertIn("PROSPECT_AUTOGROW_ENABLED", text)
         self.assertIn("PROSPECT_AUTOGROW_SAFETY_NET_ENABLED", text)
+        self.assertIn("PROSPECT_AI_ASSIST_REVIEW_ENABLED", text)
         self.assertIn("PROSPECT_AUTOGROW_STATES", text)
         self.assertIn("PROSPECT_AUTOGROW_SOURCES", text)
         self.assertIn("OUTREACH_FALLBACK_ON_EMPTY_STATE", text)
         self.assertIn("OUTREACH_SKIP_ROLE_INBOXES", text)
         self.assertIn("outreach_skip_role_inboxes=", text)
+        self.assertIn("prospect_ai_assist_review_enabled=", text)
         self.assertIn("OHS_BG", text)
         self.assertIn("APOLLO", text)
         self.assertIn("APOLLO_API_KEY", text)
