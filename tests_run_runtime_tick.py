@@ -12,8 +12,9 @@ from outreach import run_runtime_tick as tick
 
 
 class _Preflight:
-    def __init__(self, ok: bool = True):
+    def __init__(self, ok: bool = True, trusted_scheduled: bool = False):
         self.ok = ok
+        self.fingerprint = type("Fingerprint", (), {"trusted_scheduled": bool(trusted_scheduled)})()
 
 
 class TestRunRuntimeTick(unittest.TestCase):
@@ -71,7 +72,7 @@ class TestRunRuntimeTick(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as d,
             mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
-            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
             mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
             mock.patch.object(tick.subprocess, "run", side_effect=_run),
         ):
@@ -86,6 +87,37 @@ class TestRunRuntimeTick(unittest.TestCase):
         self.assertIn("run_trial_daily.py", joined)
         self.assertIn("--doctor", joined)
         self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
+
+    def test_live_mode_propagates_scheduled_env_to_child_commands(self):
+        seen_envs: list[dict[str, str]] = []
+
+        def _run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            env = kwargs.get("env") or {}
+            seen_envs.append(
+                {
+                    "command": " ".join(str(part) for part in cmd),
+                    "MFO_RUNTIME_MODE": str(env.get("MFO_RUNTIME_MODE") or ""),
+                    "MFO_TRUSTED_SCHEDULED": str(env.get("MFO_TRUSTED_SCHEDULED") or ""),
+                }
+            )
+            return self._proc(0, stdout="PASS_TRIAL_DAILY_DOCTOR status=OK\n")
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick.subprocess, "run", side_effect=_run),
+        ):
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                rc = tick.main(["--job", "trial_facs_daily", "--force", "--mode", "scheduled"])
+        out = out_buf.getvalue() + "\n" + err_buf.getvalue()
+        self.assertEqual(rc, 0, msg=out)
+        child_env = next((item for item in seen_envs if "run_trial_daily.py" in item["command"]), {})
+        self.assertEqual(child_env.get("MFO_RUNTIME_MODE"), "scheduled")
+        self.assertEqual(child_env.get("MFO_TRUSTED_SCHEDULED"), "1")
 
     def test_doctor_inbound_triage_skips_when_gmail_credentials_missing(self):
         with tempfile.TemporaryDirectory() as d:

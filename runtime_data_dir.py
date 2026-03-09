@@ -16,6 +16,14 @@ class DataDirResolution:
     raw_value: str
 
 
+@dataclass(frozen=True)
+class OshaDbResolution:
+    effective_path: Path
+    source: str
+    warning_token: str
+    raw_value: str
+
+
 def _repo_root_default() -> Path:
     return Path(__file__).resolve().parent
 
@@ -29,6 +37,11 @@ def _normalize_source(value: str) -> str:
 
 def _not_absolute_warn(raw_value: str) -> str:
     return f"WARN_DATA_DIR_NOT_ABSOLUTE=1 value={raw_value} behavior=UNSET_FOR_CHILD"
+
+
+def _signal_db_not_absolute_warn(raw_value: str, fallback_source: str) -> str:
+    behavior = "FALLBACK_DATA_DIR" if fallback_source == "data_dir" else "FALLBACK_REPO_DEFAULT"
+    return f"WARN_OUTREACH_SIGNAL_DB_NOT_ABSOLUTE=1 value={raw_value} behavior={behavior}"
 
 
 def resolve_data_dir(repo_root: Path | None = None) -> DataDirResolution:
@@ -76,5 +89,46 @@ def resolve_data_dir(repo_root: Path | None = None) -> DataDirResolution:
         effective_path=default_path,
         source="default",
         warning_token="",
+        raw_value="",
+    )
+
+
+def resolve_osha_db_path(repo_root: Path | None = None) -> OshaDbResolution:
+    root = (repo_root or _repo_root_default()).resolve(strict=False)
+    repo_default = (root / "data" / "osha.sqlite").resolve(strict=False)
+    data_dir_resolution = resolve_data_dir(root)
+    data_dir_default = (data_dir_resolution.effective_path / "osha.sqlite").resolve(strict=False)
+
+    raw_env = str(os.getenv("OUTREACH_SIGNAL_DB") or "").strip()
+    if raw_env:
+        candidate = Path(raw_env).expanduser()
+        if candidate.is_absolute():
+            return OshaDbResolution(
+                effective_path=candidate.resolve(strict=False),
+                source="env",
+                warning_token="",
+                raw_value=raw_env,
+            )
+        fallback_source = "data_dir" if data_dir_resolution.source != "default" else "repo_default"
+        fallback_path = data_dir_default if fallback_source == "data_dir" else repo_default
+        return OshaDbResolution(
+            effective_path=fallback_path,
+            source=fallback_source,
+            warning_token=_signal_db_not_absolute_warn(raw_env, fallback_source),
+            raw_value=raw_env,
+        )
+
+    if data_dir_resolution.source != "default":
+        return OshaDbResolution(
+            effective_path=data_dir_default,
+            source="data_dir",
+            warning_token=str(data_dir_resolution.warning_token or ""),
+            raw_value="",
+        )
+
+    return OshaDbResolution(
+        effective_path=repo_default,
+        source="repo_default",
+        warning_token=str(data_dir_resolution.warning_token or ""),
         raw_value="",
     )

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from runtime_data_dir import resolve_data_dir
+from runtime_data_dir import resolve_data_dir, resolve_osha_db_path
 
 VALID_RUNTIME_ROLES = {"canonical_scheduler", "dev_client"}
 VALID_MODES = {"scheduled", "manual"}
@@ -115,6 +115,7 @@ def collect_runtime_fingerprint(
 ) -> RuntimeFingerprint:
     root = (repo_root or _repo_root_default()).resolve(strict=False)
     resolution = resolve_data_dir(root)
+    osha_db = resolve_osha_db_path(root)
     hostname = _normalize_hostname(socket.gethostname())
     username = (os.getenv("USERNAME") or os.getenv("USER") or "").strip()
     runtime_role = _effective_runtime_role()
@@ -136,7 +137,7 @@ def collect_runtime_fingerprint(
         data_dir=str(resolution.effective_path),
         data_dir_source=str(resolution.source),
         data_dir_warning=str(resolution.warning_token or ""),
-        db_osha=str((root / "data" / "osha.sqlite").resolve(strict=False)),
+        db_osha=str(osha_db.effective_path),
         db_crm=str((resolution.effective_path / "crm.sqlite").resolve(strict=False)),
         db_crm_light=str((resolution.effective_path / "crm_light.sqlite").resolve(strict=False)),
         timezone=_safe_tz_name(),
@@ -338,4 +339,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

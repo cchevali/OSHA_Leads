@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import socket
 import subprocess
@@ -149,6 +150,13 @@ class TestOutreachRunAuto(unittest.TestCase):
         base_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
         env = self._test_env(env_overrides, base_env=base_env)
+        data_dir_raw = str(env.get("DATA_DIR") or "").strip()
+        signal_db_raw = str(env.get("OUTREACH_SIGNAL_DB") or "").strip()
+        if data_dir_raw and not signal_db_raw:
+            default_signal_db = Path(data_dir_raw) / "osha.sqlite"
+            if not default_signal_db.exists():
+                default_signal_db.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(REPO_ROOT / "data" / "osha.sqlite", default_signal_db)
         return subprocess.run(
             [sys.executable, str(SCRIPT)] + args,
             cwd=str(REPO_ROOT),
@@ -995,6 +1003,8 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("mfo_data_dir_source=(empty)", out)
             self.assertIn(f"crm_db={(data_dir / 'crm.sqlite').resolve()}", out)
             self.assertIn(f"suppression_csv={(data_dir / 'suppression.csv').resolve()}", out)
+            self.assertIn(f"outreach_signal_db={(data_dir / 'osha.sqlite').resolve()}", out)
+            self.assertIn("outreach_signal_db_source=data_dir", out)
             self.assertIn("outreach_daily_limit=200 source=default", out)
             self.assertIn("outreach_states=TX,CA", out)
             self.assertIn("selected_state=", out)

@@ -1122,7 +1122,10 @@ def main(argv: list[str] | None = None) -> int:
     status_fail = False
     job_results: list[dict[str, Any]] = []
     alert_summary: dict[str, Any] | None = None
+    trusted_scheduled = bool(getattr(getattr(preflight, "fingerprint", None), "trusted_scheduled", False))
     env = dict(os.environ)
+    env["MFO_RUNTIME_MODE"] = runtime_mode
+    env["MFO_TRUSTED_SCHEDULED"] = "1" if trusted_scheduled else "0"
     prior_states: dict[str, dict[str, Any]] = {}
 
     lock_path = (_locks_root(data_dir) / "runtime_tick.lock").resolve(strict=False)
