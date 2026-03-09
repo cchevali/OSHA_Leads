@@ -22,6 +22,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Windows Task Scheduler wrappers are retained only as manual break-glass fallbacks and must not remain enabled in parallel with runtime tick once cutover is complete.
 - Wrappers emit deterministic run summaries (`runtime_run_summary_v1`) plus task logs and optional backup manifests.
 - Runtime tick emits operator alert candidates and sends live SMTP alerts (recipient `RUNTIME_ALERT_RECIPIENT` fallback `OSHA_SMOKE_TO`) for job failures and critical missed morning windows with per-slot dedupe markers under `${DATA_DIR}\runtime\status\alerts\`.
+- Runtime tick persists per-job status for the latest ran/skipped/reconciled slot under `${DATA_DIR}\runtime\status\jobs\*.json` and records external-wrapper reconciliation metadata when break-glass execution is detected.
 - Artifact roots:
   - Task logs: `${TASK_LOG_ROOT}` or `${DATA_DIR}\out\task_logs` or `<repo>\out\task_logs`
   - Run summaries: `${RUN_SUMMARY_ROOT}` or `${DATA_DIR}\out\run_summaries` or `<repo>\out\run_summaries`
@@ -38,7 +39,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - `run_prospect_discovery.py`
    - `tools/dump_prospect_ai_assist_review.py` only when post-discovery backlog gap remains; this writes a manual review packet and does not mutate CRM
    - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, and `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1` when these keys are unset.
-   - Optional env-gated auto-growth sources remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+   - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+   - Planned tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are intentionally rejected by env/runtime validation until their source modules exist.
    - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
    - APOLLO remains opt-in/overflow and is not in default replenishment sources.
    - BCSP uses plain HTTP parsing (`search_results.php`) and is maintained as a future enrichment input (contact/location only; not directly sendable without employer/domain resolution).
@@ -86,6 +88,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - `out/crm_light.sqlite` (or `${DATA_DIR}/crm_light.sqlite`): onboarding entitlements + CBSA allowlists + canonical onboarding recipients
 - `out/outreach_export_ledger.jsonl`: optional compatibility ledger for contacted records
 - `out/outreach/<batch>/outbox_*_dry_run.csv` + manifest: non-sending artifact output from `run_outreach_auto.py --dry-run`
+- `${DATA_DIR}/outreach/ops_snapshots/*.json`: persisted operator artifact combining ops KPIs with runtime/suppression readiness state
+- `${DATA_DIR}/runtime/status/jobs/*.json`: runtime scheduler state for latest slot evaluation and external scheduler drift visibility
 
 ## V1 Preserved Invariants
 

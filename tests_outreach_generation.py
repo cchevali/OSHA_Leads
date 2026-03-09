@@ -1461,6 +1461,20 @@ class TestProspectGeneration(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("ERR_GENERATOR_FAILED stage=autogrow_config", (p.stderr or "") + (p.stdout or ""))
 
+    def test_unimplemented_autogrow_source_fails_fast(self):
+        p = self._run(
+            ["--dry-run", "--for-date", "2026-02-24"],
+            {
+                "OUTREACH_STATES": "FL",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA,BBB",
+            },
+        )
+        self.assertNotEqual(p.returncode, 0)
+        text = (p.stderr or "") + (p.stdout or "")
+        self.assertIn("ERR_GENERATOR_FAILED stage=autogrow_config", text)
+        self.assertIn("unimplemented_autogrow_sources=BBB", text)
+
     def test_transform_mapping_and_invalid_email_exclusion(self):
         from outreach import run_prospect_generation as generator
 

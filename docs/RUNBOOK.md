@@ -77,7 +77,7 @@ Status artifacts:
 
 - `${DATA_DIR}\runtime\status\runtime_latest.json`
 - `${DATA_DIR}\runtime\status\runtime_latest.md`
-- `${DATA_DIR}\runtime\status\jobs\<job>.json`
+- `${DATA_DIR}\runtime\status\jobs\<job>.json` (latest slot evaluation for ran, skipped, and reconciled jobs)
 - `${DATA_DIR}\runtime\status\alerts\*.json` (dedupe markers for sent runtime alerts)
 
 Runtime tick operator alerts:
@@ -88,6 +88,8 @@ Runtime tick operator alerts:
   - `job_failure` for any failed runtime tick job.
   - `missed_window` for skipped `window_closed_*` on `ingest_daily`, `prospect_replenish_daily`, `outreach_auto`, and `trial_facs_daily`.
 - Alerts are live-mode only; `--doctor` and `--dry-run` emit candidate/skipped tokens but do not send email.
+- Runtime tick reconciles same-slot wrapper summaries before sending `missed_window`; successful break-glass wrapper evidence within the catchup window suppresses the alert and records a reconciled job state instead of leaving an empty missed-window marker.
+- External wrapper evidence emits `WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER` and records `last_external_scheduler_detected=1` plus `last_reconciliation_status` in `${DATA_DIR}\runtime\status\jobs\<job>.json`.
 
 ## Runtime State Migration
 
@@ -514,7 +516,8 @@ Auto-growth (env-gated, optional):
 - OHS optional auth key (only if buyersguide pagination is work-email gated): `OHS_BG_STORAGE_STATE_PATH` (Playwright storage state JSON path).
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
 - Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_ALLOW_ROLE_INBOX` (default `0`), `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_MAX_PAGES_PER_SITE` (default `5`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (default `750`; when unset, falls back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`).
-- Source scope: `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG,BCSP,STATE_LIC`).
+- Source scope: implemented tokens are `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG,BCSP,STATE_LIC`).
+- Planned-but-unimplemented registry tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are rejected intentionally by `scripts\set_outreach_env.ps1` and `outreach\run_prospect_generation.py` until source modules land.
 - Cache paths:
   - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
   - OHS_BG: `${DATA_DIR}\prospect_generation\cache\ohs_bg\state_<STATE>.json`
@@ -1083,6 +1086,42 @@ Metric scope:
 - Last 7 and 30 days by `(batch_id, state_at_send)` with `sent`, `delivered_proxy`, `bounced_confirmed`, `bounced_inferred`, `replied`, `trial_started`, and `converted`.
 - List quality snapshot: `new_prospects_count`, `% valid email format`, duplicate-domain rows/share, and role-based inbox share.
 
+### Weekly Ops Snapshot (Persisted Ops + Readiness Artifact)
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 outreach\run_ops_snapshot.py --print-config
+py -3 outreach\run_ops_snapshot.py --dry-run
+py -3 outreach\run_ops_snapshot.py
+py -3 outreach\run_ops_snapshot.py --format json
+```
+
+Snapshot behavior:
+
+- `--print-config` is side-effect free and prints resolved artifact/config paths.
+- `--dry-run` computes the snapshot without writing files and prints `OPS_SNAPSHOT_JSON_PATH=(no-write)`.
+- Live mode writes:
+- `${DATA_DIR}\outreach\ops_snapshots\<YYYY-MM-DD>\ops_snapshot_<HHMMSSZ>.json`
+- `${DATA_DIR}\outreach\ops_snapshots\latest.json`
+- Payload includes the existing ops-report windows plus readiness state for runtime age, per-job status, `parallel_scheduler_active`, suppression freshness, and bounce-import state.
+
+### Dry-Run Artifact Retention Cleanup
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 outreach\cleanup_outreach_dry_run_artifacts.py --print-config
+py -3 outreach\cleanup_outreach_dry_run_artifacts.py --dry-run --retention-days 14
+py -3 outreach\cleanup_outreach_dry_run_artifacts.py --retention-days 14
+```
+
+Cleanup scope:
+
+- Targets only stale dry-run artifacts under `out\outreach\<batch>\`:
+- `outbox_*_dry_run.csv`
+- `outbox_*_dry_run_manifest.csv`
+- `plan_diagnostics.json`
+- Does not touch live delivery artifacts, non-dry-run manifests, or other batch files.
+
 ### QA Checks (Before/After Daily Send)
 
 ```powershell
@@ -1194,10 +1233,19 @@ Idempotency and state behavior:
 - Does **not** mutate IMAP flags/folders (`Seen`/move is not used).
 - Emits `BOUNCE_IMPORT_MODERATION_NOTICE_SEEN=1` when a moderation notice is parsed as a hard bounce.
 
+Suppression + bounce alignment:
+
+- `run_capture_sync.py` records downstream lifecycle outcomes such as `replied`, `do_not_contact`, and `bounced` back into CRM event/state.
+- `outreach\import_bounces_imap.py` is idempotent by mailbox state and message fingerprint; hard bounces update CRM suppression and prospect status, while soft bounces remain event-only.
+- `run_outreach_auto.py --doctor` enforces suppression freshness and now prints `WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE jobs=<...>` when recent external scheduler drift is visible in runtime job state.
+- `outreach\ops_report.py` and `outreach\run_ops_snapshot.py` surface reply, `trial_started`, `converted`, bounce, and suppression evidence for weekly review.
+- Complaint/FBL intake is still a manual operator path until the provider exposes a deterministic machine-readable feed.
+
 ### Task Scheduler (Break-Glass Only)
 
 Do not keep Windows Task Scheduler as an active parallel scheduler once `runtime-tick-selfhosted.yml` is live on the canonical runner.
 Use Task Scheduler only for temporary local recovery when GitHub Actions on the canonical PC is unavailable.
+If `run_outreach_auto.py --doctor` prints `WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE`, treat it as a scheduler drift warning and disable the overlapping break-glass tasks after recovery.
 
 Break-glass installer commands:
 
