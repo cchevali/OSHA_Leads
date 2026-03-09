@@ -52,6 +52,7 @@ AIHA_NET_NEW_LOSS_KEYS = (
     "already_known_crm",
     "default_send_ineligible",
 )
+DISCOVERY_SOURCE_FAMILIES = ("SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC", "AI_ASSIST", "UNKNOWN")
 
 
 def _norm_email(value: str) -> str:
@@ -443,7 +444,8 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                 clean[key] = v
             rows.append(clean)
 
-    with crm_store.connect(db_path) as conn:
+    conn = crm_store.connect(db_path)
+    try:
         crm_store.init_schema(conn)
         cur = conn.cursor()
         existing_emails: set[str] = set()
@@ -587,6 +589,8 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
                 if new_domain:
                     existing_domains.add(new_domain)
         conn.commit()
+    finally:
+        conn.close()
 
     archived_to = ""
     if not no_archive:
@@ -597,12 +601,12 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
     print(f"{PASS_CRM_SEED} inserted_count={inserted}")
     print(f"{PASS_CRM_SEED} updated_count={updated}")
     print(f"{PASS_CRM_SEED} skipped_count={skipped}")
-    for family in ("SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC", "UNKNOWN"):
+    for family in DISCOVERY_SOURCE_FAMILIES:
         print(f"DISCOVERY_SOURCE_COUNT_{family}={int(source_counts.get(family, 0))}")
     for tier in ("core_consultant", "recoverable_consultant", "adjacent_contractor"):
         print(f"DISCOVERY_TIER_COUNT_{tier.upper()}={int(tier_counts.get(tier, 0))}")
     print(f"DISCOVERY_DEFAULT_SEND_ELIGIBLE_TOTAL={int(default_send_eligible_total)}")
-    for family in ("SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC", "UNKNOWN"):
+    for family in DISCOVERY_SOURCE_FAMILIES:
         print(f"DISCOVERY_BACKFILL_SOURCE_COUNT_{family}={int(backfill_source_counts.get(family, 0))}")
     print(f"DISCOVERY_BACKFILL_UNKNOWN_SOURCE_COUNT={int(unknown_source_backfill_count)}")
     print(

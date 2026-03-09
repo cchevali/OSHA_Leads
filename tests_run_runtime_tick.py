@@ -20,6 +20,33 @@ class TestRunRuntimeTick(unittest.TestCase):
     def _proc(self, code: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(args=["mock"], returncode=code, stdout=stdout, stderr=stderr)
 
+    def _write_wrapper_summary(
+        self,
+        *,
+        data_dir: Path,
+        wrapper_name: str,
+        slot_token: str,
+        start_local: str,
+        end_local: str,
+        exit_code: int,
+    ) -> Path:
+        root = data_dir / "out" / "run_summaries"
+        root.mkdir(parents=True, exist_ok=True)
+        summary_path = root / f"{wrapper_name}_{slot_token}_000001.summary.json"
+        payload = {
+            "wrapper": wrapper_name,
+            "start_local": start_local,
+            "end_local": end_local,
+            "exit_code": int(exit_code),
+            "artifacts": {
+                "task_log": str(data_dir / "out" / "task_logs" / f"{wrapper_name}_{slot_token}.log"),
+                "summary_json": str(summary_path),
+                "summary_text": str(root / f"{wrapper_name}_{slot_token}_000001.summary.txt"),
+            },
+        }
+        summary_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return summary_path
+
     def test_print_config_has_required_tokens(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False):
             buf = io.StringIO()
@@ -212,6 +239,174 @@ class TestRunRuntimeTick(unittest.TestCase):
         self.assertIn("RUNTIME_TICK_JOB_RESULT=name=outreach_auto result=skipped exit_code=0 reason=window_closed_180m", out)
         self.assertIn("RUNTIME_TICK_ALERT_CANDIDATE=name=outreach_auto category=missed_window send=1 reason=ready_to_send", out)
         self.assertEqual(len(sent), 1)
+
+    def test_live_skipped_job_persists_state_json(self):
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+        ):
+            out_buf = io.StringIO()
+            with redirect_stdout(out_buf):
+                rc = tick.main(["--job", "outreach_auto", "--now-local", "2026-03-09T12:30", "--mode", "scheduled"])
+            out = out_buf.getvalue()
+            self.assertEqual(rc, 0, msg=out)
+            state_path = Path(d) / "runtime" / "status" / "jobs" / "outreach_auto.json"
+            self.assertTrue(state_path.exists(), msg=out)
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("last_slot_key"), "2026-03-09")
+            self.assertEqual(payload.get("last_result"), "skipped")
+            self.assertEqual(payload.get("last_reason"), "window_closed_180m")
+            self.assertIn("T08:00:00", str(payload.get("last_scheduled_local") or ""))
+
+    def test_wrapper_success_within_window_reconciles_and_suppresses_missed_window(self):
+        send_calls: list[dict[str, str]] = []
+
+        def _send_alert(*, recipient: str, subject: str, body: str, env):  # type: ignore[no-untyped-def]
+            send_calls.append({"recipient": recipient, "subject": subject, "body": body})
+
+        env = {
+            "OSHA_SMOKE_TO": "ops@example.com",
+            "SMTP_HOST": "smtp.example.com",
+            "SMTP_PORT": "587",
+            "SMTP_USER": "bot@example.com",
+            "SMTP_PASS": "secret",
+        }
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d, **env}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick, "send_plain_text_alert", side_effect=_send_alert),
+        ):
+            data_dir = Path(d)
+            self._write_wrapper_summary(
+                data_dir=data_dir,
+                wrapper_name="OSHA_Outreach_Auto",
+                slot_token="20260309",
+                start_local="2026-03-09T10:30:00-04:00",
+                end_local="2026-03-09T10:35:00-04:00",
+                exit_code=0,
+            )
+            out_buf = io.StringIO()
+            with redirect_stdout(out_buf):
+                rc = tick.main(["--job", "outreach_auto", "--now-local", "2026-03-09T12:30", "--mode", "scheduled"])
+            out = out_buf.getvalue()
+            self.assertEqual(rc, 0, msg=out)
+            self.assertIn("WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER=job=outreach_auto slot=2026-03-09 timing=within_window", out)
+            self.assertIn("RUNTIME_TICK_ALERT_SKIPPED=reason=no_candidates", out)
+            self.assertEqual(send_calls, [])
+            payload = json.loads((Path(d) / "runtime" / "status" / "jobs" / "outreach_auto.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("last_result"), "ran")
+            self.assertEqual(payload.get("last_result_detail"), "reconciled")
+            self.assertEqual(payload.get("last_reconciliation_status"), "external_wrapper_success_within_window")
+            self.assertEqual(int(payload.get("last_external_scheduler_detected") or 0), 1)
+
+    def test_wrapper_success_after_window_still_alerts_with_evidence(self):
+        sent: list[dict[str, str]] = []
+
+        def _send_alert(*, recipient: str, subject: str, body: str, env):  # type: ignore[no-untyped-def]
+            sent.append({"recipient": recipient, "subject": subject, "body": body})
+
+        env = {
+            "OSHA_SMOKE_TO": "ops@example.com",
+            "SMTP_HOST": "smtp.example.com",
+            "SMTP_PORT": "587",
+            "SMTP_USER": "bot@example.com",
+            "SMTP_PASS": "secret",
+        }
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d, **env}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick, "send_plain_text_alert", side_effect=_send_alert),
+        ):
+            data_dir = Path(d)
+            summary_path = self._write_wrapper_summary(
+                data_dir=data_dir,
+                wrapper_name="OSHA_Outreach_Auto",
+                slot_token="20260309",
+                start_local="2026-03-09T11:30:00-04:00",
+                end_local="2026-03-09T11:35:00-04:00",
+                exit_code=0,
+            )
+            out_buf = io.StringIO()
+            with redirect_stdout(out_buf):
+                rc = tick.main(["--job", "outreach_auto", "--now-local", "2026-03-09T12:30", "--mode", "scheduled"])
+            out = out_buf.getvalue()
+            self.assertEqual(rc, 0, msg=out)
+            self.assertEqual(len(sent), 1, msg=out)
+            self.assertIn("reconciliation_status: external_wrapper_success_late", sent[0]["body"])
+            self.assertIn(str(summary_path), sent[0]["body"])
+            marker_files = list((Path(d) / "runtime" / "status" / "alerts").glob("*.json"))
+            self.assertEqual(len(marker_files), 1)
+            marker_payload = json.loads(marker_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(marker_payload.get("reconciliation_status"), "external_wrapper_success_late")
+            self.assertTrue(str(marker_payload.get("run_summary_json_path") or "").endswith(".summary.json"))
+
+    def test_failed_wrapper_evidence_does_not_suppress_missed_window(self):
+        sent: list[dict[str, str]] = []
+
+        def _send_alert(*, recipient: str, subject: str, body: str, env):  # type: ignore[no-untyped-def]
+            sent.append({"recipient": recipient, "subject": subject, "body": body})
+
+        env = {
+            "OSHA_SMOKE_TO": "ops@example.com",
+            "SMTP_HOST": "smtp.example.com",
+            "SMTP_PORT": "587",
+            "SMTP_USER": "bot@example.com",
+            "SMTP_PASS": "secret",
+        }
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d, **env}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick, "send_plain_text_alert", side_effect=_send_alert),
+        ):
+            data_dir = Path(d)
+            self._write_wrapper_summary(
+                data_dir=data_dir,
+                wrapper_name="OSHA_Outreach_Auto",
+                slot_token="20260309",
+                start_local="2026-03-09T10:30:00-04:00",
+                end_local="2026-03-09T10:31:00-04:00",
+                exit_code=1,
+            )
+            out_buf = io.StringIO()
+            with redirect_stdout(out_buf):
+                rc = tick.main(["--job", "outreach_auto", "--now-local", "2026-03-09T12:30", "--mode", "scheduled"])
+            out = out_buf.getvalue()
+            self.assertEqual(rc, 0, msg=out)
+            self.assertEqual(len(sent), 1, msg=out)
+            self.assertIn("reconciliation_status: external_wrapper_failed", sent[0]["body"])
+            payload = json.loads((Path(d) / "runtime" / "status" / "jobs" / "outreach_auto.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("last_result"), "skipped")
+            self.assertEqual(payload.get("last_reconciliation_status"), "external_wrapper_failed")
+
+    def test_weekday_only_skip_persists_state_without_alert_spam(self):
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick, "send_plain_text_alert") as send_mock,
+        ):
+            out_buf = io.StringIO()
+            with redirect_stdout(out_buf):
+                rc = tick.main(["--job", "outreach_auto", "--now-local", "2026-03-07T12:30", "--mode", "scheduled"])
+            out = out_buf.getvalue()
+            self.assertEqual(rc, 0, msg=out)
+            send_mock.assert_not_called()
+            self.assertIn("RUNTIME_TICK_ALERT_SKIPPED=reason=no_candidates", out)
+            payload = json.loads((Path(d) / "runtime" / "status" / "jobs" / "outreach_auto.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("last_reason"), "weekday_only")
+            self.assertEqual(payload.get("last_result"), "skipped")
 
     def test_dry_run_failure_alert_is_non_live_candidate_only(self):
         def _run(_cmd, **_kwargs):  # type: ignore[no-untyped-def]

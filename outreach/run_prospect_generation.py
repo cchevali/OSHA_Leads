@@ -50,16 +50,10 @@ OUTPUT_FILENAME = "prospects_latest.csv"
 GENERATION_CACHE_ROOT_SUBDIR = ("prospect_generation", "cache")
 GENERATION_DIAGNOSTICS_SUBDIR = ("prospect_generation", "diagnostics")
 
-AUTOGROW_SOURCE_PREFIX = {
-    "AIHA": "aiha",
-    "OHS_BG": "ohs_bg",
-    "APOLLO": "apollo",
-    "BCSP": "bcsp",
-    "OSHA_NEWS": "osha_news",
-    "STATE_LIC": "state_lic",
-}
+AUTOGROW_SOURCE_PREFIX = source_policy.autogrow_source_prefix_map(include_unimplemented=False)
 AUTOGROW_SOURCE_LABEL = {k: str(v or "").lower() for k, v in AUTOGROW_SOURCE_PREFIX.items()}
-AUTOGROW_ALLOWED_SOURCES = set(AUTOGROW_SOURCE_PREFIX.keys())
+AUTOGROW_ALLOWED_SOURCES = set(source_policy.implemented_autogrow_sources())
+AUTOGROW_SUPPORTED_SOURCES = set(source_policy.supported_autogrow_sources(include_unimplemented=True))
 CRAWL4AI_AUTOGROW_SOURCES = {"OSHA_NEWS"}
 AUTOGROW_REJECT_KEYS = (
     "invalid_email",
@@ -320,6 +314,16 @@ def _source_family(source: str) -> str:
     return source_policy.source_family(source)
 
 
+def _effective_default_send_eligible(source: str, sendable_raw: object) -> int:
+    source_text = _normalize_text(source)
+    family = _source_family(source_text)
+    _default_tier, default_send = _source_fit_defaults(source_text)
+    if family in {"STATE_LIC", "APOLLO", "AIHA", "OHS_BG"}:
+        return int(default_send)
+    raw_text = "" if sendable_raw is None else str(sendable_raw)
+    return _coerce_boolish_int(raw_text, default_send)
+
+
 def _generator_row_observability(rows: list[dict[str, str]]) -> dict[str, object]:
     source_counts: Counter = Counter()
     tier_counts: Counter = Counter()
@@ -331,7 +335,7 @@ def _generator_row_observability(rows: list[dict[str, str]]) -> dict[str, object
         source_counts[family] += 1
         tier = _coerce_source_fit_tier(row.get("source_fit_tier") or "", source)
         tier_counts[tier] += 1
-        default_send = _coerce_boolish_int(row.get("default_send_eligible") or "", _source_fit_defaults(source)[1])
+        default_send = _effective_default_send_eligible(source, row.get("default_send_eligible"))
         if default_send == 1:
             default_send_eligible_total += 1
         status = _normalize_text(row.get("email_status") or "").lower() or "blank"
@@ -519,9 +523,11 @@ def _parse_autogrow_config() -> dict:
         if item not in source_tokens:
             source_tokens.append(item)
 
-    invalid = [item for item in source_tokens if item not in AUTOGROW_ALLOWED_SOURCES]
+    invalid, unimplemented = source_policy.validate_autogrow_source_tokens(source_tokens)
     if invalid:
         raise ValueError(f"invalid_autogrow_sources={','.join(invalid)}")
+    if unimplemented:
+        raise ValueError(f"unimplemented_autogrow_sources={','.join(unimplemented)}")
 
     backlog_target = _parse_int_env(os.getenv("PROSPECT_AUTOGROW_BACKLOG_TARGET", ""), default=60, minimum=1)
     max_fetch_pages = _parse_int_env(os.getenv("PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN", ""), default=6, minimum=1)
@@ -813,7 +819,7 @@ def compute_uncontacted_backlog(
 
     rows = conn.execute(
         f"""
-        SELECT prospect_id, email, state, {status_col} AS status, {last_contacted_col} AS last_contacted_at,
+        SELECT prospect_id, email, state, source, {status_col} AS status, {last_contacted_col} AS last_contacted_at,
                {default_send_col} AS default_send_eligible
         FROM prospects
         """
@@ -832,8 +838,7 @@ def compute_uncontacted_backlog(
             continue
         if bool(skip_role_inboxes) and _is_role_inbox_email(email):
             continue
-        sendable_raw = row["default_send_eligible"] if row["default_send_eligible"] is not None else ""
-        if _coerce_boolish_int(str(sendable_raw), 1) != 1:
+        if _effective_default_send_eligible(str(row["source"] or ""), row["default_send_eligible"]) != 1:
             continue
 
         status = _normalize_text(str(row["status"] or "")).lower()
@@ -893,7 +898,7 @@ def _compute_input_cohort(
 
     rows = conn.execute(
         f"""
-        SELECT prospect_id, email, state, {status_col} AS status, {last_contacted_col} AS last_contacted_at,
+        SELECT prospect_id, email, state, source, {status_col} AS status, {last_contacted_col} AS last_contacted_at,
                {default_send_col} AS default_send_eligible
         FROM prospects
         """
@@ -921,8 +926,7 @@ def _compute_input_cohort(
         if email in suppressed_emails:
             filtered["suppressed"] += 1
             continue
-        sendable_raw = row["default_send_eligible"] if row["default_send_eligible"] is not None else ""
-        if _coerce_boolish_int(str(sendable_raw), 1) != 1:
+        if _effective_default_send_eligible(str(row["source"] or ""), row["default_send_eligible"]) != 1:
             filtered["already_sent_or_ineligible"] += 1
             continue
 

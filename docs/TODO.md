@@ -22,18 +22,19 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Codex-owned engineering backlog
 
-- [ ] Add follow-on autogrow sources on top of `outreach/scraper_engine.py` foundation: `AGC`, `BLUEBOOK`, `THOMASNET`, `BBB` (source modules + fixtures + generator tests).
-- [ ] Add integration test coverage that validates workflow artifact upload path patterns against generated wrapper outputs (`out/task_logs`, `out/run_summaries`, `out/backups`).
-- [ ] Wire landing page conversion CTA references to paid path after Stripe link is set.
-  Reference points: `web/config/site.json`, `web/components/CTAButtons.tsx`, `web/app/pricing/page.tsx`, `web/app/contact/page.tsx`.
+- [ ] Add follow-on autogrow source modules on top of the registry-backed `outreach/scraper_engine.py` foundation: `BBB`, `BLUEBOOK`, `THOMASNET`, `AGC` (source modules + fixtures + generator tests). Planned tokens now fail fast until implemented.
 - [ ] Define trial -> paid email-only sequence using existing lifecycle states (`replied`, `trial_started`, `converted`) and conversion artifacts in `run_trial_daily.py`.
-- [ ] Add operator KPI log for reply -> trial_started -> converted by batch id.
-- [ ] Review suppression + bounce/complaint handling (data source, dedupe policy, freshness policy, and operator SOP alignment).
-- [ ] Add periodic archive/retention cleanup for outreach dry-run artifacts under `out/outreach/<batch>/`.
-- [ ] Add periodic readiness report snapshot generation for weekly operations review.
+- [ ] Add an operator-triggered schedule for `outreach\run_ops_snapshot.py` and `outreach\cleanup_outreach_dry_run_artifacts.py` on the canonical PC or runner.
+- [ ] Review complaint/FBL intake handling separately from the now-codified bounce + suppression path; provider complaint signals are still human/manual today.
 
 ## Done
 
+- 2026-03-09: Hardened `outreach/run_runtime_tick.py` so `${DATA_DIR}\runtime\status\jobs\*.json` persists latest slot evaluation for ran/skipped/reconciled jobs, reconciles same-slot wrapper summaries before `missed_window`, and emits `WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER` plus reconciliation metadata when break-glass wrappers are detected. Covered by `tests_run_runtime_tick.py`.
+- 2026-03-09: Added workflow contract coverage that keeps runtime tick as the only scheduled live workflow and validates artifact upload roots for canonical/runtime and manual wrapper paths. Evidence: `tests_run_runtime_tick_wrapper.py`.
+- 2026-03-09: Added canonical autogrow source registry `outreach/autogrow_source_registry.json` and wired env/runtime validation so unknown tokens fail as `invalid_*` and planned-but-unimplemented tokens fail as `unimplemented_*`. Evidence: `outreach/source_policy.py`, `outreach/run_prospect_generation.py`, `scripts/set_outreach_env.ps1`, `tests_source_policy_registry.py`.
+- 2026-03-09: Added persisted weekly-style ops/readiness snapshot generation via `outreach/run_ops_snapshot.py` and stale dry-run artifact retention cleanup via `outreach/cleanup_outreach_dry_run_artifacts.py`. Evidence: `tests_run_ops_snapshot.py`, `tests_cleanup_outreach_dry_run_artifacts.py`.
+- 2026-03-09: Closed the old KPI-log backlog framing; reply -> `trial_started` -> `converted` by batch/state/source-family already exists in `outreach/ops_report.py`, and the durable exported artifact path is now `outreach/run_ops_snapshot.py`. Evidence: `tests_outreach_ops_report.py`.
+- 2026-03-09: Codified bounce/suppression alignment in code and docs for hard-bounce suppression writes, soft-bounce event-only behavior, suppression freshness doctor checks, and operator snapshot visibility. Evidence: `outreach/import_bounces_imap.py`, `outreach/run_outreach_auto.py`, `outreach/run_ops_snapshot.py`, `tests_import_bounces_imap.py`.
 - 2026-03-06: Registered and verified repo self-hosted runner `desktop-q8qm4n9-runtime` on the canonical PC with labels `self-hosted`, `Windows`, `X64`, `osha-pc-canonical`. Verified by successful job pickup from `Runtime Tick (Self-Hosted)` workflow dispatch on `main`.
 - 2026-02-15: Completed outbound sender domain verification (SPF, DKIM, DMARC) for `microflowops.com`. DNS records published; test email confirmed `spf=pass`, `dkim=pass`, `dmarc=pass` with aligned domains. Verification commands added to `docs/RUNBOOK.md` under "Deliverability Preflight".
 - 2026-02-12: Set website Stripe payment link in `web/config/site.json` (`stripePaymentLink`) and wire it into `web/app/pricing/page.tsx` + `web/app/contact/page.tsx` (commit `54c2a3c6`).

@@ -7,6 +7,7 @@ param(
   [Nullable[int]] $OutreachSkipRoleInboxes = $null,
   [Nullable[int]] $ProspectAutoGrowEnabled = $null,
   [Nullable[int]] $ProspectAutoGrowSafetyNetEnabled = $null,
+  [Nullable[int]] $ProspectAiAssistReviewEnabled = $null,
   [string] $ProspectAutoGrowStates = '',
   [string] $ProspectAutoGrowSources = '',
   [Nullable[int]] $ProspectAutoGrowBacklogTarget = $null,
@@ -137,6 +138,48 @@ function Normalize-CommaList([string]$Raw) {
     }
   }
   return ($tokens -join ',')
+}
+
+function Get-AutogrowSourceRegistry {
+  $registryPath = Join-Path $repoRoot 'outreach\autogrow_source_registry.json'
+  if (-not (Test-Path -LiteralPath $registryPath)) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_TOOLING ('missing_autogrow_source_registry path=' + $registryPath)
+  }
+  try {
+    $payload = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    Fail-Token $ERR_SET_OUTREACH_ENV_TOOLING ('invalid_autogrow_source_registry detail=' + (Compact-Detail $_.Exception.Message))
+  }
+  return $payload
+}
+
+function Resolve-ImplementedAutogrowSources {
+  $payload = Get-AutogrowSourceRegistry
+  $implemented = @()
+  foreach ($item in @($payload.sources)) {
+    if ($null -eq $item) { continue }
+    $token = ([string]$item.token).Trim().ToUpperInvariant()
+    if (-not $token) { continue }
+    if (-not [bool]$item.implemented) { continue }
+    if ($implemented -notcontains $token) {
+      $implemented += $token
+    }
+  }
+  return $implemented
+}
+
+function Resolve-SupportedAutogrowSources {
+  $payload = Get-AutogrowSourceRegistry
+  $supported = @()
+  foreach ($item in @($payload.sources)) {
+    if ($null -eq $item) { continue }
+    $token = ([string]$item.token).Trim().ToUpperInvariant()
+    if (-not $token) { continue }
+    if ($supported -notcontains $token) {
+      $supported += $token
+    }
+  }
+  return $supported
 }
 
 function Test-ValidAbsoluteDataDir([string]$Value) {
@@ -334,6 +377,7 @@ try {
     'OutreachSkipRoleInboxes',
     'ProspectAutoGrowEnabled',
     'ProspectAutoGrowSafetyNetEnabled',
+    'ProspectAiAssistReviewEnabled',
     'ProspectAutoGrowStates',
     'ProspectAutoGrowSources',
     'ProspectAutoGrowBacklogTarget',
@@ -408,6 +452,9 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSafetyNetEnabled') -and $ProspectAutoGrowSafetyNetEnabled -notin @(0, 1)) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowSafetyNetEnabled'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewEnabled') -and $ProspectAiAssistReviewEnabled -notin @(0, 1)) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAiAssistReviewEnabled'
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowBacklogTarget') -and $ProspectAutoGrowBacklogTarget -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowBacklogTarget'
@@ -534,23 +581,17 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSources')) {
     $rawSources = ($ProspectAutoGrowSources -as [string])
+    $implementedSources = @(Resolve-ImplementedAutogrowSources)
+    $supportedSources = @(Resolve-SupportedAutogrowSources)
     $srcTokens = @()
     foreach ($part in ($rawSources -split ',')) {
       $src = ($part -as [string]).Trim().ToUpperInvariant()
       if (-not $src) { continue }
-      if (
-        ($src -ne 'AIHA') -and
-        ($src -ne 'OHS_BG') -and
-        ($src -ne 'APOLLO') -and
-        ($src -ne 'BCSP') -and
-        ($src -ne 'OSHA_NEWS') -and
-        ($src -ne 'STATE_LIC') -and
-        ($src -ne 'AGC') -and
-        ($src -ne 'BLUEBOOK') -and
-        ($src -ne 'THOMASNET') -and
-        ($src -ne 'BBB')
-      ) {
+      if ($supportedSources -notcontains $src) {
         Fail-Token $ERR_SET_OUTREACH_ENV_ARGS ('invalid_ProspectAutoGrowSources value=' + $src)
+      }
+      if ($implementedSources -notcontains $src) {
+        Fail-Token $ERR_SET_OUTREACH_ENV_ARGS ('unimplemented_ProspectAutoGrowSources value=' + $src)
       }
       if ($srcTokens -notcontains $src) {
         $srcTokens += $src
@@ -632,6 +673,8 @@ try {
       $printMap = Parse-DotenvMap $printPlain
       $outreachSkipRoleInboxesValue = if (Map-HasValue $printMap 'OUTREACH_SKIP_ROLE_INBOXES') { ([string]$printMap['OUTREACH_SKIP_ROLE_INBOXES']).Trim() } else { '1' }
       Write-Output ('outreach_skip_role_inboxes=' + $outreachSkipRoleInboxesValue)
+      $prospectAiAssistReviewEnabledValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_ENABLED') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_ENABLED']).Trim() } else { '1' }
+      Write-Output ('prospect_ai_assist_review_enabled=' + $prospectAiAssistReviewEnabledValue)
       $aiTriageEnabledValue = '0'
       if (Map-HasValue $printMap 'AI_TRIAGE_ENABLED') {
         $rawAiEnabled = ([string]$printMap['AI_TRIAGE_ENABLED']).Trim().ToLowerInvariant()
@@ -783,6 +826,12 @@ try {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SAFETY_NET_ENABLED' -Value ([string]$ProspectAutoGrowSafetyNetEnabled) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_SAFETY_NET_ENABLED')) {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SAFETY_NET_ENABLED' -Value '1' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewEnabled')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_REVIEW_ENABLED' -Value ([string]$ProspectAiAssistReviewEnabled) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_AI_ASSIST_REVIEW_ENABLED')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_REVIEW_ENABLED' -Value '1' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowStates')) {

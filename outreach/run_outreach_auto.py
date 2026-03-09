@@ -87,6 +87,7 @@ PASS_DOCTOR_PROVIDER_CONFIG = "PASS_DOCTOR_PROVIDER_CONFIG"
 PASS_DOCTOR_DRY_RUN_ARTIFACT = "PASS_DOCTOR_DRY_RUN_ARTIFACT"
 PASS_DOCTOR_IDEMPOTENCY = "PASS_DOCTOR_IDEMPOTENCY"
 PASS_DOCTOR_DATA_DIR = "PASS_DOCTOR_DATA_DIR"
+PASS_DOCTOR_SCHEDULER_ALIGNMENT = "PASS_DOCTOR_SCHEDULER_ALIGNMENT"
 PASS_DOCTOR_COMPLETE = "PASS_DOCTOR_COMPLETE"
 DOCTOR_ENV_REMEDIATION = "Remediation: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\\set_outreach_env.ps1"
 
@@ -2179,6 +2180,31 @@ def _doctor_check_data_dir() -> tuple[bool, str]:
     return True, ""
 
 
+def _doctor_check_scheduler_alignment(run_date: date) -> tuple[bool, str]:
+    jobs_root = _data_dir() / "runtime" / "status" / "jobs"
+    recent_slots = {run_date.isoformat(), (run_date - timedelta(days=1)).isoformat(), (run_date - timedelta(days=2)).isoformat()}
+    detected_jobs: list[str] = []
+    if jobs_root.exists():
+        for path in sorted(jobs_root.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if int(payload.get("last_external_scheduler_detected") or 0) != 1:
+                continue
+            slot_key = str(payload.get("last_slot_key") or "").strip()
+            if slot_key and slot_key not in recent_slots:
+                continue
+            detected_jobs.append(str(payload.get("job_name") or path.stem))
+    if detected_jobs:
+        print("WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE jobs=" + ",".join(detected_jobs))
+        return True, ""
+    print(f"{PASS_DOCTOR_SCHEDULER_ALIGNMENT} parallel_scheduler_active=0")
+    return True, ""
+
+
 def _doctor_check_suppression(ctx: dict[str, object]) -> tuple[bool, str]:
     suppression_csv = _suppression_csv_path()
     if not suppression_csv.exists():
@@ -2490,6 +2516,7 @@ def _run_doctor(allow_repeat: bool, run_date: date) -> tuple[bool, str]:
 
     checks = [
         _doctor_check_data_dir,
+        lambda: _doctor_check_scheduler_alignment(run_date),
         _doctor_check_crm,
         lambda: _doctor_check_signal_freshness(ctx, run_date),
         lambda: _doctor_check_suppression(ctx),
