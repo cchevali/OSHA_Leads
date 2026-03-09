@@ -2712,6 +2712,54 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("WARN_DOCTOR_DATA_DIR_NOT_ABSOLUTE=1 value=out behavior=UNSET_FOR_CHILD", text)
             self.assertIn("PASS_DOCTOR_COMPLETE", text)
 
+    def test_doctor_scheduler_alignment_warns_when_external_scheduler_detected(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            jobs_root = data_dir / "runtime" / "status" / "jobs"
+            jobs_root.mkdir(parents=True, exist_ok=True)
+            (jobs_root / "outreach_auto.json").write_text(
+                json.dumps(
+                    {
+                        "job_name": "outreach_auto",
+                        "last_slot_key": "2026-03-09",
+                        "last_external_scheduler_detected": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, self._test_env({"DATA_DIR": str(data_dir)}), clear=True):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    ok, msg = roa._doctor_check_scheduler_alignment(date(2026, 3, 9))
+            self.assertTrue(ok, msg=msg)
+            self.assertEqual(msg, "")
+            self.assertIn("WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE jobs=outreach_auto", out.getvalue())
+
+    def test_doctor_scheduler_alignment_passes_when_no_recent_external_scheduler_detected(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            jobs_root = data_dir / "runtime" / "status" / "jobs"
+            jobs_root.mkdir(parents=True, exist_ok=True)
+            (jobs_root / "outreach_auto.json").write_text(
+                json.dumps(
+                    {
+                        "job_name": "outreach_auto",
+                        "last_slot_key": "2026-02-01",
+                        "last_external_scheduler_detected": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, self._test_env({"DATA_DIR": str(data_dir)}), clear=True):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    ok, msg = roa._doctor_check_scheduler_alignment(date(2026, 3, 9))
+            self.assertTrue(ok, msg=msg)
+            self.assertEqual(msg, "")
+            self.assertIn("PASS_DOCTOR_SCHEDULER_ALIGNMENT parallel_scheduler_active=0", out.getvalue())
+
     def test_doctor_success_pass_tokens_only_and_no_db_mutation(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

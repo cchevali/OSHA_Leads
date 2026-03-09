@@ -25,6 +25,7 @@ except Exception:  # pragma: no cover
 ERR_RUNTIME_TICK_CONFIG = "ERR_RUNTIME_TICK_CONFIG"
 ERR_RUNTIME_TICK_LOCKED = "ERR_RUNTIME_TICK_LOCKED"
 ERR_RUNTIME_TICK_STAGE = "ERR_RUNTIME_TICK_STAGE"
+WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER = "WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER"
 PASS_RUNTIME_TICK_PRINT_CONFIG = "PASS_RUNTIME_TICK_PRINT_CONFIG"
 PASS_RUNTIME_TICK_DOCTOR = "PASS_RUNTIME_TICK_DOCTOR"
 PASS_RUNTIME_TICK_COMPLETE = "PASS_RUNTIME_TICK_COMPLETE"
@@ -32,6 +33,7 @@ PASS_RUNTIME_TICK_COMPLETE = "PASS_RUNTIME_TICK_COMPLETE"
 RUNTIME_TZ_NAME = "America/New_York"
 RUNTIME_TZ_FALLBACK = "Eastern Standard Time"
 LOCK_STALE_SECONDS = 4 * 60 * 60
+RUNTIME_JOB_STATE_SCHEMA = "runtime_tick_job_state_v1"
 ALERTS_SCHEMA = "runtime_tick_alert_v1"
 ALERTS_SUMMARY_SCHEMA = "runtime_tick_alert_summary_v1"
 CRITICAL_WINDOW_JOBS = frozenset({"ingest_daily", "prospect_replenish_daily", "outreach_auto", "trial_facs_daily"})
@@ -60,6 +62,22 @@ class AlertCandidate:
     task_log_path: str
     run_summary_json_path: str
     run_summary_text_path: str
+    reconciliation_status: str
+
+
+@dataclass(frozen=True)
+class WrapperRunEvidence:
+    job_name: str
+    wrapper_name: str
+    slot_key: str
+    start_local: str
+    end_local: str
+    exit_code: int
+    task_log_path: str
+    run_summary_json_path: str
+    run_summary_text_path: str
+    success: bool
+    timing: str
 
 
 JOBS: tuple[JobSpec, ...] = (
@@ -220,8 +238,18 @@ def _candidate_for_job(
     if now_local < scheduled_dt:
         return {"due": False, "reason": "not_due_yet", "slot_key": slot_key, "scheduled_local": scheduled_dt.isoformat()}
 
+    prior_slot = str(state.get("last_slot_key") or "").strip()
+    prior_result = str(state.get("last_result") or "").strip().lower()
+    prior_attempts = int(state.get("last_attempt_count") or 0)
     deadline = scheduled_dt + timedelta(minutes=int(spec.catchup_minutes))
     if now_local > deadline:
+        if prior_slot == slot_key and prior_result in {"ran", "reconciled"}:
+            return {
+                "due": False,
+                "reason": "already_ran",
+                "slot_key": slot_key,
+                "scheduled_local": scheduled_dt.isoformat(),
+            }
         return {
             "due": False,
             "reason": f"window_closed_{spec.catchup_minutes}m",
@@ -229,9 +257,6 @@ def _candidate_for_job(
             "scheduled_local": scheduled_dt.isoformat(),
         }
 
-    prior_slot = str(state.get("last_slot_key") or "").strip()
-    prior_result = str(state.get("last_result") or "").strip().lower()
-    prior_attempts = int(state.get("last_attempt_count") or 0)
     if prior_slot == slot_key:
         if prior_result == "ran":
             return {
@@ -375,6 +400,273 @@ def _extract_token(text: str, token: str) -> str:
     return str(matches[-1]).strip()
 
 
+def _parse_iso_local(raw: str) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        tz = _runtime_tz()
+        if tz is not None:
+            parsed = parsed.replace(tzinfo=tz)
+    return parsed
+
+
+def _wrapper_name_for_job(job_name: str) -> str:
+    mapping = {
+        "ingest_daily": "OSHA_Osha_Ingest_Daily",
+        "prospect_replenish_daily": "OSHA_Prospect_Replenish_Daily",
+        "outreach_auto": "OSHA_Outreach_Auto",
+        "trial_facs_daily": "OSHA_Trial_FACS_Daily",
+    }
+    return str(mapping.get(str(job_name or "").strip(), "") or "")
+
+
+def _artifact_root_candidates(repo_root: Path, data_dir: Path, env: dict[str, str], env_key: str, tail: tuple[str, ...]) -> list[Path]:
+    roots: list[Path] = []
+    raw_env = str(env.get(env_key) or "").strip()
+    if raw_env:
+        candidate = Path(raw_env).expanduser()
+        if candidate.is_absolute():
+            roots.append(candidate.resolve(strict=False))
+    roots.append(data_dir.joinpath(*tail).resolve(strict=False))
+    roots.append((repo_root / Path(*tail)).resolve(strict=False))
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return unique
+
+
+def _run_summary_roots(repo_root: Path, data_dir: Path, env: dict[str, str]) -> list[Path]:
+    return _artifact_root_candidates(repo_root, data_dir, env, "RUN_SUMMARY_ROOT", ("out", "run_summaries"))
+
+
+def _choose_wrapper_evidence(
+    *,
+    job_name: str,
+    wrapper_name: str,
+    slot_key: str,
+    scheduled_local: str,
+    summary_payloads: list[dict[str, Any]],
+) -> WrapperRunEvidence | None:
+    scheduled_dt = _parse_iso_local(scheduled_local)
+    if scheduled_dt is None:
+        return None
+    job_spec = next((item for item in JOBS if item.name == job_name), None)
+    catchup_minutes = int(job_spec.catchup_minutes) if job_spec is not None else 0
+    deadline = scheduled_dt + timedelta(minutes=catchup_minutes)
+
+    successes: list[WrapperRunEvidence] = []
+    failures: list[WrapperRunEvidence] = []
+    for payload in summary_payloads:
+        start_local = str(payload.get("start_local") or "").strip()
+        end_local = str(payload.get("end_local") or "").strip()
+        started_dt = _parse_iso_local(start_local)
+        if started_dt is None:
+            continue
+        exit_code = int(payload.get("exit_code") or 0)
+        artifacts = payload.get("artifacts") or {}
+        evidence = WrapperRunEvidence(
+            job_name=job_name,
+            wrapper_name=wrapper_name,
+            slot_key=slot_key,
+            start_local=start_local,
+            end_local=end_local,
+            exit_code=exit_code,
+            task_log_path=str(artifacts.get("task_log") or "").strip(),
+            run_summary_json_path=str(artifacts.get("summary_json") or "").strip(),
+            run_summary_text_path=str(artifacts.get("summary_text") or "").strip(),
+            success=(exit_code == 0),
+            timing="within_window" if started_dt <= deadline else "late",
+        )
+        if evidence.success:
+            successes.append(evidence)
+        else:
+            failures.append(evidence)
+
+    if successes:
+        within_window = [item for item in successes if item.timing == "within_window"]
+        if within_window:
+            return sorted(within_window, key=lambda item: item.start_local)[0]
+        return sorted(successes, key=lambda item: item.start_local)[0]
+    if failures:
+        return sorted(failures, key=lambda item: item.start_local)[-1]
+    return None
+
+
+def _find_wrapper_run_evidence_for_slot(
+    *,
+    repo_root: Path,
+    data_dir: Path,
+    env: dict[str, str],
+    job_name: str,
+    slot_key: str,
+    scheduled_local: str,
+) -> WrapperRunEvidence | None:
+    wrapper_name = _wrapper_name_for_job(job_name)
+    if not wrapper_name:
+        return None
+    slot_token = str(slot_key or "").replace("-", "")
+    if not slot_token:
+        return None
+
+    summary_payloads: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for root in _run_summary_roots(repo_root, data_dir, env):
+        if not root.exists():
+            continue
+        for path in sorted(root.glob(f"{wrapper_name}_{slot_token}_*.summary.json")):
+            key = str(path.resolve(strict=False)).lower()
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            payload = _read_json(path)
+            if str(payload.get("wrapper") or "").strip() != wrapper_name:
+                continue
+            summary_payloads.append(payload)
+    return _choose_wrapper_evidence(
+        job_name=job_name,
+        wrapper_name=wrapper_name,
+        slot_key=slot_key,
+        scheduled_local=scheduled_local,
+        summary_payloads=summary_payloads,
+    )
+
+
+def _emit_external_scheduler_warning(job_name: str, slot_key: str, evidence: WrapperRunEvidence) -> None:
+    _emit(
+        WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER,
+        "job="
+        + job_name
+        + " slot="
+        + slot_key
+        + " timing="
+        + evidence.timing
+        + " exit_code="
+        + str(evidence.exit_code)
+        + " summary_json="
+        + (evidence.run_summary_json_path or ""),
+    )
+
+
+def _reconcile_job_results_from_wrapper_artifacts(
+    *,
+    repo_root: Path,
+    data_dir: Path,
+    env: dict[str, str],
+    job_results: list[dict[str, Any]],
+) -> None:
+    for job in job_results:
+        name = str(job.get("name") or "").strip()
+        if name not in CRITICAL_WINDOW_JOBS:
+            continue
+        slot_key = str(job.get("slot_key") or "").strip()
+        scheduled_local = str(job.get("scheduled_local") or "").strip()
+        if not slot_key or not scheduled_local:
+            continue
+
+        evidence = _find_wrapper_run_evidence_for_slot(
+            repo_root=repo_root,
+            data_dir=data_dir,
+            env=env,
+            job_name=name,
+            slot_key=slot_key,
+            scheduled_local=scheduled_local,
+        )
+        if evidence is None:
+            continue
+
+        _emit_external_scheduler_warning(name, slot_key, evidence)
+        job["external_scheduler_detected"] = 1
+        job["reconciliation_status"] = (
+            "external_wrapper_success_within_window"
+            if evidence.success and evidence.timing == "within_window"
+            else "external_wrapper_success_late"
+            if evidence.success
+            else "external_wrapper_failed"
+        )
+        if evidence.start_local:
+            job["wrapper_start_local"] = evidence.start_local
+        if evidence.end_local:
+            job["wrapper_end_local"] = evidence.end_local
+        if evidence.task_log_path and not str(job.get("task_log_path") or "").strip():
+            job["task_log_path"] = evidence.task_log_path
+        if evidence.run_summary_json_path and not str(job.get("run_summary_json_path") or "").strip():
+            job["run_summary_json_path"] = evidence.run_summary_json_path
+        if evidence.run_summary_text_path and not str(job.get("run_summary_text_path") or "").strip():
+            job["run_summary_text_path"] = evidence.run_summary_text_path
+
+        result = str(job.get("result") or "").strip().lower()
+        reason = str(job.get("reason") or "").strip()
+        if result == "skipped" and reason.startswith("window_closed_") and evidence.success and evidence.timing == "within_window":
+            job["result"] = "reconciled"
+            job["reason"] = "external_wrapper_success_within_window"
+            job["exit_code"] = 0
+        elif result == "skipped" and reason.startswith("window_closed_") and evidence.success:
+            job["wrapper_success_after_window_closed"] = 1
+
+
+def _persist_job_states(
+    *,
+    repo_root: Path,
+    data_dir: Path,
+    prior_states: dict[str, dict[str, Any]],
+    job_results: list[dict[str, Any]],
+) -> None:
+    for job in job_results:
+        job_name = str(job.get("name") or "").strip()
+        if not job_name:
+            continue
+        state_path = _job_state_path(data_dir, job_name)
+        prior_state = dict(prior_states.get(job_name) or {})
+        slot_key = str(job.get("slot_key") or "").strip()
+        result = str(job.get("result") or "").strip().lower()
+        prior_slot = str(prior_state.get("last_slot_key") or "").strip()
+        prior_attempts = int(prior_state.get("last_attempt_count") or 0)
+        if result in {"ran", "failed", "doctor_ok", "dry_run_ok"}:
+            attempts = prior_attempts + 1 if prior_slot == slot_key else 1
+        elif result == "reconciled":
+            attempts = prior_attempts if prior_slot == slot_key and prior_attempts > 0 else 1
+        elif prior_slot == slot_key:
+            attempts = prior_attempts
+        else:
+            attempts = 0
+
+        last_result = "failed" if result == "failed" else "ran" if result in {"ran", "reconciled"} else "skipped"
+        state_payload: dict[str, Any] = {
+            "schema": RUNTIME_JOB_STATE_SCHEMA,
+            "job_name": job_name,
+            "last_slot_key": slot_key,
+            "last_scheduled_local": str(job.get("scheduled_local") or ""),
+            "last_started_local": str(job.get("started_local") or ""),
+            "last_finished_local": str(job.get("finished_local") or ""),
+            "last_result": last_result,
+            "last_result_detail": result,
+            "last_exit_code": int(job.get("exit_code") or 0),
+            "last_reason": str(job.get("reason") or ""),
+            "last_attempt_count": attempts,
+            "last_task_log_path": str(job.get("task_log_path") or ""),
+            "last_run_summary_json_path": str(job.get("run_summary_json_path") or ""),
+            "last_run_summary_text_path": str(job.get("run_summary_text_path") or ""),
+            "last_git_sha": _git_sha(repo_root),
+        }
+        if job.get("external_scheduler_detected"):
+            state_payload["last_external_scheduler_detected"] = 1
+            state_payload["last_reconciliation_status"] = str(job.get("reconciliation_status") or "")
+            state_payload["last_wrapper_start_local"] = str(job.get("wrapper_start_local") or "")
+            state_payload["last_wrapper_end_local"] = str(job.get("wrapper_end_local") or "")
+        _write_json(state_path, state_payload)
+
+
 def _acquire_lock(lock_path: Path) -> tuple[bool, str]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     now = time.time()
@@ -447,6 +739,7 @@ def _collect_alert_candidates(job_results: list[dict[str, Any]]) -> list[AlertCa
         task_log_path = str(job.get("task_log_path") or "").strip()
         run_summary_json_path = str(job.get("run_summary_json_path") or "").strip()
         run_summary_text_path = str(job.get("run_summary_text_path") or "").strip()
+        reconciliation_status = str(job.get("reconciliation_status") or "").strip()
         exit_code = int(job.get("exit_code") or 0)
 
         if result == "failed":
@@ -462,6 +755,7 @@ def _collect_alert_candidates(job_results: list[dict[str, Any]]) -> list[AlertCa
                     task_log_path=task_log_path,
                     run_summary_json_path=run_summary_json_path,
                     run_summary_text_path=run_summary_text_path,
+                    reconciliation_status=reconciliation_status,
                 )
             )
             continue
@@ -483,6 +777,7 @@ def _collect_alert_candidates(job_results: list[dict[str, Any]]) -> list[AlertCa
                     task_log_path=task_log_path,
                     run_summary_json_path=run_summary_json_path,
                     run_summary_text_path=run_summary_text_path,
+                    reconciliation_status=reconciliation_status,
                 )
             )
     return candidates
@@ -517,6 +812,8 @@ def _build_alert_body(
         f"repo_root: {repo_root}",
         f"data_dir: {data_dir}",
     ]
+    if candidate.reconciliation_status:
+        lines.append(f"reconciliation_status: {candidate.reconciliation_status}")
     if candidate.task_log_path:
         lines.append(f"task_log_path: {candidate.task_log_path}")
     if candidate.run_summary_json_path:
@@ -637,6 +934,7 @@ def _evaluate_runtime_alerts(
                 "result": candidate.result,
                 "reason": candidate.reason,
                 "exit_code": candidate.exit_code,
+                "reconciliation_status": candidate.reconciliation_status,
                 "task_log_path": candidate.task_log_path,
                 "run_summary_json_path": candidate.run_summary_json_path,
                 "run_summary_text_path": candidate.run_summary_text_path,
@@ -825,6 +1123,7 @@ def main(argv: list[str] | None = None) -> int:
     job_results: list[dict[str, Any]] = []
     alert_summary: dict[str, Any] | None = None
     env = dict(os.environ)
+    prior_states: dict[str, dict[str, Any]] = {}
 
     lock_path = (_locks_root(data_dir) / "runtime_tick.lock").resolve(strict=False)
     lock_acquired = False
@@ -837,8 +1136,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         for spec in selected_jobs:
-            state_path = _job_state_path(data_dir, spec.name)
-            prior_state = _read_json(state_path) if live_mode else {}
+            prior_state = _read_json(_job_state_path(data_dir, spec.name)) if live_mode else {}
+            prior_states[spec.name] = dict(prior_state)
             candidate = _candidate_for_job(
                 spec,
                 now_local,
@@ -864,6 +1163,13 @@ def main(argv: list[str] | None = None) -> int:
                         "reason": skip_reason,
                         "exit_code": 0,
                         "slot_key": slot_key,
+                        "scheduled_local": scheduled_local,
+                        "started_local": "",
+                        "finished_local": "",
+                        "task_log_path": "",
+                        "run_summary_json_path": "",
+                        "run_summary_text_path": "",
+                        "reconciliation_status": "",
                     }
                 )
                 _emit(
@@ -879,6 +1185,13 @@ def main(argv: list[str] | None = None) -> int:
                         "reason": reason,
                         "exit_code": 0,
                         "slot_key": slot_key,
+                        "scheduled_local": scheduled_local,
+                        "started_local": "",
+                        "finished_local": "",
+                        "task_log_path": "",
+                        "run_summary_json_path": "",
+                        "run_summary_text_path": "",
+                        "reconciliation_status": "",
                     }
                 )
                 _emit("RUNTIME_TICK_JOB_RESULT", f"name={spec.name} result=skipped exit_code=0 reason={reason}")
@@ -928,30 +1241,9 @@ def main(argv: list[str] | None = None) -> int:
                     "task_log_path": task_log_path,
                     "run_summary_json_path": run_summary_json,
                     "run_summary_text_path": run_summary_text,
+                    "reconciliation_status": "",
                 }
             )
-
-            if live_mode:
-                prior_slot = str(prior_state.get("last_slot_key") or "")
-                prior_attempts = int(prior_state.get("last_attempt_count") or 0)
-                attempts = prior_attempts + 1 if prior_slot == slot_key else 1
-                state_payload: dict[str, Any] = {
-                    "schema": "runtime_tick_job_state_v1",
-                    "job_name": spec.name,
-                    "last_slot_key": slot_key,
-                    "last_scheduled_local": scheduled_local,
-                    "last_started_local": started_job.isoformat(),
-                    "last_finished_local": finished_job.isoformat(),
-                    "last_result": "ran" if exit_code == 0 else "failed",
-                    "last_exit_code": int(exit_code),
-                    "last_reason": reason,
-                    "last_attempt_count": attempts,
-                    "last_task_log_path": task_log_path,
-                    "last_run_summary_json_path": run_summary_json,
-                    "last_run_summary_text_path": run_summary_text,
-                    "last_git_sha": _git_sha(repo_root),
-                }
-                _write_json(state_path, state_payload)
 
             if exit_code != 0:
                 status_fail = True
@@ -960,6 +1252,20 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.dry_run:
                     # In live mode fail fast to avoid compounding bad state.
                     break
+
+        if live_mode:
+            _reconcile_job_results_from_wrapper_artifacts(
+                repo_root=repo_root,
+                data_dir=data_dir,
+                env=env,
+                job_results=job_results,
+            )
+            _persist_job_states(
+                repo_root=repo_root,
+                data_dir=data_dir,
+                prior_states=prior_states,
+                job_results=job_results,
+            )
 
         now_done = datetime.now(now_local.tzinfo)
         alert_summary = _evaluate_runtime_alerts(

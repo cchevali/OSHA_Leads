@@ -50,16 +50,10 @@ OUTPUT_FILENAME = "prospects_latest.csv"
 GENERATION_CACHE_ROOT_SUBDIR = ("prospect_generation", "cache")
 GENERATION_DIAGNOSTICS_SUBDIR = ("prospect_generation", "diagnostics")
 
-AUTOGROW_SOURCE_PREFIX = {
-    "AIHA": "aiha",
-    "OHS_BG": "ohs_bg",
-    "APOLLO": "apollo",
-    "BCSP": "bcsp",
-    "OSHA_NEWS": "osha_news",
-    "STATE_LIC": "state_lic",
-}
+AUTOGROW_SOURCE_PREFIX = source_policy.autogrow_source_prefix_map(include_unimplemented=False)
 AUTOGROW_SOURCE_LABEL = {k: str(v or "").lower() for k, v in AUTOGROW_SOURCE_PREFIX.items()}
-AUTOGROW_ALLOWED_SOURCES = set(AUTOGROW_SOURCE_PREFIX.keys())
+AUTOGROW_ALLOWED_SOURCES = set(source_policy.implemented_autogrow_sources())
+AUTOGROW_SUPPORTED_SOURCES = set(source_policy.supported_autogrow_sources(include_unimplemented=True))
 CRAWL4AI_AUTOGROW_SOURCES = {"OSHA_NEWS"}
 AUTOGROW_REJECT_KEYS = (
     "invalid_email",
@@ -529,9 +523,11 @@ def _parse_autogrow_config() -> dict:
         if item not in source_tokens:
             source_tokens.append(item)
 
-    invalid = [item for item in source_tokens if item not in AUTOGROW_ALLOWED_SOURCES]
+    invalid, unimplemented = source_policy.validate_autogrow_source_tokens(source_tokens)
     if invalid:
         raise ValueError(f"invalid_autogrow_sources={','.join(invalid)}")
+    if unimplemented:
+        raise ValueError(f"unimplemented_autogrow_sources={','.join(unimplemented)}")
 
     backlog_target = _parse_int_env(os.getenv("PROSPECT_AUTOGROW_BACKLOG_TARGET", ""), default=60, minimum=1)
     max_fetch_pages = _parse_int_env(os.getenv("PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN", ""), default=6, minimum=1)

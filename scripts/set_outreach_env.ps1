@@ -140,6 +140,48 @@ function Normalize-CommaList([string]$Raw) {
   return ($tokens -join ',')
 }
 
+function Get-AutogrowSourceRegistry {
+  $registryPath = Join-Path $repoRoot 'outreach\autogrow_source_registry.json'
+  if (-not (Test-Path -LiteralPath $registryPath)) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_TOOLING ('missing_autogrow_source_registry path=' + $registryPath)
+  }
+  try {
+    $payload = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    Fail-Token $ERR_SET_OUTREACH_ENV_TOOLING ('invalid_autogrow_source_registry detail=' + (Compact-Detail $_.Exception.Message))
+  }
+  return $payload
+}
+
+function Resolve-ImplementedAutogrowSources {
+  $payload = Get-AutogrowSourceRegistry
+  $implemented = @()
+  foreach ($item in @($payload.sources)) {
+    if ($null -eq $item) { continue }
+    $token = ([string]$item.token).Trim().ToUpperInvariant()
+    if (-not $token) { continue }
+    if (-not [bool]$item.implemented) { continue }
+    if ($implemented -notcontains $token) {
+      $implemented += $token
+    }
+  }
+  return $implemented
+}
+
+function Resolve-SupportedAutogrowSources {
+  $payload = Get-AutogrowSourceRegistry
+  $supported = @()
+  foreach ($item in @($payload.sources)) {
+    if ($null -eq $item) { continue }
+    $token = ([string]$item.token).Trim().ToUpperInvariant()
+    if (-not $token) { continue }
+    if ($supported -notcontains $token) {
+      $supported += $token
+    }
+  }
+  return $supported
+}
+
 function Test-ValidAbsoluteDataDir([string]$Value) {
   $text = (($Value -as [string]))
   if ($null -eq $text) { $text = '' }
@@ -539,23 +581,17 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSources')) {
     $rawSources = ($ProspectAutoGrowSources -as [string])
+    $implementedSources = @(Resolve-ImplementedAutogrowSources)
+    $supportedSources = @(Resolve-SupportedAutogrowSources)
     $srcTokens = @()
     foreach ($part in ($rawSources -split ',')) {
       $src = ($part -as [string]).Trim().ToUpperInvariant()
       if (-not $src) { continue }
-      if (
-        ($src -ne 'AIHA') -and
-        ($src -ne 'OHS_BG') -and
-        ($src -ne 'APOLLO') -and
-        ($src -ne 'BCSP') -and
-        ($src -ne 'OSHA_NEWS') -and
-        ($src -ne 'STATE_LIC') -and
-        ($src -ne 'AGC') -and
-        ($src -ne 'BLUEBOOK') -and
-        ($src -ne 'THOMASNET') -and
-        ($src -ne 'BBB')
-      ) {
+      if ($supportedSources -notcontains $src) {
         Fail-Token $ERR_SET_OUTREACH_ENV_ARGS ('invalid_ProspectAutoGrowSources value=' + $src)
+      }
+      if ($implementedSources -notcontains $src) {
+        Fail-Token $ERR_SET_OUTREACH_ENV_ARGS ('unimplemented_ProspectAutoGrowSources value=' + $src)
       }
       if ($srcTokens -notcontains $src) {
         $srcTokens += $src
