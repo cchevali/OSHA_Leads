@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -10,12 +11,13 @@ from pathlib import Path
 from typing import Any
 
 import run_trial_admin
-from runtime_data_dir import resolve_data_dir
+from runtime_data_dir import resolve_data_dir, resolve_osha_db_path
 from runtime_guard import render_runtime_lines, run_runtime_preflight
 
 
 ERR_RUNTIME_STATE_MIGRATE_CONFIG = "ERR_RUNTIME_STATE_MIGRATE_CONFIG"
 ERR_RUNTIME_STATE_MIGRATE_APPLY = "ERR_RUNTIME_STATE_MIGRATE_APPLY"
+ERR_RUNTIME_STATE_MIGRATE_OSHA_DB_DIFF = "ERR_RUNTIME_STATE_MIGRATE_OSHA_DB_DIFF"
 PASS_RUNTIME_STATE_MIGRATE_PRINT_CONFIG = "PASS_RUNTIME_STATE_MIGRATE_PRINT_CONFIG"
 PASS_RUNTIME_STATE_MIGRATE_DOCTOR = "PASS_RUNTIME_STATE_MIGRATE_DOCTOR"
 PASS_RUNTIME_STATE_MIGRATE_COMPLETE = "PASS_RUNTIME_STATE_MIGRATE_COMPLETE"
@@ -74,7 +76,7 @@ def _resolve_paths(repo_root: Path) -> dict[str, Path]:
         "data_dir": data_dir,
         "repo_osha_db": (repo_root / "data" / "osha.sqlite").resolve(strict=False),
         "legacy_repo_crm_light_db": (repo_root / "out" / "crm_light.sqlite").resolve(strict=False),
-        "canonical_osha_db": (data_dir / "osha.sqlite").resolve(strict=False),
+        "canonical_osha_db": resolve_osha_db_path(repo_root).effective_path,
         "canonical_crm_db": (data_dir / "crm.sqlite").resolve(strict=False),
         "canonical_crm_light_db": (data_dir / "crm_light.sqlite").resolve(strict=False),
         "backup_root": (data_dir / "out" / "backups").resolve(strict=False),
@@ -96,16 +98,60 @@ def _exists_flag(path: Path) -> str:
     return "YES" if path.exists() else "NO"
 
 
+def _file_meta(path: Path) -> dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        return {"exists": False, "size_bytes": 0, "sha256": "", "mtime_utc": ""}
+    stat = path.stat()
+    return {
+        "exists": True,
+        "size_bytes": int(stat.st_size),
+        "sha256": _file_hash(path),
+        "mtime_utc": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+    }
+
+
+def _emit_file_meta(label: str, path: Path) -> None:
+    meta = _file_meta(path)
+    _emit(f"RUNTIME_STATE_MIGRATE_{label}_PATH", str(path))
+    _emit(f"RUNTIME_STATE_MIGRATE_{label}_EXISTS", "YES" if meta["exists"] else "NO")
+    _emit(f"RUNTIME_STATE_MIGRATE_{label}_SIZE_BYTES", int(meta["size_bytes"]))
+    _emit(f"RUNTIME_STATE_MIGRATE_{label}_SHA256", str(meta["sha256"]))
+    _emit(f"RUNTIME_STATE_MIGRATE_{label}_MTIME_UTC", str(meta["mtime_utc"]))
+
+
+def _legacy_osha_db_references(repo_root: Path) -> list[str]:
+    pattern = re.compile(r"data[\\/]+osha\.sqlite", re.IGNORECASE)
+    hits: list[str] = []
+    for path in repo_root.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in {".py", ".ps1", ".bat"}:
+            continue
+        rel = path.relative_to(repo_root).as_posix()
+        if rel.startswith(".local/") or rel.startswith("out/") or rel.startswith("tests/") or rel.startswith("docs/"):
+            continue
+        if path.name.startswith("test_"):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if pattern.search(text):
+            hits.append(rel)
+    return sorted(hits)
+
+
 def _doctor(paths: dict[str, Path]) -> int:
     _print_paths(paths)
-    _emit("RUNTIME_STATE_MIGRATE_EXISTS_REPO_OSHA_DB", _exists_flag(paths["repo_osha_db"]))
-    _emit("RUNTIME_STATE_MIGRATE_EXISTS_CANONICAL_OSHA_DB", _exists_flag(paths["canonical_osha_db"]))
-    _emit("RUNTIME_STATE_MIGRATE_EXISTS_CANONICAL_CRM_DB", _exists_flag(paths["canonical_crm_db"]))
-    _emit("RUNTIME_STATE_MIGRATE_EXISTS_CANONICAL_CRM_LIGHT_DB", _exists_flag(paths["canonical_crm_light_db"]))
-    _emit(
-        "RUNTIME_STATE_MIGRATE_EXISTS_LEGACY_REPO_CRM_LIGHT_DB",
-        _exists_flag(paths["legacy_repo_crm_light_db"]),
-    )
+    _emit_file_meta("REPO_OSHA_DB", paths["repo_osha_db"])
+    _emit_file_meta("CANONICAL_OSHA_DB", paths["canonical_osha_db"])
+    _emit_file_meta("CANONICAL_CRM_DB", paths["canonical_crm_db"])
+    _emit_file_meta("CANONICAL_CRM_LIGHT_DB", paths["canonical_crm_light_db"])
+    _emit_file_meta("LEGACY_REPO_CRM_LIGHT_DB", paths["legacy_repo_crm_light_db"])
+    refs = _legacy_osha_db_references(paths["repo_root"])
+    _emit("RUNTIME_STATE_MIGRATE_LEGACY_OSHA_DB_REFERENCE_COUNT", len(refs))
+    for ref in refs:
+        _emit("RUNTIME_STATE_MIGRATE_LEGACY_OSHA_DB_REFERENCE", ref)
     print(f"{PASS_RUNTIME_STATE_MIGRATE_DOCTOR} status=OK")
     print(f"{PASS_RUNTIME_STATE_MIGRATE_COMPLETE} status=DOCTOR")
     return 0
@@ -118,10 +164,13 @@ def _plan_actions(paths: dict[str, Path]) -> list[dict[str, Any]]:
     if repo_osha.exists():
         if not canonical_osha.exists():
             actions.append({"name": "copy_repo_osha_to_canonical", "src": repo_osha, "dst": canonical_osha})
+            actions.append({"name": "archive_repo_osha_db", "src": repo_osha, "archive_name": "legacy_repo_osha.sqlite"})
         else:
             src_hash = _file_hash(repo_osha)
             dst_hash = _file_hash(canonical_osha)
-            if src_hash and dst_hash and src_hash != dst_hash:
+            if src_hash and dst_hash and src_hash == dst_hash:
+                actions.append({"name": "archive_repo_osha_db", "src": repo_osha, "archive_name": "legacy_repo_osha.sqlite"})
+            elif src_hash and dst_hash and src_hash != dst_hash:
                 actions.append(
                     {
                         "name": "conflict_repo_osha_vs_canonical",
@@ -157,7 +206,7 @@ def _apply_actions(paths: dict[str, Path], actions: list[dict[str, Any]]) -> tup
         name = str(action.get("name") or "")
         if name == "conflict_repo_osha_vs_canonical":
             print(
-                f"{ERR_RUNTIME_STATE_MIGRATE_APPLY} action={name} src={action.get('src')} dst={action.get('dst')} "
+                f"{ERR_RUNTIME_STATE_MIGRATE_OSHA_DB_DIFF} action={name} src={action.get('src')} dst={action.get('dst')} "
                 f"src_hash={action.get('src_hash')} dst_hash={action.get('dst_hash')}",
                 file=sys.stderr,
             )
@@ -200,10 +249,10 @@ def _apply_actions(paths: dict[str, Path], actions: list[dict[str, Any]]) -> tup
             copied += 1
             continue
 
-        if name == "archive_legacy_trial_db":
+        if name in {"archive_legacy_trial_db", "archive_repo_osha_db"}:
             src = Path(action["src"]).resolve(strict=False)
             if src.exists():
-                archived_path = (backup_dir / "legacy_repo_crm_light.sqlite").resolve(strict=False)
+                archived_path = (backup_dir / str(action.get("archive_name") or src.name)).resolve(strict=False)
                 shutil.copy2(str(src), str(archived_path))
                 src.unlink()
                 archived += 1
@@ -262,6 +311,12 @@ def main(argv: list[str] | None = None) -> int:
 
     actions = _plan_actions(paths)
     _print_paths(paths)
+    _emit_file_meta("REPO_OSHA_DB", paths["repo_osha_db"])
+    _emit_file_meta("CANONICAL_OSHA_DB", paths["canonical_osha_db"])
+    refs = _legacy_osha_db_references(paths["repo_root"])
+    _emit("RUNTIME_STATE_MIGRATE_LEGACY_OSHA_DB_REFERENCE_COUNT", len(refs))
+    for ref in refs:
+        _emit("RUNTIME_STATE_MIGRATE_LEGACY_OSHA_DB_REFERENCE", ref)
     _emit("RUNTIME_STATE_MIGRATE_ACTION_COUNT", len(actions))
     for action in actions:
         name = str(action.get("name") or "")

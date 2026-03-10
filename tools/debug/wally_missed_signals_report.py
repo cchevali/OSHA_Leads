@@ -29,6 +29,7 @@ from send_digest_email import (
     send_email,
     territory_display_name,
 )
+from runtime_data_dir import resolve_osha_db_path
 
 
 _RE_ISO_DATE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
@@ -581,7 +582,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--print-config", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="Do not send preview email; still writes report artifacts.")
-    ap.add_argument("--leads-db", default="data/osha.sqlite")
+    ap.add_argument(
+        "--leads-db",
+        default=str(resolve_osha_db_path(REPO_ROOT).effective_path),
+        help=r"SQLite inspections DB path (default: ${DATA_DIR}\osha.sqlite).",
+    )
     ap.add_argument("--crm-db", default="out/crm_light.sqlite")
     ap.add_argument("--email-log", default="out/email_log.csv")
     ap.add_argument("--customer-config", default="customers/wally_trial_tx_triangle_v1.json")

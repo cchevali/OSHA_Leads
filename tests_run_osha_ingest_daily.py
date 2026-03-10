@@ -10,7 +10,7 @@ import run_osha_ingest_daily as ingest_daily
 class TestRunOshaIngestDaily(unittest.TestCase):
     def _run(self, argv: list[str], env: dict[str, str | None] | None = None) -> tuple[int, str]:
         base_env = dict(os.environ)
-        for key in ("DATA_DIR", "MFO_DATA_DIR_EFFECTIVE", "MFO_DATA_DIR_SOURCE", "OUTREACH_SIGNAL_DB"):
+        for key in ("DATA_DIR", "MFO_DATA_DIR_EFFECTIVE", "MFO_DATA_DIR_SOURCE"):
             base_env.pop(key, None)
         for key, value in (env or {}).items():
             if value is None:
@@ -27,7 +27,7 @@ class TestRunOshaIngestDaily(unittest.TestCase):
         rc, out = self._run(["--print-config"], {"OUTREACH_STATES": "TX,CA,FL"})
         self.assertEqual(rc, 0, msg=out)
         self.assertIn("INGEST_DB_PATH=", out)
-        self.assertIn("INGEST_DB_SOURCE=repo_default", out)
+        self.assertIn("INGEST_DB_SOURCE=data_dir", out)
         self.assertIn("INGEST_SCOPE_MODE=outreach", out)
         self.assertIn("INGEST_SCOPE_STATES=TX,CA,FL", out)
         self.assertIn("INGEST_SCOPE_SOURCE=outreach", out)

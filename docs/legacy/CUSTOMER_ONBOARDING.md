@@ -12,7 +12,7 @@ This guide walks through adding a new customer to the OSHA Concierge system. The
 ## Prerequisites
 
 - SMTP credentials configured as environment variables
-- Database initialized (`data/osha.sqlite`)
+- Database initialized (`${DATA_DIR}\osha.sqlite`)
 - Python virtual environment active
 
 ---
@@ -143,7 +143,7 @@ After onboarding, verify:
 | Issue | Solution |
 |-------|----------|
 | Config validation error | Check required fields in JSON |
-| Suppression check failed | Ensure `data/osha.sqlite` exists with schema |
+| Suppression check failed | Ensure `${DATA_DIR}\osha.sqlite` exists with schema |
 | Email not received | Check SMTP env vars, verify recipient in whitelist |
 | PILOT_MODE blocking | Add recipient to whitelist or disable pilot mode |
 

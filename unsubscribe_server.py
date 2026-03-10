@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 from urllib.parse import urlparse, parse_qs, urlencode
 
+from runtime_data_dir import resolve_osha_db_path
+
 # Load environment variables from .env if available
 try:
     from dotenv import load_dotenv
@@ -174,9 +176,8 @@ def _resolve_preview_db_path() -> Path | None:
         p = Path(env_path).expanduser()
         return p if p.exists() else None
 
-    # Default to the repo's conventional path when running co-located with the pipeline.
     root = Path(__file__).resolve().parent
-    p = root / "data" / "osha.sqlite"
+    p = resolve_osha_db_path(root).effective_path
     return p if p.exists() else None
 
 

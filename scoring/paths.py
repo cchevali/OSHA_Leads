@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from runtime_data_dir import resolve_data_dir
+from runtime_data_dir import resolve_data_dir, resolve_osha_db_path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,7 +28,7 @@ def ai_triage_cache_db_path() -> Path:
 
 
 def default_leads_db_path() -> Path:
-    return (REPO_ROOT / "data" / "osha.sqlite").resolve(strict=False)
+    return resolve_osha_db_path(REPO_ROOT).effective_path
 
 
 def resolve_leads_db_path(db_path: str | Path | None = None) -> Path:
@@ -36,4 +36,3 @@ def resolve_leads_db_path(db_path: str | Path | None = None) -> Path:
     if raw:
         return Path(raw).expanduser().resolve(strict=False)
     return default_leads_db_path()
-

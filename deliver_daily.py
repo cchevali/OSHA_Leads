@@ -24,7 +24,8 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from lead_filters import normalize_content_filter
-from runtime_guard import render_runtime_lines, run_runtime_preflight
+from runtime_data_dir import resolve_osha_db_path
+from runtime_guard import render_runtime_lines, run_runtime_preflight, validate_live_osha_db_path
 
 try:
     from dotenv import load_dotenv
@@ -34,7 +35,7 @@ except Exception:  # pragma: no cover
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-DEFAULT_DB = "data/osha.sqlite"
+DEFAULT_DB_LABEL = r"${DATA_DIR}\osha.sqlite"
 OUTPUT_DIR = "out"
 ADMIN_EMAIL = "support@microflowops.com"
 
@@ -54,6 +55,10 @@ def load_environment(repo_root: str) -> None:
     dotenv_path = Path(repo_root) / ".env"
     if dotenv_path.exists():
         load_dotenv(dotenv_path=dotenv_path, override=False)
+
+
+def _default_db_path() -> str:
+    return str(resolve_osha_db_path(Path(get_script_dir())).effective_path)
 
 
 def log_schedule_sanity(argv: list[str]) -> None:
@@ -506,7 +511,7 @@ def main():
         epilog="Example: python deliver_daily.py --customer customers/sunbelt_ca_pilot.json --dry-run"
     )
     parser.add_argument("--customer", required=True, help="Path to customer config JSON")
-    parser.add_argument("--db", default=DEFAULT_DB, help=f"Path to SQLite database (default: {DEFAULT_DB})")
+    parser.add_argument("--db", default=_default_db_path(), help=f"Path to SQLite database (default: {DEFAULT_DB_LABEL})")
     parser.add_argument("--mode", choices=["baseline", "daily"], default="daily",
                         help="Delivery mode (default: daily)")
     parser.add_argument("--since-days", type=int, default=30, 
@@ -549,6 +554,10 @@ def main():
         for line in render_runtime_lines(runtime_preflight):
             print(line)
         if not runtime_preflight.ok:
+            sys.exit(2)
+        osha_db_error = validate_live_osha_db_path(args.db, Path(get_script_dir()))
+        if osha_db_error:
+            print(osha_db_error)
             sys.exit(2)
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")

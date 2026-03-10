@@ -2,7 +2,7 @@
 Email-only YES-reply onboarding utility.
 
 Takes a strict KEY=VALUE block (copy/paste from an email reply), upserts a subscriber
-into data/osha.sqlite, writes an untracked customer config under customers/, sends a
+into the canonical runtime OSHA SQLite DB, writes an untracked customer config under customers/, sends a
 confirmation email, and appends an onboarding audit log row.
 
 Scope: provisioning/onboarding only (no UI).
@@ -35,9 +35,10 @@ except Exception:  # pragma: no cover
     load_dotenv = None
 
 from lead_filters import load_territory_definitions, normalize_content_filter, resolve_territory_code as resolve_canonical_territory_code
+from runtime_data_dir import resolve_osha_db_path
 
 
-DEFAULT_DB = "data/osha.sqlite"
+DEFAULT_DB_LABEL = r"${DATA_DIR}\osha.sqlite"
 DEFAULT_SCHEMA = "schema.sql"
 DEFAULT_OUTPUT_DIR = "out"
 
@@ -60,6 +61,10 @@ _TIME_RE = re.compile(r"^(?P<h>\d{2}):(?P<m>\d{2})$")
 
 class OnboardingError(RuntimeError):
     pass
+
+
+def _default_db_path() -> str:
+    return str(resolve_osha_db_path(Path(__file__).resolve().parent).effective_path)
 
 
 @dataclass(frozen=True)
@@ -502,7 +507,7 @@ def _build_request(values: dict[str, str]) -> OnboardingRequest:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Onboard a YES reply into an active subscriber (email-only).")
-    parser.add_argument("--db", default=DEFAULT_DB, help="SQLite DB path (default: data/osha.sqlite)")
+    parser.add_argument("--db", default=_default_db_path(), help=f"SQLite DB path (default: {DEFAULT_DB_LABEL})")
     parser.add_argument("--schema", default=DEFAULT_SCHEMA, help="Schema SQL path (default: schema.sql)")
     parser.add_argument(
         "--reply-block-file",

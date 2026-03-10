@@ -133,6 +133,13 @@ class TestOutreachRunAuto(unittest.TestCase):
                 env.pop(k, None)
             else:
                 env[k] = v
+        data_dir_raw = str(env.get("DATA_DIR") or "").strip()
+        signal_db_raw = str(env.get("TEST_SIGNAL_DB_PATH") or "").strip()
+        if data_dir_raw:
+            default_signal_db = Path(data_dir_raw) / "osha.sqlite"
+            default_signal_db.parent.mkdir(parents=True, exist_ok=True)
+            if signal_db_raw and Path(signal_db_raw).exists():
+                shutil.copyfile(Path(signal_db_raw), default_signal_db)
         env.setdefault("CANONICAL_HOSTNAME", socket.gethostname().strip().lower())
         env.setdefault("RUNTIME_ROLE", "dev_client")
         return env
@@ -151,11 +158,13 @@ class TestOutreachRunAuto(unittest.TestCase):
     ) -> subprocess.CompletedProcess:
         env = self._test_env(env_overrides, base_env=base_env)
         data_dir_raw = str(env.get("DATA_DIR") or "").strip()
-        signal_db_raw = str(env.get("OUTREACH_SIGNAL_DB") or "").strip()
-        if data_dir_raw and not signal_db_raw:
+        signal_db_raw = str(env.pop("TEST_SIGNAL_DB_PATH", "") or "").strip()
+        if data_dir_raw:
             default_signal_db = Path(data_dir_raw) / "osha.sqlite"
-            if not default_signal_db.exists():
-                default_signal_db.parent.mkdir(parents=True, exist_ok=True)
+            default_signal_db.parent.mkdir(parents=True, exist_ok=True)
+            if signal_db_raw:
+                shutil.copyfile(Path(signal_db_raw), default_signal_db)
+            elif not default_signal_db.exists():
                 shutil.copyfile(REPO_ROOT / "data" / "osha.sqlite", default_signal_db)
         return subprocess.run(
             [sys.executable, str(SCRIPT)] + args,
@@ -535,7 +544,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_STATES": "TX",
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
-                "OUTREACH_SIGNAL_DB": str(signal_db),
+                "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
 
             p = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
@@ -575,7 +584,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_STATES": "TX,CA",
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
-                "OUTREACH_SIGNAL_DB": str(signal_db),
+                "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
 
             p = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
@@ -634,7 +643,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_STATES": "TX",
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
-                "OUTREACH_SIGNAL_DB": str(signal_db),
+                "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
 
             p = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
@@ -682,7 +691,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_STATES": "TX",
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
-                "OUTREACH_SIGNAL_DB": str(signal_db),
+                "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
 
             p_on = self._run(["--dry-run", "--for-date", "2026-02-24"], env_base)
@@ -733,7 +742,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_STATES": "TX",
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
-                "OUTREACH_SIGNAL_DB": str(signal_db),
+                "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
 
             plan = self._run(["--plan", "--for-date", "2026-02-24"], env)
@@ -773,7 +782,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_STATES": "TX",
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
-                "OUTREACH_SIGNAL_DB": str(signal_db),
+                "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
             weekday_now = {
                 "timezone": "America/New_York",
@@ -824,6 +833,10 @@ class TestOutreachRunAuto(unittest.TestCase):
                     roa, "_append_ledger_records", return_value=None
                 ), mock.patch.object(
                     roa, "_has_prior_sent_event", return_value=True
+                ), mock.patch.object(
+                    roa, "run_runtime_preflight", return_value=mock.Mock(ok=True)
+                ), mock.patch.object(
+                    roa, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]
                 ):
                     with mock.patch.object(
                         sys,
@@ -1801,7 +1814,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_STATES": "TX,CA",
                 "OUTREACH_DAILY_LIMIT": "2",
                 "OUTREACH_FALLBACK_ON_EMPTY_STATE": "1",
-                "OUTREACH_SIGNAL_DB": str(signal_db),
+                "TEST_SIGNAL_DB_PATH": str(signal_db),
                 "OSHA_SMOKE_TO": "allow@example.com",
             }
             p = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
@@ -2956,7 +2969,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
-                "OUTREACH_SIGNAL_DB": str(signal_db),
+                "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
             with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_doctor_context_pack_soft_check", return_value=None), mock.patch.object(
@@ -3007,7 +3020,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
-                "OUTREACH_SIGNAL_DB": str(missing_db),
+                "TEST_SIGNAL_DB_PATH": str(missing_db),
             }
             with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_doctor_context_pack_soft_check", return_value=None), mock.patch.object(
@@ -3059,7 +3072,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
                 "OUTREACH_SUPPRESSION_MAX_AGE_HOURS": "240",
-                "OUTREACH_SIGNAL_DB": str(signal_db),
+                "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
             with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_doctor_context_pack_soft_check", return_value=None), mock.patch.object(

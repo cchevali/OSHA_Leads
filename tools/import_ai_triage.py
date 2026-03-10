@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--db",
         default=str(scoring_paths.default_leads_db_path()),
-        help="SQLite inspections DB path (default: data/osha.sqlite).",
+        help=r"SQLite inspections DB path (default: ${DATA_DIR}\osha.sqlite).",
     )
     ap.add_argument("--print-config", action="store_true", help="Print resolved config and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Validate only; no cache writes.")

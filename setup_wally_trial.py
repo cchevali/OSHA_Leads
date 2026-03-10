@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from lead_filters import merge_territory_definition
+from runtime_data_dir import resolve_osha_db_path
 
 TERRITORY_CODE = "TX_TRI"
 
@@ -172,7 +173,11 @@ def write_customer_config(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Setup Wally trial subscriber and territory")
-    parser.add_argument("--db", default="data/osha.sqlite", help="SQLite database path")
+    parser.add_argument(
+        "--db",
+        default=str(resolve_osha_db_path(Path(__file__).resolve().parent).effective_path),
+        help=r"SQLite database path (default: ${DATA_DIR}\osha.sqlite)",
+    )
     parser.add_argument("--schema", default="schema.sql", help="Schema SQL path")
     parser.add_argument("--customer-id", default="wally_trial_tx_triangle_v1")
     parser.add_argument("--customer-config", default="customers/wally_trial_tx_triangle_v1.json")

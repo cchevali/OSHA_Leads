@@ -2,8 +2,8 @@
 
 PACK_GIT_SHA=bd1a9695abffc465ab9e1640867863c9627a7080
 PACK_BUILD_UTC=2026-03-09T12:17:43Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=675d461b97b3e4c4136bfe546a6323796b53fac210d97991ab68ee70ce40b956 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=d88a34f6cfb781adb70956cbd9b0c63987933ec69f78cc47a829281084468803 docs/TODO.md=86a681dc2a7c2d0f0c99e9272d608c57e2315f5577d346850fd6e1a9e5f503af docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=dbc1c3c31c3c7aa3dd94ca044d3d9712815749cafc48a1810c24c614fe0c8973
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=21951886acea22e3152c61f696748e784ae5b77a11989459693417b3dbb190c6 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=3e64909f0f50b48289f691d3305814023d4e4f4a00ab7fe21b81e35e93dbe889 docs/TODO.md=86a681dc2a7c2d0f0c99e9272d608c57e2315f5577d346850fd6e1a9e5f503af docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=992ed9ffc36dba97d48628f19df4e4b06bfd5a75cb8f03e9da8e3288f84556e4
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -98,7 +98,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 
 ## Modules (High Level)
 
-- Ingest + data store: OSHA inspections -> `data/osha.sqlite`
+- Ingest + data store: OSHA inspections -> `${DATA_DIR}\osha.sqlite`
 - Digest delivery: build customer-facing alerts and send to subscribers
 - Suppression/opt-out: local suppression list (`out/suppression.csv`) and optional one-click unsubscribe service
 - Outreach operations (this repo): SQLite CRM-lite (`out/crm.sqlite`) for prospect selection, sending, and lifecycle tracking
@@ -1910,13 +1910,13 @@ Intentional exception:
 
 ### Recent Signals Troubleshooting
 
-If cold outreach renders `(no recent signals found)`, outreach is working but `data\osha.sqlite` has no records in the state/last-14-day window used by `outreach\generate_mailmerge.py`.
+If cold outreach renders `(no recent signals found)`, outreach is working but `${DATA_DIR}\osha.sqlite` has no records in the state/last-14-day window used by `outreach\generate_mailmerge.py`.
 
 One-time Florida catch-up:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-py -3 ingest_osha.py --db data\osha.sqlite --since-days 45 --states FL
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --since-days 45 --states FL
 ```
 
 Confirm Florida freshness:
@@ -1924,7 +1924,7 @@ Confirm Florida freshness:
 ```powershell
 @'
 import sqlite3
-conn = sqlite3.connect("data/osha.sqlite")
+conn = sqlite3.connect(r"${DATA_DIR}\osha.sqlite")
 cur = conn.cursor()
 cur.execute("SELECT MAX(date_opened) FROM inspections WHERE site_state='FL'")
 print(cur.fetchone()[0])
@@ -2226,7 +2226,7 @@ Troubleshooting migration/index failures:
 cd C:\dev\OSHA_Leads
 @'
 import sqlite3
-conn = sqlite3.connect("data/osha.sqlite")
+conn = sqlite3.connect(r"${DATA_DIR}\osha.sqlite")
 cur = conn.cursor()
 cur.execute("""
 SELECT lead_key, COUNT(*) c

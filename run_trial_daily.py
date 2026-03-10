@@ -19,7 +19,7 @@ import crm_light
 import run_trial_admin
 from lead_filters import load_territory_definitions, resolve_territory_code
 from runtime_data_dir import resolve_osha_db_path
-from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict
+from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict, validate_live_osha_db_path
 
 try:
     from zoneinfo import ZoneInfo
@@ -739,6 +739,10 @@ def run_trial_daily(
         for line in render_runtime_lines(preflight):
             print(line)
         if not preflight.ok:
+            return 2
+        osha_db_error = validate_live_osha_db_path(leads_db, Path(__file__).resolve().parent)
+        if osha_db_error:
+            print(osha_db_error)
             return 2
 
     if send_live and not dry_run:

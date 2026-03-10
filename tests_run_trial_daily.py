@@ -41,8 +41,8 @@ class TestRunTrialDaily(unittest.TestCase):
             with redirect_stdout(buf):
                 rc = trial_daily.run_trial_daily(
                     subscriber_key="facs_trial",
-                    leads_db="data/osha.sqlite",
-                    crm_db="data/crm_light.sqlite",
+                    leads_db=r"C:\osha_data\osha.sqlite",
+                    crm_db=r"C:\osha_data\crm_light.sqlite",
                     customer_arg="",
                     send_live=False,
                     dry_run=False,
@@ -60,6 +60,7 @@ class TestRunTrialDaily(unittest.TestCase):
             mock.patch.object(trial_daily, "_resolve_policy", return_value=self._policy()),
             mock.patch.object(trial_daily, "run_runtime_preflight", return_value=_Preflight(True)),
             mock.patch.object(trial_daily, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(trial_daily, "validate_live_osha_db_path", return_value=""),
             mock.patch.object(
                 trial_daily,
                 "_detect_split_ledger_conflict",
@@ -86,8 +87,8 @@ class TestRunTrialDaily(unittest.TestCase):
             with redirect_stdout(buf):
                 rc = trial_daily.run_trial_daily(
                     subscriber_key="facs_trial",
-                    leads_db="data/osha.sqlite",
-                    crm_db="data/crm_light.sqlite",
+                    leads_db=r"C:\osha_data\osha.sqlite",
+                    crm_db=r"C:\osha_data\crm_light.sqlite",
                     customer_arg="",
                     send_live=True,
                     dry_run=False,

@@ -1290,13 +1290,13 @@ Intentional exception:
 
 ### Recent Signals Troubleshooting
 
-If cold outreach renders `(no recent signals found)`, outreach is working but `data\osha.sqlite` has no records in the state/last-14-day window used by `outreach\generate_mailmerge.py`.
+If cold outreach renders `(no recent signals found)`, outreach is working but `${DATA_DIR}\osha.sqlite` has no records in the state/last-14-day window used by `outreach\generate_mailmerge.py`.
 
 One-time Florida catch-up:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-py -3 ingest_osha.py --db data\osha.sqlite --since-days 45 --states FL
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --since-days 45 --states FL
 ```
 
 Confirm Florida freshness:
@@ -1304,7 +1304,7 @@ Confirm Florida freshness:
 ```powershell
 @'
 import sqlite3
-conn = sqlite3.connect("data/osha.sqlite")
+conn = sqlite3.connect(r"${DATA_DIR}\osha.sqlite")
 cur = conn.cursor()
 cur.execute("SELECT MAX(date_opened) FROM inspections WHERE site_state='FL'")
 print(cur.fetchone()[0])
@@ -1606,7 +1606,7 @@ Troubleshooting migration/index failures:
 cd C:\dev\OSHA_Leads
 @'
 import sqlite3
-conn = sqlite3.connect("data/osha.sqlite")
+conn = sqlite3.connect(r"${DATA_DIR}\osha.sqlite")
 cur = conn.cursor()
 cur.execute("""
 SELECT lead_key, COUNT(*) c

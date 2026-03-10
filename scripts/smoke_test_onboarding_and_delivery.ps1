@@ -7,7 +7,8 @@ $ts = Get-Date -Format "yyyyMMdd_HHmmss"
 $WorkDir = Join-Path $RepoRoot ("out\\smoke_tests\\" + $ts)
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
-$SrcDb = Join-Path $RepoRoot "data\\osha.sqlite"
+$DataDir = if ($env:DATA_DIR) { $env:DATA_DIR } else { Join-Path $RepoRoot "out" }
+$SrcDb = Join-Path $DataDir "osha.sqlite"
 $TmpDb = Join-Path $WorkDir "osha_smoke.sqlite"
 $CustomerConfig = Join-Path $WorkDir "customer_smoke.json"
 

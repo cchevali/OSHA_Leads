@@ -102,6 +102,24 @@ class TestRuntimeGuard(unittest.TestCase):
             payload.get("db_osha"),
             str((Path(d).resolve() / "osha.sqlite").resolve(strict=False)),
         )
+        self.assertEqual(payload.get("db_osha_source"), "data_dir")
+
+    def test_split_osha_db_errors_for_live_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d).resolve()
+            (data_dir / "osha.sqlite").write_text("split", encoding="utf-8")
+            hostname = socket.gethostname().strip().lower()
+            proc = self._run(
+                ["preflight", "--mode", "manual", "--intent", "write"],
+                {
+                    "RUNTIME_ROLE": "dev_client",
+                    "CANONICAL_HOSTNAME": hostname,
+                    "DATA_DIR": str(data_dir),
+                },
+            )
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        self.assertNotEqual(proc.returncode, 0, msg=out)
+        self.assertIn("ERR_RUNTIME_DB_OSHA_SPLIT", out)
 
 
 if __name__ == "__main__":
