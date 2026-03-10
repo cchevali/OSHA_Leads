@@ -72,7 +72,7 @@ $manifestPath = Join-Path $backupRoot ("backup_manifest_" + $timestamp + ".json"
 $manifestTxtPath = Join-Path $backupRoot ("backup_manifest_" + $timestamp + ".txt")
 
 $targets = @(
-  @{ Label = 'osha'; Path = (Join-Path $repoRoot 'data\osha.sqlite') },
+  @{ Label = 'osha'; Path = (Join-Path $dataDir 'osha.sqlite') },
   @{ Label = 'crm'; Path = (Join-Path $dataDir 'crm.sqlite') },
   @{ Label = 'crm_light'; Path = (Join-Path $dataDir 'crm_light.sqlite') }
 )

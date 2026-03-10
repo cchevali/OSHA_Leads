@@ -8,7 +8,7 @@ This is intentionally lightweight (no test framework). The wrapper script exits 
 
 ## What It Tests
 
-1. Creates a temporary copy of `data/osha.sqlite`.
+1. Creates a temporary copy of the resolved runtime inspections DB (`${DATA_DIR}\osha.sqlite`, or `.\out\osha.sqlite` when `DATA_DIR` is unset).
 2. Inserts a suppression-list entry for a test email.
 3. Onboards a dummy subscriber into the temp DB (dry-run onboarding, so no confirmation emails are sent).
 4. Runs `deliver_daily.py --dry-run --skip-ingest` against the temp DB and the generated customer config.
@@ -26,4 +26,3 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_test_onboarding_and_deliv
 The wrapper asserts these strings are present in the delivery logs:
 - `DRYRUN_SUPPRESSED` includes the suppressed test email (or suppression count > 0)
 - `[SKIP_DUPLICATE_DRYRUN]` on the second delivery run
-

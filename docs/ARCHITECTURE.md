@@ -7,7 +7,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 
 ## Modules (High Level)
 
-- Ingest + data store: OSHA inspections -> `data/osha.sqlite`
+- Ingest + data store: OSHA inspections -> `${DATA_DIR}\osha.sqlite`
 - Digest delivery: build customer-facing alerts and send to subscribers
 - Suppression/opt-out: local suppression list (`out/suppression.csv`) and optional one-click unsubscribe service
 - Outreach operations (this repo): SQLite CRM-lite (`out/crm.sqlite`) for prospect selection, sending, and lifecycle tracking

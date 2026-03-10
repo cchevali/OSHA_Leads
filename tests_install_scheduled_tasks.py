@@ -54,7 +54,7 @@ def _parse_task_config(output: str) -> dict[int, dict[str, str]]:
     tasks: dict[int, dict[str, str]] = {}
     for line in (output or "").splitlines():
         match = re.match(
-            r"^TASK_(\d+)_(NAME|TIME|RL|TR|TR_LENGTH|SCHEDULE|START_DATE|START_TIME|START_BOUNDARY_LOCAL|MINUTE_INTERVAL|WEEKDAYS)=(.*)$",
+            r"^TASK_(\d+)_(NAME|TIME|RL|TR|TR_LENGTH|SCHEDULE|START_DATE|START_TIME|START_BOUNDARY_LOCAL|MINUTE_INTERVAL|WEEKDAYS|RECOVERY_ONLY|EXPECTED_STATE)=(.*)$",
             line.strip(),
         )
         if not match:
@@ -101,6 +101,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         self.assertEqual(proc.returncode, 0, msg=out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_MODE=print-config", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_PRIMARY_SCHEDULER=runtime_tick_selfhosted", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_RECOVERY_ONLY_COUNT=4", out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=0", out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAY_SCHEDULE=MON,TUE,WED,THU,FRI", out)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_PRINT_CONFIG", out)
@@ -112,6 +114,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(len(ingest), 1, msg=out)
         ingest_task = ingest[0]
         self.assertEqual(ingest_task.get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(ingest_task.get("RECOVERY_ONLY"), "YES", msg=out)
+        self.assertEqual(ingest_task.get("EXPECTED_STATE"), "Disabled", msg=out)
         self.assertEqual(ingest_task.get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(ingest_task.get("TIME"), "06:45", msg=out)
         self.assertEqual(ingest_task.get("RL"), "HIGHEST", msg=out)
@@ -124,6 +128,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(len(replenish), 1, msg=out)
         replenish_task = replenish[0]
         self.assertEqual(replenish_task.get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(replenish_task.get("RECOVERY_ONLY"), "YES", msg=out)
+        self.assertEqual(replenish_task.get("EXPECTED_STATE"), "Disabled", msg=out)
         self.assertEqual(replenish_task.get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(replenish_task.get("TIME"), "07:15", msg=out)
         self.assertEqual(replenish_task.get("RL"), "HIGHEST", msg=out)
@@ -135,6 +141,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         outreach = [t for t in tasks.values() if t.get("NAME") == "OSHA_Outreach_Auto"]
         self.assertEqual(len(outreach), 1, msg=out)
         self.assertEqual(outreach[0].get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(outreach[0].get("RECOVERY_ONLY"), "YES", msg=out)
+        self.assertEqual(outreach[0].get("EXPECTED_STATE"), "Disabled", msg=out)
         self.assertEqual(outreach[0].get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(outreach[0].get("TR"), EXPECTED_OUTREACH_TR, msg=out)
         self._assert_future_boundary(outreach[0].get("START_BOUNDARY_LOCAL", ""), out)
@@ -142,6 +150,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         facs_trial = [t for t in tasks.values() if t.get("NAME") == "OSHA_Trial_FACS_Daily"]
         self.assertEqual(len(facs_trial), 1, msg=out)
         self.assertEqual(facs_trial[0].get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(facs_trial[0].get("RECOVERY_ONLY"), "YES", msg=out)
+        self.assertEqual(facs_trial[0].get("EXPECTED_STATE"), "Disabled", msg=out)
         self.assertEqual(facs_trial[0].get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(facs_trial[0].get("TIME"), "09:00", msg=out)
         self.assertEqual(facs_trial[0].get("RL"), "HIGHEST", msg=out)
@@ -153,6 +163,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         inbound = [t for t in tasks.values() if t.get("NAME") == "OSHA_Inbound_Triage"]
         self.assertEqual(len(inbound), 1, msg=out)
         self.assertEqual(inbound[0].get("SCHEDULE"), "minute", msg=out)
+        self.assertEqual(inbound[0].get("RECOVERY_ONLY"), "NO", msg=out)
+        self.assertEqual(inbound[0].get("EXPECTED_STATE"), "Enabled", msg=out)
         self.assertEqual(inbound[0].get("MINUTE_INTERVAL"), "15", msg=out)
         self.assertEqual(inbound[0].get("TR"), EXPECTED_INBOUND_TR, msg=out)
         self._assert_future_boundary(inbound[0].get("START_BOUNDARY_LOCAL", ""), out)
@@ -175,6 +187,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("DRY_RUN_COMMAND_3=", out)
         self.assertIn("DRY_RUN_COMMAND_4=", out)
         self.assertIn("DRY_RUN_COMMAND_5=", out)
+        self.assertIn("DRY_RUN_STATE_COMMAND_1=schtasks /Change /TN \"\\OSHA_Osha_Ingest_Daily\" /Disable", out)
         self.assertIn("/RU \"DESKTOP-Q8QM4N9\\lever\" /RP ***REDACTED***", out)
         self.assertNotIn("dont-print-me", out)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_DRY_RUN", out)
@@ -232,6 +245,10 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("WARN_SCHEDTASK_ACTION_MISMATCH", text)
         self.assertIn("ERR_INSTALL_SCHEDULED_TASKS_APPLY_ACTION_STUCK", text)
         self.assertIn("ERR_SCHED_TASK_TARGET_MISSING=1", text)
+        self.assertIn("ERR_SCHEDTASK_RECOVERY_TASK_ENABLED=1", text)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_PRIMARY_SCHEDULER=runtime_tick_selfhosted", text)
+        self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_RUNNER_SERVICE", text)
+        self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_PYTHON_RESOLUTION", text)
         self.assertIn("Resolve-TaskRunTargetPath", text)
         self.assertIn("function Invoke-SchtasksCommand([string[]]$SchtasksArgs)", text)
         self.assertNotIn("function Invoke-SchtasksCommand([string[]]$Args)", text)

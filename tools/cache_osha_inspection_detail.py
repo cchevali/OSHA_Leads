@@ -28,7 +28,7 @@ def _error(detail: str) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Fetch and cache OSHA inspection detail pages into a DATA_DIR-aware SQLite cache.")
-    ap.add_argument("--db", default="", help="Optional leads SQLite db path (default: data/osha.sqlite).")
+    ap.add_argument("--db", default="", help=r"Optional leads SQLite db path (default: ${DATA_DIR}\osha.sqlite).")
     ap.add_argument("--since-days", type=int, default=14, help="Candidate lookback window in days (default: 14, max: 60).")
     ap.add_argument("--limit", type=int, default=500, help="Max candidate inspections to process (default: 500).")
     ap.add_argument("--sleep-ms", type=int, default=800, help="Sleep between detail fetch attempts in ms (default: 800).")

@@ -43,6 +43,7 @@ from outreach import generate_mailmerge as gm
 from outreach import run_prospect_generation as prospect_generation
 from outreach import source_policy
 from outreach import us_state
+from runtime_data_dir import resolve_osha_db_path
 from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict
 
 
@@ -2309,10 +2310,7 @@ def _doctor_check_provider() -> tuple[bool, str]:
 
 
 def _doctor_signal_db_path() -> Path:
-    raw = (os.getenv("OUTREACH_SIGNAL_DB") or "").strip()
-    if raw:
-        return Path(raw)
-    return REPO_ROOT / "data" / "osha.sqlite"
+    return resolve_osha_db_path(REPO_ROOT).effective_path
 
 
 def _doctor_state_signal_snapshot(
@@ -2596,7 +2594,8 @@ def main() -> int:
     skip_role_inboxes = _bool_env(os.getenv("OUTREACH_SKIP_ROLE_INBOXES", "1"))
     debug_selection_live = _bool_env(os.getenv("OUTREACH_DEBUG_SELECTION", "0"))
     signal_window_days = _signal_window_days()
-    osha_db = str((os.getenv("OUTREACH_SIGNAL_DB") or "").strip() or (REPO_ROOT / "data" / "osha.sqlite"))
+    osha_db_resolution = resolve_osha_db_path(REPO_ROOT)
+    osha_db = str(osha_db_resolution.effective_path)
     crm_db = _crm_db_path()
     suppression_csv = _suppression_csv_path()
     export_ledger = _export_ledger_path()
@@ -2630,6 +2629,9 @@ def main() -> int:
         print(f"outreach_debug_selection={1 if debug_selection_live else 0}")
         print(f"outreach_signal_window_days={signal_window_days}")
         print(f"{PASS_AUTO_PRINT_CONFIG} outreach_signal_db={Path(osha_db).resolve()}")
+        print(f"{PASS_AUTO_PRINT_CONFIG} outreach_signal_db_source={osha_db_resolution.source}")
+        if osha_db_resolution.warning_token:
+            print(osha_db_resolution.warning_token)
         print(f"OUTREACH_WEEKDAYS_ONLY={1 if OUTREACH_WEEKDAYS_ONLY else 0}")
         print(f"outreach_effective_timezone={local_now['timezone']}")
         print(f"outreach_effective_local_date={local_now['date_text']}")
@@ -2834,7 +2836,7 @@ def main() -> int:
             return 0
 
         if args.dry_run:
-            osha_db = str((os.getenv("OUTREACH_SIGNAL_DB") or "").strip() or (REPO_ROOT / "data" / "osha.sqlite"))
+            osha_db = str(resolve_osha_db_path(REPO_ROOT).effective_path)
             signal_ctx = _prepare_signal_content_with_triage(
                 batch=batch,
                 state=state,
@@ -2884,7 +2886,7 @@ def main() -> int:
         except Exception:
             html_template_text = ""
 
-        osha_db = str((os.getenv("OUTREACH_SIGNAL_DB") or "").strip() or (REPO_ROOT / "data" / "osha.sqlite"))
+        osha_db = str(resolve_osha_db_path(REPO_ROOT).effective_path)
         signal_ctx = _prepare_signal_content_with_triage(
             batch=batch,
             state=state,

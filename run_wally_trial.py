@@ -33,6 +33,7 @@ except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 from export_daily import export_daily
+from runtime_data_dir import resolve_osha_db_path
 import crm_light
 import run_trial_admin
 from send_digest_email import get_leads_for_period
@@ -881,8 +882,6 @@ def run_live_send(
         "run_trial_daily.py",
         "--subscriber-key",
         WALLY_TRIAL_SUBSCRIBER_KEY,
-        "--db",
-        db_path,
         "--customer",
         customer_config,
     ]
@@ -1016,7 +1015,7 @@ def write_batch_runner(batch_path: Path, project_root: Path, customer_config: st
         (
             "powershell -NoProfile -ExecutionPolicy Bypass "
             f"-File \"%~dp0scripts\\run_with_secrets.ps1\" "
-            f"python run_trial_daily.py --subscriber-key wally_trial --db \"{db_path}\" "
+            "python run_trial_daily.py --subscriber-key wally_trial "
             f"--customer \"%~dp0{customer_rel}\" --send-live "
             "> \"%RUN_TMP%\" 2>&1"
         ),
@@ -1284,7 +1283,11 @@ def run_doctor(customer_path: Path, repo_root: Path, task_name: str, check_sched
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Wally trial workflow")
     parser.add_argument("customer_path", nargs="?", default="", help="Customer config path or name (optional)")
-    parser.add_argument("--db", default="data/osha.sqlite")
+    parser.add_argument(
+        "--db",
+        default=str(resolve_osha_db_path(Path(__file__).resolve().parent).effective_path),
+        help=r"SQLite inspections DB path (default: ${DATA_DIR}\osha.sqlite)",
+    )
     parser.add_argument("--customer", default="customers/wally_trial_tx_triangle_v1.json")
     parser.add_argument(
         "--status",

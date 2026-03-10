@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=0895e171954385e75d3b2dcf94dd2f5f7d81555e
-PACK_BUILD_UTC=2026-03-07T04:12:07Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=60a03bf04182925312b6f95d9e487c775d9441a2e9bf0aaee881e1034700018d docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=fbecea645ebc7d19ac937f1d9f4cf541cc87bdde6557ce3d860b658bda799946 docs/TODO.md=40fedbbabf1a962e37456e39d967daf00f2686c92f9a294d233c141f78eff8fd docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=e92cbd0699dea7666882f400931ffae47dc9e66003798c80397887c18a122838
+PACK_GIT_SHA=bd1a9695abffc465ab9e1640867863c9627a7080
+PACK_BUILD_UTC=2026-03-09T12:17:43Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=21951886acea22e3152c61f696748e784ae5b77a11989459693417b3dbb190c6 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=3e64909f0f50b48289f691d3305814023d4e4f4a00ab7fe21b81e35e93dbe889 docs/TODO.md=86a681dc2a7c2d0f0c99e9272d608c57e2315f5577d346850fd6e1a9e5f503af docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=992ed9ffc36dba97d48628f19df4e4b06bfd5a75cb8f03e9da8e3288f84556e4
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -98,7 +98,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 
 ## Modules (High Level)
 
-- Ingest + data store: OSHA inspections -> `data/osha.sqlite`
+- Ingest + data store: OSHA inspections -> `${DATA_DIR}\osha.sqlite`
 - Digest delivery: build customer-facing alerts and send to subscribers
 - Suppression/opt-out: local suppression list (`out/suppression.csv`) and optional one-click unsubscribe service
 - Outreach operations (this repo): SQLite CRM-lite (`out/crm.sqlite`) for prospect selection, sending, and lifecycle tracking
@@ -113,6 +113,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Windows Task Scheduler wrappers are retained only as manual break-glass fallbacks and must not remain enabled in parallel with runtime tick once cutover is complete.
 - Wrappers emit deterministic run summaries (`runtime_run_summary_v1`) plus task logs and optional backup manifests.
 - Runtime tick emits operator alert candidates and sends live SMTP alerts (recipient `RUNTIME_ALERT_RECIPIENT` fallback `OSHA_SMOKE_TO`) for job failures and critical missed morning windows with per-slot dedupe markers under `${DATA_DIR}\runtime\status\alerts\`.
+- Runtime tick persists per-job status for the latest ran/skipped/reconciled slot under `${DATA_DIR}\runtime\status\jobs\*.json` and records external-wrapper reconciliation metadata when break-glass execution is detected.
 - Artifact roots:
   - Task logs: `${TASK_LOG_ROOT}` or `${DATA_DIR}\out\task_logs` or `<repo>\out\task_logs`
   - Run summaries: `${RUN_SUMMARY_ROOT}` or `${DATA_DIR}\out\run_summaries` or `<repo>\out\run_summaries`
@@ -129,7 +130,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - `run_prospect_discovery.py`
    - `tools/dump_prospect_ai_assist_review.py` only when post-discovery backlog gap remains; this writes a manual review packet and does not mutate CRM
    - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, and `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1` when these keys are unset.
-   - Optional env-gated auto-growth sources remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+   - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+   - Planned tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are intentionally rejected by env/runtime validation until their source modules exist.
    - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
    - APOLLO remains opt-in/overflow and is not in default replenishment sources.
    - BCSP uses plain HTTP parsing (`search_results.php`) and is maintained as a future enrichment input (contact/location only; not directly sendable without employer/domain resolution).
@@ -177,6 +179,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - `out/crm_light.sqlite` (or `${DATA_DIR}/crm_light.sqlite`): onboarding entitlements + CBSA allowlists + canonical onboarding recipients
 - `out/outreach_export_ledger.jsonl`: optional compatibility ledger for contacted records
 - `out/outreach/<batch>/outbox_*_dry_run.csv` + manifest: non-sending artifact output from `run_outreach_auto.py --dry-run`
+- `${DATA_DIR}/outreach/ops_snapshots/*.json`: persisted operator artifact combining ops KPIs with runtime/suppression readiness state
+- `${DATA_DIR}/runtime/status/jobs/*.json`: runtime scheduler state for latest slot evaluation and external scheduler drift visibility
 
 ## V1 Preserved Invariants
 
@@ -693,7 +697,7 @@ Status artifacts:
 
 - `${DATA_DIR}\runtime\status\runtime_latest.json`
 - `${DATA_DIR}\runtime\status\runtime_latest.md`
-- `${DATA_DIR}\runtime\status\jobs\<job>.json`
+- `${DATA_DIR}\runtime\status\jobs\<job>.json` (latest slot evaluation for ran, skipped, and reconciled jobs)
 - `${DATA_DIR}\runtime\status\alerts\*.json` (dedupe markers for sent runtime alerts)
 
 Runtime tick operator alerts:
@@ -704,6 +708,8 @@ Runtime tick operator alerts:
   - `job_failure` for any failed runtime tick job.
   - `missed_window` for skipped `window_closed_*` on `ingest_daily`, `prospect_replenish_daily`, `outreach_auto`, and `trial_facs_daily`.
 - Alerts are live-mode only; `--doctor` and `--dry-run` emit candidate/skipped tokens but do not send email.
+- Runtime tick reconciles same-slot wrapper summaries before sending `missed_window`; successful break-glass wrapper evidence within the catchup window suppresses the alert and records a reconciled job state instead of leaving an empty missed-window marker.
+- External wrapper evidence emits `WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER` and records `last_external_scheduler_detected=1` plus `last_reconciliation_status` in `${DATA_DIR}\runtime\status\jobs\<job>.json`.
 
 ## Runtime State Migration
 
@@ -1130,7 +1136,8 @@ Auto-growth (env-gated, optional):
 - OHS optional auth key (only if buyersguide pagination is work-email gated): `OHS_BG_STORAGE_STATE_PATH` (Playwright storage state JSON path).
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
 - Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_ALLOW_ROLE_INBOX` (default `0`), `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_MAX_PAGES_PER_SITE` (default `5`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (default `750`; when unset, falls back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`).
-- Source scope: `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG,BCSP,STATE_LIC`).
+- Source scope: implemented tokens are `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`, e.g. `AIHA,OHS_BG,BCSP,STATE_LIC`).
+- Planned-but-unimplemented registry tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are rejected intentionally by `scripts\set_outreach_env.ps1` and `outreach\run_prospect_generation.py` until source modules land.
 - Cache paths:
   - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
   - OHS_BG: `${DATA_DIR}\prospect_generation\cache\ohs_bg\state_<STATE>.json`
@@ -1699,6 +1706,42 @@ Metric scope:
 - Last 7 and 30 days by `(batch_id, state_at_send)` with `sent`, `delivered_proxy`, `bounced_confirmed`, `bounced_inferred`, `replied`, `trial_started`, and `converted`.
 - List quality snapshot: `new_prospects_count`, `% valid email format`, duplicate-domain rows/share, and role-based inbox share.
 
+### Weekly Ops Snapshot (Persisted Ops + Readiness Artifact)
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 outreach\run_ops_snapshot.py --print-config
+py -3 outreach\run_ops_snapshot.py --dry-run
+py -3 outreach\run_ops_snapshot.py
+py -3 outreach\run_ops_snapshot.py --format json
+```
+
+Snapshot behavior:
+
+- `--print-config` is side-effect free and prints resolved artifact/config paths.
+- `--dry-run` computes the snapshot without writing files and prints `OPS_SNAPSHOT_JSON_PATH=(no-write)`.
+- Live mode writes:
+- `${DATA_DIR}\outreach\ops_snapshots\<YYYY-MM-DD>\ops_snapshot_<HHMMSSZ>.json`
+- `${DATA_DIR}\outreach\ops_snapshots\latest.json`
+- Payload includes the existing ops-report windows plus readiness state for runtime age, per-job status, `parallel_scheduler_active`, suppression freshness, and bounce-import state.
+
+### Dry-Run Artifact Retention Cleanup
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 outreach\cleanup_outreach_dry_run_artifacts.py --print-config
+py -3 outreach\cleanup_outreach_dry_run_artifacts.py --dry-run --retention-days 14
+py -3 outreach\cleanup_outreach_dry_run_artifacts.py --retention-days 14
+```
+
+Cleanup scope:
+
+- Targets only stale dry-run artifacts under `out\outreach\<batch>\`:
+- `outbox_*_dry_run.csv`
+- `outbox_*_dry_run_manifest.csv`
+- `plan_diagnostics.json`
+- Does not touch live delivery artifacts, non-dry-run manifests, or other batch files.
+
 ### QA Checks (Before/After Daily Send)
 
 ```powershell
@@ -1810,10 +1853,19 @@ Idempotency and state behavior:
 - Does **not** mutate IMAP flags/folders (`Seen`/move is not used).
 - Emits `BOUNCE_IMPORT_MODERATION_NOTICE_SEEN=1` when a moderation notice is parsed as a hard bounce.
 
+Suppression + bounce alignment:
+
+- `run_capture_sync.py` records downstream lifecycle outcomes such as `replied`, `do_not_contact`, and `bounced` back into CRM event/state.
+- `outreach\import_bounces_imap.py` is idempotent by mailbox state and message fingerprint; hard bounces update CRM suppression and prospect status, while soft bounces remain event-only.
+- `run_outreach_auto.py --doctor` enforces suppression freshness and now prints `WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE jobs=<...>` when recent external scheduler drift is visible in runtime job state.
+- `outreach\ops_report.py` and `outreach\run_ops_snapshot.py` surface reply, `trial_started`, `converted`, bounce, and suppression evidence for weekly review.
+- Complaint/FBL intake is still a manual operator path until the provider exposes a deterministic machine-readable feed.
+
 ### Task Scheduler (Break-Glass Only)
 
 Do not keep Windows Task Scheduler as an active parallel scheduler once `runtime-tick-selfhosted.yml` is live on the canonical runner.
 Use Task Scheduler only for temporary local recovery when GitHub Actions on the canonical PC is unavailable.
+If `run_outreach_auto.py --doctor` prints `WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE`, treat it as a scheduler drift warning and disable the overlapping break-glass tasks after recovery.
 
 Break-glass installer commands:
 
@@ -1858,13 +1910,13 @@ Intentional exception:
 
 ### Recent Signals Troubleshooting
 
-If cold outreach renders `(no recent signals found)`, outreach is working but `data\osha.sqlite` has no records in the state/last-14-day window used by `outreach\generate_mailmerge.py`.
+If cold outreach renders `(no recent signals found)`, outreach is working but `${DATA_DIR}\osha.sqlite` has no records in the state/last-14-day window used by `outreach\generate_mailmerge.py`.
 
 One-time Florida catch-up:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-py -3 ingest_osha.py --db data\osha.sqlite --since-days 45 --states FL
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --since-days 45 --states FL
 ```
 
 Confirm Florida freshness:
@@ -1872,7 +1924,7 @@ Confirm Florida freshness:
 ```powershell
 @'
 import sqlite3
-conn = sqlite3.connect("data/osha.sqlite")
+conn = sqlite3.connect(r"${DATA_DIR}\osha.sqlite")
 cur = conn.cursor()
 cur.execute("SELECT MAX(date_opened) FROM inspections WHERE site_state='FL'")
 print(cur.fetchone()[0])
@@ -2174,7 +2226,7 @@ Troubleshooting migration/index failures:
 cd C:\dev\OSHA_Leads
 @'
 import sqlite3
-conn = sqlite3.connect("data/osha.sqlite")
+conn = sqlite3.connect(r"${DATA_DIR}\osha.sqlite")
 cur = conn.cursor()
 cur.execute("""
 SELECT lead_key, COUNT(*) c
@@ -2261,18 +2313,19 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Codex-owned engineering backlog
 
-- [ ] Add follow-on autogrow sources on top of `outreach/scraper_engine.py` foundation: `AGC`, `BLUEBOOK`, `THOMASNET`, `BBB` (source modules + fixtures + generator tests).
-- [ ] Add integration test coverage that validates workflow artifact upload path patterns against generated wrapper outputs (`out/task_logs`, `out/run_summaries`, `out/backups`).
-- [ ] Wire landing page conversion CTA references to paid path after Stripe link is set.
-  Reference points: `web/config/site.json`, `web/components/CTAButtons.tsx`, `web/app/pricing/page.tsx`, `web/app/contact/page.tsx`.
+- [ ] Add follow-on autogrow source modules on top of the registry-backed `outreach/scraper_engine.py` foundation: `BBB`, `BLUEBOOK`, `THOMASNET`, `AGC` (source modules + fixtures + generator tests). Planned tokens now fail fast until implemented.
 - [ ] Define trial -> paid email-only sequence using existing lifecycle states (`replied`, `trial_started`, `converted`) and conversion artifacts in `run_trial_daily.py`.
-- [ ] Add operator KPI log for reply -> trial_started -> converted by batch id.
-- [ ] Review suppression + bounce/complaint handling (data source, dedupe policy, freshness policy, and operator SOP alignment).
-- [ ] Add periodic archive/retention cleanup for outreach dry-run artifacts under `out/outreach/<batch>/`.
-- [ ] Add periodic readiness report snapshot generation for weekly operations review.
+- [ ] Add an operator-triggered schedule for `outreach\run_ops_snapshot.py` and `outreach\cleanup_outreach_dry_run_artifacts.py` on the canonical PC or runner.
+- [ ] Review complaint/FBL intake handling separately from the now-codified bounce + suppression path; provider complaint signals are still human/manual today.
 
 ## Done
 
+- 2026-03-09: Hardened `outreach/run_runtime_tick.py` so `${DATA_DIR}\runtime\status\jobs\*.json` persists latest slot evaluation for ran/skipped/reconciled jobs, reconciles same-slot wrapper summaries before `missed_window`, and emits `WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER` plus reconciliation metadata when break-glass wrappers are detected. Covered by `tests_run_runtime_tick.py`.
+- 2026-03-09: Added workflow contract coverage that keeps runtime tick as the only scheduled live workflow and validates artifact upload roots for canonical/runtime and manual wrapper paths. Evidence: `tests_run_runtime_tick_wrapper.py`.
+- 2026-03-09: Added canonical autogrow source registry `outreach/autogrow_source_registry.json` and wired env/runtime validation so unknown tokens fail as `invalid_*` and planned-but-unimplemented tokens fail as `unimplemented_*`. Evidence: `outreach/source_policy.py`, `outreach/run_prospect_generation.py`, `scripts/set_outreach_env.ps1`, `tests_source_policy_registry.py`.
+- 2026-03-09: Added persisted weekly-style ops/readiness snapshot generation via `outreach/run_ops_snapshot.py` and stale dry-run artifact retention cleanup via `outreach/cleanup_outreach_dry_run_artifacts.py`. Evidence: `tests_run_ops_snapshot.py`, `tests_cleanup_outreach_dry_run_artifacts.py`.
+- 2026-03-09: Closed the old KPI-log backlog framing; reply -> `trial_started` -> `converted` by batch/state/source-family already exists in `outreach/ops_report.py`, and the durable exported artifact path is now `outreach/run_ops_snapshot.py`. Evidence: `tests_outreach_ops_report.py`.
+- 2026-03-09: Codified bounce/suppression alignment in code and docs for hard-bounce suppression writes, soft-bounce event-only behavior, suppression freshness doctor checks, and operator snapshot visibility. Evidence: `outreach/import_bounces_imap.py`, `outreach/run_outreach_auto.py`, `outreach/run_ops_snapshot.py`, `tests_import_bounces_imap.py`.
 - 2026-03-06: Registered and verified repo self-hosted runner `desktop-q8qm4n9-runtime` on the canonical PC with labels `self-hosted`, `Windows`, `X64`, `osha-pc-canonical`. Verified by successful job pickup from `Runtime Tick (Self-Hosted)` workflow dispatch on `main`.
 - 2026-02-15: Completed outbound sender domain verification (SPF, DKIM, DMARC) for `microflowops.com`. DNS records published; test email confirmed `spf=pass`, `dkim=pass`, `dmarc=pass` with aligned domains. Verification commands added to `docs/RUNBOOK.md` under "Deliverability Preflight".
 - 2026-02-12: Set website Stripe payment link in `web/config/site.json` (`stripePaymentLink`) and wire it into `web/app/pricing/page.tsx` + `web/app/contact/page.tsx` (commit `54c2a3c6`).

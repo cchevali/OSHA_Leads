@@ -16,6 +16,14 @@ class DataDirResolution:
     raw_value: str
 
 
+@dataclass(frozen=True)
+class OshaDbResolution:
+    effective_path: Path
+    source: str
+    warning_token: str
+    raw_value: str
+
+
 def _repo_root_default() -> Path:
     return Path(__file__).resolve().parent
 
@@ -76,5 +84,18 @@ def resolve_data_dir(repo_root: Path | None = None) -> DataDirResolution:
         effective_path=default_path,
         source="default",
         warning_token="",
+        raw_value="",
+    )
+
+
+def resolve_osha_db_path(repo_root: Path | None = None) -> OshaDbResolution:
+    root = (repo_root or _repo_root_default()).resolve(strict=False)
+    data_dir_resolution = resolve_data_dir(root)
+    data_dir_default = (data_dir_resolution.effective_path / "osha.sqlite").resolve(strict=False)
+
+    return OshaDbResolution(
+        effective_path=data_dir_default,
+        source="data_dir",
+        warning_token=str(data_dir_resolution.warning_token or ""),
         raw_value="",
     )

@@ -8,14 +8,30 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
 $startLocal = Get-Date
 $startUtc = [datetime]::UtcNow
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
-$runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
-$taskLogPath = Join-Path $taskLogDir ("OSHA_Trial_FACS_Daily_{0}.log" -f $timestamp)
 $trialSubscriberKey = "facs_trial"
 $trialExitCode = 1
 $preflight = $null
 $commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key $trialSubscriberKey --send-live"
+$bootstrapLines = New-Object System.Collections.Generic.List[string]
+
+function Add-BootstrapLine([string]$Line) {
+  $text = [string]$Line
+  if ($text) {
+    [void]$bootstrapLines.Add($text)
+  }
+}
+
+$preflight = Invoke-RuntimePreflight `
+  -RepoRoot $repoRoot `
+  -Mode 'scheduled' `
+  -Intent 'send' `
+  -DryRun:$false `
+  -EmitLine ${function:Add-BootstrapLine}
+
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
+$runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
+$taskLogPath = Join-Path $taskLogDir ("OSHA_Trial_FACS_Daily_{0}.log" -f $timestamp)
 
 New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runSummaryRoot | Out-Null
@@ -24,6 +40,10 @@ function Write-TaskLine([string]$Line) {
   $text = [string]$Line
   Write-Output $text
   Add-Content -Path $taskLogPath -Value $text -Encoding UTF8
+}
+
+foreach ($line in @($bootstrapLines)) {
+  Write-TaskLine ([string]$line)
 }
 
 function Invoke-And-Log([scriptblock]$Invocation) {
@@ -36,14 +56,6 @@ function Invoke-And-Log([scriptblock]$Invocation) {
 try {
   Push-Location $repoRoot
   try {
-    $preflight = Invoke-RuntimePreflight `
-      -RepoRoot $repoRoot `
-      -Mode 'scheduled' `
-      -Intent 'send' `
-      -DryRun:$false `
-      -TaskLogRoot $taskLogDir `
-      -RunSummaryRoot $runSummaryRoot `
-      -EmitLine ${function:Write-TaskLine}
     if (-not [bool]$preflight.Ok) {
       throw "runtime preflight failed"
     }

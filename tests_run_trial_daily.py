@@ -1,6 +1,8 @@
 import io
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 import run_trial_daily as trial_daily
@@ -39,8 +41,8 @@ class TestRunTrialDaily(unittest.TestCase):
             with redirect_stdout(buf):
                 rc = trial_daily.run_trial_daily(
                     subscriber_key="facs_trial",
-                    leads_db="data/osha.sqlite",
-                    crm_db="data/crm_light.sqlite",
+                    leads_db=r"C:\osha_data\osha.sqlite",
+                    crm_db=r"C:\osha_data\crm_light.sqlite",
                     customer_arg="",
                     send_live=False,
                     dry_run=False,
@@ -58,6 +60,7 @@ class TestRunTrialDaily(unittest.TestCase):
             mock.patch.object(trial_daily, "_resolve_policy", return_value=self._policy()),
             mock.patch.object(trial_daily, "run_runtime_preflight", return_value=_Preflight(True)),
             mock.patch.object(trial_daily, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(trial_daily, "validate_live_osha_db_path", return_value=""),
             mock.patch.object(
                 trial_daily,
                 "_detect_split_ledger_conflict",
@@ -84,8 +87,8 @@ class TestRunTrialDaily(unittest.TestCase):
             with redirect_stdout(buf):
                 rc = trial_daily.run_trial_daily(
                     subscriber_key="facs_trial",
-                    leads_db="data/osha.sqlite",
-                    crm_db="data/crm_light.sqlite",
+                    leads_db=r"C:\osha_data\osha.sqlite",
+                    crm_db=r"C:\osha_data\crm_light.sqlite",
                     customer_arg="",
                     send_live=True,
                     dry_run=False,
@@ -98,6 +101,18 @@ class TestRunTrialDaily(unittest.TestCase):
         self.assertEqual(rc, 0, msg=out)
         self.assertIn("WARN_TRIAL_LEDGER_SPLIT", out)
         self.assertIn("SKIP_NON_WEEKDAY", out)
+
+    def test_main_defaults_leads_db_to_data_dir_osha_sqlite(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d).resolve()
+            with (
+                mock.patch.dict(trial_daily.os.environ, {"DATA_DIR": str(data_dir)}, clear=True),
+                mock.patch.object(trial_daily.crm_light, "resolve_crm_db_path", return_value="C:\\osha_data\\crm_light.sqlite"),
+                mock.patch.object(trial_daily, "run_trial_daily", return_value=0) as run_mock,
+            ):
+                rc = trial_daily.main(["--subscriber-key", "facs_trial", "--print-config"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(run_mock.call_args.kwargs["leads_db"], str((data_dir / "osha.sqlite").resolve(strict=False)))
 
 
 if __name__ == "__main__":

@@ -307,15 +307,16 @@ class TestWallyTrialDoctor(unittest.TestCase):
                 batch_path=batch_path,
                 project_root=root,
                 customer_config=str(root / "customers" / "wally_trial_tx_triangle_v1.json"),
-                db_path="data/osha.sqlite",
+                db_path=r"C:\osha_data\osha.sqlite",
                 admin_email="support@microflowops.com",
             )
             text = batch_path.read_text(encoding="utf-8")
 
             self.assertIn(
-                "python run_trial_daily.py --subscriber-key wally_trial --db \"data/osha.sqlite\" --customer \"%~dp0customers\\wally_trial_tx_triangle_v1.json\" --send-live",
+                "python run_trial_daily.py --subscriber-key wally_trial --customer \"%~dp0customers\\wally_trial_tx_triangle_v1.json\" --send-live",
                 text,
             )
+            self.assertNotIn("--db", text)
             self.assertNotIn("run_trial_admin.py append-event --subscriber-key wally_trial", text)
             self.assertNotIn("WARN_TRIAL_LEDGER_APPEND_FAILED subscriber_key=wally_trial", text)
 
@@ -332,7 +333,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
         run_wally_trial.subprocess.run = _fake_run  # type: ignore[assignment]
         try:
             run_wally_trial.run_live_send(
-                db_path="data/osha.sqlite",
+                db_path=r"C:\osha_data\osha.sqlite",
                 customer_config="customers/wally_trial_tx_triangle_v1.json",
                 admin_email="support@microflowops.com",
                 send_live=True,
@@ -346,6 +347,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
         self.assertIn("--subscriber-key", cmd)
         self.assertIn("wally_trial", cmd)
         self.assertIn("--send-live", cmd)
+        self.assertNotIn("--db", cmd)
 
     def test_run_live_send_skips_on_weekend_without_override(self) -> None:
         calls = {"run": 0}
@@ -370,7 +372,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 run_wally_trial.run_live_send(
-                    db_path="data/osha.sqlite",
+                    db_path=r"C:\osha_data\osha.sqlite",
                     customer_config="customers/wally_trial_tx_triangle_v1.json",
                     admin_email="support@microflowops.com",
                     send_live=True,
@@ -454,7 +456,7 @@ class TestWallyTrialDoctor(unittest.TestCase):
         try:
             with self.assertRaises(run_wally_trial.subprocess.CalledProcessError):
                 run_wally_trial.run_live_send(
-                    db_path="data/osha.sqlite",
+                    db_path=r"C:\osha_data\osha.sqlite",
                     customer_config="customers/wally_trial_tx_triangle_v1.json",
                     admin_email="support@microflowops.com",
                     send_live=True,

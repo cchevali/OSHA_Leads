@@ -22,8 +22,13 @@ import crm_light
 import trial_audit
 from email_footer import build_footer_html, build_footer_text
 from lead_filters import load_territory_definitions, merge_territory_definition, resolve_territory_code
+from runtime_data_dir import resolve_osha_db_path
 from send_digest_email import build_unsubscribe_payload, resolve_branding, send_email
-from runtime_guard import render_runtime_lines, run_runtime_preflight
+from runtime_guard import render_runtime_lines, run_runtime_preflight, validate_live_osha_db_path
+
+
+def _default_leads_db_path() -> str:
+    return str(resolve_osha_db_path(Path(__file__).resolve().parent).effective_path)
 
 
 def _count_status_live_primary_weekdays(
@@ -1955,6 +1960,10 @@ def scope_enhancement(
             print(line)
         if not preflight.ok:
             return 2
+        osha_db_error = validate_live_osha_db_path(leads_db_path, Path(__file__).resolve().parent)
+        if osha_db_error:
+            print(osha_db_error)
+            return 2
 
     report = generate_missed_signals_report(
         subscriber_key=subscriber_key,
@@ -2134,7 +2143,7 @@ def main(argv: list[str] | None = None) -> int:
     add.add_argument("--tz", default="America/Chicago")
     add.add_argument("--start-date", required=True, help="YYYY-MM-DD")
     add.add_argument("--sends-limit", type=int, default=DEFAULT_SENDS_LIMIT)
-    add.add_argument("--db", default="data/osha.sqlite", help="Leads SQLite database path (default: data/osha.sqlite)")
+    add.add_argument("--db", default=_default_leads_db_path(), help=r"Leads SQLite database path (default: ${DATA_DIR}\osha.sqlite)")
     add.add_argument("--schema", default="schema.sql", help="Schema SQL path (default: schema.sql)")
     add.add_argument("--crm-db", default="", help="Optional override path for crm_light sqlite.")
 
@@ -2176,7 +2185,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Write missed-signals artifacts for a trial subscriber over a date range.",
     )
     missed.add_argument("--subscriber-key", required=True)
-    missed.add_argument("--db", default="data/osha.sqlite", help="Leads SQLite db path.")
+    missed.add_argument("--db", default=_default_leads_db_path(), help=r"Leads SQLite db path (default: ${DATA_DIR}\osha.sqlite).")
     missed.add_argument("--from", dest="from_date", required=True, help="Start date YYYY-MM-DD.")
     missed.add_argument("--to", dest="to_date", required=True, help="End date YYYY-MM-DD.")
     missed.add_argument("--customer", default="", help="Optional customer config path override.")
@@ -2248,7 +2257,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Generate and optionally send one-time scope-enhancement email with missed signals.",
     )
     scope.add_argument("--subscriber-key", required=True)
-    scope.add_argument("--db", default="data/osha.sqlite", help="Leads SQLite db path.")
+    scope.add_argument("--db", default=_default_leads_db_path(), help=r"Leads SQLite db path (default: ${DATA_DIR}\osha.sqlite).")
     scope.add_argument("--from", dest="from_date", required=True, help="Start date YYYY-MM-DD.")
     scope.add_argument("--to", dest="to_date", required=True, help="End date YYYY-MM-DD.")
     scope.add_argument("--extend-days", type=int, default=7, help="Calendar days to extend active trials.")

@@ -52,7 +52,7 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="Read-only state coverage diagnostics for inspections in data/osha.sqlite.")
+    ap = argparse.ArgumentParser(description=r"Read-only state coverage diagnostics for inspections in ${DATA_DIR}\osha.sqlite.")
     ap.add_argument(
         "--states",
         default=",".join(DEFAULT_STATES),
@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--db",
         default=str(scoring_paths.default_leads_db_path()),
-        help="SQLite inspections DB path (default: data/osha.sqlite).",
+        help=r"SQLite inspections DB path (default: ${DATA_DIR}\osha.sqlite).",
     )
     ap.add_argument("--print-config", action="store_true", help="Print resolved config and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Run read-only diagnostics and mark dry-run status.")

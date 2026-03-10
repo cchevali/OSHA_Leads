@@ -11,6 +11,7 @@ from typing import Any
 
 import crm_light
 from lead_filters import filter_by_cbsa_allowlist
+from runtime_data_dir import resolve_osha_db_path
 
 
 def _read_json_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -301,7 +302,11 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--inspection", required=True)
     audit.add_argument("--subscriber-key", default="")
     audit.add_argument("--email", default="")
-    audit.add_argument("--db", default="data/osha.sqlite")
+    audit.add_argument(
+        "--db",
+        default=str(resolve_osha_db_path(Path(__file__).resolve().parents[1]).effective_path),
+        help=r"SQLite inspections DB path (default: ${DATA_DIR}\osha.sqlite).",
+    )
     audit.add_argument("--crm-db", default="")
     audit.add_argument("--print-config", action="store_true")
     audit.add_argument("--dry-run", action="store_true")

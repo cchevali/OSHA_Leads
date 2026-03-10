@@ -59,12 +59,12 @@ class TestRunRuntimeTickWrapper(unittest.TestCase):
             self.assertIn("workflow_dispatch:", text, msg=f"expected dispatch-only workflow: {path}")
             self.assertNotIn("\nschedule:", text, msg=f"unexpected scheduled trigger in {path}")
 
-    def test_manual_wrapper_artifact_paths_match_repo_out_roots(self):
+    def test_manual_wrapper_artifact_paths_match_canonical_out_roots(self):
         for path in [TRIAL_WORKFLOW, INGEST_EVENING_WORKFLOW, MANUAL_WRAPPER_WORKFLOW]:
             text = path.read_text(encoding="utf-8")
-            self.assertIn("out/task_logs/**", text, msg=f"missing task log upload path in {path}")
-            self.assertIn("out/run_summaries/**", text, msg=f"missing run summary upload path in {path}")
-            self.assertIn("out/backups/**", text, msg=f"missing backup upload path in {path}")
+            self.assertIn(r"C:\osha_data\out\task_logs\**", text, msg=f"missing task log upload path in {path}")
+            self.assertIn(r"C:\osha_data\out\run_summaries\**", text, msg=f"missing run summary upload path in {path}")
+            self.assertIn(r"C:\osha_data\out\backups\**", text, msg=f"missing backup upload path in {path}")
 
     def test_no_non_runtime_tick_workflow_schedules_live_wrappers(self):
         workflow_paths = list((REPO_ROOT / ".github" / "workflows").glob("*.yml"))

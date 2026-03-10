@@ -8,6 +8,7 @@ from pathlib import Path
 import crm_light
 import ingest_osha
 from lead_filters import load_territory_definitions, resolve_territory_code
+from runtime_data_dir import resolve_osha_db_path
 from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict
 
 
@@ -155,6 +156,8 @@ def _resolve_states(cli_states: str, scope_mode: str) -> tuple[list[str], str, l
 
 def _emit_common_tokens(
     db_path: Path,
+    db_source: str,
+    db_warning: str,
     states: list[str],
     since_days: int,
     max_details: int,
@@ -164,6 +167,9 @@ def _emit_common_tokens(
     scope_source: str,
 ) -> None:
     _emit("INGEST_DB_PATH", str(db_path))
+    _emit("INGEST_DB_SOURCE", str(db_source or ""))
+    if db_warning:
+        print(db_warning)
     _emit("INGEST_SCOPE_MODE", scope_mode)
     _emit("INGEST_SCOPE_STATES", ",".join(scope_states))
     _emit("INGEST_SCOPE_SOURCE", scope_source)
@@ -211,9 +217,12 @@ def main(argv: list[str] | None = None) -> int:
         return _error(ERR_INGEST_DAILY_CONFIG, "states_empty")
 
     repo_root = Path(__file__).resolve().parent
-    db_path = (repo_root / "data" / "osha.sqlite").resolve()
+    db_resolution = resolve_osha_db_path(repo_root)
+    db_path = db_resolution.effective_path
     _emit_common_tokens(
         db_path=db_path,
+        db_source=db_resolution.source,
+        db_warning=db_resolution.warning_token,
         states=states,
         since_days=args.since_days,
         max_details=args.max_details,

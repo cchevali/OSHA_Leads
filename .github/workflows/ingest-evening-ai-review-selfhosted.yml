@@ -33,8 +33,7 @@ jobs:
         if: steps.gate.outputs.run_now == 'true'
         shell: powershell
         run: |
-          cd C:\dev\OSHA_Leads
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\run_osha_ingest_evening.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}\scripts\scheduled\run_osha_ingest_evening.ps1"
 
       - name: Upload Runtime Artifacts
         if: always()
@@ -43,6 +42,6 @@ jobs:
           name: ingest-evening-artifacts-${{ github.run_id }}
           if-no-files-found: warn
           path: |
-            out/task_logs/**
-            out/run_summaries/**
-            out/backups/**
+            C:\osha_data\out\task_logs\**
+            C:\osha_data\out\run_summaries\**
+            C:\osha_data\out\backups\**

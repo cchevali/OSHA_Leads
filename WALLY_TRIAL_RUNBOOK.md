@@ -109,16 +109,16 @@ Recommended operator sequence before `--send-live` (keeps onboarding email-only 
 
 ```powershell
 # A) Onboarding preflight (parse/validate the YES reply block; no writes)
-python onboard_subscriber.py --db data/osha.sqlite --preflight --reply-block-file out\\yes_reply.txt
+python onboard_subscriber.py --preflight --reply-block-file out\\yes_reply.txt
 
 # B) Onboarding dry-run (writes subscriber + customer config; no confirmation emails)
-python onboard_subscriber.py --db data/osha.sqlite --dry-run --reply-block-file out\\yes_reply.txt
+python onboard_subscriber.py --dry-run --reply-block-file out\\yes_reply.txt
 
 # C) Trial runtime config preflight (no send)
-.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key wally_trial --db data/osha.sqlite --customer customers\\wally_trial_tx_triangle_v1.json --print-config
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key wally_trial --customer customers\\wally_trial_tx_triangle_v1.json --print-config
 
 # D) Trial daily dry-run (renders daily path; no live send)
-.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key wally_trial --db data/osha.sqlite --customer customers\\wally_trial_tx_triangle_v1.json --test-send-daily --dry-run
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key wally_trial --customer customers\\wally_trial_tx_triangle_v1.json --test-send-daily --dry-run
 ```
 
 Artifacts:
@@ -128,13 +128,13 @@ Artifacts:
 ## 4) Ingest Last 14 Days (TX)
 
 ```powershell
-python ingest_osha.py --db data/osha.sqlite --states TX --since-days 14 --max-details 500
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --states TX --since-days 14 --max-details 500
 ```
 
 ## 5) Dry-Run + Preview + Counts
 
 ```powershell
-python run_wally_trial.py wally_trial_tx_triangle_v1.json --db data/osha.sqlite --lookback-days 14 --chase-email cchevali@gmail.com
+python run_wally_trial.py wally_trial_tx_triangle_v1.json --lookback-days 14 --chase-email cchevali@gmail.com
 ```
 
 Outputs:

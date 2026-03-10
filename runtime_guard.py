@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
@@ -11,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from runtime_data_dir import resolve_data_dir
+from runtime_data_dir import resolve_data_dir, resolve_osha_db_path
 
 VALID_RUNTIME_ROLES = {"canonical_scheduler", "dev_client"}
 VALID_MODES = {"scheduled", "manual"}
@@ -23,6 +24,8 @@ ERR_RUNTIME_HOST_MISMATCH = "ERR_RUNTIME_HOST_MISMATCH"
 ERR_RUNTIME_DATA_DIR_REPO_FALLBACK = "ERR_RUNTIME_DATA_DIR_REPO_FALLBACK"
 ERR_RUNTIME_DIR_PREP_FAILED = "ERR_RUNTIME_DIR_PREP_FAILED"
 ERR_RUNTIME_LIVE_CONFIRM_REQUIRED = "ERR_RUNTIME_LIVE_CONFIRM_REQUIRED"
+ERR_RUNTIME_DB_OSHA_OUTSIDE_DATA_DIR = "ERR_RUNTIME_DB_OSHA_OUTSIDE_DATA_DIR"
+ERR_RUNTIME_DB_OSHA_SPLIT = "ERR_RUNTIME_DB_OSHA_SPLIT"
 PASS_RUNTIME_PREFLIGHT = "PASS_RUNTIME_PREFLIGHT"
 
 
@@ -42,6 +45,12 @@ class RuntimeFingerprint:
     data_dir_source: str
     data_dir_warning: str
     db_osha: str
+    db_osha_source: str
+    db_osha_warning: str
+    db_osha_legacy: str
+    db_osha_legacy_exists: bool
+    db_osha_split_conflict: bool
+    db_osha_split_reason: str
     db_crm: str
     db_crm_light: str
     timezone: str
@@ -60,6 +69,62 @@ class RuntimePreflightResult:
 
 def _repo_root_default() -> Path:
     return Path(__file__).resolve().parent
+
+
+def _legacy_repo_osha_db(root: Path) -> Path:
+    return (root / "data" / "osha.sqlite").resolve(strict=False)
+
+
+def _sha256_file(path: Path) -> str:
+    if (not path.exists()) or (not path.is_file()):
+        return ""
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            block = fh.read(1024 * 1024)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
+def _detect_osha_db_split(root: Path, effective_db: Path) -> dict[str, Any]:
+    legacy = _legacy_repo_osha_db(root)
+    canonical = Path(effective_db).resolve(strict=False)
+    result: dict[str, Any] = {
+        "legacy_path": str(legacy),
+        "legacy_exists": legacy.exists(),
+        "conflict": False,
+        "reason": "",
+    }
+    if legacy == canonical or (not legacy.exists()) or (not canonical.exists()):
+        return result
+    legacy_hash = _sha256_file(legacy)
+    canonical_hash = _sha256_file(canonical)
+    if legacy_hash and canonical_hash and legacy_hash != canonical_hash:
+        result["conflict"] = True
+        result["reason"] = "hash_mismatch"
+    return result
+
+
+def validate_live_osha_db_path(selected_db: str | Path, repo_root: Path | None = None) -> str:
+    if _running_under_unittest():
+        return ""
+    root = (repo_root or _repo_root_default()).resolve(strict=False)
+    canonical = resolve_osha_db_path(root).effective_path.resolve(strict=False)
+    selected = Path(selected_db).expanduser().resolve(strict=False)
+    if selected != canonical:
+        return (
+            f"{ERR_RUNTIME_DB_OSHA_OUTSIDE_DATA_DIR} "
+            f"selected_db={selected} canonical_db={canonical}"
+        )
+    split = _detect_osha_db_split(root, canonical)
+    if bool(split.get("conflict")):
+        return (
+            f"{ERR_RUNTIME_DB_OSHA_SPLIT} db_osha={canonical} "
+            f"legacy_db={split.get('legacy_path')} reason={split.get('reason') or 'hash_mismatch'}"
+        )
+    return ""
 
 
 
@@ -115,6 +180,8 @@ def collect_runtime_fingerprint(
 ) -> RuntimeFingerprint:
     root = (repo_root or _repo_root_default()).resolve(strict=False)
     resolution = resolve_data_dir(root)
+    osha_db = resolve_osha_db_path(root)
+    legacy_osha = _detect_osha_db_split(root, osha_db.effective_path)
     hostname = _normalize_hostname(socket.gethostname())
     username = (os.getenv("USERNAME") or os.getenv("USER") or "").strip()
     runtime_role = _effective_runtime_role()
@@ -136,7 +203,13 @@ def collect_runtime_fingerprint(
         data_dir=str(resolution.effective_path),
         data_dir_source=str(resolution.source),
         data_dir_warning=str(resolution.warning_token or ""),
-        db_osha=str((root / "data" / "osha.sqlite").resolve(strict=False)),
+        db_osha=str(osha_db.effective_path),
+        db_osha_source=str(osha_db.source),
+        db_osha_warning=str(osha_db.warning_token or ""),
+        db_osha_legacy=str(legacy_osha.get("legacy_path") or ""),
+        db_osha_legacy_exists=bool(legacy_osha.get("legacy_exists")),
+        db_osha_split_conflict=bool(legacy_osha.get("conflict")),
+        db_osha_split_reason=str(legacy_osha.get("reason") or ""),
         db_crm=str((resolution.effective_path / "crm.sqlite").resolve(strict=False)),
         db_crm_light=str((resolution.effective_path / "crm_light.sqlite").resolve(strict=False)),
         timezone=_safe_tz_name(),
@@ -164,6 +237,16 @@ def _uses_repo_fallback_data_dir(fingerprint: RuntimeFingerprint) -> bool:
     default_path = (Path(fingerprint.repo_root) / "out").resolve(strict=False)
     actual = Path(fingerprint.data_dir).resolve(strict=False)
     return actual == default_path
+
+
+def _osha_db_outside_data_dir(fingerprint: RuntimeFingerprint) -> bool:
+    data_dir = Path(fingerprint.data_dir).resolve(strict=False)
+    db_path = Path(fingerprint.db_osha).resolve(strict=False)
+    try:
+        db_path.relative_to(data_dir)
+        return False
+    except ValueError:
+        return True
 
 
 
@@ -209,6 +292,15 @@ def run_runtime_preflight(
         errors.append(
             f"{ERR_RUNTIME_DATA_DIR_REPO_FALLBACK} data_dir={fingerprint.data_dir} source={fingerprint.data_dir_source}"
         )
+    if (fingerprint.intent in {"send", "write"}) and (not fingerprint.dry_run) and _osha_db_outside_data_dir(fingerprint):
+        errors.append(
+            f"{ERR_RUNTIME_DB_OSHA_OUTSIDE_DATA_DIR} db_osha={fingerprint.db_osha} data_dir={fingerprint.data_dir}"
+        )
+    if (fingerprint.intent in {"send", "write"}) and (not fingerprint.dry_run) and fingerprint.db_osha_split_conflict:
+        errors.append(
+            f"{ERR_RUNTIME_DB_OSHA_SPLIT} db_osha={fingerprint.db_osha} "
+            f"legacy_db={fingerprint.db_osha_legacy} reason={fingerprint.db_osha_split_reason}"
+        )
 
     if require_confirm_live_send and (fingerprint.intent == "send") and (not fingerprint.dry_run):
         if (not fingerprint.trusted_scheduled) and (not bool(confirm_live_send)):
@@ -252,6 +344,10 @@ def render_runtime_lines(result: RuntimePreflightResult) -> list[str]:
         f"RUNTIME_DATA_DIR={fp.data_dir}",
         f"RUNTIME_DATA_DIR_SOURCE={fp.data_dir_source}",
         f"RUNTIME_DB_OSHA={fp.db_osha}",
+        f"RUNTIME_DB_OSHA_SOURCE={fp.db_osha_source}",
+        f"RUNTIME_DB_OSHA_LEGACY={fp.db_osha_legacy}",
+        f"RUNTIME_DB_OSHA_LEGACY_EXISTS={1 if fp.db_osha_legacy_exists else 0}",
+        f"RUNTIME_DB_OSHA_SPLIT_CONFLICT={1 if fp.db_osha_split_conflict else 0}",
         f"RUNTIME_DB_CRM={fp.db_crm}",
         f"RUNTIME_DB_CRM_LIGHT={fp.db_crm_light}",
         f"RUNTIME_TIMEZONE={fp.timezone}",
@@ -262,6 +358,10 @@ def render_runtime_lines(result: RuntimePreflightResult) -> list[str]:
     ]
     if fp.data_dir_warning:
         lines.append(fp.data_dir_warning)
+    if fp.db_osha_warning:
+        lines.append(fp.db_osha_warning)
+    if fp.db_osha_split_reason:
+        lines.append(f"RUNTIME_DB_OSHA_SPLIT_REASON={fp.db_osha_split_reason}")
     for path in sorted(set(result.prepared_dirs)):
         lines.append(f"RUNTIME_PREPARED_DIR={path}")
     if result.ok:
@@ -338,4 +438,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

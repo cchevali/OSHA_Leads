@@ -12,8 +12,9 @@ from outreach import run_runtime_tick as tick
 
 
 class _Preflight:
-    def __init__(self, ok: bool = True):
+    def __init__(self, ok: bool = True, trusted_scheduled: bool = False):
         self.ok = ok
+        self.fingerprint = type("Fingerprint", (), {"trusted_scheduled": bool(trusted_scheduled)})()
 
 
 class TestRunRuntimeTick(unittest.TestCase):
@@ -56,6 +57,8 @@ class TestRunRuntimeTick(unittest.TestCase):
         self.assertEqual(rc, 0, msg=out)
         self.assertIn("RUNTIME_TICK_REPO_ROOT=", out)
         self.assertIn(f"RUNTIME_TICK_DATA_DIR={Path(d).resolve()}", out)
+        self.assertIn("RUNTIME_TICK_PRIMARY_SCHEDULER=runtime_tick_selfhosted", out)
+        self.assertIn(f"RUNTIME_TICK_CANONICAL_RUN_SUMMARY_ROOT={(Path(d).resolve() / 'out' / 'run_summaries').resolve()}", out)
         self.assertIn("RUNTIME_TICK_SELECTED_JOBS=ingest_daily", out)
         self.assertIn("PASS_RUNTIME_TICK_PRINT_CONFIG status=OK", out)
         self.assertIn("PASS_RUNTIME_TICK_COMPLETE status=PRINT_CONFIG", out)
@@ -71,7 +74,7 @@ class TestRunRuntimeTick(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as d,
             mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
-            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
             mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
             mock.patch.object(tick.subprocess, "run", side_effect=_run),
         ):
@@ -86,6 +89,93 @@ class TestRunRuntimeTick(unittest.TestCase):
         self.assertIn("run_trial_daily.py", joined)
         self.assertIn("--doctor", joined)
         self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
+
+    def test_live_mode_propagates_scheduled_env_to_child_commands(self):
+        seen_envs: list[dict[str, str]] = []
+
+        def _run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            env = kwargs.get("env") or {}
+            seen_envs.append(
+                {
+                    "command": " ".join(str(part) for part in cmd),
+                    "MFO_RUNTIME_MODE": str(env.get("MFO_RUNTIME_MODE") or ""),
+                    "MFO_TRUSTED_SCHEDULED": str(env.get("MFO_TRUSTED_SCHEDULED") or ""),
+                }
+            )
+            return self._proc(0, stdout="PASS_TRIAL_DAILY_DOCTOR status=OK\n")
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick.subprocess, "run", side_effect=_run),
+        ):
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                rc = tick.main(["--job", "trial_facs_daily", "--force", "--mode", "scheduled"])
+        out = out_buf.getvalue() + "\n" + err_buf.getvalue()
+        self.assertEqual(rc, 0, msg=out)
+        child_env = next((item for item in seen_envs if "run_trial_daily.py" in item["command"]), {})
+        self.assertEqual(child_env.get("MFO_RUNTIME_MODE"), "scheduled")
+        self.assertEqual(child_env.get("MFO_TRUSTED_SCHEDULED"), "1")
+
+    def test_trusted_scheduled_reconciliation_ignores_repo_run_summary_fallback(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as repo_tmp:
+            data_dir = Path(d)
+            repo_root = Path(repo_tmp)
+            repo_root.mkdir(parents=True, exist_ok=True)
+            (repo_root / "run_with_secrets.ps1").write_text("", encoding="utf-8")
+            repo_summary_root = repo_root / "out" / "run_summaries"
+            repo_summary_root.mkdir(parents=True, exist_ok=True)
+            repo_summary_path = repo_summary_root / "OSHA_Outreach_Auto_20260309_000001.summary.json"
+            repo_summary_path.write_text(
+                json.dumps(
+                    {
+                        "wrapper": "OSHA_Outreach_Auto",
+                        "start_local": "2026-03-09T10:30:00-04:00",
+                        "end_local": "2026-03-09T10:35:00-04:00",
+                        "exit_code": 0,
+                        "artifacts": {
+                            "task_log": str(repo_root / "out" / "task_logs" / "OSHA_Outreach_Auto_20260309.log"),
+                            "summary_json": str(repo_summary_path),
+                            "summary_text": str(repo_summary_root / "OSHA_Outreach_Auto_20260309_000001.summary.txt"),
+                        },
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            out_buf = io.StringIO()
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "DATA_DIR": str(data_dir),
+                        "MFO_TRUSTED_SCHEDULED": "1",
+                        "OSHA_SMOKE_TO": "ops@example.com",
+                        "SMTP_HOST": "smtp.example.com",
+                        "SMTP_PORT": "587",
+                        "SMTP_USER": "bot@example.com",
+                        "SMTP_PASS": "secret",
+                    },
+                    clear=False,
+                ),
+                mock.patch.object(tick, "_repo_root", return_value=repo_root),
+                mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
+                mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+                mock.patch.object(tick, "send_plain_text_alert") as send_mock,
+                redirect_stdout(out_buf),
+            ):
+                rc = tick.main(["--job", "outreach_auto", "--now-local", "2026-03-09T12:30", "--mode", "scheduled"])
+            out = out_buf.getvalue()
+            self.assertEqual(rc, 0, msg=out)
+            self.assertIn("RUNTIME_TICK_REPO_RUN_SUMMARY_FALLBACK_ALLOWED=0", out)
+            self.assertIn("RUNTIME_TICK_ALERT_CANDIDATE=name=outreach_auto category=missed_window send=1 reason=ready_to_send", out)
+            send_mock.assert_called_once()
 
     def test_doctor_inbound_triage_skips_when_gmail_credentials_missing(self):
         with tempfile.TemporaryDirectory() as d:

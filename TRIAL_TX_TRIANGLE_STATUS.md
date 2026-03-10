@@ -9,7 +9,7 @@ This document is the single source of truth for the current Texas Triangle daily
 What the repo itself confirms:
 - A production runner exists (`run_wally_trial_daily.bat`) and calls the live-send path.
 - Territory filtering, content thresholds, dedupe, suppression checks, send idempotency, and run artifacts/logging are implemented.
-- The SQLite DB (`data/osha.sqlite`) currently contains an enabled `wally_trial` subscriber with the intended recipients.
+- The canonical runtime SQLite DB (`${DATA_DIR}\osha.sqlite`) currently contains an enabled `wally_trial` subscriber with the intended recipients.
 
 What the repo cannot confirm (machine state):
 - Whether Task Scheduler is currently enabled/active on the operator machine and scheduled for the correct time.
@@ -32,7 +32,7 @@ What the repo cannot confirm (machine state):
 `run_wally_trial_daily.bat` runs this exact command:
 
 ```bat
-python run_trial_daily.py --subscriber-key wally_trial --db "data/osha.sqlite" --customer "%~dp0customers\wally_trial_tx_triangle_v1.json" --send-live
+python run_trial_daily.py --subscriber-key wally_trial --customer "%~dp0customers\wally_trial_tx_triangle_v1.json" --send-live
 ```
 
 Notes:
@@ -54,7 +54,7 @@ python run_wally_trial.py wally_trial_tx_triangle_v1.json --check-schedule
 
 ## Data Inputs
 
-- SQLite DB: `data/osha.sqlite`
+- SQLite DB: `${DATA_DIR}\osha.sqlite`
   - Primary lead table: `inspections` (includes `activity_nr`, `lead_score`, `first_seen_at`, `last_seen_at`, `date_opened`, `site_city`, `site_state`, optional `area_office`, etc.).
 - Environment config: `.env` in repo root (SMTP + branding + optional unsubscribe endpoint config).
 - Customer config (untracked): `customers/wally_trial_tx_triangle_v1.json`
@@ -107,7 +107,7 @@ Send-level idempotency:
 
 ## Output Email Recipients (Current)
 
-Current subscriber row in `data/osha.sqlite`:
+Current subscriber row in `${DATA_DIR}\osha.sqlite`:
 - `subscriber_key`: `wally_trial`
 - `territory_code`: `TX_TRIANGLE_V1`
 - `send_time_local`: `08:00`
@@ -187,19 +187,19 @@ Provision a new subscriber (no manual DB edits) from a prospect's copy/paste rep
 
 ```powershell
 # 1) Preflight (parse/validate only; no writes)
-python onboard_subscriber.py --db data/osha.sqlite --preflight --reply-block-file out\\yes_reply.txt
+python onboard_subscriber.py --preflight --reply-block-file out\\yes_reply.txt
 
 # Option A: from a file containing the KEY=VALUE block
-python onboard_subscriber.py --db data/osha.sqlite --dry-run --reply-block-file out\\yes_reply.txt
+python onboard_subscriber.py --dry-run --reply-block-file out\\yes_reply.txt
 
 # 2) Trial runtime config preflight (no send)
-.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key <subscriber_key> --db data/osha.sqlite --customer customers\\<subscriber_key>.json --print-config
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key <subscriber_key> --customer customers\\<subscriber_key>.json --print-config
 
 # 3) Trial daily dry-run (renders trial daily path; no live send)
-.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key <subscriber_key> --db data/osha.sqlite --customer customers\\<subscriber_key>.json --test-send-daily --dry-run
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key <subscriber_key> --customer customers\\<subscriber_key>.json --test-send-daily --dry-run
 
 # 4) Live send (within the configured send window)
-.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key <subscriber_key> --db data/osha.sqlite --customer customers\\<subscriber_key>.json --send-live
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key <subscriber_key> --customer customers\\<subscriber_key>.json --send-live
 ```
 
 What it does:
@@ -219,7 +219,7 @@ Operator artifacts (recommended):
 ## Suppression / Unsubscribe Enforcement
 
 Suppression enforcement:
-- Before sending each recipient email, the pipeline checks `suppression_list` in `data/osha.sqlite` for:
+- Before sending each recipient email, the pipeline checks `suppression_list` in `${DATA_DIR}\osha.sqlite` for:
   - exact email match (lowercased)
   - domain match (lowercased, e.g. `example.com`)
 - If suppressed, the message is not sent and the suppression action is logged (CSV + run artifacts).

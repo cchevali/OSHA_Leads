@@ -36,6 +36,33 @@ class TestRuntimeRunSummary(unittest.TestCase):
             self.assertIn(f"TASK={expected_task}", out)
             self.assertIn(f"SUMMARY={expected_summary}", out)
 
+    def test_default_roots_fall_back_to_runtime_data_dir_when_mfo_unset(self):
+        self.assertTrue(SCRIPT.exists(), msg=f"missing script: {SCRIPT}")
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "osha_data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            cmd = (
+                "$env:MFO_DATA_DIR_EFFECTIVE=''; "
+                f"$env:RUNTIME_DATA_DIR='{data_dir}'; "
+                f". '{SCRIPT}'; "
+                f"$a = Resolve-DefaultTaskLogRoot -RepoRoot '{REPO_ROOT}'; "
+                f"$b = Resolve-DefaultRunSummaryRoot -RepoRoot '{REPO_ROOT}'; "
+                "Write-Output ('TASK=' + $a); "
+                "Write-Output ('SUMMARY=' + $b);"
+            )
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+            )
+            out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            self.assertEqual(proc.returncode, 0, msg=out)
+            expected_task = str((data_dir / "out" / "task_logs").resolve())
+            expected_summary = str((data_dir / "out" / "run_summaries").resolve())
+            self.assertIn(f"TASK={expected_task}", out)
+            self.assertIn(f"SUMMARY={expected_summary}", out)
+
     def test_writes_summary_json_and_text_with_tokens(self):
         self.assertTrue(SCRIPT.exists(), msg=f"missing script: {SCRIPT}")
         with tempfile.TemporaryDirectory() as d:

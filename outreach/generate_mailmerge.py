@@ -1532,8 +1532,8 @@ def main() -> int:
     ap.add_argument("--out", help="Output outbox CSV path.")
     ap.add_argument(
         "--db",
-        default=str(Path("data") / "osha.sqlite"),
-        help="Optional SQLite db path for suppression_list domain/email suppression (default: data/osha.sqlite).",
+        default=str(scoring_paths.default_leads_db_path()),
+        help=r"Optional SQLite db path for suppression_list domain/email suppression (default: ${DATA_DIR}\osha.sqlite).",
     )
     ap.add_argument(
         "--template",
