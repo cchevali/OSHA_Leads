@@ -26,6 +26,7 @@ ERR_RUNTIME_DIR_PREP_FAILED = "ERR_RUNTIME_DIR_PREP_FAILED"
 ERR_RUNTIME_LIVE_CONFIRM_REQUIRED = "ERR_RUNTIME_LIVE_CONFIRM_REQUIRED"
 ERR_RUNTIME_DB_OSHA_OUTSIDE_DATA_DIR = "ERR_RUNTIME_DB_OSHA_OUTSIDE_DATA_DIR"
 ERR_RUNTIME_DB_OSHA_SPLIT = "ERR_RUNTIME_DB_OSHA_SPLIT"
+WARN_RUNTIME_DB_OSHA_SPLIT_IGNORED = "WARN_RUNTIME_DB_OSHA_SPLIT_IGNORED"
 PASS_RUNTIME_PREFLIGHT = "PASS_RUNTIME_PREFLIGHT"
 
 
@@ -111,7 +112,8 @@ def validate_live_osha_db_path(selected_db: str | Path, repo_root: Path | None =
     if _running_under_unittest():
         return ""
     root = (repo_root or _repo_root_default()).resolve(strict=False)
-    canonical = resolve_osha_db_path(root).effective_path.resolve(strict=False)
+    resolution = resolve_osha_db_path(root)
+    canonical = resolution.effective_path.resolve(strict=False)
     selected = Path(selected_db).expanduser().resolve(strict=False)
     if selected != canonical:
         return (
@@ -120,6 +122,16 @@ def validate_live_osha_db_path(selected_db: str | Path, repo_root: Path | None =
         )
     split = _detect_osha_db_split(root, canonical)
     if bool(split.get("conflict")):
+        hostname = _normalize_hostname(socket.gethostname())
+        runtime_role = _effective_runtime_role()
+        canonical_host = _canonical_hostname()
+        canonical_match = bool(canonical_host and hostname == canonical_host)
+        if (
+            runtime_role == "canonical_scheduler"
+            and canonical_match
+            and str(resolution.source) == "data_dir"
+        ):
+            return ""
         return (
             f"{ERR_RUNTIME_DB_OSHA_SPLIT} db_osha={canonical} "
             f"legacy_db={split.get('legacy_path')} reason={split.get('reason') or 'hash_mismatch'}"
@@ -231,6 +243,16 @@ def _running_under_unittest() -> bool:
 
 
 
+def _allow_canonical_split_override(fingerprint: RuntimeFingerprint) -> bool:
+    return bool(
+        fingerprint.runtime_role == "canonical_scheduler"
+        and fingerprint.canonical_host_match
+        and fingerprint.db_osha_source == "data_dir"
+        and (not _uses_repo_fallback_data_dir(fingerprint))
+        and (not _osha_db_outside_data_dir(fingerprint))
+    )
+
+
 def _uses_repo_fallback_data_dir(fingerprint: RuntimeFingerprint) -> bool:
     if fingerprint.data_dir_source != "default":
         return False
@@ -296,7 +318,12 @@ def run_runtime_preflight(
         errors.append(
             f"{ERR_RUNTIME_DB_OSHA_OUTSIDE_DATA_DIR} db_osha={fingerprint.db_osha} data_dir={fingerprint.data_dir}"
         )
-    if (fingerprint.intent in {"send", "write"}) and (not fingerprint.dry_run) and fingerprint.db_osha_split_conflict:
+    if (
+        (fingerprint.intent in {"send", "write"})
+        and (not fingerprint.dry_run)
+        and fingerprint.db_osha_split_conflict
+        and (not _allow_canonical_split_override(fingerprint))
+    ):
         errors.append(
             f"{ERR_RUNTIME_DB_OSHA_SPLIT} db_osha={fingerprint.db_osha} "
             f"legacy_db={fingerprint.db_osha_legacy} reason={fingerprint.db_osha_split_reason}"
@@ -362,6 +389,11 @@ def render_runtime_lines(result: RuntimePreflightResult) -> list[str]:
         lines.append(fp.db_osha_warning)
     if fp.db_osha_split_reason:
         lines.append(f"RUNTIME_DB_OSHA_SPLIT_REASON={fp.db_osha_split_reason}")
+    if fp.db_osha_split_conflict and _allow_canonical_split_override(fp):
+        lines.append(
+            f"{WARN_RUNTIME_DB_OSHA_SPLIT_IGNORED} "
+            f"db_osha={fp.db_osha} legacy_db={fp.db_osha_legacy} reason={fp.db_osha_split_reason or 'hash_mismatch'}"
+        )
     for path in sorted(set(result.prepared_dirs)):
         lines.append(f"RUNTIME_PREPARED_DIR={path}")
     if result.ok:

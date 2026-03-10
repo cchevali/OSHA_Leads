@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import runtime_guard
 
 REPO_ROOT = Path(__file__).resolve().parent
 SCRIPT = REPO_ROOT / "runtime_guard.py"
@@ -120,6 +121,26 @@ class TestRuntimeGuard(unittest.TestCase):
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         self.assertNotEqual(proc.returncode, 0, msg=out)
         self.assertIn("ERR_RUNTIME_DB_OSHA_SPLIT", out)
+
+    def test_split_osha_db_allowed_for_canonical_scheduler_on_canonical_host(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d).resolve()
+            osha_db = (data_dir / "osha.sqlite").resolve()
+            osha_db.write_text("split", encoding="utf-8")
+            hostname = socket.gethostname().strip().lower()
+            original = {k: os.environ.get(k) for k in ("RUNTIME_ROLE", "CANONICAL_HOSTNAME", "DATA_DIR")}
+            try:
+                os.environ["RUNTIME_ROLE"] = "canonical_scheduler"
+                os.environ["CANONICAL_HOSTNAME"] = hostname
+                os.environ["DATA_DIR"] = str(data_dir)
+                err = runtime_guard.validate_live_osha_db_path(osha_db, REPO_ROOT)
+            finally:
+                for key, value in original.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+            self.assertEqual("", err)
 
 
 if __name__ == "__main__":
