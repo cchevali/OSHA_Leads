@@ -104,43 +104,122 @@ class TestRuntimeGuard(unittest.TestCase):
             str((Path(d).resolve() / "osha.sqlite").resolve(strict=False)),
         )
         self.assertEqual(payload.get("db_osha_source"), "data_dir")
+        self.assertIn("db_crm_legacy_exists", payload)
+        self.assertIn("db_crm_light_legacy_exists", payload)
 
     def test_split_osha_db_errors_for_live_write(self):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d).resolve()
             (data_dir / "osha.sqlite").write_text("split", encoding="utf-8")
+            legacy_osha = (REPO_ROOT / "data" / "osha.sqlite").resolve()
+            original_bytes = legacy_osha.read_bytes() if legacy_osha.exists() else None
+            legacy_osha.parent.mkdir(parents=True, exist_ok=True)
+            legacy_osha.write_text("legacy", encoding="utf-8")
             hostname = socket.gethostname().strip().lower()
-            proc = self._run(
-                ["preflight", "--mode", "manual", "--intent", "write"],
-                {
-                    "RUNTIME_ROLE": "dev_client",
-                    "CANONICAL_HOSTNAME": hostname,
-                    "DATA_DIR": str(data_dir),
-                },
-            )
+            try:
+                proc = self._run(
+                    ["preflight", "--mode", "manual", "--intent", "write"],
+                    {
+                        "RUNTIME_ROLE": "dev_client",
+                        "CANONICAL_HOSTNAME": hostname,
+                        "DATA_DIR": str(data_dir),
+                    },
+                )
+            finally:
+                if original_bytes is None:
+                    legacy_osha.unlink(missing_ok=True)
+                else:
+                    legacy_osha.write_bytes(original_bytes)
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         self.assertNotEqual(proc.returncode, 0, msg=out)
+        self.assertIn("ERR_RUNTIME_DB_OSHA_LEGACY_PRESENT", out)
         self.assertIn("ERR_RUNTIME_DB_OSHA_SPLIT", out)
 
-    def test_split_osha_db_allowed_for_canonical_scheduler_on_canonical_host(self):
+    def test_split_osha_db_errors_for_canonical_scheduler_on_canonical_host(self):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d).resolve()
             osha_db = (data_dir / "osha.sqlite").resolve()
             osha_db.write_text("split", encoding="utf-8")
+            legacy_osha = (REPO_ROOT / "data" / "osha.sqlite").resolve()
+            original_bytes = legacy_osha.read_bytes() if legacy_osha.exists() else None
+            legacy_osha.parent.mkdir(parents=True, exist_ok=True)
+            legacy_osha.write_text("legacy", encoding="utf-8")
             hostname = socket.gethostname().strip().lower()
-            original = {k: os.environ.get(k) for k in ("RUNTIME_ROLE", "CANONICAL_HOSTNAME", "DATA_DIR")}
             try:
-                os.environ["RUNTIME_ROLE"] = "canonical_scheduler"
-                os.environ["CANONICAL_HOSTNAME"] = hostname
-                os.environ["DATA_DIR"] = str(data_dir)
-                err = runtime_guard.validate_live_osha_db_path(osha_db, REPO_ROOT)
+                proc = self._run(
+                    ["preflight", "--mode", "scheduled", "--intent", "write"],
+                    {
+                        "RUNTIME_ROLE": "canonical_scheduler",
+                        "CANONICAL_HOSTNAME": hostname,
+                        "DATA_DIR": str(data_dir),
+                    },
+                )
             finally:
-                for key, value in original.items():
-                    if value is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = value
-            self.assertEqual("", err)
+                if original_bytes is None:
+                    legacy_osha.unlink(missing_ok=True)
+                else:
+                    legacy_osha.write_bytes(original_bytes)
+            out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            self.assertNotEqual(proc.returncode, 0, msg=out)
+            self.assertIn("ERR_RUNTIME_DB_OSHA_LEGACY_PRESENT", out)
+
+    def test_legacy_repo_crm_db_errors_for_live_send(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d).resolve()
+            (data_dir / "crm.sqlite").write_text("canonical", encoding="utf-8")
+            legacy_crm = (REPO_ROOT / "out" / "crm.sqlite").resolve()
+            original_bytes = legacy_crm.read_bytes() if legacy_crm.exists() else None
+            legacy_crm.parent.mkdir(parents=True, exist_ok=True)
+            legacy_crm.write_text("legacy", encoding="utf-8")
+            hostname = socket.gethostname().strip().lower()
+            try:
+                proc = self._run(
+                    ["preflight", "--mode", "manual", "--intent", "send", "--confirm-live-send"],
+                    {
+                        "RUNTIME_ROLE": "dev_client",
+                        "CANONICAL_HOSTNAME": hostname,
+                        "DATA_DIR": str(data_dir),
+                        "MFO_TRUSTED_SCHEDULED": "0",
+                    },
+                )
+            finally:
+                if original_bytes is None:
+                    legacy_crm.unlink(missing_ok=True)
+                else:
+                    legacy_crm.write_bytes(original_bytes)
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        self.assertNotEqual(proc.returncode, 0, msg=out)
+        self.assertIn("ERR_RUNTIME_DB_CRM_LEGACY_PRESENT", out)
+        self.assertIn("ERR_RUNTIME_DB_CRM_SPLIT", out)
+
+    def test_legacy_repo_crm_light_db_errors_for_live_send(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d).resolve()
+            (data_dir / "crm_light.sqlite").write_text("canonical", encoding="utf-8")
+            legacy_db = (REPO_ROOT / "out" / "crm_light.sqlite").resolve()
+            original_bytes = legacy_db.read_bytes() if legacy_db.exists() else None
+            legacy_db.parent.mkdir(parents=True, exist_ok=True)
+            legacy_db.write_text("legacy", encoding="utf-8")
+            hostname = socket.gethostname().strip().lower()
+            try:
+                proc = self._run(
+                    ["preflight", "--mode", "manual", "--intent", "send", "--confirm-live-send"],
+                    {
+                        "RUNTIME_ROLE": "dev_client",
+                        "CANONICAL_HOSTNAME": hostname,
+                        "DATA_DIR": str(data_dir),
+                        "MFO_TRUSTED_SCHEDULED": "0",
+                    },
+                )
+            finally:
+                if original_bytes is None:
+                    legacy_db.unlink(missing_ok=True)
+                else:
+                    legacy_db.write_bytes(original_bytes)
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        self.assertNotEqual(proc.returncode, 0, msg=out)
+        self.assertIn("ERR_RUNTIME_DB_CRM_LIGHT_LEGACY_PRESENT", out)
+        self.assertIn("ERR_RUNTIME_DB_CRM_LIGHT_SPLIT", out)
 
 
 if __name__ == "__main__":

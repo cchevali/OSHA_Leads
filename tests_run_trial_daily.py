@@ -55,7 +55,7 @@ class TestRunTrialDaily(unittest.TestCase):
         self.assertIn("PASS_RUNTIME_PREFLIGHT", out)
         self.assertIn("PASS_TRIAL_DAILY_DOCTOR status=OK", out)
 
-    def test_split_ledger_is_warning_only_in_live_mode(self):
+    def test_split_ledger_blocks_live_mode(self):
         with (
             mock.patch.object(trial_daily, "_resolve_policy", return_value=self._policy()),
             mock.patch.object(trial_daily, "run_runtime_preflight", return_value=_Preflight(True)),
@@ -98,9 +98,9 @@ class TestRunTrialDaily(unittest.TestCase):
                     allow_weekend_send=False,
                 )
         out = buf.getvalue()
-        self.assertEqual(rc, 0, msg=out)
+        self.assertEqual(rc, 2, msg=out)
         self.assertIn("WARN_TRIAL_LEDGER_SPLIT", out)
-        self.assertIn("SKIP_NON_WEEKDAY", out)
+        self.assertIn("run_runtime_state_migrate.py --apply", out)
 
     def test_main_defaults_leads_db_to_data_dir_osha_sqlite(self):
         with tempfile.TemporaryDirectory() as d:

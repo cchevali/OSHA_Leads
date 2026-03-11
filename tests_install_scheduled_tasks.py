@@ -115,7 +115,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         ingest_task = ingest[0]
         self.assertEqual(ingest_task.get("SCHEDULE"), "weekly", msg=out)
         self.assertEqual(ingest_task.get("RECOVERY_ONLY"), "YES", msg=out)
-        self.assertEqual(ingest_task.get("EXPECTED_STATE"), "Disabled", msg=out)
+        self.assertEqual(ingest_task.get("EXPECTED_STATE"), "Enabled", msg=out)
         self.assertEqual(ingest_task.get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(ingest_task.get("TIME"), "06:45", msg=out)
         self.assertEqual(ingest_task.get("RL"), "HIGHEST", msg=out)
@@ -125,11 +125,13 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self._assert_future_boundary(ingest_task.get("START_BOUNDARY_LOCAL", ""), out)
 
         replenish = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Replenish_Daily"]
+        if not replenish:
+            replenish = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Replenish_SafetyNet"]
         self.assertEqual(len(replenish), 1, msg=out)
         replenish_task = replenish[0]
         self.assertEqual(replenish_task.get("SCHEDULE"), "weekly", msg=out)
         self.assertEqual(replenish_task.get("RECOVERY_ONLY"), "YES", msg=out)
-        self.assertEqual(replenish_task.get("EXPECTED_STATE"), "Disabled", msg=out)
+        self.assertEqual(replenish_task.get("EXPECTED_STATE"), "Enabled", msg=out)
         self.assertEqual(replenish_task.get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(replenish_task.get("TIME"), "07:15", msg=out)
         self.assertEqual(replenish_task.get("RL"), "HIGHEST", msg=out)
@@ -138,11 +140,11 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(int(replenish_task.get("TR_LENGTH", "0")), len(EXPECTED_REPLENISH_TR), msg=out)
         self._assert_future_boundary(replenish_task.get("START_BOUNDARY_LOCAL", ""), out)
 
-        outreach = [t for t in tasks.values() if t.get("NAME") == "OSHA_Outreach_Auto"]
+        outreach = [t for t in tasks.values() if t.get("NAME") == "OSHA_Outreach_Auto_SafetyNet"]
         self.assertEqual(len(outreach), 1, msg=out)
         self.assertEqual(outreach[0].get("SCHEDULE"), "weekly", msg=out)
         self.assertEqual(outreach[0].get("RECOVERY_ONLY"), "YES", msg=out)
-        self.assertEqual(outreach[0].get("EXPECTED_STATE"), "Disabled", msg=out)
+        self.assertEqual(outreach[0].get("EXPECTED_STATE"), "Enabled", msg=out)
         self.assertEqual(outreach[0].get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(outreach[0].get("TR"), EXPECTED_OUTREACH_TR, msg=out)
         self._assert_future_boundary(outreach[0].get("START_BOUNDARY_LOCAL", ""), out)
@@ -151,7 +153,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(len(facs_trial), 1, msg=out)
         self.assertEqual(facs_trial[0].get("SCHEDULE"), "weekly", msg=out)
         self.assertEqual(facs_trial[0].get("RECOVERY_ONLY"), "YES", msg=out)
-        self.assertEqual(facs_trial[0].get("EXPECTED_STATE"), "Disabled", msg=out)
+        self.assertEqual(facs_trial[0].get("EXPECTED_STATE"), "Enabled", msg=out)
         self.assertEqual(facs_trial[0].get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
         self.assertEqual(facs_trial[0].get("TIME"), "09:00", msg=out)
         self.assertEqual(facs_trial[0].get("RL"), "HIGHEST", msg=out)
@@ -187,7 +189,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("DRY_RUN_COMMAND_3=", out)
         self.assertIn("DRY_RUN_COMMAND_4=", out)
         self.assertIn("DRY_RUN_COMMAND_5=", out)
-        self.assertIn("DRY_RUN_STATE_COMMAND_1=schtasks /Change /TN \"\\OSHA_Osha_Ingest_Daily\" /Disable", out)
+        self.assertIn("DRY_RUN_STATE_COMMAND_1=schtasks /Change /TN \"\\OSHA_Osha_Ingest_Daily\" /Enable", out)
         self.assertIn("/RU \"DESKTOP-Q8QM4N9\\lever\" /RP ***REDACTED***", out)
         self.assertNotIn("dont-print-me", out)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_DRY_RUN", out)
@@ -245,7 +247,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("WARN_SCHEDTASK_ACTION_MISMATCH", text)
         self.assertIn("ERR_INSTALL_SCHEDULED_TASKS_APPLY_ACTION_STUCK", text)
         self.assertIn("ERR_SCHED_TASK_TARGET_MISSING=1", text)
-        self.assertIn("ERR_SCHEDTASK_RECOVERY_TASK_ENABLED=1", text)
+        self.assertIn("ERR_SCHEDTASK_SAFETY_NET_DISABLED=1", text)
         self.assertIn("INSTALL_SCHEDULED_TASKS_PRIMARY_SCHEDULER=runtime_tick_selfhosted", text)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_RUNNER_SERVICE", text)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_PYTHON_RESOLUTION", text)
@@ -254,9 +256,11 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertNotIn("function Invoke-SchtasksCommand([string[]]$Args)", text)
         self.assertIn("last_run_result_hex=0x41303", text)
         self.assertNotIn("last_result=0x41303", text)
-        self.assertIn("OSHA_Prospect_Replenish_Daily", text)
+        self.assertIn("OSHA_Prospect_Replenish_SafetyNet", text)
         self.assertIn("run_prospect_replenish_daily.ps1", text)
         self.assertIn("TASK_REMOVED_LEGACY", text)
+        self.assertIn("ERR_SCHEDTASK_UNMANAGED_OSHA_TASK=1", text)
+        self.assertIn("OSHA Wally Trial Daily", text)
         self.assertIn("--verify", text)
         self.assertIn("--status", text)
         self.assertIn("$modeArg -eq '--verify' -or $modeArg -eq '--status'", text)

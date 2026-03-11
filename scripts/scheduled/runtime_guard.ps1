@@ -183,3 +183,78 @@ function Invoke-RuntimePreflight {
     Lines = @($output | ForEach-Object { [string]$_ })
   }
 }
+
+function Resolve-EffectiveDataDir {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepoRoot
+  )
+
+  $effective = ([string]$env:MFO_DATA_DIR_EFFECTIVE).Trim()
+  if ($effective) {
+    return $effective
+  }
+
+  $dataDir = ([string]$env:DATA_DIR).Trim()
+  if ($dataDir -and [System.IO.Path]::IsPathRooted($dataDir)) {
+    return $dataDir
+  }
+
+  return (Join-Path $RepoRoot 'out')
+}
+
+function Test-RuntimeTickDailySlotAlreadyCompleted {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepoRoot,
+    [Parameter(Mandatory = $true)][string]$JobName,
+    [Parameter(Mandatory = $true)][datetime]$NowLocal,
+    [scriptblock]$EmitLine = $null
+  )
+
+  $dataDir = Resolve-EffectiveDataDir -RepoRoot $RepoRoot
+  $statePath = Join-Path $dataDir ('runtime\status\jobs\' + $JobName + '.json')
+  $slotKey = $NowLocal.ToString('yyyy-MM-dd')
+  if (-not (Test-Path -LiteralPath $statePath)) {
+    return @{
+      Skip = $false
+      SlotKey = $slotKey
+      StatePath = $statePath
+      Detail = 'state_missing'
+    }
+  }
+
+  try {
+    $raw = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8
+    $state = $raw | ConvertFrom-Json
+  }
+  catch {
+    $detail = 'state_unreadable'
+    if ($EmitLine) {
+      & $EmitLine ('WARN_RUNTIME_TICK_STATE_UNREADABLE job=' + $JobName + ' state_path=' + $statePath + ' detail=' + $detail) | Out-Null
+    }
+    return @{
+      Skip = $false
+      SlotKey = $slotKey
+      StatePath = $statePath
+      Detail = $detail
+    }
+  }
+
+  $lastSlotKey = ([string]$state.last_slot_key).Trim()
+  $lastResult = ([string]$state.last_result).Trim().ToLowerInvariant()
+  $detail = 'state_present'
+  $skip = ($lastSlotKey -eq $slotKey -and $lastResult -eq 'ran')
+  if ($skip -and $EmitLine) {
+    $summaryPath = ([string]$state.last_run_summary_json_path).Trim()
+    & $EmitLine (
+      'WRAPPER_RUNTIME_TICK_SKIP job=' + $JobName + ' slot=' + $slotKey + ' state_path=' + $statePath +
+      ' summary_json=' + $summaryPath
+    ) | Out-Null
+  }
+
+  return @{
+    Skip = $skip
+    SlotKey = $slotKey
+    StatePath = $statePath
+    Detail = $detail
+  }
+}

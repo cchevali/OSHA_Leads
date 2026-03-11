@@ -11,6 +11,7 @@ $startUtc = [datetime]::UtcNow
 $trialSubscriberKey = "facs_trial"
 $trialExitCode = 1
 $preflight = $null
+$runtimeTickState = $null
 $commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key $trialSubscriberKey --send-live"
 $bootstrapLines = New-Object System.Collections.Generic.List[string]
 
@@ -26,6 +27,12 @@ $preflight = Invoke-RuntimePreflight `
   -Mode 'scheduled' `
   -Intent 'send' `
   -DryRun:$false `
+  -EmitLine ${function:Add-BootstrapLine}
+
+$runtimeTickState = Test-RuntimeTickDailySlotAlreadyCompleted `
+  -RepoRoot $repoRoot `
+  -JobName 'trial_facs_daily' `
+  -NowLocal $startLocal `
   -EmitLine ${function:Add-BootstrapLine}
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -59,11 +66,16 @@ try {
     if (-not [bool]$preflight.Ok) {
       throw "runtime preflight failed"
     }
-
-    Invoke-And-Log {
-      & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_trial_daily.py" --subscriber-key $trialSubscriberKey --send-live
+    if ([bool]$runtimeTickState.Skip) {
+      $trialExitCode = 0
+      Write-TaskLine ('TRIAL_SKIPPED reason=runtime_tick_same_slot slot=' + [string]$runtimeTickState.SlotKey)
     }
-    $trialExitCode = [int]$LASTEXITCODE
+    else {
+      Invoke-And-Log {
+        & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_trial_daily.py" --subscriber-key $trialSubscriberKey --send-live
+      }
+      $trialExitCode = [int]$LASTEXITCODE
+    }
   }
   catch {
     $trialExitCode = 1

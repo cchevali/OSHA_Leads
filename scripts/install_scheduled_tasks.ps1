@@ -85,8 +85,8 @@ function Get-TaskDefinitions([string]$RepoRoot) {
 
   return @(
     (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '06:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestRunner) -RecoveryOnly:$true),
-    (New-TaskDefinition -Name 'OSHA_Prospect_Replenish_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $replenishRunner) -RecoveryOnly:$true),
-    (New-TaskDefinition -Name 'OSHA_Outreach_Auto' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $outreachRunner) -RecoveryOnly:$true),
+    (New-TaskDefinition -Name 'OSHA_Prospect_Replenish_SafetyNet' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $replenishRunner) -RecoveryOnly:$true),
+    (New-TaskDefinition -Name 'OSHA_Outreach_Auto_SafetyNet' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $outreachRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Trial_FACS_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '09:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $facsTrialRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Inbound_Triage' -ScheduleType 'minute' -StartTime '' -MinuteInterval 15 -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $inboundRunner))
   )
@@ -180,7 +180,7 @@ function Emit-TaskConfig([array]$Tasks, [string]$Mode, [hashtable]$SchedulerCred
     Write-Output ('TASK_' + $idx + '_SCHEDULE=' + $task.ScheduleType)
     Write-Output ('TASK_' + $idx + '_TIME=' + $task.StartTime)
     Write-Output ('TASK_' + $idx + '_RECOVERY_ONLY=' + $(if ([bool]$task.RecoveryOnly) { 'YES' } else { 'NO' }))
-    Write-Output ('TASK_' + $idx + '_EXPECTED_STATE=' + $(if ([bool]$task.RecoveryOnly) { 'Disabled' } else { 'Enabled' }))
+    Write-Output ('TASK_' + $idx + '_EXPECTED_STATE=' + (Get-TaskStateExpectation -Task $task))
     Write-Output ('TASK_' + $idx + '_START_DATE=' + $task.StartDate)
     Write-Output ('TASK_' + $idx + '_START_TIME=' + $task.StartTimeResolved)
     Write-Output ('TASK_' + $idx + '_START_BOUNDARY_LOCAL=' + $task.StartBoundary.ToString('yyyy-MM-ddTHH:mm:ss'))
@@ -372,16 +372,17 @@ function Invoke-TaskCreate([hashtable]$Task, [string]$SchedulerUser, [string]$Sc
 
 function Set-TaskEnabledState([hashtable]$Task) {
   $taskNameForQuery = '\' + $Task.Name
-  $changeMode = if ([bool]$Task.RecoveryOnly) { '/Disable' } else { '/Enable' }
+  $expectedState = Get-TaskStateExpectation -Task $Task
+  $changeMode = if ($expectedState -eq 'Disabled') { '/Disable' } else { '/Enable' }
   $result = Invoke-SchtasksCommand -SchtasksArgs @('/Change', '/TN', $taskNameForQuery, $changeMode)
   if ([int]$result.ExitCode -eq 0) {
-    Write-Output ('TASK_EXPECTED_STATE_APPLIED=' + $Task.Name + ' state=' + $(if ([bool]$Task.RecoveryOnly) { 'Disabled' } else { 'Enabled' }))
+    Write-Output ('TASK_EXPECTED_STATE_APPLIED=' + $Task.Name + ' state=' + $expectedState)
     return
   }
 
   $detail = ((@($result.Output) | ForEach-Object { [string]$_ }) -join ' ').Trim()
   if ($detail -match 'Access is denied') {
-    Write-Output ('WARN_INSTALL_SCHEDULED_TASKS_STATE_ACCESS_DENIED task=' + $Task.Name + ' state=' + $(if ([bool]$Task.RecoveryOnly) { 'Disabled' } else { 'Enabled' }))
+    Write-Output ('WARN_INSTALL_SCHEDULED_TASKS_STATE_ACCESS_DENIED task=' + $Task.Name + ' state=' + $expectedState)
     return
   }
 
@@ -391,9 +392,6 @@ function Set-TaskEnabledState([hashtable]$Task) {
 }
 
 function Get-TaskStateExpectation([hashtable]$Task) {
-  if ([bool]$Task.RecoveryOnly) {
-    return 'Disabled'
-  }
   return 'Enabled'
 }
 
@@ -537,7 +535,10 @@ function Get-RegisteredOshaTaskNames() {
     if (-not $taskName) {
       continue
     }
-    if ($taskName -notmatch '(?i)\\?OSHA_') {
+    if ($taskName -notmatch '(?i)\\?OSHA(?:_| |$)') {
+      continue
+    }
+    if ($taskName -match '(?i)\\?OSHA_WIP_Autosave_') {
       continue
     }
     [void]$names.Add($taskName)
@@ -630,24 +631,13 @@ function Invoke-Verify([array]$Tasks, [string]$RepoRoot) {
     if ([int]$queryResult.ExitCode -ne 0) {
       $detail = ((@($queryOut) | ForEach-Object { [string]$_ }) -join ' ').Trim()
       if ($detail -match '(?i)cannot find the file specified') {
-        if ([bool]$task.RecoveryOnly) {
-          Write-Output ('WARN_SCHEDTASK_RECOVERY_TASK_ABSENT task=' + $task.Name)
-          $warnings += ('task=' + $task.Name + ' recovery_task_missing')
-        } else {
-          Write-Output ('ERR_SCHEDTASK_MISSING=1 task=' + $task.Name)
-          $failures += ('task=' + $task.Name + ' missing=true')
-        }
+        Write-Output ('ERR_SCHEDTASK_MISSING=1 task=' + $task.Name)
+        $failures += ('task=' + $task.Name + ' missing=true')
         continue
       }
       if ($detail -match '(?i)access is denied') {
-        $registeredVisible = $registeredLookup.ContainsKey($taskNameForQuery.ToLowerInvariant())
-        if ([bool]$task.RecoveryOnly -and (-not $registeredVisible)) {
-          Write-Output ('WARN_SCHEDTASK_RECOVERY_TASK_UNREACHABLE task=' + $task.Name + ' detail=access_denied_not_listed')
-          $warnings += ('task=' + $task.Name + ' recovery_task_unreachable')
-        } else {
-          Write-Output ('ERR_SCHEDTASK_QUERY_ACCESS_DENIED=1 task=' + $task.Name)
-          $failures += ('task=' + $task.Name + ' query_access_denied=true')
-        }
+        Write-Output ('ERR_SCHEDTASK_QUERY_ACCESS_DENIED=1 task=' + $task.Name)
+        $failures += ('task=' + $task.Name + ' query_access_denied=true')
         continue
       }
       $failures += ('task=' + $task.Name + ' query_failed_exit_code=' + [int]$queryResult.ExitCode)
@@ -696,12 +686,10 @@ function Invoke-Verify([array]$Tasks, [string]$RepoRoot) {
       }
     }
     $isDisabled = ($taskState -match 'Disabled')
-    if ([bool]$task.RecoveryOnly) {
-      if (-not $isDisabled) {
-        Write-Output ('ERR_SCHEDTASK_RECOVERY_TASK_ENABLED=1 task=' + $task.Name)
-        $failures += ('task=' + $task.Name + ' recovery_task_enabled=true')
+    if ($isDisabled) {
+      if ([bool]$task.RecoveryOnly) {
+        Write-Output ('ERR_SCHEDTASK_SAFETY_NET_DISABLED=1 task=' + $task.Name)
       }
-    } elseif ($isDisabled) {
       $failures += ('task=' + $task.Name + ' disabled=true')
     }
     if (-not $logonMode -or $logonMode -eq 'N/A') {
@@ -740,6 +728,23 @@ function Invoke-Verify([array]$Tasks, [string]$RepoRoot) {
       Write-Output ('ERR_SCHED_TASK_TARGET_MISSING=1 task=' + $displayName + ' target=' + $targetPath)
       $failures += ('task=' + $displayName + ' target_missing=' + $targetPath)
     }
+  }
+
+  $managedLookup = @{}
+  foreach ($task in @($Tasks)) {
+    $managedLookup[('\'+$task.Name).ToLowerInvariant()] = $true
+  }
+  foreach ($rawTaskName in @($registeredOshaTasks)) {
+    $normalized = Normalize-TaskQueryName -TaskName ([string]$rawTaskName)
+    if (-not $normalized) {
+      continue
+    }
+    if ($managedLookup.ContainsKey($normalized.ToLowerInvariant())) {
+      continue
+    }
+    $displayName = Normalize-TaskDisplayName -TaskName $normalized
+    Write-Output ('ERR_SCHEDTASK_UNMANAGED_OSHA_TASK=1 task=' + $displayName)
+    $failures += ('task=' + $displayName + ' unmanaged_osha_task=true')
   }
 
   for ($i = 0; $i -lt $warnings.Count; $i++) {
@@ -795,9 +800,7 @@ if ($modeArg -eq '--dry-run') {
   for ($i = 0; $i -lt $resolvedTasks.Count; $i++) {
     $idx = $i + 1
     Write-Output ('DRY_RUN_COMMAND_' + $idx + '=' + (Build-SchtasksPreviewLine -Task $resolvedTasks[$i] -SchedulerUser ([string]$schedulerCredentials.User)))
-    if ([bool]$resolvedTasks[$i].RecoveryOnly) {
-      Write-Output ('DRY_RUN_STATE_COMMAND_' + $idx + '=schtasks /Change /TN "\' + $resolvedTasks[$i].Name + '" /Disable')
-    }
+    Write-Output ('DRY_RUN_STATE_COMMAND_' + $idx + '=schtasks /Change /TN "\' + $resolvedTasks[$i].Name + '" /' + $(if ((Get-TaskStateExpectation -Task $resolvedTasks[$i]) -eq 'Disabled') { 'Disable' } else { 'Enable' }))
   }
   Write-Output 'PASS_INSTALL_SCHEDULED_TASKS_DRY_RUN'
   exit 0
@@ -809,7 +812,7 @@ if ($modeArg -eq '--verify' -or $modeArg -eq '--status') {
 }
 
 Emit-TaskConfig -Tasks $resolvedTasks -Mode 'apply' -SchedulerCredentials $schedulerCredentials
-$legacyTaskNames = @('OSHA_Prospect_Generation', 'OSHA_Prospect_Discovery')
+$legacyTaskNames = @('OSHA_Prospect_Generation', 'OSHA_Prospect_Discovery', 'OSHA Wally Trial Daily', 'OSHA_Daily_Pipeline')
 foreach ($legacyTaskName in $legacyTaskNames) {
   Delete-TaskIfExists -TaskName $legacyTaskName
   Write-Output ('TASK_REMOVED_LEGACY=' + $legacyTaskName)

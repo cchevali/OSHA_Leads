@@ -10,6 +10,7 @@ $startLocal = Get-Date
 $startUtc = [datetime]::UtcNow
 $replenishExitCode = 1
 $preflight = $null
+$runtimeTickState = $null
 $commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py"
 $bootstrapLines = New-Object System.Collections.Generic.List[string]
 
@@ -25,6 +26,12 @@ $preflight = Invoke-RuntimePreflight `
   -Mode 'scheduled' `
   -Intent 'write' `
   -DryRun:$false `
+  -EmitLine ${function:Add-BootstrapLine}
+
+$runtimeTickState = Test-RuntimeTickDailySlotAlreadyCompleted `
+  -RepoRoot $repoRoot `
+  -JobName 'prospect_replenish_daily' `
+  -NowLocal $startLocal `
   -EmitLine ${function:Add-BootstrapLine}
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -58,11 +65,16 @@ try {
     if (-not [bool]$preflight.Ok) {
       throw "runtime preflight failed"
     }
-
-    Invoke-And-Log {
-      & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_prospect_replenish_daily.py"
+    if ([bool]$runtimeTickState.Skip) {
+      $replenishExitCode = 0
+      Write-TaskLine ('PROSPECT_REPLENISH_SKIPPED reason=runtime_tick_same_slot slot=' + [string]$runtimeTickState.SlotKey)
     }
-    $replenishExitCode = [int]$LASTEXITCODE
+    else {
+      Invoke-And-Log {
+        & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_prospect_replenish_daily.py"
+      }
+      $replenishExitCode = [int]$LASTEXITCODE
+    }
   }
   catch {
     $replenishExitCode = 1

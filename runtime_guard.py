@@ -26,7 +26,11 @@ ERR_RUNTIME_DIR_PREP_FAILED = "ERR_RUNTIME_DIR_PREP_FAILED"
 ERR_RUNTIME_LIVE_CONFIRM_REQUIRED = "ERR_RUNTIME_LIVE_CONFIRM_REQUIRED"
 ERR_RUNTIME_DB_OSHA_OUTSIDE_DATA_DIR = "ERR_RUNTIME_DB_OSHA_OUTSIDE_DATA_DIR"
 ERR_RUNTIME_DB_OSHA_SPLIT = "ERR_RUNTIME_DB_OSHA_SPLIT"
-WARN_RUNTIME_DB_OSHA_SPLIT_IGNORED = "WARN_RUNTIME_DB_OSHA_SPLIT_IGNORED"
+ERR_RUNTIME_DB_OSHA_LEGACY_PRESENT = "ERR_RUNTIME_DB_OSHA_LEGACY_PRESENT"
+ERR_RUNTIME_DB_CRM_LEGACY_PRESENT = "ERR_RUNTIME_DB_CRM_LEGACY_PRESENT"
+ERR_RUNTIME_DB_CRM_LIGHT_LEGACY_PRESENT = "ERR_RUNTIME_DB_CRM_LIGHT_LEGACY_PRESENT"
+ERR_RUNTIME_DB_CRM_SPLIT = "ERR_RUNTIME_DB_CRM_SPLIT"
+ERR_RUNTIME_DB_CRM_LIGHT_SPLIT = "ERR_RUNTIME_DB_CRM_LIGHT_SPLIT"
 PASS_RUNTIME_PREFLIGHT = "PASS_RUNTIME_PREFLIGHT"
 
 
@@ -53,7 +57,15 @@ class RuntimeFingerprint:
     db_osha_split_conflict: bool
     db_osha_split_reason: str
     db_crm: str
+    db_crm_legacy: str
+    db_crm_legacy_exists: bool
+    db_crm_split_conflict: bool
+    db_crm_split_reason: str
     db_crm_light: str
+    db_crm_light_legacy: str
+    db_crm_light_legacy_exists: bool
+    db_crm_light_split_conflict: bool
+    db_crm_light_split_reason: str
     timezone: str
     git_sha: str
     timestamp_utc: str
@@ -76,6 +88,14 @@ def _legacy_repo_osha_db(root: Path) -> Path:
     return (root / "data" / "osha.sqlite").resolve(strict=False)
 
 
+def _legacy_repo_crm_db(root: Path) -> Path:
+    return (root / "out" / "crm.sqlite").resolve(strict=False)
+
+
+def _legacy_repo_crm_light_db(root: Path) -> Path:
+    return (root / "out" / "crm_light.sqlite").resolve(strict=False)
+
+
 def _sha256_file(path: Path) -> str:
     if (not path.exists()) or (not path.is_file()):
         return ""
@@ -89,8 +109,14 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _detect_osha_db_split(root: Path, effective_db: Path) -> dict[str, Any]:
-    legacy = _legacy_repo_osha_db(root)
+def _detect_legacy_db_state(root: Path, effective_db: Path, *, family: str) -> dict[str, Any]:
+    legacy_lookup = {
+        "osha": _legacy_repo_osha_db,
+        "crm": _legacy_repo_crm_db,
+        "crm_light": _legacy_repo_crm_light_db,
+    }
+    resolver = legacy_lookup[str(family)]
+    legacy = resolver(root)
     canonical = Path(effective_db).resolve(strict=False)
     result: dict[str, Any] = {
         "legacy_path": str(legacy),
@@ -98,7 +124,11 @@ def _detect_osha_db_split(root: Path, effective_db: Path) -> dict[str, Any]:
         "conflict": False,
         "reason": "",
     }
-    if legacy == canonical or (not legacy.exists()) or (not canonical.exists()):
+    if legacy == canonical or (not legacy.exists()):
+        return result
+    if not canonical.exists():
+        result["conflict"] = True
+        result["reason"] = "legacy_present_canonical_missing"
         return result
     legacy_hash = _sha256_file(legacy)
     canonical_hash = _sha256_file(canonical)
@@ -120,18 +150,13 @@ def validate_live_osha_db_path(selected_db: str | Path, repo_root: Path | None =
             f"{ERR_RUNTIME_DB_OSHA_OUTSIDE_DATA_DIR} "
             f"selected_db={selected} canonical_db={canonical}"
         )
-    split = _detect_osha_db_split(root, canonical)
+    split = _detect_legacy_db_state(root, canonical, family="osha")
+    if bool(split.get("legacy_exists")):
+        return (
+            f"{ERR_RUNTIME_DB_OSHA_LEGACY_PRESENT} db_osha={canonical} "
+            f"legacy_db={split.get('legacy_path')}"
+        )
     if bool(split.get("conflict")):
-        hostname = _normalize_hostname(socket.gethostname())
-        runtime_role = _effective_runtime_role()
-        canonical_host = _canonical_hostname()
-        canonical_match = bool(canonical_host and hostname == canonical_host)
-        if (
-            runtime_role == "canonical_scheduler"
-            and canonical_match
-            and str(resolution.source) == "data_dir"
-        ):
-            return ""
         return (
             f"{ERR_RUNTIME_DB_OSHA_SPLIT} db_osha={canonical} "
             f"legacy_db={split.get('legacy_path')} reason={split.get('reason') or 'hash_mismatch'}"
@@ -193,7 +218,13 @@ def collect_runtime_fingerprint(
     root = (repo_root or _repo_root_default()).resolve(strict=False)
     resolution = resolve_data_dir(root)
     osha_db = resolve_osha_db_path(root)
-    legacy_osha = _detect_osha_db_split(root, osha_db.effective_path)
+    legacy_osha = _detect_legacy_db_state(root, osha_db.effective_path, family="osha")
+    legacy_crm = _detect_legacy_db_state(root, resolution.effective_path / "crm.sqlite", family="crm")
+    legacy_crm_light = _detect_legacy_db_state(
+        root,
+        resolution.effective_path / "crm_light.sqlite",
+        family="crm_light",
+    )
     hostname = _normalize_hostname(socket.gethostname())
     username = (os.getenv("USERNAME") or os.getenv("USER") or "").strip()
     runtime_role = _effective_runtime_role()
@@ -223,7 +254,15 @@ def collect_runtime_fingerprint(
         db_osha_split_conflict=bool(legacy_osha.get("conflict")),
         db_osha_split_reason=str(legacy_osha.get("reason") or ""),
         db_crm=str((resolution.effective_path / "crm.sqlite").resolve(strict=False)),
+        db_crm_legacy=str(legacy_crm.get("legacy_path") or ""),
+        db_crm_legacy_exists=bool(legacy_crm.get("legacy_exists")),
+        db_crm_split_conflict=bool(legacy_crm.get("conflict")),
+        db_crm_split_reason=str(legacy_crm.get("reason") or ""),
         db_crm_light=str((resolution.effective_path / "crm_light.sqlite").resolve(strict=False)),
+        db_crm_light_legacy=str(legacy_crm_light.get("legacy_path") or ""),
+        db_crm_light_legacy_exists=bool(legacy_crm_light.get("legacy_exists")),
+        db_crm_light_split_conflict=bool(legacy_crm_light.get("conflict")),
+        db_crm_light_split_reason=str(legacy_crm_light.get("reason") or ""),
         timezone=_safe_tz_name(),
         git_sha=_safe_git_sha(root),
         timestamp_utc=datetime.now(timezone.utc).isoformat(),
@@ -243,16 +282,6 @@ def _running_under_unittest() -> bool:
 
 
 
-def _allow_canonical_split_override(fingerprint: RuntimeFingerprint) -> bool:
-    return bool(
-        fingerprint.runtime_role == "canonical_scheduler"
-        and fingerprint.canonical_host_match
-        and fingerprint.db_osha_source == "data_dir"
-        and (not _uses_repo_fallback_data_dir(fingerprint))
-        and (not _osha_db_outside_data_dir(fingerprint))
-    )
-
-
 def _uses_repo_fallback_data_dir(fingerprint: RuntimeFingerprint) -> bool:
     if fingerprint.data_dir_source != "default":
         return False
@@ -269,6 +298,10 @@ def _osha_db_outside_data_dir(fingerprint: RuntimeFingerprint) -> bool:
         return False
     except ValueError:
         return True
+
+
+def _live_send_or_write(fingerprint: RuntimeFingerprint) -> bool:
+    return bool((fingerprint.intent in {"send", "write"}) and (not fingerprint.dry_run))
 
 
 
@@ -310,23 +343,43 @@ def run_runtime_preflight(
                 f"{ERR_RUNTIME_HOST_MISMATCH} expected={fingerprint.canonical_hostname} actual={fingerprint.hostname}"
             )
 
-    if (fingerprint.intent in {"send", "write"}) and (not fingerprint.dry_run) and _uses_repo_fallback_data_dir(fingerprint):
+    if _live_send_or_write(fingerprint) and _uses_repo_fallback_data_dir(fingerprint):
         errors.append(
             f"{ERR_RUNTIME_DATA_DIR_REPO_FALLBACK} data_dir={fingerprint.data_dir} source={fingerprint.data_dir_source}"
         )
-    if (fingerprint.intent in {"send", "write"}) and (not fingerprint.dry_run) and _osha_db_outside_data_dir(fingerprint):
+    if _live_send_or_write(fingerprint) and _osha_db_outside_data_dir(fingerprint):
         errors.append(
             f"{ERR_RUNTIME_DB_OSHA_OUTSIDE_DATA_DIR} db_osha={fingerprint.db_osha} data_dir={fingerprint.data_dir}"
         )
-    if (
-        (fingerprint.intent in {"send", "write"})
-        and (not fingerprint.dry_run)
-        and fingerprint.db_osha_split_conflict
-        and (not _allow_canonical_split_override(fingerprint))
-    ):
+    if _live_send_or_write(fingerprint) and fingerprint.db_osha_legacy_exists:
+        errors.append(
+            f"{ERR_RUNTIME_DB_OSHA_LEGACY_PRESENT} db_osha={fingerprint.db_osha} "
+            f"legacy_db={fingerprint.db_osha_legacy}"
+        )
+    if _live_send_or_write(fingerprint) and fingerprint.db_osha_split_conflict:
         errors.append(
             f"{ERR_RUNTIME_DB_OSHA_SPLIT} db_osha={fingerprint.db_osha} "
             f"legacy_db={fingerprint.db_osha_legacy} reason={fingerprint.db_osha_split_reason}"
+        )
+    if _live_send_or_write(fingerprint) and fingerprint.db_crm_legacy_exists:
+        errors.append(
+            f"{ERR_RUNTIME_DB_CRM_LEGACY_PRESENT} db_crm={fingerprint.db_crm} "
+            f"legacy_db={fingerprint.db_crm_legacy}"
+        )
+    if _live_send_or_write(fingerprint) and fingerprint.db_crm_split_conflict:
+        errors.append(
+            f"{ERR_RUNTIME_DB_CRM_SPLIT} db_crm={fingerprint.db_crm} "
+            f"legacy_db={fingerprint.db_crm_legacy} reason={fingerprint.db_crm_split_reason}"
+        )
+    if _live_send_or_write(fingerprint) and fingerprint.db_crm_light_legacy_exists:
+        errors.append(
+            f"{ERR_RUNTIME_DB_CRM_LIGHT_LEGACY_PRESENT} db_crm_light={fingerprint.db_crm_light} "
+            f"legacy_db={fingerprint.db_crm_light_legacy}"
+        )
+    if _live_send_or_write(fingerprint) and fingerprint.db_crm_light_split_conflict:
+        errors.append(
+            f"{ERR_RUNTIME_DB_CRM_LIGHT_SPLIT} db_crm_light={fingerprint.db_crm_light} "
+            f"legacy_db={fingerprint.db_crm_light_legacy} reason={fingerprint.db_crm_light_split_reason}"
         )
 
     if require_confirm_live_send and (fingerprint.intent == "send") and (not fingerprint.dry_run):
@@ -376,7 +429,13 @@ def render_runtime_lines(result: RuntimePreflightResult) -> list[str]:
         f"RUNTIME_DB_OSHA_LEGACY_EXISTS={1 if fp.db_osha_legacy_exists else 0}",
         f"RUNTIME_DB_OSHA_SPLIT_CONFLICT={1 if fp.db_osha_split_conflict else 0}",
         f"RUNTIME_DB_CRM={fp.db_crm}",
+        f"RUNTIME_DB_CRM_LEGACY={fp.db_crm_legacy}",
+        f"RUNTIME_DB_CRM_LEGACY_EXISTS={1 if fp.db_crm_legacy_exists else 0}",
+        f"RUNTIME_DB_CRM_SPLIT_CONFLICT={1 if fp.db_crm_split_conflict else 0}",
         f"RUNTIME_DB_CRM_LIGHT={fp.db_crm_light}",
+        f"RUNTIME_DB_CRM_LIGHT_LEGACY={fp.db_crm_light_legacy}",
+        f"RUNTIME_DB_CRM_LIGHT_LEGACY_EXISTS={1 if fp.db_crm_light_legacy_exists else 0}",
+        f"RUNTIME_DB_CRM_LIGHT_SPLIT_CONFLICT={1 if fp.db_crm_light_split_conflict else 0}",
         f"RUNTIME_TIMEZONE={fp.timezone}",
         f"RUNTIME_GIT_SHA={fp.git_sha}",
         f"RUNTIME_TIMESTAMP_UTC={fp.timestamp_utc}",
@@ -389,11 +448,10 @@ def render_runtime_lines(result: RuntimePreflightResult) -> list[str]:
         lines.append(fp.db_osha_warning)
     if fp.db_osha_split_reason:
         lines.append(f"RUNTIME_DB_OSHA_SPLIT_REASON={fp.db_osha_split_reason}")
-    if fp.db_osha_split_conflict and _allow_canonical_split_override(fp):
-        lines.append(
-            f"{WARN_RUNTIME_DB_OSHA_SPLIT_IGNORED} "
-            f"db_osha={fp.db_osha} legacy_db={fp.db_osha_legacy} reason={fp.db_osha_split_reason or 'hash_mismatch'}"
-        )
+    if fp.db_crm_split_reason:
+        lines.append(f"RUNTIME_DB_CRM_SPLIT_REASON={fp.db_crm_split_reason}")
+    if fp.db_crm_light_split_reason:
+        lines.append(f"RUNTIME_DB_CRM_LIGHT_SPLIT_REASON={fp.db_crm_light_split_reason}")
     for path in sorted(set(result.prepared_dirs)):
         lines.append(f"RUNTIME_PREPARED_DIR={path}")
     if result.ok:

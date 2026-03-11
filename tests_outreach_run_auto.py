@@ -28,6 +28,17 @@ from outreach import crm_store
 from outreach import run_outreach_auto as roa
 
 
+def _default_signal_db_source() -> Path:
+    canonical = Path(r"C:\osha_data\osha.sqlite")
+    if canonical.exists():
+        return canonical
+    backup_root = (REPO_ROOT / "out" / "backups" / "legacy_db_quarantine").resolve()
+    candidates = sorted(backup_root.glob("**/legacy_repo_osha.sqlite"), key=lambda item: item.stat().st_mtime, reverse=True)
+    if candidates:
+        return candidates[0]
+    raise FileNotFoundError("missing default OSHA signal DB fixture source")
+
+
 def _write_suppression(path: Path, emails: list[str] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -138,8 +149,12 @@ class TestOutreachRunAuto(unittest.TestCase):
         if data_dir_raw:
             default_signal_db = Path(data_dir_raw) / "osha.sqlite"
             default_signal_db.parent.mkdir(parents=True, exist_ok=True)
-            if signal_db_raw and Path(signal_db_raw).exists():
-                shutil.copyfile(Path(signal_db_raw), default_signal_db)
+            if signal_db_raw:
+                source_path = Path(signal_db_raw)
+                if source_path.exists():
+                    shutil.copyfile(source_path, default_signal_db)
+            elif not default_signal_db.exists():
+                shutil.copyfile(_default_signal_db_source(), default_signal_db)
         env.setdefault("CANONICAL_HOSTNAME", socket.gethostname().strip().lower())
         env.setdefault("RUNTIME_ROLE", "dev_client")
         return env
@@ -163,9 +178,11 @@ class TestOutreachRunAuto(unittest.TestCase):
             default_signal_db = Path(data_dir_raw) / "osha.sqlite"
             default_signal_db.parent.mkdir(parents=True, exist_ok=True)
             if signal_db_raw:
-                shutil.copyfile(Path(signal_db_raw), default_signal_db)
+                source_path = Path(signal_db_raw)
+                if source_path.exists():
+                    shutil.copyfile(source_path, default_signal_db)
             elif not default_signal_db.exists():
-                shutil.copyfile(REPO_ROOT / "data" / "osha.sqlite", default_signal_db)
+                shutil.copyfile(_default_signal_db_source(), default_signal_db)
         return subprocess.run(
             [sys.executable, str(SCRIPT)] + args,
             cwd=str(REPO_ROOT),
