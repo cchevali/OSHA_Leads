@@ -433,7 +433,9 @@ def _artifact_root_candidates(repo_root: Path, data_dir: Path, env: dict[str, st
         if candidate.is_absolute():
             roots.append(candidate.resolve(strict=False))
     roots.append(data_dir.joinpath(*tail).resolve(strict=False))
-    roots.append((repo_root / Path(*tail)).resolve(strict=False))
+    trusted_scheduled = str(env.get("MFO_TRUSTED_SCHEDULED") or "").strip() == "1"
+    if not trusted_scheduled:
+        roots.append((repo_root / Path(*tail)).resolve(strict=False))
 
     unique: list[Path] = []
     seen: set[str] = set()
@@ -1051,6 +1053,8 @@ def _print_config(repo_root: Path, data_dir: Path, selected: list[JobSpec]) -> N
     _emit("RUNTIME_TICK_DATA_DIR", str(data_dir))
     _emit("RUNTIME_TICK_STATUS_ROOT", str(_status_root(data_dir)))
     _emit("RUNTIME_TICK_LOCK_ROOT", str(_locks_root(data_dir)))
+    _emit("RUNTIME_TICK_PRIMARY_SCHEDULER", "runtime_tick_selfhosted")
+    _emit("RUNTIME_TICK_CANONICAL_RUN_SUMMARY_ROOT", str((data_dir / "out" / "run_summaries").resolve(strict=False)))
     _emit("RUNTIME_TICK_SELECTED_JOBS", ",".join(spec.name for spec in selected))
     for spec in selected:
         _emit("RUNTIME_TICK_JOB_NAME", spec.name)
@@ -1115,6 +1119,8 @@ def main(argv: list[str] | None = None) -> int:
     _emit("RUNTIME_TICK_MODE", "doctor" if args.doctor else "dry_run" if args.dry_run else "live")
     _emit("RUNTIME_TICK_REPO_ROOT", str(repo_root))
     _emit("RUNTIME_TICK_DATA_DIR", str(data_dir))
+    _emit("RUNTIME_TICK_PRIMARY_SCHEDULER", "runtime_tick_selfhosted")
+    _emit("RUNTIME_TICK_CANONICAL_RUN_SUMMARY_ROOT", str((data_dir / "out" / "run_summaries").resolve(strict=False)))
     _emit("RUNTIME_TICK_NOW_LOCAL", now_local.isoformat())
     _emit("RUNTIME_TICK_SELECTED_JOBS", ",".join(job.name for job in selected_jobs))
 
@@ -1126,6 +1132,7 @@ def main(argv: list[str] | None = None) -> int:
     env = dict(os.environ)
     env["MFO_RUNTIME_MODE"] = runtime_mode
     env["MFO_TRUSTED_SCHEDULED"] = "1" if trusted_scheduled else "0"
+    _emit("RUNTIME_TICK_REPO_RUN_SUMMARY_FALLBACK_ALLOWED", 0 if env["MFO_TRUSTED_SCHEDULED"] == "1" else 1)
     prior_states: dict[str, dict[str, Any]] = {}
 
     lock_path = (_locks_root(data_dir) / "runtime_tick.lock").resolve(strict=False)

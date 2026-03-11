@@ -44,6 +44,7 @@ class TestRunRuntimeStateMigrate(unittest.TestCase):
             (repo_root / "data").mkdir(parents=True, exist_ok=True)
             (repo_root / "out").mkdir(parents=True, exist_ok=True)
             (repo_root / "data" / "osha.sqlite").write_text("osha", encoding="utf-8")
+            (repo_root / "out" / "crm.sqlite").write_text("crm", encoding="utf-8")
             (repo_root / "out" / "crm_light.sqlite").write_text("trial", encoding="utf-8")
             with (
                 mock.patch.dict(os.environ, {"DATA_DIR": str(data_root)}, clear=False),
@@ -56,14 +57,16 @@ class TestRunRuntimeStateMigrate(unittest.TestCase):
                     rc = migrate.main(["--dry-run"])
             out = buf.getvalue()
             self.assertEqual(rc, 0, msg=out)
-            self.assertIn("RUNTIME_STATE_MIGRATE_ACTION_COUNT=4", out)
+            self.assertIn("RUNTIME_STATE_MIGRATE_ACTION_COUNT=6", out)
             self.assertIn("RUNTIME_STATE_MIGRATE_ACTION_PLAN=copy_repo_osha_to_canonical", out)
             self.assertIn("RUNTIME_STATE_MIGRATE_ACTION_PLAN=archive_repo_osha_db", out)
+            self.assertIn("RUNTIME_STATE_MIGRATE_ACTION_PLAN=copy_repo_crm_to_canonical", out)
+            self.assertIn("RUNTIME_STATE_MIGRATE_ACTION_PLAN=archive_repo_crm_db", out)
             self.assertIn("RUNTIME_STATE_MIGRATE_ACTION_PLAN=copy_legacy_trial_to_canonical", out)
             self.assertIn("RUNTIME_STATE_MIGRATE_ACTION_PLAN=archive_legacy_trial_db", out)
             self.assertIn("PASS_RUNTIME_STATE_MIGRATE_COMPLETE status=DRY_RUN", out)
 
-    def test_dry_run_reports_osha_db_diff_without_archive_plan(self):
+    def test_dry_run_archives_repo_osha_even_when_canonical_differs(self):
         with tempfile.TemporaryDirectory() as d:
             repo_root = Path(d) / "repo"
             data_root = Path(d) / "data"
@@ -82,8 +85,7 @@ class TestRunRuntimeStateMigrate(unittest.TestCase):
                     rc = migrate.main(["--dry-run"])
             out = buf.getvalue()
             self.assertEqual(rc, 0, msg=out)
-            self.assertIn("RUNTIME_STATE_MIGRATE_ACTION_PLAN=conflict_repo_osha_vs_canonical", out)
-            self.assertNotIn("RUNTIME_STATE_MIGRATE_ACTION_PLAN=archive_repo_osha_db", out)
+            self.assertIn("RUNTIME_STATE_MIGRATE_ACTION_PLAN=archive_repo_osha_db", out)
 
     def test_invalid_mode_combo_fails(self):
         with (

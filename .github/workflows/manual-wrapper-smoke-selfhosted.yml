@@ -24,22 +24,21 @@ jobs:
       - name: Run Selected Wrapper
         shell: powershell
         run: |
-          cd C:\dev\OSHA_Leads
           $wrapper = "${{ github.event.inputs.wrapper }}"
           if ($wrapper -eq "trial_facs_daily") {
-            powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\run_trial_facs_daily.ps1
+            powershell -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}\scripts\scheduled\run_trial_facs_daily.ps1"
             exit $LASTEXITCODE
           }
           if ($wrapper -eq "ingest_evening") {
-            powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\run_osha_ingest_evening.ps1
+            powershell -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}\scripts\scheduled\run_osha_ingest_evening.ps1"
             exit $LASTEXITCODE
           }
           if ($wrapper -eq "outreach_auto") {
-            powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\run_outreach_auto.ps1
+            powershell -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}\scripts\scheduled\run_outreach_auto.ps1"
             exit $LASTEXITCODE
           }
           if ($wrapper -eq "backup_runtime_state_dry_run") {
-            powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\backup_runtime_state.ps1 -DryRun
+            powershell -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}\scripts\scheduled\backup_runtime_state.ps1" -DryRun
             exit $LASTEXITCODE
           }
           Write-Error ("Unknown wrapper input: " + $wrapper)
@@ -52,6 +51,6 @@ jobs:
           name: manual-wrapper-artifacts-${{ github.run_id }}
           if-no-files-found: warn
           path: |
-            out/task_logs/**
-            out/run_summaries/**
-            out/backups/**
+            C:\osha_data\out\task_logs\**
+            C:\osha_data\out\run_summaries\**
+            C:\osha_data\out\backups\**

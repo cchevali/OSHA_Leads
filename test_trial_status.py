@@ -1555,12 +1555,12 @@ class TestTrialStatus(unittest.TestCase):
                     run_trial_daily._run_deliver_daily = orig_deliver  # type: ignore[assignment]
                     run_trial_daily._try_extract_latest_send_start_mode = orig_mode  # type: ignore[assignment]
 
-                self.assertEqual(code_live, 0)
+                self.assertEqual(code_live, 2)
                 self.assertIn("WARN_TRIAL_LEDGER_SPLIT subscriber_key=wally_trial", live_out.getvalue())
-                self.assertIn("--trial-state-merge source --apply", live_out.getvalue())
+                self.assertIn("outreach\\run_runtime_state_migrate.py --apply", live_out.getvalue())
                 self.assertEqual(code_non_live, 0)
                 self.assertNotIn("WARN_TRIAL_LEDGER_SPLIT", non_live_out.getvalue())
-                self.assertEqual(calls["deliver"], 2)
+                self.assertEqual(calls["deliver"], 1)
             finally:
                 if old_data_dir is None:
                     os.environ.pop("DATA_DIR", None)

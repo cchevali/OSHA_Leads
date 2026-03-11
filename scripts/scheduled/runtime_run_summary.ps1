@@ -2,13 +2,26 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+function Resolve-EffectiveDataDir {
+  foreach ($value in @(
+    ([string]$env:MFO_DATA_DIR_EFFECTIVE).Trim(),
+    ([string]$env:RUNTIME_DATA_DIR).Trim(),
+    ([string]$env:DATA_DIR).Trim()
+  )) {
+    if ($value -and [System.IO.Path]::IsPathRooted($value)) {
+      return $value
+    }
+  }
+  return ''
+}
+
 function Resolve-DefaultTaskLogRoot {
   param([string]$RepoRoot)
   $override = ([string]$env:TASK_LOG_ROOT).Trim()
   if ($override) {
     return $override
   }
-  $effectiveDataDir = ([string]$env:MFO_DATA_DIR_EFFECTIVE).Trim()
+  $effectiveDataDir = Resolve-EffectiveDataDir
   if ($effectiveDataDir -and [System.IO.Path]::IsPathRooted($effectiveDataDir)) {
     return (Join-Path (Join-Path $effectiveDataDir 'out') 'task_logs')
   }
@@ -21,7 +34,7 @@ function Resolve-DefaultRunSummaryRoot {
   if ($override) {
     return $override
   }
-  $effectiveDataDir = ([string]$env:MFO_DATA_DIR_EFFECTIVE).Trim()
+  $effectiveDataDir = Resolve-EffectiveDataDir
   if ($effectiveDataDir -and [System.IO.Path]::IsPathRooted($effectiveDataDir)) {
     return (Join-Path (Join-Path $effectiveDataDir 'out') 'run_summaries')
   }
