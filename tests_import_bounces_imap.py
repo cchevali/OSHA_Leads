@@ -1,5 +1,6 @@
 import contextlib
 import email
+import email.policy
 import io
 import json
 import os
@@ -118,6 +119,67 @@ class TestImportBouncesImap(unittest.TestCase):
         self.assertEqual(parsed.source, "moderation")
         self.assertEqual(parsed.original_to, "alerts@microflowops.com")
         self.assertEqual(parsed.recipient_email, "bounce-me@example.com")
+
+    def test_non_bounce_messages_with_status_headers_are_not_candidates(self):
+        self.assertFalse(
+            ib._looks_like_candidate(
+                "Invoice - 50101483990 from ZOHO Corporation.",
+                "Zoho Payments <payments@zohocorp.com>",
+                "Authentication-Results: mx.zohomail.com; dmarc=pass(p=reject dis=none) header.from=google.com",
+                "Dear Customer, thank you for subscribing to Zoho.",
+            )
+        )
+        self.assertFalse(
+            ib._looks_like_candidate(
+                "Report domain: microflowops.com Submitter: google.com",
+                "noreply-dmarc-support@google.com",
+                "Authentication-Results: mx.zohomail.com; dmarc=pass(p=reject dis=none) header.from=google.com",
+                "Attached is your DMARC aggregate report.",
+            )
+        )
+
+    def test_extract_plain_body_includes_nested_moderation_report(self):
+        nested = EmailMessage()
+        nested["From"] = "mailer-daemon@mail.zoho.com"
+        nested["To"] = "alerts@microflowops.com"
+        nested["Subject"] = "Undelivered Mail Returned to Sender"
+        nested.set_content(
+            "This message was created automatically by mail delivery software.\n"
+            "info@aggiesafety.com, ERROR CODE :550 - 5.4.1 Recipient address rejected: Access denied.\n"
+        )
+        nested.add_attachment(
+            "Final-Recipient: rfc822; info@aggiesafety.com\n"
+            "Status: 550\n"
+            "Diagnostic-Code: 5.4.1 Recipient address rejected: Access denied.\n",
+            subtype="delivery-status",
+        )
+
+        outer = EmailMessage()
+        outer["From"] = "noreply@zoho.com"
+        outer["Subject"] = "Email held for Moderation - alerts@microflowops.com"
+        outer.set_content(
+            "<p>An email is waiting for moderator approval before it can be delivered.</p>",
+            subtype="html",
+        )
+        outer.make_mixed()
+        outer.attach(nested)
+
+        raw = outer.as_bytes(policy=email.policy.default)
+        parsed_msg = email.message_from_bytes(raw, policy=email.policy.default)
+        body = ib._extract_plain_body(parsed_msg)
+        self.assertIn("info@aggiesafety.com, ERROR CODE :550", body)
+
+        parsed = ib._parse_bounce(
+            str(parsed_msg.get("Subject", "")),
+            str(parsed_msg.get("From", "")),
+            ib._header_text(parsed_msg),
+            body,
+            "<m3>",
+        )
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.recipient_email, "info@aggiesafety.com")
+        self.assertEqual(parsed.source, "moderation")
 
     def test_print_config_is_side_effect_free(self):
         with tempfile.TemporaryDirectory() as d:

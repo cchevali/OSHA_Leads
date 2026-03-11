@@ -16,6 +16,7 @@ import argparse
 import contextlib
 import csv
 import email
+import email.policy
 import imaplib
 import json
 import os
@@ -62,15 +63,24 @@ DEFAULT_MAX_MESSAGES = 400
 
 DSN_MARKERS = (
     "final-recipient:",
-    "status:",
+    "original-recipient:",
     "diagnostic-code:",
     "delivery status notification",
-    "undelivered",
-    "returned mail",
-    "mailer-daemon",
-    "postmaster",
+    "undelivered mail returned to sender",
+    "this message was created automatically by mail delivery software",
     "user unknown",
     "invalid recipient",
+)
+
+BOUNCE_SUBJECT_HINTS = (
+    "undelivered",
+    "returned mail",
+    "delivery status notification",
+)
+
+BOUNCE_SENDER_HINTS = (
+    "mailer-daemon",
+    "postmaster",
 )
 
 HARD_BOUNCE_HINTS = (
@@ -194,35 +204,53 @@ def _decode_header_value(value: str) -> str:
 
 
 def _extract_plain_body(msg: email.message.Message) -> str:
-    if msg.is_multipart():
-        for part in msg.walk():
-            ctype = (part.get_content_type() or "").lower()
-            disp = (part.get("Content-Disposition") or "").lower()
-            if ctype == "text/plain" and "attachment" not in disp:
-                try:
-                    return str(part.get_content())
-                except Exception:
-                    raw = part.get_payload(decode=True)
-                    if isinstance(raw, bytes):
-                        return raw.decode(errors="replace")
-        for part in msg.walk():
-            ctype = (part.get_content_type() or "").lower()
-            disp = (part.get("Content-Disposition") or "").lower()
-            if ctype == "text/html" and "attachment" not in disp:
-                try:
-                    html_body = str(part.get_content())
-                except Exception:
-                    raw = part.get_payload(decode=True)
-                    html_body = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw or "")
-                return re.sub(r"<[^>]+>", " ", html_body)
+    def _decode_part_text(part: email.message.Message) -> str:
+        ctype = (part.get_content_type() or "").lower()
+        disp = (part.get("Content-Disposition") or "").lower()
+        if "attachment" in disp and ctype not in {"message/rfc822", "message/delivery-status", "text/rfc822"}:
+            return ""
+        if ctype == "text/plain":
+            try:
+                return str(part.get_content())
+            except Exception:
+                raw = part.get_payload(decode=True)
+                if isinstance(raw, bytes):
+                    return raw.decode(errors="replace")
+                return str(raw or "")
+        if ctype == "text/html":
+            try:
+                html_body = str(part.get_content())
+            except Exception:
+                raw = part.get_payload(decode=True)
+                html_body = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw or "")
+            return re.sub(r"<[^>]+>", " ", html_body)
+        if ctype in {"message/rfc822", "message/delivery-status", "text/rfc822"}:
+            try:
+                return part.as_string()
+            except Exception:
+                payload = part.get_payload()
+                if isinstance(payload, list):
+                    return "\n".join(str(item) for item in payload if item)
+                raw = part.get_payload(decode=True)
+                if isinstance(raw, bytes):
+                    return raw.decode(errors="replace")
+                return str(payload or "")
         return ""
-    try:
-        return str(msg.get_content())
-    except Exception:
-        raw = msg.get_payload(decode=True)
-        if isinstance(raw, bytes):
-            return raw.decode(errors="replace")
-    return ""
+
+    if msg.is_multipart():
+        collected: list[str] = []
+        for part in msg.walk():
+            text = _decode_part_text(part)
+            if text:
+                collected.append(text)
+        if collected:
+            return "\n".join(collected)
+        for part in msg.walk():
+            text = _decode_part_text(part)
+            if text:
+                return text
+        return ""
+    return _decode_part_text(msg)
 
 
 def _header_text(msg: email.message.Message) -> str:
@@ -307,8 +335,20 @@ def _looks_like_candidate(subject: str, sender: str, headers_text: str, body_tex
     subject_lower = (subject or "").strip().lower()
     if subject_lower.startswith(MODERATION_SUBJECT_PREFIX):
         return True
+    sender_lower = (sender or "").strip().lower()
     text = f"{subject}\n{sender}\n{headers_text}\n{body_text}".lower()
-    return any(marker in text for marker in DSN_MARKERS)
+    if any(marker in text for marker in DSN_MARKERS):
+        return True
+    if any(hint in subject_lower for hint in BOUNCE_SUBJECT_HINTS):
+        return True
+    if any(hint in sender_lower for hint in BOUNCE_SENDER_HINTS):
+        if re.search(r"(?im)^\s*(?:final|original)-recipient:", text):
+            return True
+        if re.search(r"(?im)^\s*status:\s*[245](?:\.\d+){1,2}", text):
+            return True
+        if any(token in text for token in HARD_BOUNCE_HINTS):
+            return True
+    return False
 
 
 def _extract_original_to(text: str) -> str:
@@ -341,6 +381,7 @@ def _extract_final_recipient(text: str) -> str:
         r"Final-Recipient:\s*(?:[^;\r\n]+;\s*)?([^\s<>\r\n;]+@[^\s<>\r\n;]+)",
         r"Original-Recipient:\s*(?:[^;\r\n]+;\s*)?([^\s<>\r\n;]+@[^\s<>\r\n;]+)",
         r"rfc822;\s*([^\s<>\r\n;]+@[^\s<>\r\n;]+)",
+        r"([^\s<>\r\n;]+@[^\s<>\r\n;]+)\s*,\s*ERROR\s+CODE\s*:",
         r"<([^>]+@[^>]+)>\s*was not found",
         r"User\s+([^\s<>\r\n;]+@[^\s<>\r\n;]+)\s+not found",
         r"recipient\s+address\s+rejected:\s*([^\s<>\r\n;]+@[^\s<>\r\n;]+)",

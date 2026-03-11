@@ -126,6 +126,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("stripe_price_id_core_present", text)
         self.assertIn("stripe_price_id_multi_present", text)
         self.assertIn("web_stripe_webhook_secret_present", text)
+        self.assertIn("Resolve-EnvSopsPath -RepoRoot $repoRoot", text)
         self.assertIn("AI_TRIAGE_ENABLED", text)
         self.assertIn("AI_TRIAGE_OPENAI_MODEL", text)
         self.assertIn("SIGNAL_FRESHNESS_MAX_DAYS", text)
