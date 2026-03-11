@@ -44,7 +44,7 @@ from outreach import run_prospect_generation as prospect_generation
 from outreach import source_policy
 from outreach import us_state
 from runtime_data_dir import resolve_osha_db_path
-from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict
+from runtime_guard import acquire_runtime_lock, render_runtime_lines, run_runtime_preflight, runtime_context_dict
 
 
 ERR_AUTO_ENV = "ERR_AUTO_ENV"
@@ -2689,17 +2689,36 @@ def main() -> int:
         ok_to, summary_to, _msg = _resolve_summary_recipient(args.to)
         summary_to = summary_to if ok_to else "(missing OSHA_SMOKE_TO)"
 
-    if not crm_db.exists():
-        print(f"{ERR_AUTO_CRM_REQUIRED} crm_missing path={crm_db}", file=sys.stderr)
-        return 2
-
+    live_send_lock = None
     try:
-        conn = _connect_existing_crm(crm_db)
-    except Exception as e:
-        print(f"{ERR_AUTO_CRM_REQUIRED} crm_open_failed path={crm_db} err={e}", file=sys.stderr)
-        return 2
+        if is_live_send:
+            live_send_lock = acquire_runtime_lock(
+                f"outreach_auto_{run_date.isoformat()}",
+                repo_root=REPO_ROOT,
+                metadata={"run_date": run_date.isoformat(), "task": "outreach_auto"},
+            )
+            if not live_send_lock.acquired:
+                holder_meta = dict(live_send_lock.metadata or {})
+                holder_pid = str(holder_meta.get("pid") or "").strip() or "unknown"
+                holder_host = _safe_text(str(holder_meta.get("hostname") or "")) or "unknown"
+                holder_started = _safe_text(str(holder_meta.get("acquired_at_utc") or "")) or "unknown"
+                print(
+                    f"OUTREACH_SKIP_CONCURRENT_RUN=1 date={run_date.isoformat()} "
+                    f"lock_path={live_send_lock.path} holder_pid={holder_pid} holder_host={holder_host} "
+                    f"holder_started_at={holder_started} guard=LOCK"
+                )
+                return 0
 
-    try:
+        if not crm_db.exists():
+            print(f"{ERR_AUTO_CRM_REQUIRED} crm_missing path={crm_db}", file=sys.stderr)
+            return 2
+
+        try:
+            conn = _connect_existing_crm(crm_db)
+        except Exception as e:
+            print(f"{ERR_AUTO_CRM_REQUIRED} crm_open_failed path={crm_db} err={e}", file=sys.stderr)
+            return 2
+
         if not _require_schema(conn):
             print(f"{ERR_AUTO_CRM_REQUIRED} schema_missing path={crm_db}", file=sys.stderr)
             return 2
@@ -3096,7 +3115,12 @@ def main() -> int:
             return 1
         return 0
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
+        if live_send_lock is not None:
+            live_send_lock.release()
 
 
 if __name__ == "__main__":

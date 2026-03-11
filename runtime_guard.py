@@ -8,9 +8,10 @@ import socket
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from runtime_data_dir import resolve_data_dir, resolve_osha_db_path
 
@@ -32,6 +33,7 @@ ERR_RUNTIME_DB_CRM_LIGHT_LEGACY_PRESENT = "ERR_RUNTIME_DB_CRM_LIGHT_LEGACY_PRESE
 ERR_RUNTIME_DB_CRM_SPLIT = "ERR_RUNTIME_DB_CRM_SPLIT"
 ERR_RUNTIME_DB_CRM_LIGHT_SPLIT = "ERR_RUNTIME_DB_CRM_LIGHT_SPLIT"
 PASS_RUNTIME_PREFLIGHT = "PASS_RUNTIME_PREFLIGHT"
+DEFAULT_RUNTIME_LOCK_STALE_SECONDS = 6 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,32 @@ class RuntimePreflightResult:
     fingerprint: RuntimeFingerprint
     errors: list[str]
     prepared_dirs: list[str]
+
+
+@dataclass
+class RuntimeLockHandle:
+    acquired: bool
+    path: str
+    name: str
+    token: str
+    metadata: dict[str, Any]
+    reason: str = ""
+    stale_reclaimed: bool = False
+
+    def release(self) -> None:
+        if not self.acquired or not self.path:
+            return
+        lock_path = Path(self.path)
+        try:
+            current = _read_runtime_lock_metadata(lock_path)
+            if current and str(current.get("token") or "").strip() != str(self.token or "").strip():
+                return
+        except Exception:
+            pass
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 
@@ -192,6 +220,189 @@ def _safe_git_sha(repo_root: Path) -> str:
 
 def _normalize_hostname(value: str) -> str:
     return (value or "").strip().lower()
+
+
+def _safe_runtime_lock_name(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in raw).strip("._-")
+    return cleaned or "runtime_lock"
+
+
+def _runtime_lock_dir(repo_root: Path | None = None) -> Path:
+    root = (repo_root or _repo_root_default()).resolve(strict=False)
+    return (resolve_data_dir(root).effective_path / "runtime" / "locks").resolve(strict=False)
+
+
+def runtime_lock_path(lock_name: str, repo_root: Path | None = None) -> Path:
+    return _runtime_lock_dir(repo_root) / f"{_safe_runtime_lock_name(lock_name)}.json"
+
+
+def _read_runtime_lock_metadata(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _runtime_pid_exists(pid: int) -> bool:
+    if int(pid) <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            process = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+            if not process:
+                return False
+            ctypes.windll.kernel32.CloseHandle(process)
+            return True
+        except Exception:
+            return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _parse_runtime_lock_timestamp(value: str | None) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _runtime_lock_is_stale(
+    path: Path,
+    metadata: dict[str, Any],
+    *,
+    stale_after_seconds: int = DEFAULT_RUNTIME_LOCK_STALE_SECONDS,
+) -> bool:
+    holder_host = _normalize_hostname(str(metadata.get("hostname") or ""))
+    current_host = _normalize_hostname(socket.gethostname())
+    try:
+        holder_pid = int(metadata.get("pid") or 0)
+    except Exception:
+        holder_pid = 0
+    if holder_host and holder_host == current_host and holder_pid > 0 and (not _runtime_pid_exists(holder_pid)):
+        return True
+
+    acquired_at = _parse_runtime_lock_timestamp(str(metadata.get("acquired_at_utc") or ""))
+    if acquired_at is not None:
+        age = datetime.now(timezone.utc) - acquired_at
+        if age >= timedelta(seconds=max(60, int(stale_after_seconds))):
+            return True
+
+    try:
+        mtime_utc = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except Exception:
+        mtime_utc = None
+    if mtime_utc is not None:
+        if datetime.now(timezone.utc) - mtime_utc >= timedelta(seconds=max(60, int(stale_after_seconds))):
+            return True
+    return False
+
+
+def acquire_runtime_lock(
+    lock_name: str,
+    *,
+    repo_root: Path | None = None,
+    stale_after_seconds: int = DEFAULT_RUNTIME_LOCK_STALE_SECONDS,
+    metadata: dict[str, Any] | None = None,
+) -> RuntimeLockHandle:
+    root = (repo_root or _repo_root_default()).resolve(strict=False)
+    safe_name = _safe_runtime_lock_name(lock_name)
+    lock_path = runtime_lock_path(safe_name, repo_root=root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    token = uuid4().hex
+    payload: dict[str, Any] = {
+        "name": safe_name,
+        "token": token,
+        "pid": os.getpid(),
+        "hostname": _normalize_hostname(socket.gethostname()),
+        "acquired_at_utc": datetime.now(timezone.utc).isoformat(),
+        "repo_root": str(root),
+    }
+    for key, value in dict(metadata or {}).items():
+        if key not in payload:
+            payload[str(key)] = value
+
+    stale_reclaimed = False
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            existing = _read_runtime_lock_metadata(lock_path)
+            if _runtime_lock_is_stale(
+                lock_path,
+                existing,
+                stale_after_seconds=stale_after_seconds,
+            ):
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    continue
+                except Exception:
+                    return RuntimeLockHandle(
+                        acquired=False,
+                        path=str(lock_path),
+                        name=safe_name,
+                        token="",
+                        metadata=existing,
+                        reason="stale_reclaim_failed",
+                        stale_reclaimed=stale_reclaimed,
+                    )
+                stale_reclaimed = True
+                continue
+            return RuntimeLockHandle(
+                acquired=False,
+                path=str(lock_path),
+                name=safe_name,
+                token="",
+                metadata=existing,
+                reason="locked",
+                stale_reclaimed=stale_reclaimed,
+            )
+        except Exception as exc:
+            return RuntimeLockHandle(
+                acquired=False,
+                path=str(lock_path),
+                name=safe_name,
+                token="",
+                metadata={},
+                reason=f"lock_create_failed:{type(exc).__name__}",
+                stale_reclaimed=stale_reclaimed,
+            )
+
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, sort_keys=True)
+                handle.write("\n")
+        except Exception:
+            try:
+                lock_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
+        return RuntimeLockHandle(
+            acquired=True,
+            path=str(lock_path),
+            name=safe_name,
+            token=token,
+            metadata=payload,
+            stale_reclaimed=stale_reclaimed,
+        )
 
 
 

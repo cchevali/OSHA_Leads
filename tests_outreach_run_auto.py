@@ -17,6 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 from unittest import mock
 
+import runtime_guard
 
 REPO_ROOT = Path(__file__).resolve().parent
 SCRIPT = REPO_ROOT / "outreach" / "run_outreach_auto.py"
@@ -930,6 +931,54 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "OUTREACH_SKIP_ALREADY_SENT_TODAY=1 date=2026-02-24 existing_batches=2026-02-24_TX guard=ON",
                 out.getvalue(),
             )
+
+    def test_live_concurrent_lock_skips_before_crm_or_selection(self):
+        env = {
+            "DATA_DIR": str(Path(tempfile.gettempdir()) / "unused_outreach_lock_data"),
+            "OUTREACH_STATES": "TX",
+            "OUTREACH_DAILY_LIMIT": "10",
+            "OSHA_SMOKE_TO": "allow@example.com",
+        }
+        weekday_now = {
+            "timezone": "America/New_York",
+            "datetime": datetime(2026, 2, 24, 9, 0, 0),
+            "date": date(2026, 2, 24),
+            "date_text": "2026-02-24",
+            "weekday_idx": 1,
+            "weekday_name": "tue",
+            "is_weekend": False,
+        }
+        locked_handle = runtime_guard.RuntimeLockHandle(
+            acquired=False,
+            path=r"C:\locks\outreach_auto_2026-02-24.json",
+            name="outreach_auto_2026-02-24",
+            token="",
+            metadata={
+                "pid": 4321,
+                "hostname": "scheduler-host",
+                "acquired_at_utc": "2026-02-24T13:00:00+00:00",
+            },
+            reason="locked",
+            stale_reclaimed=False,
+        )
+        with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+            with mock.patch.object(roa, "_outreach_local_now", return_value=weekday_now), mock.patch.object(
+                roa, "acquire_runtime_lock", return_value=locked_handle
+            ), mock.patch.object(
+                roa, "_connect_existing_crm", side_effect=AssertionError("crm should not open when locked")
+            ), mock.patch.object(
+                roa, "run_runtime_preflight", return_value=mock.Mock(ok=True)
+            ), mock.patch.object(
+                roa, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]
+            ):
+                with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--confirm-live-send"]):
+                    out = io.StringIO()
+                    err = io.StringIO()
+                    with redirect_stdout(out), redirect_stderr(err):
+                        rc = roa.main()
+        self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+        self.assertIn("OUTREACH_SKIP_CONCURRENT_RUN=1 date=2026-02-24", out.getvalue())
+        self.assertIn("guard=LOCK", out.getvalue())
 
     def test_live_same_day_override_bypasses_guard(self):
         with tempfile.TemporaryDirectory() as d:

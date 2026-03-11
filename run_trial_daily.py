@@ -19,7 +19,13 @@ import crm_light
 import run_trial_admin
 from lead_filters import load_territory_definitions, resolve_territory_code
 from runtime_data_dir import resolve_osha_db_path
-from runtime_guard import render_runtime_lines, run_runtime_preflight, runtime_context_dict, validate_live_osha_db_path
+from runtime_guard import (
+    acquire_runtime_lock,
+    render_runtime_lines,
+    run_runtime_preflight,
+    runtime_context_dict,
+    validate_live_osha_db_path,
+)
 
 try:
     from zoneinfo import ZoneInfo
@@ -743,132 +749,207 @@ def run_trial_daily(
         )
         return 0
 
-    crm_light.ensure_database(resolved_crm_db)
-    with crm_light.open_conn(resolved_crm_db) as conn:
-        crm_light.init_schema(conn)
-
-        if policy.expired:
-            crm_light.append_send_event(
-                conn,
-                subscriber_key=policy.subscriber_key,
-                variant="daily",
-                status="SKIP_TRIAL_EXPIRED",
-                run_id=run_id,
-                meta={
-                    "start_date": policy.start_date,
-                    "successful_sends": policy.successful_sends,
-                    "sends_limit": policy.sends_limit,
-                    "expired_behavior": policy.expired_behavior,
+    live_send_lock = None
+    try:
+        if send_live and not dry_run:
+            live_send_lock = acquire_runtime_lock(
+                f"trial_daily_{policy.subscriber_key}_{day_ctx['local_date']}",
+                repo_root=Path(__file__).resolve().parent,
+                metadata={
+                    "subscriber_key": policy.subscriber_key,
+                    "local_date": day_ctx["local_date"],
+                    "task": "trial_daily",
                 },
-                ts_utc="",
             )
-            crm_light.set_trial_ended_at(conn, policy.subscriber_key, _now_utc_iso())
-            if policy.expired_behavior == "notify_once":
-                trial_state = crm_light.get_trial_state(conn, policy.subscriber_key) or {}
-                if not str(trial_state.get("notified_at_utc") or "").strip():
-                    text_artifact = out_root / "trials" / policy.subscriber_key / "conversion_email.txt"
-                    if text_artifact.exists():
-                        text_artifact = text_artifact.resolve()
-                    else:
-                        text_artifact = run_trial_admin.write_conversion_draft(
-                            subscriber_key=policy.subscriber_key,
-                            crm_db_path=resolved_crm_db,
-                            emit_stdout=False,
-                        )
-                    print(f"CONVERSION_ARTIFACT text_path={text_artifact}")
-                    if send_live and not dry_run:
-                        artifact_text = ""
-                        try:
-                            artifact_text = text_artifact.read_text(encoding="utf-8")
-                        except Exception as exc:
+            if not live_send_lock.acquired:
+                holder_meta = dict(live_send_lock.metadata or {})
+                holder_pid = str(holder_meta.get("pid") or "").strip() or "unknown"
+                holder_host = str(holder_meta.get("hostname") or "").strip().lower() or "unknown"
+                holder_started = str(holder_meta.get("acquired_at_utc") or "").strip() or "unknown"
+                print(
+                    f"TRIAL_SKIP_CONCURRENT_RUN=1 subscriber_key={policy.subscriber_key} "
+                    f"local_date={day_ctx['local_date']} lock_path={live_send_lock.path} "
+                    f"holder_pid={holder_pid} holder_host={holder_host} holder_started_at={holder_started} guard=LOCK"
+                )
+                return _finalize(0, mirror_after=False)
+
+        crm_light.ensure_database(resolved_crm_db)
+        with crm_light.open_conn(resolved_crm_db) as conn:
+            crm_light.init_schema(conn)
+
+            if policy.expired:
+                crm_light.append_send_event(
+                    conn,
+                    subscriber_key=policy.subscriber_key,
+                    variant="daily",
+                    status="SKIP_TRIAL_EXPIRED",
+                    run_id=run_id,
+                    meta={
+                        "start_date": policy.start_date,
+                        "successful_sends": policy.successful_sends,
+                        "sends_limit": policy.sends_limit,
+                        "expired_behavior": policy.expired_behavior,
+                    },
+                    ts_utc="",
+                )
+                crm_light.set_trial_ended_at(conn, policy.subscriber_key, _now_utc_iso())
+                if policy.expired_behavior == "notify_once":
+                    trial_state = crm_light.get_trial_state(conn, policy.subscriber_key) or {}
+                    if not str(trial_state.get("notified_at_utc") or "").strip():
+                        text_artifact = out_root / "trials" / policy.subscriber_key / "conversion_email.txt"
+                        if text_artifact.exists():
+                            text_artifact = text_artifact.resolve()
+                        else:
+                            text_artifact = run_trial_admin.write_conversion_draft(
+                                subscriber_key=policy.subscriber_key,
+                                crm_db_path=resolved_crm_db,
+                                emit_stdout=False,
+                            )
+                        print(f"CONVERSION_ARTIFACT text_path={text_artifact}")
+                        if send_live and not dry_run:
                             artifact_text = ""
-                            print(f"WARN_CONVERSION_ARTIFACT_READ_FAILED detail={exc}")
-                        if _has_unresolved_conversion_link(artifact_text):
-                            print(f"ERR_CONVERSION_LINK_MISSING subscriber_key={policy.subscriber_key}")
+                            try:
+                                artifact_text = text_artifact.read_text(encoding="utf-8")
+                            except Exception as exc:
+                                artifact_text = ""
+                                print(f"WARN_CONVERSION_ARTIFACT_READ_FAILED detail={exc}")
+                            if _has_unresolved_conversion_link(artifact_text):
+                                print(f"ERR_CONVERSION_LINK_MISSING subscriber_key={policy.subscriber_key}")
+                                crm_light.append_send_event(
+                                    conn,
+                                    subscriber_key=policy.subscriber_key,
+                                    variant="conversion",
+                                    status="CONVERSION_LINK_MISSING",
+                                    run_id=run_id,
+                                    meta={
+                                        "artifact_path": str(text_artifact),
+                                        "reason": "stripe_link_placeholder",
+                                    },
+                                    ts_utc="",
+                                )
+                                return _finalize(0, mirror_after=False)
+                            sent, message_id, error_detail = _send_conversion_email_from_artifact(
+                                artifact_path=text_artifact,
+                                subscriber_key=policy.subscriber_key,
+                                territory_code=policy.territory_code,
+                            )
+                            status = "CONVERSION_SENT" if sent else "CONVERSION_SEND_ERROR"
+                            meta: dict[str, Any] = {
+                                "start_date": policy.start_date,
+                                "successful_sends": policy.successful_sends,
+                                "sends_limit": policy.sends_limit,
+                                "expired_behavior": policy.expired_behavior,
+                                "artifact_path": str(text_artifact),
+                            }
+                            if message_id:
+                                meta["message_id"] = message_id
+                            if error_detail:
+                                meta["error"] = error_detail
                             crm_light.append_send_event(
                                 conn,
                                 subscriber_key=policy.subscriber_key,
                                 variant="conversion",
-                                status="CONVERSION_LINK_MISSING",
+                                status=status,
                                 run_id=run_id,
-                                meta={
-                                    "artifact_path": str(text_artifact),
-                                    "reason": "stripe_link_placeholder",
-                                },
+                                meta=meta,
                                 ts_utc="",
                             )
-                            return _finalize(0, mirror_after=False)
-                        sent, message_id, error_detail = _send_conversion_email_from_artifact(
-                            artifact_path=text_artifact,
-                            subscriber_key=policy.subscriber_key,
-                            territory_code=policy.territory_code,
-                        )
-                        status = "CONVERSION_SENT" if sent else "CONVERSION_SEND_ERROR"
-                        meta: dict[str, Any] = {
-                            "start_date": policy.start_date,
-                            "successful_sends": policy.successful_sends,
-                            "sends_limit": policy.sends_limit,
-                            "expired_behavior": policy.expired_behavior,
-                            "artifact_path": str(text_artifact),
-                        }
-                        if message_id:
-                            meta["message_id"] = message_id
-                        if error_detail:
-                            meta["error"] = error_detail
-                        crm_light.append_send_event(
-                            conn,
-                            subscriber_key=policy.subscriber_key,
-                            variant="conversion",
-                            status=status,
-                            run_id=run_id,
-                            meta=meta,
-                            ts_utc="",
-                        )
-                        if sent:
-                            crm_light.set_trial_notified_at(conn, policy.subscriber_key, _now_utc_iso())
-                            print(f"CONVERSION_EMAIL_SENT to={policy.email}")
+                            if sent:
+                                crm_light.set_trial_notified_at(conn, policy.subscriber_key, _now_utc_iso())
+                                print(f"CONVERSION_EMAIL_SENT to={policy.email}")
+                            else:
+                                print(f"WARN_CONVERSION_EMAIL_SEND_FAILED detail={error_detail}")
                         else:
-                            print(f"WARN_CONVERSION_EMAIL_SEND_FAILED detail={error_detail}")
-                    else:
-                        print("CONVERSION_EMAIL_PENDING send_live=NO")
-            return _finalize(0, mirror_after=False)
+                            print("CONVERSION_EMAIL_PENDING send_live=NO")
+                return _finalize(0, mirror_after=False)
 
-        local_today = str(day_ctx["local_date"])
-        if send_live and not dry_run and crm_light.has_trial_delivery_on_local_date(
-            conn,
-            subscriber_key=policy.subscriber_key,
-            start_date=policy.start_date,
-            tz_name=policy.tz,
-            primary_recipient=policy.email,
-            local_date_text=local_today,
-        ):
+            local_today = str(day_ctx["local_date"])
+            if send_live and not dry_run and crm_light.has_trial_delivery_on_local_date(
+                conn,
+                subscriber_key=policy.subscriber_key,
+                start_date=policy.start_date,
+                tz_name=policy.tz,
+                primary_recipient=policy.email,
+                local_date_text=local_today,
+            ):
+                crm_light.append_send_event(
+                    conn,
+                    subscriber_key=policy.subscriber_key,
+                    variant="daily",
+                    status="SKIP_ALREADY_SENT_LOCAL_DATE",
+                    run_id=run_id,
+                    meta={"local_date": local_today, "timezone": policy.tz},
+                    ts_utc="",
+                )
+                print(f"TRIAL_EVENT status=SKIP_ALREADY_SENT_LOCAL_DATE local_date={local_today}")
+                return _finalize(0, mirror_after=False)
+
+            customer_path = _resolve_customer_config_path(policy.subscriber_key, customer_arg, out_root)
+            customer_runtime = _load_or_build_customer_config(policy, customer_path, out_root)
+
+            if test_send_daily:
+                code, out = _run_send_digest_test_daily(leads_db, customer_runtime, dry_run=dry_run)
+                status = "DRY_RUN" if dry_run else ("TEST_SENT" if code == 0 else "ERROR")
+                event_mode = "DRY_RUN" if dry_run else ("TEST" if code == 0 else "ERROR")
+                crm_light.append_send_event(
+                    conn,
+                    subscriber_key=policy.subscriber_key,
+                    variant="test_send_daily",
+                    status=status,
+                    run_id=run_id,
+                    meta=_event_meta(
+                        source="run_trial_daily_test_send",
+                        send_mode=event_mode,
+                        primary_recipient=policy.email,
+                        local_date=local_today,
+                        exit_code=code,
+                    ),
+                    ts_utc="",
+                )
+                print(f"TRIAL_EVENT status={status}")
+                if out.strip():
+                    print(out.rstrip())
+                return _finalize(0 if code == 0 else code, mirror_after=False)
+
+            code, out = _run_deliver_daily(leads_db, customer_runtime, send_live=send_live, dry_run=dry_run)
+            status = "ERROR"
+            customer_id = ""
+            try:
+                customer_id = str(
+                    json.loads(customer_runtime.read_text(encoding="utf-8")).get("customer_id") or ""
+                )
+            except Exception:
+                customer_id = ""
+
+            if dry_run:
+                status = "DRY_RUN" if code == 0 else "ERROR"
+                event_mode = "DRY_RUN" if code == 0 else "ERROR"
+            else:
+                mode = _try_extract_latest_send_start_mode(customer_id=customer_id)
+                if mode is None:
+                    # Fallback to subprocess output when latest.json/send_result is unavailable.
+                    mode = _try_extract_last_send_start_mode_from_log_text(out)
+                if code == 0 and mode == "LIVE":
+                    status = "SENT"
+                    event_mode = "LIVE"
+                elif code == 0 and mode == "SAFE":
+                    status = "SAFE_MODE"
+                    event_mode = "SAFE"
+                elif code == 0:
+                    status = "UNKNOWN"
+                    event_mode = "UNKNOWN"
+                else:
+                    status = "ERROR"
+                    event_mode = "ERROR"
+
             crm_light.append_send_event(
                 conn,
                 subscriber_key=policy.subscriber_key,
                 variant="daily",
-                status="SKIP_ALREADY_SENT_LOCAL_DATE",
-                run_id=run_id,
-                meta={"local_date": local_today, "timezone": policy.tz},
-                ts_utc="",
-            )
-            print(f"TRIAL_EVENT status=SKIP_ALREADY_SENT_LOCAL_DATE local_date={local_today}")
-            return _finalize(0, mirror_after=False)
-
-        customer_path = _resolve_customer_config_path(policy.subscriber_key, customer_arg, out_root)
-        customer_runtime = _load_or_build_customer_config(policy, customer_path, out_root)
-
-        if test_send_daily:
-            code, out = _run_send_digest_test_daily(leads_db, customer_runtime, dry_run=dry_run)
-            status = "DRY_RUN" if dry_run else ("TEST_SENT" if code == 0 else "ERROR")
-            event_mode = "DRY_RUN" if dry_run else ("TEST" if code == 0 else "ERROR")
-            crm_light.append_send_event(
-                conn,
-                subscriber_key=policy.subscriber_key,
-                variant="test_send_daily",
                 status=status,
                 run_id=run_id,
                 meta=_event_meta(
-                    source="run_trial_daily_test_send",
+                    source="run_trial_daily_deliver",
                     send_mode=event_mode,
                     primary_recipient=policy.email,
                     local_date=local_today,
@@ -880,57 +961,9 @@ def run_trial_daily(
             if out.strip():
                 print(out.rstrip())
             return _finalize(0 if code == 0 else code, mirror_after=False)
-
-        code, out = _run_deliver_daily(leads_db, customer_runtime, send_live=send_live, dry_run=dry_run)
-        status = "ERROR"
-        customer_id = ""
-        try:
-            customer_id = str(
-                json.loads(customer_runtime.read_text(encoding="utf-8")).get("customer_id") or ""
-            )
-        except Exception:
-            customer_id = ""
-
-        if dry_run:
-            status = "DRY_RUN" if code == 0 else "ERROR"
-            event_mode = "DRY_RUN" if code == 0 else "ERROR"
-        else:
-            mode = _try_extract_latest_send_start_mode(customer_id=customer_id)
-            if mode is None:
-                # Fallback to subprocess output when latest.json/send_result is unavailable.
-                mode = _try_extract_last_send_start_mode_from_log_text(out)
-            if code == 0 and mode == "LIVE":
-                status = "SENT"
-                event_mode = "LIVE"
-            elif code == 0 and mode == "SAFE":
-                status = "SAFE_MODE"
-                event_mode = "SAFE"
-            elif code == 0:
-                status = "UNKNOWN"
-                event_mode = "UNKNOWN"
-            else:
-                status = "ERROR"
-                event_mode = "ERROR"
-
-        crm_light.append_send_event(
-            conn,
-            subscriber_key=policy.subscriber_key,
-            variant="daily",
-            status=status,
-            run_id=run_id,
-            meta=_event_meta(
-                source="run_trial_daily_deliver",
-                send_mode=event_mode,
-                primary_recipient=policy.email,
-                local_date=local_today,
-                exit_code=code,
-            ),
-            ts_utc="",
-        )
-        print(f"TRIAL_EVENT status={status}")
-        if out.strip():
-            print(out.rstrip())
-        return _finalize(0 if code == 0 else code, mirror_after=False)
+    finally:
+        if live_send_lock is not None:
+            live_send_lock.release()
 
 
 def main(argv: list[str] | None = None) -> int:
