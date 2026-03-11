@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=bd1a9695abffc465ab9e1640867863c9627a7080
-PACK_BUILD_UTC=2026-03-09T12:17:43Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=21951886acea22e3152c61f696748e784ae5b77a11989459693417b3dbb190c6 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=3e64909f0f50b48289f691d3305814023d4e4f4a00ab7fe21b81e35e93dbe889 docs/TODO.md=86a681dc2a7c2d0f0c99e9272d608c57e2315f5577d346850fd6e1a9e5f503af docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=992ed9ffc36dba97d48628f19df4e4b06bfd5a75cb8f03e9da8e3288f84556e4
+PACK_GIT_SHA=465203001ade9c9b229cec904400633f1147088d
+PACK_BUILD_UTC=2026-03-11T01:44:08Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=21951886acea22e3152c61f696748e784ae5b77a11989459693417b3dbb190c6 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=3e64909f0f50b48289f691d3305814023d4e4f4a00ab7fe21b81e35e93dbe889 docs/TODO.md=542082411548559bf73ec7939766b0358fadc2d387a15613eb3a1b4e7455ce4f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=c5a1fe4888362170dfd5c63af610b59d13fdb103fea5052ca9c36e39ca06f870
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -2298,15 +2298,12 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 ## Human-only (UI/credentials)
 
 - [ ] After any PR/commit that changes docs/contracts/templates/workflow (or any time `WARN_CONTEXT_PACK_STALE` appears): run build + fingerprint + upload + mark-uploaded + check (in that order).
-- [ ] Install the registered GitHub self-hosted runner on the canonical PC as a Windows service from an elevated shell so it survives reboot/logoff.
-- [ ] Set runtime role keys on canonical PC via `scripts\set_outreach_env.ps1` (`RUNTIME_ROLE=canonical_scheduler`, `CANONICAL_HOSTNAME=<pc-hostname>`) and verify with wrapper `--print-config` paths.
 - [ ] Set optional `ARTIFACT_SYNC_DIR` (for example OneDrive artifacts folder) via `scripts\set_outreach_env.ps1` and confirm mirrors for task logs/run summaries/backups.
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
 - [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
 - [ ] If enabling AI triage, set `AI_TRIAGE_ENABLED` / `AI_TRIAGE_OPENAI_MODEL` via `scripts\set_outreach_env.ps1` and load `OPENAI_API_KEY` in the shell first (no manual `.env` / `.env.sops` edits).
 - [ ] If OHS buyersguide multi-page replenishment is needed, refresh a valid Playwright storage-state file and set `OHS_BG_STORAGE_STATE_PATH` via `scripts\set_outreach_env.ps1`.
 
-- [ ] Ensure email provider account/sender credentials are configured for production and validated with daily doctor checks (`run_outreach_auto.py --doctor`).
 - [ ] Before travel, verify the Windows-native RDP path from the laptop to the canonical PC over the existing secure access layer; disconnect, reconnect, and confirm usable resolution/performance.
 - [ ] Before travel, confirm the canonical PC stays awake, network-connected, and reachable after disconnect/reconnect.
 - [ ] Before travel, run `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_travel_readiness.ps1 --dry-run` on the laptop and resolve any failing step before leaving.
@@ -2320,6 +2317,12 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Done
 
+- 2026-03-10: Cut over morning scheduling so the self-hosted `runtime-tick-selfhosted.yml` path remains the canonical live executor while managed Task Scheduler morning wrappers run as enabled safety nets with same-slot skip behavior and scheduler status emits runner/Python/topology health tokens. Evidence: `scripts/install_scheduled_tasks.ps1`, `scripts/scheduled/runtime_guard.ps1`, `scripts/scheduled/run_outreach_auto.ps1`, `scripts/scheduled/run_prospect_replenish_daily.ps1`, `scripts/scheduled/run_trial_facs_daily.ps1`, `outreach/run_runtime_tick.py`, `tests_install_scheduled_tasks.py`, `tests_runtime_guard_ps1.py`, `tests_run_runtime_tick.py`.
+- 2026-03-10: Standardized scheduled wrapper Python resolution and canonical artifact roots under `${DATA_DIR}\out\...` so scheduled preflight, task logs, run summaries, and runtime-tick reconciliation agree in unattended runs. Evidence: `scripts/scheduled/runtime_guard.ps1`, `scripts/scheduled/runtime_run_summary.ps1`, `scripts/scheduled/run_osha_ingest_daily.ps1`, `scripts/scheduled/run_prospect_replenish_daily.ps1`, `scripts/scheduled/run_outreach_auto.ps1`, `scripts/scheduled/run_trial_facs_daily.ps1`, `tests_runtime_guard_ps1.py`, `tests_runtime_run_summary.py`, `tests_run_runtime_tick_wrapper.py`.
+- 2026-03-10: Completed canonical DB cutover so live runtime state now uses only `C:\osha_data\osha.sqlite`, `C:\osha_data\crm.sqlite`, and `C:\osha_data\crm_light.sqlite`; repo-local live-like DB copies are quarantined under `out\backups\legacy_db_quarantine\...`, runtime preflight blocks new legacy drift, and trial ledger reconcile runs into canonical before quarantine. Evidence: `outreach/run_runtime_state_migrate.py`, `runtime_guard.py`, `run_trial_daily.py`, `tests_run_runtime_state_migrate.py`, `tests_runtime_guard.py`, `test_trial_status.py`.
+- 2026-03-10: Verified the registered GitHub self-hosted runner is installed as a Windows service on the canonical PC and currently running as `actions.runner.cchevali-OSHA_Leads.desktop-q8qm4n9-runtime`. Evidence: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --status`.
+- 2026-03-10: Verified canonical runtime-role keys on the canonical PC (`RUNTIME_ROLE=canonical_scheduler`, `CANONICAL_HOSTNAME=desktop-q8qm4n9`) via wrapper-backed config/doctor output. Evidence: `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --print-config`, `.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --doctor`.
+- 2026-03-10: Verified production outreach sender/provider configuration via doctor checks, including provider config, scheduler alignment, and no-send artifact coverage. Evidence: `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --doctor`.
 - 2026-03-09: Hardened `outreach/run_runtime_tick.py` so `${DATA_DIR}\runtime\status\jobs\*.json` persists latest slot evaluation for ran/skipped/reconciled jobs, reconciles same-slot wrapper summaries before `missed_window`, and emits `WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER` plus reconciliation metadata when break-glass wrappers are detected. Covered by `tests_run_runtime_tick.py`.
 - 2026-03-09: Added workflow contract coverage that keeps runtime tick as the only scheduled live workflow and validates artifact upload roots for canonical/runtime and manual wrapper paths. Evidence: `tests_run_runtime_tick_wrapper.py`.
 - 2026-03-09: Added canonical autogrow source registry `outreach/autogrow_source_registry.json` and wired env/runtime validation so unknown tokens fail as `invalid_*` and planned-but-unimplemented tokens fail as `unimplemented_*`. Evidence: `outreach/source_policy.py`, `outreach/run_prospect_generation.py`, `scripts/set_outreach_env.ps1`, `tests_source_policy_registry.py`.
