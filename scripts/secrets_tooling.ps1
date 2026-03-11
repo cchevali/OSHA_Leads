@@ -8,6 +8,27 @@ function Resolve-RepoRoot {
   return $root.Path
 }
 
+function Resolve-EnvSopsPath {
+  param(
+    [Parameter(Mandatory = $true)] [string]$RepoRoot
+  )
+
+  $forced = ([string]$env:ENV_SOPS_PATH).Trim()
+  if ($forced -and (Test-Path -LiteralPath $forced)) {
+    try { return (Resolve-Path -LiteralPath $forced).Path } catch { return $forced }
+  }
+
+  $programData = ([string]$env:ProgramData).Trim()
+  if ($programData) {
+    $machinePath = Join-Path $programData 'OSHA_Leads\secrets\.env.sops'
+    if (Test-Path -LiteralPath $machinePath) {
+      try { return (Resolve-Path -LiteralPath $machinePath).Path } catch { return $machinePath }
+    }
+  }
+
+  return (Join-Path $RepoRoot '.env.sops')
+}
+
 function Resolve-ExternalExe {
   param(
     [Parameter(Mandatory = $true)] [string] $ToolName,

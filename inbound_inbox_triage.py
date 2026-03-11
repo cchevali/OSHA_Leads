@@ -16,6 +16,7 @@ import argparse
 import base64
 import csv
 import email
+import email.policy
 import imaplib
 import json
 import os

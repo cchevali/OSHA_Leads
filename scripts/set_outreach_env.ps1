@@ -365,7 +365,7 @@ function Run-PrintConfigCheck(
 
 try {
   $repoRoot = Resolve-RepoRoot
-  $envSopsPath = Join-Path $repoRoot '.env.sops'
+  $envSopsPath = Resolve-EnvSopsPath -RepoRoot $repoRoot
   $runWithSecretsPath = Join-Path $repoRoot 'run_with_secrets.ps1'
 
   $mutatingArgs = @(

@@ -17,7 +17,7 @@ if ($args -contains '-NonSecret' -or $args -contains '--non-secret' -or $args -c
 }
 
 $repoRoot = Resolve-RepoRoot
-$envSopsPath = Join-Path $repoRoot '.env.sops'
+$envSopsPath = Resolve-EnvSopsPath -RepoRoot $repoRoot
 $sopsYamlPath = Join-Path $repoRoot '.sops.yaml'
 $envExamplePath = Join-Path $repoRoot '.env.example'
 $ageKeysPath = Get-AgeKeyFilePath
