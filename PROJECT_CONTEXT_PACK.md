@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=465203001ade9c9b229cec904400633f1147088d
-PACK_BUILD_UTC=2026-03-11T01:44:08Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=21951886acea22e3152c61f696748e784ae5b77a11989459693417b3dbb190c6 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=3e64909f0f50b48289f691d3305814023d4e4f4a00ab7fe21b81e35e93dbe889 docs/TODO.md=542082411548559bf73ec7939766b0358fadc2d387a15613eb3a1b4e7455ce4f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=c5a1fe4888362170dfd5c63af610b59d13fdb103fea5052ca9c36e39ca06f870
+PACK_GIT_SHA=2c4b22a8b45d606b3579148a1ea48816f13c3425
+PACK_BUILD_UTC=2026-03-12T01:45:31Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=21951886acea22e3152c61f696748e784ae5b77a11989459693417b3dbb190c6 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=281561699391ff12dcc18536885675aea85a44d627378f744de48730d98f70c0 docs/TODO.md=542082411548559bf73ec7939766b0358fadc2d387a15613eb3a1b4e7455ce4f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=7f0dd9cc8175c4aa3fea22d65790e8be72752ab189ee39dc07500a99e2f5014b
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -1449,11 +1449,12 @@ py -3 tools\cache_osha_inspection_detail.py --since-days 14
 
 Triage behavior contract:
 
-- Rules layer is always on for trial digest signal selection and outreach signal examples.
-- AI layer is optional and raise-only. It is evaluated only when `AI_TRIAGE_ENABLED=1` and the path gate is on:
-- Trial path gate: `TRIAL_TRIAGE_OVERLAY_ENABLED=1`
+- Rules layer is always on for trial/shared daily digest signal selection, render-time digest intelligence, and outreach signal examples.
+- Shared daily subscriber/trial digest intelligence is rules-first and default-on in the renderer; this improves summary/top-pick presentation only and does not change outreach behavior.
+- AI layer is optional. It is evaluated only when `AI_TRIAGE_ENABLED=1` and the path gate is on:
+- Shared/trial daily digest AI overlay gate: `DIGEST_AI_OVERLAY_ENABLED=1` (with `TRIAL_TRIAGE_OVERLAY_ENABLED=1` as the default-on rules/render path gate)
 - Outreach path gate: `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
-- AI never lowers rules priority and never unsuppresses a rules-suppressed signal.
+- Cached/manual-reviewed AI overlay can raise or lower final digest priority, but it never unsuppresses a rules-suppressed signal.
 - AI cache lookup is attempted before OpenAI API access; cached/manual-reviewed priorities can apply even when `OPENAI_API_KEY` is missing.
 - Trial/outreach send paths auto-import the newest `ai_review_*.csv` once per process from `C:\osha_data\imports` (fallback `${DATA_DIR}\imports`) unless overridden.
 - If AI is enabled but unavailable for uncached signals (missing key/network/API error), execution degrades to rules-only and emits `WARN_AI_TRIAGE_UNAVAILABLE` plus `AI_TRIAGE_UNAVAILABLE=1`.
