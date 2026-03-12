@@ -237,6 +237,14 @@ def _export_ledger_path() -> Path:
     return _data_dir() / "outreach_export_ledger.jsonl"
 
 
+def _run_ai_assist_pending_imports(*, dry_run: bool) -> int:
+    if bool(dry_run):
+        return 0
+    from tools import import_prospect_ai_assist_review as ai_assist_import
+
+    return int(ai_assist_import.run_pending_imports(dry_run=False))
+
+
 def _parse_for_date(raw: str) -> tuple[bool, date, str]:
     text = (raw or "").strip()
     if not text:
@@ -1068,14 +1076,8 @@ def _crm_uncontacted_by_state(
     if not normalized_states:
         return counts
 
-    try:
-        rows = conn.execute(
-            """
-            SELECT prospect_id, email, status, last_contacted_at, state
-            FROM prospects
-            """,
-        ).fetchall()
-    except Exception:
+    rows = _crm_summary_rows(conn)
+    if rows is None:
         return counts
 
     sent_ids = _fetch_prior_sent_ids(conn)
@@ -1095,6 +1097,18 @@ def _crm_uncontacted_by_state(
             continue
         counts[row_state] = int(counts.get(row_state, 0)) + 1
     return counts
+
+
+def _crm_summary_rows(conn: sqlite3.Connection) -> list[sqlite3.Row] | None:
+    try:
+        return conn.execute(
+            """
+            SELECT prospect_id, email, status, last_contacted_at, state, source, default_send_eligible, source_fit_tier
+            FROM prospects
+            """
+        ).fetchall()
+    except Exception:
+        return None
 
 
 def _crm_funnel_breakdown_for_summary(
@@ -1126,14 +1140,8 @@ def _crm_funnel_breakdown_for_summary(
         "already_contacted_count_overall": 0,
     }
 
-    try:
-        rows = conn.execute(
-            """
-            SELECT prospect_id, email, status, last_contacted_at, state
-            FROM prospects
-            """
-        ).fetchall()
-    except Exception:
+    rows = _crm_summary_rows(conn)
+    if rows is None:
         return out
 
     selected_state_norm = _normalize_us_state(selected_state)
@@ -2708,6 +2716,10 @@ def main() -> int:
                     f"holder_started_at={holder_started} guard=LOCK"
                 )
                 return 0
+
+        pending_import_rc = _run_ai_assist_pending_imports(dry_run=bool(args.dry_run or args.plan or args.doctor))
+        if pending_import_rc != 0:
+            return pending_import_rc
 
         if not crm_db.exists():
             print(f"{ERR_AUTO_CRM_REQUIRED} crm_missing path={crm_db}", file=sys.stderr)

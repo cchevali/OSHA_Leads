@@ -130,6 +130,16 @@ def _emit_effective_defaults(env: dict[str, str]) -> None:
     )
 
 
+def _run_ai_assist_pending_imports(*, dry_run: bool) -> int:
+    if bool(dry_run):
+        return 0
+    from tools import import_prospect_ai_assist_review as ai_assist_import
+
+    _emit("PROSPECT_REPLENISH_STAGE", "ai_assist_pending_import")
+    _emit("PROSPECT_REPLENISH_STAGE_COMMAND", "module:tools.import_prospect_ai_assist_review.run_pending_imports")
+    return int(ai_assist_import.run_pending_imports(dry_run=False))
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="Run deterministic daily prospect replenishment pipeline: doctor -> generation -> discovery -> ai assist dump."
@@ -235,6 +245,9 @@ def main(argv: list[str] | None = None) -> int:
             script_and_args=["run_prospect_generation.py", "--doctor"],
             env=env,
         )
+        if rc != 0:
+            return rc
+        rc = _run_ai_assist_pending_imports(dry_run=False)
         if rc != 0:
             return rc
 
