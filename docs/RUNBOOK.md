@@ -829,11 +829,12 @@ py -3 tools\cache_osha_inspection_detail.py --since-days 14
 
 Triage behavior contract:
 
-- Rules layer is always on for trial digest signal selection and outreach signal examples.
-- AI layer is optional and raise-only. It is evaluated only when `AI_TRIAGE_ENABLED=1` and the path gate is on:
-- Trial path gate: `TRIAL_TRIAGE_OVERLAY_ENABLED=1`
+- Rules layer is always on for trial/shared daily digest signal selection, render-time digest intelligence, and outreach signal examples.
+- Shared daily subscriber/trial digest intelligence is rules-first and default-on in the renderer; this improves summary/top-pick presentation only and does not change outreach behavior.
+- AI layer is optional. It is evaluated only when `AI_TRIAGE_ENABLED=1` and the path gate is on:
+- Shared/trial daily digest AI overlay gate: `DIGEST_AI_OVERLAY_ENABLED=1` (with `TRIAL_TRIAGE_OVERLAY_ENABLED=1` as the default-on rules/render path gate)
 - Outreach path gate: `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
-- AI never lowers rules priority and never unsuppresses a rules-suppressed signal.
+- Cached/manual-reviewed AI overlay can raise or lower final digest priority, but it never unsuppresses a rules-suppressed signal.
 - AI cache lookup is attempted before OpenAI API access; cached/manual-reviewed priorities can apply even when `OPENAI_API_KEY` is missing.
 - Trial/outreach send paths auto-import the newest `ai_review_*.csv` once per process from `C:\osha_data\imports` (fallback `${DATA_DIR}\imports`) unless overridden.
 - If AI is enabled but unavailable for uncached signals (missing key/network/API error), execution degrades to rules-only and emits `WARN_AI_TRIAGE_UNAVAILABLE` plus `AI_TRIAGE_UNAVAILABLE=1`.

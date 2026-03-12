@@ -221,6 +221,65 @@ class TestRuntimeGuard(unittest.TestCase):
         self.assertIn("ERR_RUNTIME_DB_CRM_LIGHT_LEGACY_PRESENT", out)
         self.assertIn("ERR_RUNTIME_DB_CRM_LIGHT_SPLIT", out)
 
+    def test_runtime_lock_blocks_second_holder_until_release(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d).resolve()
+            old_data_dir = os.environ.get("DATA_DIR")
+            os.environ["DATA_DIR"] = str(data_dir)
+            try:
+                first = runtime_guard.acquire_runtime_lock("outreach_auto_2026-03-11", repo_root=REPO_ROOT)
+                self.assertTrue(first.acquired)
+                second = runtime_guard.acquire_runtime_lock("outreach_auto_2026-03-11", repo_root=REPO_ROOT)
+                self.assertFalse(second.acquired)
+                self.assertEqual(second.reason, "locked")
+                self.assertEqual(Path(first.path), Path(second.path))
+            finally:
+                try:
+                    first.release()
+                except Exception:
+                    pass
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+
+    def test_runtime_lock_reclaims_stale_file_from_dead_pid(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d).resolve()
+            old_data_dir = os.environ.get("DATA_DIR")
+            os.environ["DATA_DIR"] = str(data_dir)
+            try:
+                lock_path = runtime_guard.runtime_lock_path("trial_daily_facs_trial_2026-03-11", repo_root=REPO_ROOT)
+                lock_path.parent.mkdir(parents=True, exist_ok=True)
+                lock_path.write_text(
+                    json.dumps(
+                        {
+                            "name": "trial_daily_facs_trial_2026-03-11",
+                            "token": "stale-token",
+                            "pid": 999999,
+                            "hostname": socket.gethostname().strip().lower(),
+                            "acquired_at_utc": "2026-03-11T08:00:00+00:00",
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                handle = runtime_guard.acquire_runtime_lock(
+                    "trial_daily_facs_trial_2026-03-11",
+                    repo_root=REPO_ROOT,
+                )
+                self.assertTrue(handle.acquired)
+                self.assertTrue(handle.stale_reclaimed)
+            finally:
+                try:
+                    handle.release()
+                except Exception:
+                    pass
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+
 
 if __name__ == "__main__":
     unittest.main()

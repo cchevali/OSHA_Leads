@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 
 import crm_light
+import runtime_guard
 import run_trial_admin
 import run_trial_daily
 import run_wally_trial
@@ -839,6 +840,68 @@ class TestTrialStatus(unittest.TestCase):
                     ).fetchall()
                 self.assertEqual(sends_used, 1)
                 self.assertIn("SKIP_ALREADY_SENT_LOCAL_DATE", [str(row[0] or "") for row in statuses])
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+
+    def test_live_concurrent_lock_skips_before_deliver(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            leads_db = base / "osha.sqlite"
+            old_data_dir = os.environ.get("DATA_DIR")
+            os.environ["DATA_DIR"] = str(data_dir)
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="facs_trial",
+                    start_date="2026-02-01",
+                    sends_limit=14,
+                )
+                locked_handle = runtime_guard.RuntimeLockHandle(
+                    acquired=False,
+                    path=r"C:\locks\trial_daily_facs_trial_2026-02-20.json",
+                    name="trial_daily_facs_trial_2026-02-20",
+                    token="",
+                    metadata={
+                        "pid": 9876,
+                        "hostname": "scheduler-host",
+                        "acquired_at_utc": "2026-02-20T13:00:00+00:00",
+                    },
+                    reason="locked",
+                    stale_reclaimed=False,
+                )
+                orig_lock = run_trial_daily.acquire_runtime_lock
+                orig_deliver = run_trial_daily._run_deliver_daily
+                orig_split = run_trial_daily._detect_split_ledger_conflict
+                try:
+                    run_trial_daily.acquire_runtime_lock = lambda *_a, **_k: locked_handle  # type: ignore[assignment]
+                    run_trial_daily._run_deliver_daily = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("deliver should not run when locked"))  # type: ignore[assignment]
+                    run_trial_daily._detect_split_ledger_conflict = lambda *_a, **_k: {"conflict": False}  # type: ignore[assignment]
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        code = run_trial_daily.run_trial_daily(
+                            subscriber_key="facs_trial",
+                            leads_db=str(leads_db),
+                            crm_db=db,
+                            customer_arg="",
+                            send_live=True,
+                            confirm_live_send=True,
+                            dry_run=False,
+                            test_send_daily=False,
+                            print_config=False,
+                            allow_weekend_send=True,
+                        )
+                finally:
+                    run_trial_daily.acquire_runtime_lock = orig_lock  # type: ignore[assignment]
+                    run_trial_daily._run_deliver_daily = orig_deliver  # type: ignore[assignment]
+                    run_trial_daily._detect_split_ledger_conflict = orig_split  # type: ignore[assignment]
+                self.assertEqual(code, 0)
+                self.assertIn("TRIAL_SKIP_CONCURRENT_RUN=1 subscriber_key=facs_trial", out.getvalue())
+                self.assertIn("guard=LOCK", out.getvalue())
             finally:
                 if old_data_dir is None:
                     os.environ.pop("DATA_DIR", None)
