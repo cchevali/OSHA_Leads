@@ -2,6 +2,7 @@ import unittest
 
 from email_footer import build_footer_html, build_footer_text
 from send_digest_email import _select_snapshot_rows, generate_digest_html, generate_digest_text
+from scoring import digest_intelligence as scoring_digest_intelligence
 
 
 class TestDigestSnapshotSection(unittest.TestCase):
@@ -48,6 +49,7 @@ class TestDigestSnapshotSection(unittest.TestCase):
             }
         ]
         snap_tiers = {"high": 1, "medium": 2, "low": 0}
+        presentation = scoring_digest_intelligence.build_digest_presentation(snap_rows, section_kind="snapshot_not_new")
 
         html = generate_digest_html(
             leads=[],
@@ -71,10 +73,15 @@ class TestDigestSnapshotSection(unittest.TestCase):
             snapshot_enable_lows_url=None,
             snapshot_rows=snap_rows,
             snapshot_total=10,
+            intro_summary_html=presentation["intro_html"],
+            top_pick_rows=presentation["top_picks"],
+            top_pick_heading=presentation["top_pick_heading"],
         )
         self.assertIn("Last 14 days snapshot (not new)", html)
         self.assertIn("Tier summary (not new): High 1, Medium 2, Low 0", html)
         self.assertIn("Example Priority Co", html)
+        self.assertIn("Most important in recent activity", html)
+        self.assertIn("not newly observed today", html)
         self.assertNotIn("Low-priority signals: 0.", html)
         self.assertNotIn("Also observed (not shown)", html)
 
@@ -100,10 +107,15 @@ class TestDigestSnapshotSection(unittest.TestCase):
             snapshot_enable_lows_url=None,
             snapshot_rows=snap_rows,
             snapshot_total=10,
+            intro_summary_text=presentation["intro_text"],
+            top_pick_rows=presentation["top_picks"],
+            top_pick_heading=presentation["top_pick_heading"],
         )
         self.assertIn("Last 14 days snapshot (not new)", text)
         self.assertIn("Tier summary (not new): High 1, Medium 2, Low 0", text)
         self.assertIn("Example Priority Co", text)
+        self.assertIn("Most important in recent activity", text)
+        self.assertIn("not newly observed today", text)
         self.assertNotIn("Low-priority signals: 0.", text)
         self.assertNotIn("Also observed (not shown)", text)
 

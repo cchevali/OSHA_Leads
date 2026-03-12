@@ -13,6 +13,7 @@ Features:
 import argparse
 import base64
 import csv
+import html as html_lib
 import json
 import hashlib
 import hmac
@@ -41,6 +42,7 @@ except Exception:  # pragma: no cover
     load_dotenv = None
 
 import crm_light
+from scoring import digest_intelligence as scoring_digest_intelligence
 from scoring import osha_detail_cache as scoring_osha_detail_cache
 from scoring import triage_overlay as scoring_triage_overlay
 from lead_filters import (
@@ -442,16 +444,7 @@ def _lead_event_date_value(lead: dict[str, Any]) -> float:
 
 
 def _sort_leads_for_digest(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    ordered = list(rows or [])
-    ordered.sort(
-        key=lambda lead: (
-            -_priority_rank_value(_lead_effective_priority(lead)),
-            -_lead_event_date_value(lead),
-            -_lead_recency_value(lead),
-            str(lead.get("activity_nr") or lead.get("lead_key") or lead.get("lead_id") or ""),
-        ),
-    )
-    return ordered
+    return scoring_digest_intelligence.sort_rows_for_digest(rows)
 
 
 def _filter_by_effective_priority(rows: list[dict[str, Any]], content_filter: str) -> tuple[list[dict[str, Any]], int]:
@@ -525,6 +518,56 @@ def _reason_chip_label(lead: dict[str, Any]) -> str:
     else:
         event_label = "Signal"
     return f"{event_label} + {_naics_family_label(lead)}"
+
+
+def _presentation_reason_label(lead: dict[str, Any], *, include_collapse_cue: bool) -> str:
+    text = " ".join(str(lead.get("presentation_reason_sentence") or "").strip().split())
+    if not text:
+        text = _reason_chip_label(lead)
+    collapse_count = int(lead.get("presentation_collapsed_hidden_count") or 0)
+    if include_collapse_cue and collapse_count > 0:
+        cue = f"{collapse_count} similar signals collapsed"
+        if text:
+            return f"{text} {cue}."
+        return cue
+    return text
+
+
+def _top_picks_html(rows: list[dict[str, Any]], heading: str) -> str:
+    if not rows:
+        return ""
+    parts = [
+        '<div style="background-color:#f8fafc; padding:12px; border-radius:6px; margin:12px 0;">',
+        f"<p style=\"margin:0 0 8px 0;\"><strong>{html_lib.escape(heading)}</strong></p>",
+        '<ul style="margin:0; padding-left:18px;">',
+    ]
+    for lead in rows:
+        company = html_lib.escape(str(lead.get("establishment_name") or "Unknown").strip() or "Unknown")
+        city = html_lib.escape(str(lead.get("site_city") or "").strip())
+        state = html_lib.escape(str(lead.get("site_state") or "").strip())
+        location = ", ".join([part for part in [city, state] if part])
+        location_html = f" ({location})" if location else ""
+        reason = html_lib.escape(_presentation_reason_label(lead, include_collapse_cue=False))
+        parts.append(f"<li><strong>{company}</strong>{location_html}: {reason}</li>")
+    parts.extend(["</ul>", "</div>"])
+    return "\n".join(parts)
+
+
+def _top_picks_text(rows: list[dict[str, Any]], heading: str) -> list[str]:
+    if not rows:
+        return []
+    lines = [heading + ":"]
+    for lead in rows:
+        company = str(lead.get("establishment_name") or "Unknown").strip() or "Unknown"
+        city = str(lead.get("site_city") or "").strip()
+        state = str(lead.get("site_state") or "").strip()
+        location = ", ".join([part for part in [city, state] if part])
+        reason = _presentation_reason_label(lead, include_collapse_cue=False)
+        if location:
+            lines.append(f"- {company} ({location}) | {reason}")
+        else:
+            lines.append(f"- {company} | {reason}")
+    return lines
 
 
 def _tier_counts(leads: list[dict]) -> dict[str, int]:
@@ -706,20 +749,47 @@ def compute_digest_hash(
     territory_code: str | None,
     content_filter: str,
     include_low_fallback: bool,
+    render_sections: dict[str, list[dict[str, Any]]] | None = None,
 ) -> str:
-    """Stable digest hash over normalized lead identifiers and config flags."""
+    """Stable digest hash over normalized presentation identifiers and config flags."""
     def _lead_id(lead: dict) -> str:
         return str(lead.get("lead_key") or lead.get("activity_nr") or lead.get("lead_id") or "").strip()
+
+    def _section_payload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for row in list(rows or []):
+            out.append(
+                {
+                    "representative_key": str(
+                        row.get("presentation_representative_key") or _lead_id(row)
+                    ).strip(),
+                    "collapsed_member_keys": sorted(
+                        [
+                            str(key).strip()
+                            for key in list(row.get("presentation_collapsed_member_keys") or [])
+                            if str(key).strip()
+                        ]
+                    ),
+                    "top_pick_rank": int(row.get("presentation_top_pick_rank") or 0),
+                    "reason_sentence": " ".join(str(row.get("presentation_reason_sentence") or "").split()),
+                }
+            )
+        return out
 
     main_ids = sorted([_lead_id(lead) for lead in leads if _lead_id(lead)])
     low_ids = sorted([_lead_id(lead) for lead in low_fallback if _lead_id(lead)])
     payload = {
+        "render_version": "digest_intelligence_v1",
         "mode": mode,
         "territory": territory_code or "",
         "content_filter": content_filter,
         "include_low_fallback": bool(include_low_fallback),
         "leads": main_ids,
         "low_fallback": low_ids,
+        "render_sections": {
+            str(section or ""): _section_payload(rows)
+            for section, rows in sorted(dict(render_sections or {}).items())
+        },
     }
     blob = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
@@ -824,6 +894,83 @@ def _selected_lead_keys_for_payload(
     return selected
 
 
+def _presentation_rows_payload(rows: list[dict[str, Any]], section_name: str) -> list[dict[str, Any]]:
+    payload_rows: list[dict[str, Any]] = []
+    for row in list(rows or []):
+        representative_key = str(row.get("presentation_representative_key") or _lead_key(row)).strip()
+        payload_rows.append(
+            {
+                "section": str(section_name or "").strip(),
+                "lead_key": _lead_key(row),
+                "presentation_representative_key": representative_key,
+                "presentation_collapsed_member_keys": sorted(
+                    [
+                        str(key).strip()
+                        for key in list(row.get("presentation_collapsed_member_keys") or [])
+                        if str(key).strip()
+                    ]
+                ),
+                "presentation_collapsed_hidden_count": int(row.get("presentation_collapsed_hidden_count") or 0),
+                "presentation_top_pick_rank": (
+                    int(row.get("presentation_top_pick_rank"))
+                    if row.get("presentation_top_pick_rank") is not None
+                    else None
+                ),
+                "presentation_reason_sentence": " ".join(str(row.get("presentation_reason_sentence") or "").split()) or None,
+            }
+        )
+    return payload_rows
+
+
+def _presentation_metadata_maps(
+    sections: dict[str, list[dict[str, Any]]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    visible_meta: dict[str, dict[str, Any]] = {}
+    hidden_rep_map: dict[str, str] = {}
+    for section_name, rows in dict(sections or {}).items():
+        for row in list(rows or []):
+            representative_key = str(row.get("presentation_representative_key") or _lead_key(row)).strip()
+            if not representative_key:
+                continue
+            visible_meta[representative_key] = {
+                "section": str(section_name or "").strip(),
+                "presentation_representative_key": representative_key,
+                "presentation_collapsed_member_keys": sorted(
+                    [
+                        str(key).strip()
+                        for key in list(row.get("presentation_collapsed_member_keys") or [])
+                        if str(key).strip()
+                    ]
+                ),
+                "presentation_collapsed_hidden_count": int(row.get("presentation_collapsed_hidden_count") or 0),
+                "presentation_top_pick_rank": (
+                    int(row.get("presentation_top_pick_rank"))
+                    if row.get("presentation_top_pick_rank") is not None
+                    else None
+                ),
+                "presentation_reason_sentence": " ".join(str(row.get("presentation_reason_sentence") or "").split()) or None,
+            }
+            for hidden_key in list(row.get("presentation_collapsed_member_keys") or []):
+                hidden = str(hidden_key).strip()
+                if hidden:
+                    hidden_rep_map[hidden] = representative_key
+    return visible_meta, hidden_rep_map
+
+
+def _sync_rendered_top_pick_ranks(
+    rows: list[dict[str, Any]],
+    top_pick_rows: list[dict[str, Any]],
+) -> None:
+    rank_by_key: dict[str, int] = {}
+    for rank, row in enumerate(list(top_pick_rows or []), start=1):
+        key = str(row.get("presentation_representative_key") or _lead_key(row)).strip()
+        if key:
+            rank_by_key[key] = rank
+    for row in list(rows or []):
+        key = str(row.get("presentation_representative_key") or _lead_key(row)).strip()
+        row["presentation_top_pick_rank"] = rank_by_key.get(key)
+
+
 def _lead_key(lead: dict[str, Any]) -> str:
     return str(lead.get("lead_key") or lead.get("activity_nr") or lead.get("lead_id") or "").strip()
 
@@ -859,6 +1006,8 @@ def _write_digest_audit_artifact(
     shown_keys: set[str],
     include_lows_pref: bool,
     content_filter: str,
+    presentation_visible_meta: dict[str, dict[str, Any]] | None = None,
+    presentation_hidden_rep_map: dict[str, str] | None = None,
 ) -> tuple[str, int, int, int]:
     out_dir = _digest_audit_artifact_dir(
         subscriber_key=subscriber_key,
@@ -873,6 +1022,8 @@ def _write_digest_audit_artifact(
     mode = normalize_content_filter(content_filter)
     hidden_low_total = 0
     shown_total = 0
+    visible_meta = dict(presentation_visible_meta or {})
+    hidden_rep_map = dict(presentation_hidden_rep_map or {})
     with open(out_path, "w", encoding="utf-8", newline="") as fh:
         for lead in candidate_rows:
             key = _lead_key(lead)
@@ -880,10 +1031,26 @@ def _write_digest_audit_artifact(
             if shown:
                 shown_total += 1
             hidden_reason = "empty"
-            if (not shown) and _lead_effective_priority(lead) == "LOW" and (not include_lows_pref) and mode != "all":
+            if (not shown) and key and key in hidden_rep_map:
+                hidden_reason = "presentation_collapsed"
+            elif (not shown) and _lead_effective_priority(lead) == "LOW" and (not include_lows_pref) and mode != "all":
                 hidden_reason = "low_hidden_pref_off"
                 hidden_low_total += 1
             ai_priority = str(lead.get("ai_priority") or "").strip().upper()
+            presentation_meta = visible_meta.get(key or "")
+            representative_key = None
+            collapsed_member_keys = None
+            collapsed_hidden_count = None
+            top_pick_rank = None
+            reason_sentence = None
+            if presentation_meta:
+                representative_key = presentation_meta.get("presentation_representative_key")
+                collapsed_member_keys = presentation_meta.get("presentation_collapsed_member_keys")
+                collapsed_hidden_count = presentation_meta.get("presentation_collapsed_hidden_count")
+                top_pick_rank = presentation_meta.get("presentation_top_pick_rank")
+                reason_sentence = presentation_meta.get("presentation_reason_sentence")
+            elif key and key in hidden_rep_map:
+                representative_key = hidden_rep_map.get(key)
             row = {
                 "subscriber_key": str(subscriber_key or customer_id or "").strip().lower(),
                 "recipient_email": str(recipient_email or "").strip().lower(),
@@ -900,6 +1067,11 @@ def _write_digest_audit_artifact(
                 "shown_in_email": bool(shown),
                 "hidden_reason": hidden_reason,
                 "ai_reason": str(lead.get("ai_reason") or "").strip() or None,
+                "presentation_representative_key": representative_key,
+                "presentation_collapsed_member_keys": collapsed_member_keys,
+                "presentation_collapsed_hidden_count": collapsed_hidden_count,
+                "presentation_top_pick_rank": top_pick_rank,
+                "presentation_reason_sentence": reason_sentence,
             }
             fh.write(json.dumps(row, separators=(",", ":"), sort_keys=True) + "\n")
     resolved = str(out_path.resolve(strict=False))
@@ -2598,7 +2770,7 @@ def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, 
         event_date = lead.get("date_opened") or "-"
         observed = _observed_timestamp(lead, tz)
         priority = _priority_label_from_value(_lead_effective_priority(lead))
-        reason_chip = _reason_chip_label(lead)
+        reason_chip = _presentation_reason_label(lead, include_collapse_cue=True)
         url = lead.get("source_url") or "#"
         company_html = f'<a href="{url}">{company}</a>' if url and url != "#" else company
         if include_area_office:
@@ -2672,6 +2844,10 @@ def generate_digest_html(
     state_summary_states: list[str] | None = None,
     state_summary_counts: dict[str, int] | None = None,
     hidden_low_state_counts: dict[str, int] | None = None,
+    render_rows: list[dict] | None = None,
+    intro_summary_html: str | None = None,
+    top_pick_rows: list[dict] | None = None,
+    top_pick_heading: str | None = None,
     tz: ZoneInfo | None = None,
 ) -> str:
     states = config["states"]
@@ -2686,14 +2862,16 @@ def generate_digest_html(
         summary_states,
         state_counts,
     )
-    main_limit = min(10, top_k_overall)
-    main_rows = leads[:main_limit]
-    include_area_office_main = any((lead.get("area_office") or "").strip() for lead in main_rows)
-    include_area_office_all = any((lead.get("area_office") or "").strip() for lead in leads)
+    display_rows = list(render_rows if render_rows is not None else leads)
+    include_area_office_all = any((lead.get("area_office") or "").strip() for lead in display_rows)
     summary_line = summary_label or f"{len(leads)} signals"
-    preheader = _build_preheader(leads)
+    show_limit = len(display_rows) if signals_limit is None else max(0, int(signals_limit))
+    shown_rows = display_rows[:show_limit]
+    include_area_office_main = any((lead.get("area_office") or "").strip() for lead in shown_rows)
+    preheader = _build_preheader(list(top_pick_rows or []) or shown_rows or display_rows or leads)
     tz = tz or ZoneInfo("America/Chicago")
     low_priority = low_priority or []
+    top_pick_rows = list(top_pick_rows or [])
     if not include_lows:
         # Ensure low-priority rows are never present in the HTML unless the preference is enabled.
         low_priority = []
@@ -2838,16 +3016,26 @@ def generate_digest_html(
         else:
             html.append(f"<p style=\"color: #555;\">{coverage_line}</p>")
 
+    if intro_summary_html:
+        html.append(
+            "<div style=\"background-color:#fff7ed; padding:12px; border-radius:6px; margin:12px 0;\">"
+            f"<p style=\"margin:0; color:#7c2d12;\">{intro_summary_html}</p>"
+            "</div>"
+        )
+    if top_pick_rows and top_pick_heading:
+        html.append(_top_picks_html(top_pick_rows, top_pick_heading))
+
     if len(leads) == 0 and mode == "daily":
         territory_text = territory_label or "/".join(states)
-        if report_label:
-            html.append(
-                f"<p><strong>No OSHA activity signals found in the starter snapshot window for {territory_text}.</strong></p>"
-            )
-        else:
-            html.append(
-                f"<p><strong>No new OSHA activity signals since last send for {territory_text}.</strong></p>"
-            )
+        if not intro_summary_html:
+            if report_label:
+                html.append(
+                    f"<p><strong>No OSHA activity signals found in the starter snapshot window for {territory_text}.</strong></p>"
+                )
+            else:
+                html.append(
+                    f"<p><strong>No new OSHA activity signals since last send for {territory_text}.</strong></p>"
+                )
         if include_low_fallback and low_fallback:
             html.append(f"<h2>Low Signals (Fallback) - Top {len(low_fallback)}</h2>")
             html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all, tz))
@@ -2857,10 +3045,8 @@ def generate_digest_html(
             html.append(_lead_rows_html(low_priority, len(low_priority), include_area_office_low, tz))
     else:
         html.append("<h2>Signals</h2>")
-        show_limit = len(leads) if signals_limit is None else max(0, int(signals_limit))
-        shown = leads[:show_limit]
-        html.append(_lead_rows_html(shown, len(shown), include_area_office_main, tz))
-        if len(shown) < len(leads):
+        html.append(_lead_rows_html(shown_rows, len(shown_rows), include_area_office_main, tz))
+        if len(shown_rows) < len(display_rows):
             html.append(
                 "<p style=\"margin: 14px 0 0 0; color: #555; font-size: 12px;\">"
                 "More signals available. Some were omitted to keep this email under Gmail clipping limits. "
@@ -2960,6 +3146,10 @@ def generate_digest_text(
     state_summary_states: list[str] | None = None,
     state_summary_counts: dict[str, int] | None = None,
     hidden_low_state_counts: dict[str, int] | None = None,
+    render_rows: list[dict] | None = None,
+    intro_summary_text: str | None = None,
+    top_pick_rows: list[dict] | None = None,
+    top_pick_heading: str | None = None,
     tz: ZoneInfo | None = None,
 ) -> str:
     states = config["states"]
@@ -2971,13 +3161,15 @@ def generate_digest_text(
         summary_states,
         state_counts,
     )
-    main_limit = min(10, config.get("top_k_overall", 25))
-    main_rows = leads[:main_limit]
+    display_rows = list(render_rows if render_rows is not None else leads)
+    show_limit = len(display_rows) if signals_limit is None else max(0, int(signals_limit))
+    main_rows = display_rows[:show_limit]
     include_area_office_main = any((lead.get("area_office") or "").strip() for lead in main_rows)
-    include_area_office_all = any((lead.get("area_office") or "").strip() for lead in leads)
+    include_area_office_all = any((lead.get("area_office") or "").strip() for lead in display_rows)
     summary_line = summary_label or f"{len(leads)} signals"
     tz = tz or ZoneInfo("America/Chicago")
     low_priority = low_priority or []
+    top_pick_rows = list(top_pick_rows or [])
     if not include_lows:
         low_priority = []
 
@@ -3052,13 +3244,20 @@ def generate_digest_text(
         else:
             lines.append(coverage_line)
 
+    if intro_summary_text:
+        lines.append(intro_summary_text)
+    if top_pick_rows and top_pick_heading:
+        lines.append("")
+        lines.extend(_top_picks_text(top_pick_rows, top_pick_heading))
+
     if len(leads) == 0 and mode == "daily":
         territory_text = territory_label or "/".join(states)
         lines.append("")
-        if report_label:
-            lines.append(f"No OSHA activity signals found in the starter snapshot window for {territory_text}.")
-        else:
-            lines.append(f"No new OSHA activity signals since last send for {territory_text}.")
+        if not intro_summary_text:
+            if report_label:
+                lines.append(f"No OSHA activity signals found in the starter snapshot window for {territory_text}.")
+            else:
+                lines.append(f"No new OSHA activity signals since last send for {territory_text}.")
         if include_low_fallback and low_fallback:
             lines.append("")
             lines.append("Low Signals (Fallback):")
@@ -3124,15 +3323,14 @@ def generate_digest_text(
                 location_line += f" | Area Office: {(lead.get('area_office') or '-')}"
             lines.append(location_line)
             lines.append(
-                f"  Priority: {priority} | Why: {_reason_chip_label(lead)} | Signal: {(lead.get('inspection_type') or '-')}"
+                f"  Priority: {priority} | Why: {_presentation_reason_label(lead, include_collapse_cue=True)} | Signal: {(lead.get('inspection_type') or '-')}"
             )
             lines.append(
                 f"  Observed: {_observed_timestamp(lead, tz)} | Event date: {(lead.get('date_opened') or '-')}"
             )
             lines.append(f"  {(lead.get('source_url') or '#')}")
 
-        show_limit = len(leads) if signals_limit is None else max(0, int(signals_limit))
-        if show_limit < len(leads):
+        if show_limit < len(display_rows):
             lines.append("")
             lines.append(
                 "More signals available. Some were omitted to keep this email short. "
@@ -3917,6 +4115,13 @@ def main() -> None:
         summary_label = f"{len(leads)} signals"
 
     low_available_today = int(tier_counts.get("low", 0)) if isinstance(tier_counts, dict) else 0
+    prefs_territory = (territory_code or "").strip()
+    include_lows_pref_resolved = False
+    if args.mode == "daily" and prefs_territory:
+        try:
+            include_lows_pref_resolved = bool(fetch_lows_enabled_pref(subscriber_key, prefs_territory))
+        except Exception:
+            include_lows_pref_resolved = False
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     run_diagnostics_path = os.path.join(args.output_dir, "run_diagnostics.jsonl")
@@ -3985,13 +4190,87 @@ def main() -> None:
     else:
         subject = f"{location_label} OSHA Signals - {gen_date} ({len(leads)} signals)"
 
+    configured_state_order = _normalize_state_codes(list(territory_states or states))
+    if not configured_state_order:
+        configured_state_order = sorted(_normalize_state_codes(list(states or [])))
+    digest_candidate_rows = list(all_leads_deduped if args.mode == "daily" else leads)
+    state_summary_counts = _state_counts_for_rows(leads, configured_state_order)
+
+    main_section_kind = "starter_snapshot" if snapshot_mode else "daily_new"
+    main_presentation = scoring_digest_intelligence.build_digest_presentation(
+        list(leads or []),
+        section_kind=main_section_kind,
+    )
+    main_render_rows = list(main_presentation.get("visible_rows") or [])
+
+    snapshot_rows = None
+    snapshot_total = None
+    snapshot_presentation: dict[str, Any] | None = None
+    if snapshot_label and snapshot_all_0_new is not None and snapshot_limit_0_new is not None:
+        snapshot_rows_raw, snapshot_total = _select_snapshot_rows(
+            snapshot_all_0_new,
+            include_lows=include_lows_pref_resolved,
+            medium_min=medium_min,
+            limit=int(snapshot_limit_0_new),
+        )
+        snapshot_presentation = scoring_digest_intelligence.build_digest_presentation(
+            list(snapshot_rows_raw or []),
+            section_kind="snapshot_not_new",
+        )
+        snapshot_rows = list(snapshot_presentation.get("visible_rows") or [])
+
+    low_priority_shown: list[dict] = []
+    low_priority_presentation: dict[str, Any] | None = None
+    if include_lows_pref_resolved and content_filter not in {"all", "low"}:
+        try:
+            low_limit = int(config.get("low_signals_limit", os.getenv("LOW_SIGNALS_LIMIT", "8")))
+        except Exception:
+            low_limit = 8
+        low_limit = max(0, min(25, int(low_limit)))
+        low_sorted = _sort_leads_for_digest(list(low_priority_all or []))
+        low_priority_source = low_sorted[:low_limit]
+        low_priority_presentation = scoring_digest_intelligence.build_digest_presentation(
+            list(low_priority_source or []),
+            section_kind="low_section",
+            top_pick_limit=0,
+        )
+        low_priority_shown = list(low_priority_presentation.get("visible_rows") or [])
+
+    low_fallback_render = list(low_fallback or [])
+    low_fallback_presentation: dict[str, Any] | None = None
+    if include_low_fallback and low_fallback_render:
+        low_fallback_presentation = scoring_digest_intelligence.build_digest_presentation(
+            list(low_fallback_render or []),
+            section_kind="low_section",
+            top_pick_limit=0,
+        )
+        low_fallback_render = list(low_fallback_presentation.get("visible_rows") or [])
+
+    chosen_intro = main_presentation
+    if (not main_render_rows) and snapshot_presentation and snapshot_rows:
+        chosen_intro = snapshot_presentation
+    intro_summary_text = str(chosen_intro.get("intro_text") or "").strip() or None
+    intro_summary_html = str(chosen_intro.get("intro_html") or "").strip() or None
+    top_pick_rows = list(chosen_intro.get("top_picks") or [])
+    top_pick_heading = str(chosen_intro.get("top_pick_heading") or "").strip() or None
+    top_pick_limit = len(top_pick_rows)
+
+    render_sections_for_hash: dict[str, list[dict[str, Any]]] = {"main": main_render_rows}
+    if low_priority_shown:
+        render_sections_for_hash["low_priority"] = low_priority_shown
+    if include_low_fallback and low_fallback_render:
+        render_sections_for_hash["low_fallback"] = low_fallback_render
+    if snapshot_rows is not None:
+        render_sections_for_hash["snapshot"] = list(snapshot_rows or [])
+
     digest_hash = compute_digest_hash(
-        leads=leads,
-        low_fallback=low_fallback,
+        leads=main_render_rows,
+        low_fallback=low_fallback_render,
         mode=args.mode,
         territory_code=territory_code,
         content_filter=content_filter,
         include_low_fallback=include_low_fallback,
+        render_sections=render_sections_for_hash,
     )
     territory_date = gen_date
     duplicate_skip = False
@@ -4117,8 +4396,6 @@ def main() -> None:
     suppressed_count = 0
     pilot_skipped_count = 0
     suppressed_emails: list[str] = []
-    # Prefs endpoints are territory-scoped; don't render prefs links for state-scoped configs.
-    prefs_territory = (territory_code or "").strip()
 
     prefs_checked = False
     prefs_ok = True
@@ -4145,12 +4422,6 @@ def main() -> None:
             if not prefs_ok:
                 print(f"PREFS_LINKS_DISABLED detail={prefs_detail}")
                 os.environ["PREFS_LINKS_DISABLED"] = "1"
-
-    configured_state_order = _normalize_state_codes(list(territory_states or states))
-    if not configured_state_order:
-        configured_state_order = sorted(_normalize_state_codes(list(states or [])))
-    digest_candidate_rows = list(all_leads_deduped if args.mode == "daily" else leads)
-    state_summary_counts = _state_counts_for_rows(leads, configured_state_order)
 
     for recipient in recipients:
         if pilot_mode and recipient not in whitelist:
@@ -4217,12 +4488,7 @@ def main() -> None:
             dry_run=args.dry_run,
         )
 
-        include_lows_pref = False
-        if args.mode == "daily" and prefs_territory:
-            try:
-                include_lows_pref = bool(fetch_lows_enabled_pref(subscriber_key, prefs_territory))
-            except Exception:
-                include_lows_pref = False
+        include_lows_pref = bool(include_lows_pref_resolved)
 
         enable_lows_url = None
         disable_lows_url = None
@@ -4272,18 +4538,6 @@ def main() -> None:
                                     "PREFS_LINK_BUILT host=unsub.microflowops.com path=/prefs/enable_lows "
                                     "query=token,subscriber_key,territory_code"
                                 )
-
-        # Per-recipient snapshot rows (0-new fallback): include lows only when enabled.
-        snapshot_rows = None
-        snapshot_total = None
-        if snapshot_label and snapshot_all_0_new is not None and snapshot_limit_0_new is not None:
-            snapshot_rows, snapshot_total = _select_snapshot_rows(
-                snapshot_all_0_new,
-                include_lows=include_lows_pref,
-                medium_min=medium_min,
-                limit=int(snapshot_limit_0_new),
-            )
-
         if args.mode == "daily" and tier_counts is not None and content_filter not in {"all", "low"}:
             low_today = int(low_available_today)
             print(
@@ -4312,32 +4566,24 @@ def main() -> None:
 
         # Initial signals display cap for HTML (guardrailed below by EMAIL_HTML_TARGET_BYTES/HARD_CAP).
         signals_limit = None
-        if leads:
+        if main_render_rows:
             try:
                 cap = int(config.get("top_k_overall", 25))
             except Exception:
                 cap = 25
             cap = max(1, cap)
-            signals_limit = min(len(leads), cap)
-
-        low_priority_shown: list[dict] = []
-        if include_lows_pref and content_filter not in {"all", "low"}:
-            try:
-                low_limit = int(config.get("low_signals_limit", os.getenv("LOW_SIGNALS_LIMIT", "8")))
-            except Exception:
-                low_limit = 8
-            low_limit = max(0, min(25, int(low_limit)))
-            low_sorted = _sort_leads_for_digest(list(low_priority_all or []))
-            low_priority_shown = low_sorted[:low_limit]
+            signals_limit = min(len(main_render_rows), cap)
 
         hidden_low_state_counts: dict[str, int] = {}
         if args.mode == "daily" and (not include_lows_pref) and content_filter not in {"all", "low"}:
             hidden_low_rows = [row for row in digest_candidate_rows if _lead_effective_priority(row) == "LOW"]
             hidden_low_state_counts = _state_counts_for_rows(hidden_low_rows, configured_state_order)
 
+        current_top_pick_rows = list(top_pick_rows[:top_pick_limit])
+
         html_body = generate_digest_html(
             leads=leads,
-            low_fallback=low_fallback,
+            low_fallback=low_fallback_render,
             config=config,
             gen_date=gen_date,
             mode=args.mode,
@@ -4367,13 +4613,17 @@ def main() -> None:
             state_summary_states=configured_state_order,
             state_summary_counts=state_summary_counts,
             hidden_low_state_counts=hidden_low_state_counts,
+            render_rows=main_render_rows,
+            intro_summary_html=intro_summary_html,
+            top_pick_rows=current_top_pick_rows,
+            top_pick_heading=top_pick_heading,
             tz=tz,
         )
 
         # Measure and guardrail HTML size to avoid Gmail clipping (~102KB).
         html_bytes = _html_bytes(html_body)
         print(f"EMAIL_HTML_BYTES recipient={recipient} bytes={html_bytes}")
-        if leads and signals_limit and html_bytes > EMAIL_HTML_TARGET_BYTES and signals_limit > 1:
+        if main_render_rows and signals_limit and html_bytes > EMAIL_HTML_TARGET_BYTES and signals_limit > 1:
             lo = 1
             hi = signals_limit
             best_limit = None
@@ -4383,7 +4633,7 @@ def main() -> None:
                 mid = (lo + hi) // 2
                 candidate = generate_digest_html(
                     leads=leads,
-                    low_fallback=low_fallback,
+                    low_fallback=low_fallback_render,
                     config=config,
                     gen_date=gen_date,
                     mode=args.mode,
@@ -4413,6 +4663,10 @@ def main() -> None:
                     state_summary_states=configured_state_order,
                     state_summary_counts=state_summary_counts,
                     hidden_low_state_counts=hidden_low_state_counts,
+                    render_rows=main_render_rows,
+                    intro_summary_html=intro_summary_html,
+                    top_pick_rows=current_top_pick_rows,
+                    top_pick_heading=top_pick_heading,
                     tz=tz,
                 )
                 b = _html_bytes(candidate)
@@ -4428,7 +4682,7 @@ def main() -> None:
                 best_limit = 1
                 best_html = generate_digest_html(
                     leads=leads,
-                    low_fallback=low_fallback,
+                    low_fallback=low_fallback_render,
                     config=config,
                     gen_date=gen_date,
                     mode=args.mode,
@@ -4458,6 +4712,10 @@ def main() -> None:
                     state_summary_states=configured_state_order,
                     state_summary_counts=state_summary_counts,
                     hidden_low_state_counts=hidden_low_state_counts,
+                    render_rows=main_render_rows,
+                    intro_summary_html=intro_summary_html,
+                    top_pick_rows=current_top_pick_rows,
+                    top_pick_heading=top_pick_heading,
                     tz=tz,
                 )
                 best_bytes = _html_bytes(best_html)
@@ -4467,18 +4725,62 @@ def main() -> None:
             signals_limit = int(best_limit)
             print(
                 "EMAIL_HTML_TRUNCATED "
-                f"recipient={recipient} shown={best_limit} total={len(leads)} bytes={html_bytes} "
+                f"recipient={recipient} shown={best_limit} total={len(main_render_rows)} bytes={html_bytes} "
                 f"target={EMAIL_HTML_TARGET_BYTES} hard_cap={EMAIL_HTML_HARD_CAP_BYTES}"
             )
 
-        if leads and signals_limit and html_bytes > EMAIL_HTML_HARD_CAP_BYTES:
+        if html_bytes > EMAIL_HTML_TARGET_BYTES and len(top_pick_rows) > 3:
+            while html_bytes > EMAIL_HTML_TARGET_BYTES and top_pick_limit > 3:
+                top_pick_limit -= 1
+                current_top_pick_rows = list(top_pick_rows[:top_pick_limit])
+                html_body = generate_digest_html(
+                    leads=leads,
+                    low_fallback=low_fallback_render,
+                    config=config,
+                    gen_date=gen_date,
+                    mode=args.mode,
+                    territory_code=territory_code,
+                    content_filter=content_filter,
+                    include_low_fallback=include_low_fallback,
+                    branding=branding,
+                    tier_counts=render_tier_counts if args.mode == "daily" else None,
+                    low_available_today=low_available_today if args.mode == "daily" else None,
+                    enable_lows_url=enable_lows_url,
+                    disable_lows_url=disable_lows_url,
+                    include_lows=include_lows_pref,
+                    low_priority=low_priority_shown,
+                    signals_limit=signals_limit,
+                    report_label=report_label,
+                    footer_html=footer_html,
+                    summary_label=summary_label,
+                    coverage_line=coverage_line,
+                    health_summary_html=health_summary_html,
+                    snapshot_label=snapshot_label,
+                    snapshot_days=snapshot_days,
+                    snapshot_tier_counts=snapshot_tier_counts,
+                    snapshot_enable_lows_url=snapshot_enable_lows_url,
+                    snapshot_disable_lows_url=snapshot_disable_lows_url,
+                    snapshot_rows=snapshot_rows,
+                    snapshot_total=snapshot_total,
+                    state_summary_states=configured_state_order,
+                    state_summary_counts=state_summary_counts,
+                    hidden_low_state_counts=hidden_low_state_counts,
+                    render_rows=main_render_rows,
+                    intro_summary_html=intro_summary_html,
+                    top_pick_rows=current_top_pick_rows,
+                    top_pick_heading=top_pick_heading,
+                    tz=tz,
+                )
+                html_bytes = _html_bytes(html_body)
+
+        if main_render_rows and signals_limit and html_bytes > EMAIL_HTML_HARD_CAP_BYTES:
             # Hard cap fallback: decrement rows until under cap.
             limit = int(signals_limit)
             while limit > 1 and html_bytes > EMAIL_HTML_HARD_CAP_BYTES:
                 limit -= 1
                 html_body = generate_digest_html(
                     leads=leads,
-                    low_fallback=low_fallback,
+                    low_fallback=low_fallback_render,
                     config=config,
                     gen_date=gen_date,
                     mode=args.mode,
@@ -4508,15 +4810,23 @@ def main() -> None:
                     state_summary_states=configured_state_order,
                     state_summary_counts=state_summary_counts,
                     hidden_low_state_counts=hidden_low_state_counts,
+                    render_rows=main_render_rows,
+                    intro_summary_html=intro_summary_html,
+                    top_pick_rows=current_top_pick_rows,
+                    top_pick_heading=top_pick_heading,
                     tz=tz,
                 )
                 html_bytes = _html_bytes(html_body)
             signals_limit = int(limit)
             if html_bytes > EMAIL_HTML_HARD_CAP_BYTES:
                 logger.warning("EMAIL_HTML_HARD_CAP_EXCEEDED bytes=%d recipient=%s", html_bytes, recipient)
+        _sync_rendered_top_pick_ranks(main_render_rows, current_top_pick_rows)
+        _sync_rendered_top_pick_ranks(low_priority_shown, [])
+        _sync_rendered_top_pick_ranks(low_fallback_render, [])
+        _sync_rendered_top_pick_ranks(snapshot_rows or [], current_top_pick_rows if not main_render_rows else [])
         text_body = generate_digest_text(
             leads=leads,
-            low_fallback=low_fallback,
+            low_fallback=low_fallback_render,
             config=config,
             gen_date=gen_date,
             mode=args.mode,
@@ -4546,13 +4856,18 @@ def main() -> None:
             state_summary_states=configured_state_order,
             state_summary_counts=state_summary_counts,
             hidden_low_state_counts=hidden_low_state_counts,
+            render_rows=main_render_rows,
+            intro_summary_text=intro_summary_text,
+            top_pick_rows=current_top_pick_rows,
+            top_pick_heading=top_pick_heading,
             tz=tz,
         )
 
         if args.mode == "daily":
-            shown_limit = len(leads) if signals_limit is None else max(0, int(signals_limit))
+            shown_limit = len(main_render_rows) if signals_limit is None else max(0, int(signals_limit))
             shown_keys: set[str] = set()
-            for row in list(leads or [])[:shown_limit]:
+            shown_main_rows = list(main_render_rows or [])[:shown_limit]
+            for row in shown_main_rows:
                 key = _lead_key(row)
                 if key:
                     shown_keys.add(key)
@@ -4560,11 +4875,34 @@ def main() -> None:
                 key = _lead_key(row)
                 if key:
                     shown_keys.add(key)
-            if include_low_fallback and (not leads):
-                for row in list(low_fallback or []):
+            if include_low_fallback and (not shown_main_rows):
+                for row in list(low_fallback_render or []):
                     key = _lead_key(row)
                     if key:
                         shown_keys.add(key)
+            for row in list(snapshot_rows or []):
+                key = _lead_key(row)
+                if key:
+                    shown_keys.add(key)
+            presentation_sections_for_audit: dict[str, list[dict[str, Any]]] = {
+                "main": shown_main_rows,
+            }
+            if low_priority_shown:
+                presentation_sections_for_audit["low_priority"] = list(low_priority_shown or [])
+            if include_low_fallback and (not shown_main_rows) and low_fallback_render:
+                presentation_sections_for_audit["low_fallback"] = list(low_fallback_render or [])
+            if snapshot_rows:
+                presentation_sections_for_audit["snapshot"] = list(snapshot_rows or [])
+            presentation_visible_meta, presentation_hidden_rep_map = _presentation_metadata_maps(
+                presentation_sections_for_audit
+            )
+            audit_candidate_rows = list(digest_candidate_rows or [])
+            audit_seen_keys = {_lead_key(row) for row in audit_candidate_rows if _lead_key(row)}
+            for extra_row in list(snapshot_rows or []):
+                extra_key = _lead_key(extra_row)
+                if extra_key and extra_key not in audit_seen_keys:
+                    audit_candidate_rows.append(extra_row)
+                    audit_seen_keys.add(extra_key)
             audit_path, audit_total, audit_shown, audit_hidden_low = _write_digest_audit_artifact(
                 subscriber_key=str(subscriber_key or customer_id or ""),
                 customer_id=str(customer_id or ""),
@@ -4573,10 +4911,12 @@ def main() -> None:
                 run_id=crm_send_event_run_id,
                 gen_date=gen_date,
                 trial_subscriber=bool(trial_subscriber),
-                candidates=list(digest_candidate_rows or []),
+                candidates=audit_candidate_rows,
                 shown_keys=shown_keys,
                 include_lows_pref=bool(include_lows_pref),
                 content_filter=str(content_filter or ""),
+                presentation_visible_meta=presentation_visible_meta,
+                presentation_hidden_rep_map=presentation_hidden_rep_map,
             )
             print(f"DIGEST_AUDIT_ARTIFACT_PATH={audit_path}")
             print(f"DIGEST_AUDIT_CANDIDATES_TOTAL={int(audit_total)}")
@@ -4600,13 +4940,19 @@ def main() -> None:
                     "low": int(render_tier_counts.get("low", 0)),
                 }
             selected_keys = _selected_lead_keys_for_payload(
-                leads=leads,
-                low_fallback=low_fallback,
+                leads=shown_main_rows,
+                low_fallback=low_fallback_render,
                 signals_limit=signals_limit,
                 include_lows=bool(include_lows_pref),
                 low_priority_shown=low_priority_shown,
                 snapshot_rows=snapshot_rows,
             )
+            payload_presentation_rows: list[dict[str, Any]] = []
+            payload_presentation_rows.extend(_presentation_rows_payload(shown_main_rows, "main"))
+            payload_presentation_rows.extend(_presentation_rows_payload(low_priority_shown, "low_priority"))
+            if include_low_fallback and (not shown_main_rows):
+                payload_presentation_rows.extend(_presentation_rows_payload(low_fallback_render, "low_fallback"))
+            payload_presentation_rows.extend(_presentation_rows_payload(snapshot_rows or [], "snapshot"))
             low_available_keys: list[str] = []
             for row in list(low_priority_all or []):
                 key = str(row.get("lead_key") or row.get("activity_nr") or row.get("lead_id") or "").strip()
@@ -4621,6 +4967,7 @@ def main() -> None:
                 "tier_counts": payload_tiers,
                 "selected_lead_keys": selected_keys,
                 "low_available_lead_keys": low_available_keys,
+                "presentation_rows": payload_presentation_rows,
                 "subject": subject,
                 "render_sha256": _render_sha256(subject, html_body, text_body),
             }
