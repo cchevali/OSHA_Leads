@@ -37,7 +37,7 @@ $runtimeTickState = Test-RuntimeTickDailySlotAlreadyCompleted `
 $taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
 $runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
 $runId = New-RuntimeRunId -StartLocal $startLocal -StartUtc $startUtc
-$taskLogPath = New-RuntimeTaskLogPath -TaskLogRoot $taskLogDir -WrapperName 'OSHA_Outreach_Auto' -RunId $runId
+$taskLogPath = New-RuntimeTaskLogPath -TaskLogRoot $taskLogDir -WrapperName 'OSHA_Outreach_Auto_SafetyNet' -RunId $runId
 
 New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runSummaryRoot | Out-Null
@@ -87,7 +87,7 @@ Write-TaskLine ("TASK_LOG_PATH=" + $taskLogPath)
 Write-TaskLine ("OUTREACH_EXIT_CODE=" + $outreachExitCode)
 $summaryResult = Write-RuntimeRunSummary `
   -RepoRoot $repoRoot `
-  -WrapperName 'OSHA_Outreach_Auto' `
+  -WrapperName 'OSHA_Outreach_Auto_SafetyNet' `
   -CommandLine $commandInvoked `
   -Mode 'scheduled' `
   -Intent 'send' `

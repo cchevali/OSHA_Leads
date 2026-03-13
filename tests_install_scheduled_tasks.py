@@ -258,6 +258,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("run_prospect_replenish_daily.ps1", text)
         self.assertIn("TASK_REMOVED_LEGACY", text)
         self.assertIn("OSHA_Prospect_Replenish_Daily", text)
+        self.assertIn("OSHA_Outreach_Auto", text)
         self.assertIn("ERR_SCHEDTASK_LEGACY_PRESENT=1", text)
         self.assertIn("ERR_SCHEDTASK_UNMANAGED_OSHA_TASK=1", text)
         self.assertIn("OSHA Wally Trial Daily", text)

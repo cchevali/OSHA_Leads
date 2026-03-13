@@ -37,7 +37,7 @@ $runtimeTickState = Test-RuntimeTickDailySlotAlreadyCompleted `
 $taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
 $runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
 $runId = New-RuntimeRunId -StartLocal $startLocal -StartUtc $startUtc
-$taskLogPath = New-RuntimeTaskLogPath -TaskLogRoot $taskLogDir -WrapperName 'OSHA_Prospect_Replenish_Daily' -RunId $runId
+$taskLogPath = New-RuntimeTaskLogPath -TaskLogRoot $taskLogDir -WrapperName 'OSHA_Prospect_Replenish_SafetyNet' -RunId $runId
 
 New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runSummaryRoot | Out-Null
@@ -87,7 +87,7 @@ Write-TaskLine ("TASK_LOG_PATH=" + $taskLogPath)
 Write-TaskLine ("PROSPECT_REPLENISH_EXIT_CODE=" + $replenishExitCode)
 Write-RuntimeRunSummary `
   -RepoRoot $repoRoot `
-  -WrapperName 'OSHA_Prospect_Replenish_Daily' `
+  -WrapperName 'OSHA_Prospect_Replenish_SafetyNet' `
   -CommandLine $commandInvoked `
   -Mode 'scheduled' `
   -Intent 'write' `

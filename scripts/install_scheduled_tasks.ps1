@@ -558,6 +558,7 @@ function Get-KnownLegacyTaskNames() {
     'OSHA_Prospect_Generation',
     'OSHA_Prospect_Discovery',
     'OSHA_Prospect_Replenish_Daily',
+    'OSHA_Outreach_Auto',
     'OSHA Wally Trial Daily',
     'OSHA_Daily_Pipeline'
   )

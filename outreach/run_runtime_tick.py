@@ -415,14 +415,14 @@ def _parse_iso_local(raw: str) -> datetime | None:
     return parsed
 
 
-def _wrapper_name_for_job(job_name: str) -> str:
+def _wrapper_names_for_job(job_name: str) -> tuple[str, ...]:
     mapping = {
-        "ingest_daily": "OSHA_Osha_Ingest_Daily",
-        "prospect_replenish_daily": "OSHA_Prospect_Replenish_Daily",
-        "outreach_auto": "OSHA_Outreach_Auto",
-        "trial_facs_daily": "OSHA_Trial_FACS_Daily",
+        "ingest_daily": ("OSHA_Osha_Ingest_Daily",),
+        "prospect_replenish_daily": ("OSHA_Prospect_Replenish_SafetyNet", "OSHA_Prospect_Replenish_Daily"),
+        "outreach_auto": ("OSHA_Outreach_Auto_SafetyNet", "OSHA_Outreach_Auto"),
+        "trial_facs_daily": ("OSHA_Trial_FACS_Daily",),
     }
-    return str(mapping.get(str(job_name or "").strip(), "") or "")
+    return tuple(mapping.get(str(job_name or "").strip(), ()) or ())
 
 
 def _artifact_root_candidates(repo_root: Path, data_dir: Path, env: dict[str, str], env_key: str, tail: tuple[str, ...]) -> list[Path]:
@@ -455,7 +455,6 @@ def _run_summary_roots(repo_root: Path, data_dir: Path, env: dict[str, str]) -> 
 def _choose_wrapper_evidence(
     *,
     job_name: str,
-    wrapper_name: str,
     slot_key: str,
     scheduled_local: str,
     summary_payloads: list[dict[str, Any]],
@@ -470,6 +469,9 @@ def _choose_wrapper_evidence(
     successes: list[WrapperRunEvidence] = []
     failures: list[WrapperRunEvidence] = []
     for payload in summary_payloads:
+        payload_wrapper = str(payload.get("wrapper") or "").strip()
+        if not payload_wrapper:
+            continue
         start_local = str(payload.get("start_local") or "").strip()
         end_local = str(payload.get("end_local") or "").strip()
         started_dt = _parse_iso_local(start_local)
@@ -479,7 +481,7 @@ def _choose_wrapper_evidence(
         artifacts = payload.get("artifacts") or {}
         evidence = WrapperRunEvidence(
             job_name=job_name,
-            wrapper_name=wrapper_name,
+            wrapper_name=payload_wrapper,
             slot_key=slot_key,
             start_local=start_local,
             end_local=end_local,
@@ -514,8 +516,8 @@ def _find_wrapper_run_evidence_for_slot(
     slot_key: str,
     scheduled_local: str,
 ) -> WrapperRunEvidence | None:
-    wrapper_name = _wrapper_name_for_job(job_name)
-    if not wrapper_name:
+    wrapper_names = _wrapper_names_for_job(job_name)
+    if not wrapper_names:
         return None
     slot_token = str(slot_key or "").replace("-", "")
     if not slot_token:
@@ -526,18 +528,18 @@ def _find_wrapper_run_evidence_for_slot(
     for root in _run_summary_roots(repo_root, data_dir, env):
         if not root.exists():
             continue
-        for path in sorted(root.glob(f"{wrapper_name}_{slot_token}_*.summary.json")):
-            key = str(path.resolve(strict=False)).lower()
-            if key in seen_paths:
-                continue
-            seen_paths.add(key)
-            payload = _read_json(path)
-            if str(payload.get("wrapper") or "").strip() != wrapper_name:
-                continue
-            summary_payloads.append(payload)
+        for wrapper_name in wrapper_names:
+            for path in sorted(root.glob(f"{wrapper_name}_{slot_token}_*.summary.json")):
+                key = str(path.resolve(strict=False)).lower()
+                if key in seen_paths:
+                    continue
+                seen_paths.add(key)
+                payload = _read_json(path)
+                if str(payload.get("wrapper") or "").strip() not in wrapper_names:
+                    continue
+                summary_payloads.append(payload)
     return _choose_wrapper_evidence(
         job_name=job_name,
-        wrapper_name=wrapper_name,
         slot_key=slot_key,
         scheduled_local=scheduled_local,
         summary_payloads=summary_payloads,

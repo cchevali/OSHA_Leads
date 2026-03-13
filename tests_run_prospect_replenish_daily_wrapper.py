@@ -53,6 +53,7 @@ class TestRunProspectReplenishDailyWrapper(unittest.TestCase):
         self.assertIn("run_prospect_replenish_daily.py", text)
         self.assertIn("runtime_guard.ps1", text)
         self.assertIn("runtime_run_summary.ps1", text)
+        self.assertIn("OSHA_Prospect_Replenish_SafetyNet", text)
         self.assertIn("TASK_LOG_PATH=", text)
         self.assertIn("PROSPECT_REPLENISH_EXIT_CODE=", text)
         self.assertIn("RUN_SUMMARY_JSON_PATH=", text)

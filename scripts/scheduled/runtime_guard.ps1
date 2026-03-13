@@ -258,3 +258,80 @@ function Test-RuntimeTickDailySlotAlreadyCompleted {
     Detail = $detail
   }
 }
+
+function Get-RuntimeTickIntervalSlotKey {
+  param(
+    [Parameter(Mandatory = $true)][datetime]$NowLocal,
+    [Parameter(Mandatory = $true)][int]$IntervalMinutes
+  )
+
+  if ($IntervalMinutes -le 0) {
+    throw 'ERR_RUNTIME_TICK_INTERVAL_INVALID'
+  }
+
+  $slotMinute = [math]::Floor([double]$NowLocal.Minute / [double]$IntervalMinutes) * $IntervalMinutes
+  $slotLocal = [datetime]::new($NowLocal.Year, $NowLocal.Month, $NowLocal.Day, $NowLocal.Hour, [int]$slotMinute, 0, $NowLocal.Kind)
+  return $slotLocal.ToString('yyyy-MM-ddTHH:mm')
+}
+
+function Test-RuntimeTickIntervalSlotAlreadyHandled {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepoRoot,
+    [Parameter(Mandatory = $true)][string]$JobName,
+    [Parameter(Mandatory = $true)][datetime]$NowLocal,
+    [int]$IntervalMinutes = 15,
+    [scriptblock]$EmitLine = $null
+  )
+
+  $dataDir = Resolve-EffectiveDataDir -RepoRoot $RepoRoot
+  $statePath = Join-Path $dataDir ('runtime\\status\\jobs\\' + $JobName + '.json')
+  $slotKey = Get-RuntimeTickIntervalSlotKey -NowLocal $NowLocal -IntervalMinutes $IntervalMinutes
+  if (-not (Test-Path -LiteralPath $statePath)) {
+    return @{
+      Skip = $false
+      SlotKey = $slotKey
+      StatePath = $statePath
+      Detail = 'state_missing'
+      LastResult = ''
+    }
+  }
+
+  try {
+    $raw = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8
+    $state = $raw | ConvertFrom-Json
+  }
+  catch {
+    $detail = 'state_unreadable'
+    if ($EmitLine) {
+      & $EmitLine ('WARN_RUNTIME_TICK_STATE_UNREADABLE job=' + $JobName + ' state_path=' + $statePath + ' detail=' + $detail) | Out-Null
+    }
+    return @{
+      Skip = $false
+      SlotKey = $slotKey
+      StatePath = $statePath
+      Detail = $detail
+      LastResult = ''
+    }
+  }
+
+  $lastSlotKey = ([string]$state.last_slot_key).Trim()
+  $lastResult = ([string]$state.last_result).Trim().ToLowerInvariant()
+  $detail = 'state_present'
+  $skipResults = @('ran', 'reconciled', 'skipped')
+  $skip = ($lastSlotKey -eq $slotKey -and $skipResults -contains $lastResult)
+  if ($skip -and $EmitLine) {
+    $summaryPath = ([string]$state.last_run_summary_json_path).Trim()
+    & $EmitLine (
+      'WRAPPER_RUNTIME_TICK_SKIP job=' + $JobName + ' slot=' + $slotKey + ' last_result=' + $lastResult +
+      ' state_path=' + $statePath + ' summary_json=' + $summaryPath
+    ) | Out-Null
+  }
+
+  return @{
+    Skip = $skip
+    SlotKey = $slotKey
+    StatePath = $statePath
+    Detail = $detail
+    LastResult = $lastResult
+  }
+}

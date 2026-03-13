@@ -374,7 +374,7 @@ class TestRunRuntimeTick(unittest.TestCase):
             data_dir = Path(d)
             self._write_wrapper_summary(
                 data_dir=data_dir,
-                wrapper_name="OSHA_Outreach_Auto",
+                wrapper_name="OSHA_Outreach_Auto_SafetyNet",
                 slot_token="20260309",
                 start_local="2026-03-09T10:30:00-04:00",
                 end_local="2026-03-09T10:35:00-04:00",
@@ -418,7 +418,7 @@ class TestRunRuntimeTick(unittest.TestCase):
             data_dir = Path(d)
             summary_path = self._write_wrapper_summary(
                 data_dir=data_dir,
-                wrapper_name="OSHA_Outreach_Auto",
+                wrapper_name="OSHA_Outreach_Auto_SafetyNet",
                 slot_token="20260309",
                 start_local="2026-03-09T11:30:00-04:00",
                 end_local="2026-03-09T11:35:00-04:00",
@@ -462,7 +462,7 @@ class TestRunRuntimeTick(unittest.TestCase):
             data_dir = Path(d)
             self._write_wrapper_summary(
                 data_dir=data_dir,
-                wrapper_name="OSHA_Outreach_Auto",
+                wrapper_name="OSHA_Outreach_Auto_SafetyNet",
                 slot_token="20260309",
                 start_local="2026-03-09T10:30:00-04:00",
                 end_local="2026-03-09T10:31:00-04:00",
@@ -478,6 +478,29 @@ class TestRunRuntimeTick(unittest.TestCase):
             payload = json.loads((Path(d) / "runtime" / "status" / "jobs" / "outreach_auto.json").read_text(encoding="utf-8"))
             self.assertEqual(payload.get("last_result"), "skipped")
             self.assertEqual(payload.get("last_reconciliation_status"), "external_wrapper_failed")
+
+    def test_legacy_wrapper_names_still_reconcile_for_backward_compatibility(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d)
+            self._write_wrapper_summary(
+                data_dir=data_dir,
+                wrapper_name="OSHA_Prospect_Replenish_Daily",
+                slot_token="20260309",
+                start_local="2026-03-09T07:20:00-04:00",
+                end_local="2026-03-09T07:25:00-04:00",
+                exit_code=0,
+            )
+            evidence = tick._find_wrapper_run_evidence_for_slot(
+                repo_root=data_dir,
+                data_dir=data_dir,
+                env={"DATA_DIR": str(data_dir), "MFO_TRUSTED_SCHEDULED": "1"},
+                job_name="prospect_replenish_daily",
+                slot_key="2026-03-09",
+                scheduled_local="2026-03-09T07:15:00-04:00",
+            )
+        self.assertIsNotNone(evidence)
+        assert evidence is not None
+        self.assertEqual(evidence.wrapper_name, "OSHA_Prospect_Replenish_Daily")
 
     def test_weekday_only_skip_persists_state_without_alert_spam(self):
         with (
