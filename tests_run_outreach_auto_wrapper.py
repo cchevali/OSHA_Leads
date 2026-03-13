@@ -42,6 +42,7 @@ class TestRunOutreachAutoWrapper(unittest.TestCase):
         self.assertIn("run_outreach_auto.py", text)
         self.assertIn("runtime_guard.ps1", text)
         self.assertIn("runtime_run_summary.ps1", text)
+        self.assertIn("OSHA_Outreach_Auto_SafetyNet", text)
         self.assertIn("TASK_LOG_PATH=", text)
         self.assertIn("OUTREACH_EXIT_CODE=", text)
         self.assertIn("RUN_SUMMARY_JSON_PATH=", text)

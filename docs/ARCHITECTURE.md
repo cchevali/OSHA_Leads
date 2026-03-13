@@ -19,7 +19,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Runtime guard layer (`runtime_guard.py` + `scripts/scheduled/runtime_guard.ps1`) enforces host/data-root policy before write/send paths.
 - Primary scheduled control plane: GitHub Actions workflows run on a label-pinned self-hosted Windows runner (`self-hosted`, `windows`, `osha-pc-canonical`) on the canonical PC.
 - Primary scheduler entrypoint: `run_runtime_tick.py`, invoked by `.github/workflows/runtime-tick-selfhosted.yml` every 15 minutes and fanning into due jobs by local time.
-- Windows Task Scheduler wrappers are retained only as manual break-glass fallbacks and must not remain enabled in parallel with runtime tick once cutover is complete.
+- Windows Task Scheduler wrappers remain as managed safety-net recovery tasks on the canonical PC; runtime tick stays primary, and duplicate or legacy scheduler entries are treated as drift.
 - Wrappers emit deterministic run summaries (`runtime_run_summary_v1`) plus task logs and optional backup manifests.
 - Runtime tick emits operator alert candidates and sends live SMTP alerts (recipient `RUNTIME_ALERT_RECIPIENT` fallback `OSHA_SMOKE_TO`) for job failures and critical missed morning windows with per-slot dedupe markers under `${DATA_DIR}\runtime\status\alerts\`.
 - Runtime tick persists per-job status for the latest ran/skipped/reconciled slot under `${DATA_DIR}\runtime\status\jobs\*.json` and records external-wrapper reconciliation metadata when break-glass execution is detected.

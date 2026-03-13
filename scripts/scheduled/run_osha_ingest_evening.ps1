@@ -8,10 +8,10 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
 $startLocal = Get-Date
 $startUtc = [datetime]::UtcNow
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
 $runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
-$taskLogPath = Join-Path $taskLogDir ("OSHA_Osha_Ingest_Evening_{0}.log" -f $timestamp)
+$runId = New-RuntimeRunId -StartLocal $startLocal -StartUtc $startUtc
+$taskLogPath = New-RuntimeTaskLogPath -TaskLogRoot $taskLogDir -WrapperName 'OSHA_Osha_Ingest_Evening' -RunId $runId
 
 New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runSummaryRoot | Out-Null
@@ -25,9 +25,7 @@ $preflight = $null
 $commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --scope-mode outreach_plus_trial_live; .\scripts\dump_signals_for_ai_review.ps1 -SinceDays 14"
 
 function Write-TaskLine([string]$Line) {
-  $text = [string]$Line
-  Write-Output $text
-  Add-Content -Path $taskLogPath -Value $text -Encoding UTF8
+  Write-RuntimeTaskLogLine -TaskLogPath $taskLogPath -Line $Line
 }
 
 function Invoke-And-Log([scriptblock]$Invocation) {
@@ -108,6 +106,7 @@ $summaryResult = Write-RuntimeRunSummary `
   -ExitCode $(if ($ingestExitCode -ne 0 -or $dumpExitCode -ne 0) { 1 } else { 0 }) `
   -StartLocal $startLocal `
   -StartUtc $startUtc `
+  -RunId $runId `
   -TaskLogPath $taskLogPath `
   -TaskLogRoot $taskLogDir `
   -RunSummaryRoot $runSummaryRoot `

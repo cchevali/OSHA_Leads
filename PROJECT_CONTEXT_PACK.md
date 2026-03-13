@@ -2,8 +2,8 @@
 
 PACK_GIT_SHA=2c4b22a8b45d606b3579148a1ea48816f13c3425
 PACK_BUILD_UTC=2026-03-12T01:45:31Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=21951886acea22e3152c61f696748e784ae5b77a11989459693417b3dbb190c6 docs/DECISIONS.md=57de77bd96d8df24800db9d1562536f087291c3699961da5058f8b490c50d1c8 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=281561699391ff12dcc18536885675aea85a44d627378f744de48730d98f70c0 docs/TODO.md=542082411548559bf73ec7939766b0358fadc2d387a15613eb3a1b4e7455ce4f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=7f0dd9cc8175c4aa3fea22d65790e8be72752ab189ee39dc07500a99e2f5014b
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=67c75bc3a53f17ef18efdb3c383d443a36ba159a3552f4dc20d30b97c56b110b docs/DECISIONS.md=169cc2fa51cb18ba29cad103cbe457428d8de012571c81b2150a4ccd53003b3b docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=5808c5a2e5952fb7e5dcc74dc0183f0326086c997ee5eb518206fd77c3cb327b docs/TODO.md=542082411548559bf73ec7939766b0358fadc2d387a15613eb3a1b4e7455ce4f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=d167d141eedb1ad0f785fd9641d67d80713e462420fdba6d44d7a3cc6f80f049
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -110,7 +110,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Runtime guard layer (`runtime_guard.py` + `scripts/scheduled/runtime_guard.ps1`) enforces host/data-root policy before write/send paths.
 - Primary scheduled control plane: GitHub Actions workflows run on a label-pinned self-hosted Windows runner (`self-hosted`, `windows`, `osha-pc-canonical`) on the canonical PC.
 - Primary scheduler entrypoint: `run_runtime_tick.py`, invoked by `.github/workflows/runtime-tick-selfhosted.yml` every 15 minutes and fanning into due jobs by local time.
-- Windows Task Scheduler wrappers are retained only as manual break-glass fallbacks and must not remain enabled in parallel with runtime tick once cutover is complete.
+- Windows Task Scheduler wrappers remain as managed safety-net recovery tasks on the canonical PC; runtime tick stays primary, and duplicate or legacy scheduler entries are treated as drift.
 - Wrappers emit deterministic run summaries (`runtime_run_summary_v1`) plus task logs and optional backup manifests.
 - Runtime tick emits operator alert candidates and sends live SMTP alerts (recipient `RUNTIME_ALERT_RECIPIENT` fallback `OSHA_SMOKE_TO`) for job failures and critical missed morning windows with per-slot dedupe markers under `${DATA_DIR}\runtime\status\alerts\`.
 - Runtime tick persists per-job status for the latest ran/skipped/reconciled slot under `${DATA_DIR}\runtime\status\jobs\*.json` and records external-wrapper reconciliation metadata when break-glass execution is detected.
@@ -507,6 +507,7 @@ Operators also needed remote visibility into scheduled outcomes without touching
 
 Date: 2026-03-06
 Status: Accepted
+Amended: 2026-03-13 to allow installer-managed safety-net tasks to remain enabled as secondary recovery rails while runtime tick remains primary.
 
 ### Context
 
@@ -523,8 +524,8 @@ The runtime hardening work introduced a single orchestrator (`run_runtime_tick.p
   - prospect replenishment
   - outreach auto-send
   - FACS daily trial send
-- Keep Windows Task Scheduler wrappers and installers only for manual break-glass recovery on the canonical PC.
-- Do not run Task Scheduler and runtime tick as parallel daily schedulers after cutover.
+- Keep Windows Task Scheduler wrappers and installers as managed safety-net recovery rails on the canonical PC.
+- Do not allow duplicate, legacy, or unmanaged Task Scheduler entries to run in parallel with runtime tick after cutover.
 
 ### Rationale
 
@@ -632,7 +633,7 @@ Runtime model:
 - Canonical PC is the only live writer/sender for `osha.sqlite`, `crm.sqlite`, `crm_light.sqlite`, and live email sends.
 - Laptop/dev clients are limited to `--print-config`, `--doctor`, `--dry-run`, and artifact review.
 - GitHub Actions on the label-pinned self-hosted runner (`self-hosted`, `windows`, `osha-pc-canonical`) is the primary scheduled control plane.
-- Windows Task Scheduler wrappers remain available for manual break-glass recovery only and must not stay enabled as a parallel daily scheduler once runtime tick is live.
+- Windows Task Scheduler wrappers remain available as managed safety-net recovery tasks; runtime tick stays primary, and duplicate or legacy scheduler entries must be removed as drift.
 
 Primary entrypoints:
 
@@ -1864,9 +1865,9 @@ Suppression + bounce alignment:
 
 ### Task Scheduler (Break-Glass Only)
 
-Do not keep Windows Task Scheduler as an active parallel scheduler once `runtime-tick-selfhosted.yml` is live on the canonical runner.
-Use Task Scheduler only for temporary local recovery when GitHub Actions on the canonical PC is unavailable.
-If `run_outreach_auto.py --doctor` prints `WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE`, treat it as a scheduler drift warning and disable the overlapping break-glass tasks after recovery.
+Do not keep duplicate or legacy Windows Task Scheduler entries active once `runtime-tick-selfhosted.yml` is live on the canonical runner.
+Use the managed Task Scheduler entries only as safety-net recovery rails when GitHub Actions on the canonical PC is unavailable or degraded.
+If `run_outreach_auto.py --doctor` prints `WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE`, treat it as a scheduler drift warning and remove the overlapping legacy or unmanaged tasks after recovery.
 
 Break-glass installer commands:
 

@@ -50,6 +50,61 @@ function _Write-TextUtf8NoBom {
   [System.IO.File]::WriteAllText($Path, $Content, $enc)
 }
 
+function _Append-LineUtf8NoBom {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Content
+  )
+  $enc = New-Object System.Text.UTF8Encoding($false)
+  $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+  try {
+    $writer = New-Object System.IO.StreamWriter($stream, $enc)
+    try {
+      $writer.WriteLine($Content)
+      $writer.Flush()
+    }
+    finally {
+      $writer.Dispose()
+    }
+  }
+  finally {
+    $stream.Dispose()
+  }
+}
+
+function New-RuntimeRunId {
+  param(
+    [datetime]$StartLocal,
+    [datetime]$StartUtc
+  )
+  $startLocalDt = if ($StartLocal) { $StartLocal } else { Get-Date }
+  $startUtcDt = if ($StartUtc) { $StartUtc } else { [datetime]::UtcNow }
+  $localStamp = $startLocalDt.ToString('yyyyMMdd_HHmmss_fffffff')
+  $utcStamp = $startUtcDt.ToString('yyyyMMdd_HHmmss_fffffff')
+  $pidValue = [System.Diagnostics.Process]::GetCurrentProcess().Id
+  $entropy = [guid]::NewGuid().ToString('N').Substring(0, 12)
+  return ($localStamp + '_u' + $utcStamp + '_pid' + $pidValue + '_' + $entropy)
+}
+
+function New-RuntimeTaskLogPath {
+  param(
+    [Parameter(Mandatory = $true)][string]$TaskLogRoot,
+    [Parameter(Mandatory = $true)][string]$WrapperName,
+    [Parameter(Mandatory = $true)][string]$RunId
+  )
+  return (Join-Path $TaskLogRoot ($WrapperName + '_' + $RunId + '.log'))
+}
+
+function Write-RuntimeTaskLogLine {
+  param(
+    [Parameter(Mandatory = $true)][string]$TaskLogPath,
+    [Parameter(Mandatory = $true)][string]$Line
+  )
+  $text = [string]$Line
+  Write-Output $text
+  _Append-LineUtf8NoBom -Path $TaskLogPath -Content $text
+}
+
 function _Collect-TokenLists {
   param([string[]]$Lines)
   $pass = New-Object System.Collections.Generic.List[string]
@@ -165,6 +220,7 @@ function Write-RuntimeRunSummary {
     [int]$ExitCode = 0,
     [datetime]$StartLocal,
     [datetime]$StartUtc,
+    [string]$RunId = '',
     [string]$TaskLogPath = '',
     [string]$TaskLogRoot = '',
     [string]$RunSummaryRoot = '',
@@ -192,8 +248,11 @@ function Write-RuntimeRunSummary {
   $tokens = _Collect-TokenLists -Lines $logLines
   $parsed = _Collect-CountsAndArtifacts -Lines $logLines
 
-  $stamp = $startUtcDt.ToString('yyyyMMdd_HHmmss')
-  $baseName = ($WrapperName + '_' + $stamp)
+  $resolvedRunId = ([string]$RunId).Trim()
+  if (-not $resolvedRunId) {
+    $resolvedRunId = New-RuntimeRunId -StartLocal $startLocalDt -StartUtc $startUtcDt
+  }
+  $baseName = ($WrapperName + '_' + $resolvedRunId)
   $summaryJsonPath = Join-Path $resolvedSummaryRoot ($baseName + '.summary.json')
   $summaryTextPath = Join-Path $resolvedSummaryRoot ($baseName + '.summary.txt')
 
@@ -229,6 +288,7 @@ function Write-RuntimeRunSummary {
     end_local = $endLocalDt.ToString('o')
     end_utc = $endUtcDt.ToString('o')
     duration_seconds = [math]::Round(($endUtcDt - $startUtcDt).TotalSeconds, 3)
+    run_id = $resolvedRunId
     exit_code = [int]$ExitCode
     fingerprint = $fingerprintBlock
     tokens = [ordered]@{
