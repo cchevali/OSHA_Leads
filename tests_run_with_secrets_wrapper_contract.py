@@ -13,7 +13,11 @@ class TestRunWithSecretsWrapperContract(unittest.TestCase):
         self.assertTrue(SCRIPT.exists(), msg=f"missing script: {SCRIPT}")
         text = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn("py -3 $contextPackScript --check --soft", text)
+        self.assertIn("Resolve-ContextPackPythonCommand", text)
+        self.assertIn("Resolve-ContextPackPythonExePath", text)
+        self.assertIn("$output = & $python.Exe @pythonArgs 2>&1", text)
+        self.assertIn("'OSHA_Leads\\python\\python.exe'", text)
+        self.assertIn("$env:PYTHON_EXE", text)
         self.assertIn("MFO_CONTEXT_PACK_SOFT_CHECK_DONE", text)
         self.assertIn("WARN_CONTEXT_PACK_SCRIPT_MISSING", text)
         self.assertIn("WARN_CONTEXT_PACK_CHECK_FAILED", text)

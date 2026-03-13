@@ -12,7 +12,7 @@ Runtime model:
 - Canonical PC is the only live writer/sender for `osha.sqlite`, `crm.sqlite`, `crm_light.sqlite`, and live email sends.
 - Laptop/dev clients are limited to `--print-config`, `--doctor`, `--dry-run`, and artifact review.
 - GitHub Actions on the label-pinned self-hosted runner (`self-hosted`, `windows`, `osha-pc-canonical`) is the primary scheduled control plane.
-- Windows Task Scheduler wrappers remain available for manual break-glass recovery only and must not stay enabled as a parallel daily scheduler once runtime tick is live.
+- Windows Task Scheduler wrappers remain available as managed safety-net recovery tasks; runtime tick stays primary, and duplicate or legacy scheduler entries must be removed as drift.
 
 Primary entrypoints:
 
@@ -1244,9 +1244,9 @@ Suppression + bounce alignment:
 
 ### Task Scheduler (Break-Glass Only)
 
-Do not keep Windows Task Scheduler as an active parallel scheduler once `runtime-tick-selfhosted.yml` is live on the canonical runner.
-Use Task Scheduler only for temporary local recovery when GitHub Actions on the canonical PC is unavailable.
-If `run_outreach_auto.py --doctor` prints `WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE`, treat it as a scheduler drift warning and disable the overlapping break-glass tasks after recovery.
+Do not keep duplicate or legacy Windows Task Scheduler entries active once `runtime-tick-selfhosted.yml` is live on the canonical runner.
+Use the managed Task Scheduler entries only as safety-net recovery rails when GitHub Actions on the canonical PC is unavailable or degraded.
+If `run_outreach_auto.py --doctor` prints `WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE`, treat it as a scheduler drift warning and remove the overlapping legacy or unmanaged tasks after recovery.
 
 Break-glass installer commands:
 

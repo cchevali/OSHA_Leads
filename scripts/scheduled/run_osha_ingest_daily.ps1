@@ -33,18 +33,16 @@ $runtimeTickState = Test-RuntimeTickDailySlotAlreadyCompleted `
   -NowLocal $startLocal `
   -EmitLine ${function:Add-BootstrapLine}
 
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
 $runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
-$taskLogPath = Join-Path $taskLogDir ("OSHA_Osha_Ingest_Daily_{0}.log" -f $timestamp)
+$runId = New-RuntimeRunId -StartLocal $startLocal -StartUtc $startUtc
+$taskLogPath = New-RuntimeTaskLogPath -TaskLogRoot $taskLogDir -WrapperName 'OSHA_Osha_Ingest_Daily' -RunId $runId
 
 New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runSummaryRoot | Out-Null
 
 function Write-TaskLine([string]$Line) {
-  $text = [string]$Line
-  Write-Output $text
-  Add-Content -Path $taskLogPath -Value $text -Encoding UTF8
+  Write-RuntimeTaskLogLine -TaskLogPath $taskLogPath -Line $Line
 }
 
 foreach ($line in @($bootstrapLines)) {
@@ -95,6 +93,7 @@ Write-RuntimeRunSummary `
   -ExitCode $ingestExitCode `
   -StartLocal $startLocal `
   -StartUtc $startUtc `
+  -RunId $runId `
   -TaskLogPath $taskLogPath `
   -TaskLogRoot $taskLogDir `
   -RunSummaryRoot $runSummaryRoot `

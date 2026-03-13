@@ -19,7 +19,8 @@ function Invoke-ContextPackSoftCheck {
     return
   }
 
-  if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
+  $python = Resolve-ContextPackPythonCommand
+  if (-not $python) {
     Write-Output "WARN_CONTEXT_PACK_CHECK_FAILED runner_not_found"
     return
   }
@@ -27,7 +28,8 @@ function Invoke-ContextPackSoftCheck {
   $lines = @()
   $exitCode = 0
   try {
-    $output = & py -3 $contextPackScript --check --soft 2>&1
+    $pythonArgs = @($python.ArgsPrefix) + @($contextPackScript, '--check', '--soft')
+    $output = & $python.Exe @pythonArgs 2>&1
     $exitCode = $LASTEXITCODE
     foreach ($line in @($output)) {
       $text = [string]$line
@@ -67,6 +69,100 @@ function Invoke-ContextPackSoftCheck {
       Write-Output $line
     }
   }
+}
+
+function Resolve-ContextPackPythonExePath {
+  $forced = ([string]$env:PYTHON_EXE).Trim()
+  if ($forced -and (Test-Path -LiteralPath $forced)) {
+    try {
+      return (Resolve-Path -LiteralPath $forced).Path
+    }
+    catch {
+      return $forced
+    }
+  }
+
+  $candidates = New-Object System.Collections.Generic.List[string]
+  $localAppData = ([string]$env:LOCALAPPDATA).Trim()
+  $programData = ([string]$env:ProgramData).Trim()
+  if ($programData) {
+    [void]$candidates.Add((Join-Path $programData 'OSHA_Leads\python\python.exe'))
+    [void]$candidates.Add((Join-Path $programData 'OSHA_Leads\Python313\python.exe'))
+  }
+  if ($localAppData) {
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python313\python.exe'))
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python312\python.exe'))
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python311\python.exe'))
+  }
+  if ([string]$env:ProgramFiles) {
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python313\python.exe'))
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python312\python.exe'))
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python311\python.exe'))
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python310\python.exe'))
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python\python.exe'))
+  }
+  if ([string]${env:ProgramFiles(x86)}) {
+    [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python313\python.exe'))
+    [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python312\python.exe'))
+    [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python311\python.exe'))
+  }
+
+  foreach ($candidate in @($candidates)) {
+    if (-not $candidate) {
+      continue
+    }
+    if (Test-Path -LiteralPath $candidate) {
+      try {
+        return (Resolve-Path -LiteralPath $candidate).Path
+      }
+      catch {
+        return $candidate
+      }
+    }
+  }
+
+  $pythonCmd = Get-Command -Name python -ErrorAction SilentlyContinue
+  if ($pythonCmd -and $pythonCmd.Source -and (Test-Path -LiteralPath $pythonCmd.Source)) {
+    try {
+      return (Resolve-Path -LiteralPath $pythonCmd.Source).Path
+    }
+    catch {
+      return $pythonCmd.Source
+    }
+  }
+
+  foreach ($root in @('C:\Users\lever', 'C:\Users\Public')) {
+    $candidate = Join-Path $root 'AppData\Local\Programs\Python\Python313\python.exe'
+    if (Test-Path -LiteralPath $candidate) {
+      try {
+        return (Resolve-Path -LiteralPath $candidate).Path
+      }
+      catch {
+        return $candidate
+      }
+    }
+  }
+
+  return $null
+}
+
+function Resolve-ContextPackPythonCommand {
+  $resolvedExe = Resolve-ContextPackPythonExePath
+  if ($resolvedExe) {
+    return @{
+      Exe = $resolvedExe
+      ArgsPrefix = @()
+    }
+  }
+
+  if (Get-Command -Name py -ErrorAction SilentlyContinue) {
+    return @{
+      Exe = 'py'
+      ArgsPrefix = @('-3')
+    }
+  }
+
+  return $null
 }
 
 # Convenience wrapper so callers can run from repo root:

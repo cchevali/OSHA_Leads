@@ -312,6 +312,7 @@ Operators also needed remote visibility into scheduled outcomes without touching
 
 Date: 2026-03-06
 Status: Accepted
+Amended: 2026-03-13 to allow installer-managed safety-net tasks to remain enabled as secondary recovery rails while runtime tick remains primary.
 
 ### Context
 
@@ -328,8 +329,8 @@ The runtime hardening work introduced a single orchestrator (`run_runtime_tick.p
   - prospect replenishment
   - outreach auto-send
   - FACS daily trial send
-- Keep Windows Task Scheduler wrappers and installers only for manual break-glass recovery on the canonical PC.
-- Do not run Task Scheduler and runtime tick as parallel daily schedulers after cutover.
+- Keep Windows Task Scheduler wrappers and installers as managed safety-net recovery rails on the canonical PC.
+- Do not allow duplicate, legacy, or unmanaged Task Scheduler entries to run in parallel with runtime tick after cutover.
 
 ### Rationale
 

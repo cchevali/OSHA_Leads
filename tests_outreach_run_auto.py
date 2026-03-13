@@ -1391,7 +1391,9 @@ class TestOutreachRunAuto(unittest.TestCase):
                     roa, "_append_ledger_records", return_value=None
                 ), mock.patch.object(
                     roa, "_send_summary_email", side_effect=_fake_summary_send
-                ):
+                ), mock.patch.object(
+                    roa, "_run_ai_assist_pending_imports", return_value=0
+                ) as m_pending_imports:
                     with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--confirm-live-send"]):
                         out = io.StringIO()
                         err = io.StringIO()
@@ -1399,6 +1401,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                             rc = roa.main()
 
             self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            m_pending_imports.assert_called_once_with(dry_run=False)
             stdout = out.getvalue()
             self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", stdout)
             self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=CA", stdout)
@@ -1823,6 +1826,97 @@ class TestOutreachRunAuto(unittest.TestCase):
                 )
                 self.assertFalse(bool(decision.get("triggered")))
                 self.assertEqual(str(decision.get("to_state") or ""), "CA")
+            finally:
+                conn.close()
+
+    def test_summary_excludes_not_default_send_eligible_rows_from_sendable_and_raw_counts(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            crm_db = tmp / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_tx_blocked",
+                        "contact_name": "TX Blocked",
+                        "firm": "TX Co",
+                        "email": "tx.blocked@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "source": "ai_assist_manual",
+                        "score": 8,
+                    },
+                    {
+                        "prospect_id": "p_tx_sendable",
+                        "contact_name": "TX Sendable",
+                        "firm": "TX Co",
+                        "email": "tx.sendable@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "source": "ai_assist_manual",
+                        "score": 7,
+                    },
+                    {
+                        "prospect_id": "p_tx_invalid",
+                        "contact_name": "TX Invalid",
+                        "firm": "TX Co",
+                        "email": "bad-email",
+                        "title": "Owner",
+                        "state": "TX",
+                        "source": "ai_assist_manual",
+                        "score": 6,
+                    },
+                    {
+                        "prospect_id": "p_tx_suppressed",
+                        "contact_name": "TX Suppressed",
+                        "firm": "TX Co",
+                        "email": "tx.suppressed@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                        "source": "ai_assist_manual",
+                        "score": 5,
+                    },
+                ],
+            )
+            conn = crm_store.connect(crm_db)
+            try:
+                conn.execute(
+                    """
+                    UPDATE prospects
+                    SET default_send_eligible = CASE prospect_id
+                        WHEN 'p_tx_blocked' THEN 0
+                        ELSE 1
+                    END,
+                    source_fit_tier = 'recoverable_consultant'
+                    WHERE prospect_id IN ('p_tx_blocked', 'p_tx_sendable', 'p_tx_invalid', 'p_tx_suppressed')
+                    """
+                )
+                conn.commit()
+
+                funnel = roa._crm_funnel_breakdown_for_summary(
+                    conn=conn,
+                    states=["TX"],
+                    suppressed_emails={"tx.suppressed@example.com"},
+                    allow_repeat=True,
+                    skip_role_inboxes=True,
+                    include_adjacent_contractors=False,
+                    selected_state="TX",
+                )
+                uncontacted = roa._crm_uncontacted_by_state(
+                    conn=conn,
+                    states=["TX"],
+                    suppressed_emails={"tx.suppressed@example.com"},
+                    allow_repeat=True,
+                    skip_role_inboxes=True,
+                    include_adjacent_contractors=False,
+                )
+
+                self.assertEqual(int((funnel.get("pool_total_by_state") or {}).get("TX", 0)), 4)
+                self.assertEqual(int((funnel.get("uncontacted_sendable_by_state") or {}).get("TX", 0)), 1)
+                self.assertEqual(int((funnel.get("uncontacted_raw_by_state") or {}).get("TX", 0)), 3)
+                self.assertEqual(int(uncontacted.get("TX", 0)), 1)
+                self.assertEqual(int(funnel.get("invalid_email_count") or 0), 1)
+                self.assertEqual(int(funnel.get("suppressed_count") or 0), 1)
             finally:
                 conn.close()
 

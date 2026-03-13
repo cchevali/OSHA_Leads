@@ -59,12 +59,15 @@ class TestRunProspectReplenishDaily(unittest.TestCase):
                 ),
             )
 
-        with mock.patch.object(replenish.subprocess, "run", side_effect=_run):
+        with mock.patch.object(replenish.subprocess, "run", side_effect=_run), mock.patch.object(
+            replenish, "_run_ai_assist_pending_imports", return_value=0
+        ) as m_pending_imports:
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = replenish.main([])
         out = buf.getvalue()
         self.assertEqual(rc, 0, msg=out)
+        m_pending_imports.assert_called_once_with(dry_run=False)
         self.assertEqual(len(calls), 4, msg=str(calls))
         self.assertIn("run_prospect_generation.py", calls[0])
         self.assertIn("--doctor", calls[0])
@@ -103,12 +106,15 @@ class TestRunProspectReplenishDaily(unittest.TestCase):
                 return self._proc(0, stdout="PASS_DISCOVERY_PRINT_CONFIG data_dir=C:\\osha_data\n")
             return self._proc(0, stdout="AI_ASSIST_DUMP_GAP_TOTAL=0\nAI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL=0\n")
 
-        with mock.patch.object(replenish.subprocess, "run", side_effect=_run):
+        with mock.patch.object(replenish.subprocess, "run", side_effect=_run), mock.patch.object(
+            replenish, "_run_ai_assist_pending_imports", return_value=0
+        ) as m_pending_imports:
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = replenish.main(["--dry-run", "--for-date", "2026-03-05"])
         out = buf.getvalue()
         self.assertEqual(rc, 0, msg=out)
+        m_pending_imports.assert_not_called()
         self.assertEqual(len(calls), 3, msg=str(calls))
         self.assertIn("run_prospect_generation.py", calls[0])
         self.assertIn("--dry-run", calls[0])

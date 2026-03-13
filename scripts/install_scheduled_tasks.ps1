@@ -224,32 +224,15 @@ function Invoke-SchtasksCommand([string[]]$SchtasksArgs) {
   }
 }
 
-function Invoke-CmdCommand([string]$CommandLine) {
-  $prevErrorAction = $ErrorActionPreference
-  $ErrorActionPreference = 'Continue'
-  try {
-    $output = & cmd.exe /c $CommandLine 2>&1
-    $code = $LASTEXITCODE
-  }
-  finally {
-    $ErrorActionPreference = $prevErrorAction
-  }
-  return @{
-    Output   = @($output)
-    ExitCode = [int]$code
-  }
-}
-
 function Get-TaskToRunFromSchtasks([string]$TaskName) {
   $taskNameForQuery = '\' + $TaskName
-  $queryCmd = 'schtasks.exe /Query /TN ' + $taskNameForQuery + ' /V /FO LIST'
-  $queryResult = Invoke-CmdCommand -CommandLine $queryCmd
+  $queryResult = Invoke-SchtasksCommand -SchtasksArgs @('/Query', '/TN', $taskNameForQuery, '/V', '/FO', 'LIST')
   $queryOut = @($queryResult.Output)
   if ([int]$queryResult.ExitCode -ne 0) {
     # If the task does not exist, schtasks returns error code 1 and a specific message.
     # In this case, we return $null to indicate the task is missing, which triggers creation.
     $outputString = ($queryOut -join ' ')
-    Write-Output ("DEBUG: Check-Task-Failure task=" + $TaskName + " output=" + $outputString)
+    Write-Verbose ("Check-Task-Failure task=" + $TaskName + " output=" + $outputString)
     if ($outputString -like '*system cannot find the file specified*') {
       return $null
     }
@@ -269,9 +252,33 @@ function Delete-TaskIfExists([string]$TaskName) {
   if ([int]$deleteResult.ExitCode -ne 0) {
     $text = ((@($deleteResult.Output) | ForEach-Object { [string]$_ }) -join ' ').Trim()
     if ($text -match 'The system cannot find the file specified') {
-      return
+      return @{
+        Removed = $false
+        Missing = $true
+        AccessDenied = $false
+        Detail = $text
+      }
     }
-    Fail 'ERR_INSTALL_SCHEDULED_TASKS_APPLY' ('task=' + $TaskName + ' delete_failed exit_code=' + [int]$deleteResult.ExitCode + ' detail=' + $text)
+    if ($text -match '(?i)Access is denied') {
+      return @{
+        Removed = $false
+        Missing = $false
+        AccessDenied = $true
+        Detail = $text
+      }
+    }
+    return @{
+      Removed = $false
+      Missing = $false
+      AccessDenied = $false
+      Detail = ('exit_code=' + [int]$deleteResult.ExitCode + ' detail=' + $text)
+    }
+  }
+  return @{
+    Removed = $true
+    Missing = $false
+    AccessDenied = $false
+    Detail = ''
   }
 }
 
@@ -520,7 +527,7 @@ function Resolve-TaskRunTargetPath([string]$TaskRun) {
 }
 
 function Get-RegisteredOshaTaskNames() {
-  $queryResult = Invoke-CmdCommand -CommandLine 'schtasks.exe /Query /FO LIST'
+  $queryResult = Invoke-SchtasksCommand -SchtasksArgs @('/Query', '/FO', 'LIST')
   if ([int]$queryResult.ExitCode -ne 0) {
     Fail 'ERR_INSTALL_SCHEDULED_TASKS_VERIFY' ('query_all_failed exit_code=' + [int]$queryResult.ExitCode)
   }
@@ -544,6 +551,16 @@ function Get-RegisteredOshaTaskNames() {
     [void]$names.Add($taskName)
   }
   return ,$names.ToArray()
+}
+
+function Get-KnownLegacyTaskNames() {
+  return @(
+    'OSHA_Prospect_Generation',
+    'OSHA_Prospect_Discovery',
+    'OSHA_Prospect_Replenish_Daily',
+    'OSHA Wally Trial Daily',
+    'OSHA_Daily_Pipeline'
+  )
 }
 
 function Convert-LastResultToHex([string]$Raw) {
@@ -622,11 +639,28 @@ function Invoke-Verify([array]$Tasks, [string]$RepoRoot) {
       $registeredLookup[$normalized.ToLowerInvariant()] = $true
     }
   }
+  foreach ($legacyTaskName in @(Get-KnownLegacyTaskNames)) {
+    $legacyTaskState = Get-TaskToRunFromSchtasks -TaskName $legacyTaskName
+    if (([string]$legacyTaskState).Trim() -eq '__ACCESS_DENIED__') {
+      Write-Output ('ERR_SCHEDTASK_LEGACY_PRESENT=1 task=' + $legacyTaskName)
+      $failures += ('task=' + $legacyTaskName + ' legacy_task_present=access_denied')
+      continue
+    }
+    if (($legacyTaskState -as [string]).Trim()) {
+      Write-Output ('ERR_SCHEDTASK_LEGACY_PRESENT=1 task=' + $legacyTaskName)
+      $failures += ('task=' + $legacyTaskName + ' legacy_task_present=true')
+      continue
+    }
+    $normalizedLegacy = Normalize-TaskQueryName -TaskName $legacyTaskName
+    if ($normalizedLegacy -and $registeredLookup.ContainsKey($normalizedLegacy.ToLowerInvariant())) {
+      Write-Output ('ERR_SCHEDTASK_LEGACY_PRESENT=1 task=' + $legacyTaskName)
+      $failures += ('task=' + $legacyTaskName + ' legacy_task_present=enumerated')
+    }
+  }
   for ($i = 0; $i -lt $Tasks.Count; $i++) {
     $task = $Tasks[$i]
     $taskNameForQuery = '\' + $task.Name
-    $queryCmd = 'schtasks.exe /Query /TN ' + $taskNameForQuery + ' /V /FO LIST'
-    $queryResult = Invoke-CmdCommand -CommandLine $queryCmd
+    $queryResult = Invoke-SchtasksCommand -SchtasksArgs @('/Query', '/TN', $taskNameForQuery, '/V', '/FO', 'LIST')
     $queryOut = @($queryResult.Output)
     if ([int]$queryResult.ExitCode -ne 0) {
       $detail = ((@($queryOut) | ForEach-Object { [string]$_ }) -join ' ').Trim()
@@ -712,8 +746,7 @@ function Invoke-Verify([array]$Tasks, [string]$RepoRoot) {
     if (-not $taskNameForQuery) {
       continue
     }
-    $queryCmd = 'schtasks.exe /Query /TN ' + $taskNameForQuery + ' /V /FO LIST'
-    $queryResult = Invoke-CmdCommand -CommandLine $queryCmd
+    $queryResult = Invoke-SchtasksCommand -SchtasksArgs @('/Query', '/TN', $taskNameForQuery, '/V', '/FO', 'LIST')
     if ([int]$queryResult.ExitCode -ne 0) {
       continue
     }
@@ -812,10 +845,27 @@ if ($modeArg -eq '--verify' -or $modeArg -eq '--status') {
 }
 
 Emit-TaskConfig -Tasks $resolvedTasks -Mode 'apply' -SchedulerCredentials $schedulerCredentials
-$legacyTaskNames = @('OSHA_Prospect_Generation', 'OSHA_Prospect_Discovery', 'OSHA Wally Trial Daily', 'OSHA_Daily_Pipeline')
-foreach ($legacyTaskName in $legacyTaskNames) {
-  Delete-TaskIfExists -TaskName $legacyTaskName
-  Write-Output ('TASK_REMOVED_LEGACY=' + $legacyTaskName)
+$legacyCleanupFailures = New-Object System.Collections.Generic.List[string]
+foreach ($legacyTaskName in @(Get-KnownLegacyTaskNames)) {
+  $deleteState = Delete-TaskIfExists -TaskName $legacyTaskName
+  if ([bool]$deleteState.Removed) {
+    Write-Output ('TASK_REMOVED_LEGACY=' + $legacyTaskName)
+    continue
+  }
+  if ([bool]$deleteState.Missing) {
+    Write-Output ('TASK_LEGACY_ABSENT=' + $legacyTaskName)
+    continue
+  }
+  if ([bool]$deleteState.AccessDenied) {
+    Write-Output ('ERR_SCHEDTASK_LEGACY_ACCESS_DENIED=1 task=' + $legacyTaskName)
+    $legacyCleanupFailures.Add('task=' + $legacyTaskName + ' delete_failed=access_denied') | Out-Null
+    continue
+  }
+  Write-Output ('ERR_SCHEDTASK_LEGACY_DELETE_FAILED=1 task=' + $legacyTaskName)
+  $legacyCleanupFailures.Add('task=' + $legacyTaskName + ' delete_failed=' + ([string]$deleteState.Detail).Trim()) | Out-Null
+}
+if ($legacyCleanupFailures.Count -gt 0) {
+  Fail 'ERR_INSTALL_SCHEDULED_TASKS_APPLY' ('legacy_cleanup_failed ' + ($legacyCleanupFailures -join ';'))
 }
 $applyAccessDeniedCount = 0
 for ($i = 0; $i -lt $resolvedTasks.Count; $i++) {

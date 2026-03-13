@@ -18,6 +18,8 @@ PROSPECTS_MIGRATION_COLUMNS = {
     "enrichment_lane": "TEXT NOT NULL DEFAULT ''",
 }
 AI_ASSIST_CANDIDATE_TABLE = "ai_assist_candidates"
+AI_ASSIST_IMPORT_BATCH_TABLE = "ai_assist_import_batches"
+AI_ASSIST_CANDIDATE_BATCH_KEY_INDEX = "idx_ai_assist_candidates_batch_key_unique"
 VALID_SOURCE_FIT_TIERS = ("core_consultant", "recoverable_consultant", "adjacent_contractor")
 
 
@@ -56,6 +58,14 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table_name})") if len(r) > 1}
+
+
+def _index_exists(conn: sqlite3.Connection, index_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ? LIMIT 1",
+        (index_name,),
+    ).fetchone()
+    return bool(row)
 
 
 def ensure_outreach_events_columns(conn: sqlite3.Connection) -> None:
@@ -185,6 +195,48 @@ def ensure_ai_assist_candidate_table(conn: sqlite3.Connection) -> None:
             ON {AI_ASSIST_CANDIDATE_TABLE}(batch_id, verification_status);
         """
     )
+    if not _index_exists(conn, AI_ASSIST_CANDIDATE_BATCH_KEY_INDEX):
+        conn.execute(
+            f"""
+            DELETE FROM {AI_ASSIST_CANDIDATE_TABLE}
+            WHERE candidate_id NOT IN (
+                SELECT MAX(candidate_id)
+                FROM {AI_ASSIST_CANDIDATE_TABLE}
+                GROUP BY batch_id, candidate_key
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE UNIQUE INDEX IF NOT EXISTS {AI_ASSIST_CANDIDATE_BATCH_KEY_INDEX}
+            ON {AI_ASSIST_CANDIDATE_TABLE}(batch_id, candidate_key)
+            """
+        )
+
+
+def ensure_ai_assist_import_batch_table(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        f"""
+        CREATE TABLE IF NOT EXISTS {AI_ASSIST_IMPORT_BATCH_TABLE} (
+            batch_id TEXT PRIMARY KEY,
+            source_path TEXT NOT NULL DEFAULT '',
+            source_filename TEXT NOT NULL DEFAULT '',
+            source_file_hash TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL DEFAULT '',
+            completed_at TEXT NOT NULL DEFAULT '',
+            last_error TEXT NOT NULL DEFAULT '',
+            candidates_total INTEGER NOT NULL DEFAULT 0,
+            accepted_total INTEGER NOT NULL DEFAULT 0,
+            rejected_total INTEGER NOT NULL DEFAULT 0,
+            verified_total INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_assist_import_batches_status
+            ON {AI_ASSIST_IMPORT_BATCH_TABLE}(status, updated_at);
+        """
+    )
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
@@ -268,6 +320,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     ensure_prospect_indexes(conn)
     ensure_outreach_events_columns(conn)
     ensure_ai_assist_candidate_table(conn)
+    ensure_ai_assist_import_batch_table(conn)
     conn.commit()
 
 

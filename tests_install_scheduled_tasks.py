@@ -124,9 +124,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(int(ingest_task.get("TR_LENGTH", "0")), len(EXPECTED_INGEST_TR), msg=out)
         self._assert_future_boundary(ingest_task.get("START_BOUNDARY_LOCAL", ""), out)
 
-        replenish = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Replenish_Daily"]
-        if not replenish:
-            replenish = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Replenish_SafetyNet"]
+        replenish = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Replenish_SafetyNet"]
         self.assertEqual(len(replenish), 1, msg=out)
         replenish_task = replenish[0]
         self.assertEqual(replenish_task.get("SCHEDULE"), "weekly", msg=out)
@@ -259,6 +257,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("OSHA_Prospect_Replenish_SafetyNet", text)
         self.assertIn("run_prospect_replenish_daily.ps1", text)
         self.assertIn("TASK_REMOVED_LEGACY", text)
+        self.assertIn("OSHA_Prospect_Replenish_Daily", text)
+        self.assertIn("ERR_SCHEDTASK_LEGACY_PRESENT=1", text)
         self.assertIn("ERR_SCHEDTASK_UNMANAGED_OSHA_TASK=1", text)
         self.assertIn("OSHA Wally Trial Daily", text)
         self.assertIn("--verify", text)

@@ -119,10 +119,67 @@ class TestRuntimeRunSummary(unittest.TestCase):
             payload = json.loads(summary_files[0].read_text(encoding="utf-8"))
             self.assertEqual(payload.get("schema"), "runtime_run_summary_v1")
             self.assertEqual(payload.get("wrapper"), "TEST_WRAPPER")
+            self.assertTrue(payload.get("run_id"))
             self.assertEqual(int(payload.get("exit_code", 0)), 1)
             self.assertIn("PASS_SAMPLE_TOKEN", payload.get("tokens", {}).get("pass", []))
             self.assertIn("ERR_SAMPLE_TOKEN", payload.get("tokens", {}).get("err", []))
             self.assertEqual(int(payload.get("counts", {}).get("ROWS_INSERTED", 0)), 12)
+
+    def test_same_timestamp_calls_produce_unique_summary_paths(self):
+        self.assertTrue(SCRIPT.exists(), msg=f"missing script: {SCRIPT}")
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            task_log_root = tmp / "task_logs"
+            summary_root = tmp / "run_summaries"
+            task_log_root.mkdir(parents=True, exist_ok=True)
+            summary_root.mkdir(parents=True, exist_ok=True)
+            task_log = task_log_root / "sample.log"
+            task_log.write_text("PASS_SAMPLE_TOKEN detail=ok\n", encoding="utf-8")
+
+            cmd = (
+                f". '{SCRIPT}'; "
+                f"$startLocal = ([datetime]'2026-03-12T07:15:00Z').ToLocalTime(); "
+                f"$startUtc = [datetime]'2026-03-12T07:15:00Z'; "
+                f"Write-RuntimeRunSummary "
+                f"-RepoRoot '{REPO_ROOT}' "
+                f"-WrapperName 'TEST_WRAPPER' "
+                f"-CommandLine 'echo first' "
+                f"-Mode 'scheduled' "
+                f"-Intent 'write' "
+                f"-DryRun:$false "
+                f"-ExitCode 0 "
+                f"-StartLocal $startLocal "
+                f"-StartUtc $startUtc "
+                f"-TaskLogPath '{task_log}' "
+                f"-TaskLogRoot '{task_log_root}' "
+                f"-RunSummaryRoot '{summary_root}' | Out-Null; "
+                f"Write-RuntimeRunSummary "
+                f"-RepoRoot '{REPO_ROOT}' "
+                f"-WrapperName 'TEST_WRAPPER' "
+                f"-CommandLine 'echo second' "
+                f"-Mode 'scheduled' "
+                f"-Intent 'write' "
+                f"-DryRun:$false "
+                f"-ExitCode 0 "
+                f"-StartLocal $startLocal "
+                f"-StartUtc $startUtc "
+                f"-TaskLogPath '{task_log}' "
+                f"-TaskLogRoot '{task_log_root}' "
+                f"-RunSummaryRoot '{summary_root}' | Out-Null"
+            )
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+            )
+            out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            self.assertEqual(proc.returncode, 0, msg=out)
+            summary_files = sorted(summary_root.glob("*.summary.json"))
+            text_files = sorted(summary_root.glob("*.summary.txt"))
+            self.assertEqual(len(summary_files), 2, msg=str(summary_files))
+            self.assertEqual(len(text_files), 2, msg=str(text_files))
+            self.assertNotEqual(summary_files[0].name, summary_files[1].name)
 
 
 if __name__ == "__main__":
