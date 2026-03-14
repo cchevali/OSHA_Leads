@@ -22,9 +22,17 @@ class TestOutreachGenerationMetadata(unittest.TestCase):
                 "state": "CALIFORNIA",
                 "source": "legacy_directory_export",
             },
+            {
+                "email": "ops@licensedcontractor.com",
+                "company_name": "Licensed Contractor",
+                "contact_role": "Owner",
+                "city": "450 Market St, Houston, Texas 77002",
+                "state": "Texas",
+                "source": "STATE_LIC_WORK_EMAIL",
+            },
         ]
         out = generator._to_discovery_rows(rows)
-        self.assertEqual(len(out), 2)
+        self.assertEqual(len(out), 3)
         by_email = {str(r.get("email") or ""): r for r in out}
 
         state_lic = by_email["owner@contractor.com"]
@@ -39,11 +47,18 @@ class TestOutreachGenerationMetadata(unittest.TestCase):
         self.assertEqual(legacy["source_fit_tier"], "recoverable_consultant")
         self.assertEqual(legacy["default_send_eligible"], "1")
 
+        state_lic_work_email = by_email["ops@licensedcontractor.com"]
+        self.assertEqual(state_lic_work_email["state"], "TX")
+        self.assertEqual(state_lic_work_email["city"], "Houston")
+        self.assertEqual(state_lic_work_email["source_fit_tier"], "adjacent_contractor")
+        self.assertEqual(state_lic_work_email["default_send_eligible"], "1")
+
     def test_generator_row_observability_counts_source_tier_sendable(self):
         rows = [
             {"email": "a@seed.com", "source": "seed_recipients_pools", "source_fit_tier": "", "default_send_eligible": ""},
             {"email": "b@aiha.com", "source": "aiha_consultants_listing:12-13", "source_fit_tier": "", "default_send_eligible": "1"},
             {"email": "c@state.com", "source": "STATE_LIC", "source_fit_tier": "", "default_send_eligible": ""},
+            {"email": "work@state.com", "source": "STATE_LIC_WORK_EMAIL", "source_fit_tier": "", "default_send_eligible": ""},
             {"email": "d@unknown.com", "source": "legacy_export", "source_fit_tier": "", "default_send_eligible": ""},
             {"email": "e@apollo.com", "source": "apollo_export_csv", "source_fit_tier": "", "default_send_eligible": "true"},
         ]
@@ -53,14 +68,14 @@ class TestOutreachGenerationMetadata(unittest.TestCase):
 
         self.assertEqual(int(source_counts.get("SEED", 0)), 1)
         self.assertEqual(int(source_counts.get("AIHA", 0)), 1)
-        self.assertEqual(int(source_counts.get("STATE_LIC", 0)), 1)
+        self.assertEqual(int(source_counts.get("STATE_LIC", 0)), 2)
         self.assertEqual(int(source_counts.get("UNKNOWN", 0)), 1)
         self.assertEqual(int(source_counts.get("APOLLO", 0)), 1)
 
         self.assertEqual(int(tier_counts.get("core_consultant", 0)), 1)
         self.assertEqual(int(tier_counts.get("recoverable_consultant", 0)), 3)
-        self.assertEqual(int(tier_counts.get("adjacent_contractor", 0)), 1)
-        self.assertEqual(int(obs.get("default_send_eligible_total") or 0), 4)
+        self.assertEqual(int(tier_counts.get("adjacent_contractor", 0)), 2)
+        self.assertEqual(int(obs.get("default_send_eligible_total") or 0), 5)
 
 
 if __name__ == "__main__":

@@ -146,6 +146,7 @@ APOLLO_DEFAULT_PERSON_TITLES = [
     "principal consultant",
 ]
 TDLR_STATE_LIC_SOURCE_KEY = "STATE_LIC"
+TDLR_STATE_LIC_WORK_EMAIL_SOURCE_KEY = "STATE_LIC_WORK_EMAIL"
 GENERATOR_FILTER_KEYS = (
     "missing_state",
     "state_mismatch",
@@ -322,6 +323,37 @@ def _effective_default_send_eligible(source: str, sendable_raw: object) -> int:
         return int(default_send)
     raw_text = "" if sendable_raw is None else str(sendable_raw)
     return _coerce_boolish_int(raw_text, default_send)
+
+
+def _row_is_effectively_sendable(row: dict[str, object], *, skip_role_inboxes: bool) -> bool:
+    email = _normalize_email(str(row.get("email") or row.get("contact_email") or ""))
+    if not _valid_email(email):
+        return False
+    if _email_domain(email) in pools.FREE_EMAIL_DOMAINS:
+        return False
+    if bool(skip_role_inboxes) and _is_role_inbox_email(email):
+        return False
+    return _effective_default_send_eligible(str(row.get("source") or ""), row.get("default_send_eligible")) == 1
+
+
+def _row_has_nonfree_work_email(row: dict[str, object]) -> bool:
+    email = _normalize_email(str(row.get("email") or row.get("contact_email") or ""))
+    if not _valid_email(email):
+        return False
+    return _email_domain(email) not in pools.FREE_EMAIL_DOMAINS
+
+
+def _promote_state_lic_work_email_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    promoted_rows: list[dict[str, str]] = []
+    for row in list(rows or []):
+        updated = dict(row)
+        source = _normalize_text(updated.get("source") or TDLR_STATE_LIC_SOURCE_KEY)
+        if _source_family(source) == "STATE_LIC" and _row_has_nonfree_work_email(updated):
+            updated["source"] = TDLR_STATE_LIC_WORK_EMAIL_SOURCE_KEY
+            updated["source_fit_tier"] = "adjacent_contractor"
+            updated["default_send_eligible"] = "1"
+        promoted_rows.append(updated)
+    return promoted_rows
 
 
 def _generator_row_observability(rows: list[dict[str, str]]) -> dict[str, object]:
@@ -830,15 +862,9 @@ def compute_uncontacted_backlog(
         if _normalize_state(str(row["state"] or "")) != target_state:
             continue
         email = _normalize_email(str(row["email"] or ""))
-        if not _valid_email(email):
-            continue
-        if _email_domain(email) in pools.FREE_EMAIL_DOMAINS:
-            continue
         if email in suppressed_emails:
             continue
-        if bool(skip_role_inboxes) and _is_role_inbox_email(email):
-            continue
-        if _effective_default_send_eligible(str(row["source"] or ""), row["default_send_eligible"]) != 1:
+        if not _row_is_effectively_sendable(dict(row), skip_role_inboxes=bool(skip_role_inboxes)):
             continue
 
         status = _normalize_text(str(row["status"] or "")).lower()
@@ -2045,6 +2071,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 rows_candidate = list(enrich_out.get("rows") or rows_candidate)
                 _merge_generator_enrich_metrics(enrich_metrics, enrich_out.get("metrics"))
+            if source_token == TDLR_STATE_LIC_SOURCE_KEY:
+                rows_candidate = _promote_state_lic_work_email_rows(rows_candidate)
             if source_token == "AIHA":
                 aiha_loss_counters.update(
                     _aiha_loss_counters_from_candidates(
@@ -2067,7 +2095,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             accepted_rows = filtered_rows[:remaining_slots]
             sendable_accepted = sum(
-                1 for row in accepted_rows if _coerce_boolish_int(row.get("default_send_eligible") or "", 1) == 1
+                1
+                for row in accepted_rows
+                if _row_is_effectively_sendable(row, skip_role_inboxes=bool(skip_role_inboxes))
             )
             backlog_credit = int(sendable_accepted) if source_policy.counts_toward_consultant_backlog(source_token) else 0
             remaining_needed = max(0, remaining_needed - int(backlog_credit))

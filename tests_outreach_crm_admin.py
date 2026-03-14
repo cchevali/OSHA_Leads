@@ -176,6 +176,19 @@ def _seed_repair_rows(db_path: Path) -> None:
                 1,
             ),
             (
+                "state_lic_work_email_bad",
+                "State Lic Work Email Bad",
+                "Owner",
+                "ops@licensedvendor.com",
+                "Owner",
+                "Dallas",
+                "TEXAS",
+                "https://licensedvendor.com",
+                "STATE_LIC_WORK_EMAIL",
+                "recoverable_consultant",
+                0,
+            ),
+            (
                 "apollo_bad",
                 "Apollo Bad",
                 "Owner",
@@ -678,9 +691,9 @@ class TestOutreachCrmAdmin(unittest.TestCase):
             preview = self._run(["repair-prospects", "--dry-run"], {"DATA_DIR": str(data_dir)})
             self.assertEqual(preview.returncode, 0, msg=preview.stderr + "\n" + preview.stdout)
             out_preview = preview.stdout or ""
-            self.assertEqual(self._stdout_value(out_preview, "state_canonicalized"), "4")
-            self.assertEqual(self._stdout_value(out_preview, "source_fit_repaired"), "3")
-            self.assertEqual(self._stdout_value(out_preview, "default_send_repaired"), "4")
+            self.assertEqual(self._stdout_value(out_preview, "state_canonicalized"), "5")
+            self.assertEqual(self._stdout_value(out_preview, "source_fit_repaired"), "4")
+            self.assertEqual(self._stdout_value(out_preview, "default_send_repaired"), "5")
             self.assertEqual(self._stdout_value(out_preview, "bad_ohs_bg_quarantined"), "1")
 
             conn = sqlite3.connect(str(db_path))
@@ -698,15 +711,16 @@ class TestOutreachCrmAdmin(unittest.TestCase):
             finally:
                 conn.close()
             self.assertEqual(before["state_lic_bad"], ("TEXAS", "core_consultant", 1))
+            self.assertEqual(before["state_lic_work_email_bad"], ("TEXAS", "recoverable_consultant", 0))
             self.assertEqual(before["apollo_bad"], ("CALIFORNIA", "adjacent_contractor", 0))
             self.assertEqual(before["seed_unchanged"], ("FLORIDA", "core_consultant", 1))
 
             apply_run = self._run(["repair-prospects", "--apply"], {"DATA_DIR": str(data_dir)})
             self.assertEqual(apply_run.returncode, 0, msg=apply_run.stderr + "\n" + apply_run.stdout)
             out_apply = apply_run.stdout or ""
-            self.assertEqual(self._stdout_value(out_apply, "state_canonicalized"), "4")
-            self.assertEqual(self._stdout_value(out_apply, "source_fit_repaired"), "3")
-            self.assertEqual(self._stdout_value(out_apply, "default_send_repaired"), "4")
+            self.assertEqual(self._stdout_value(out_apply, "state_canonicalized"), "5")
+            self.assertEqual(self._stdout_value(out_apply, "source_fit_repaired"), "4")
+            self.assertEqual(self._stdout_value(out_apply, "default_send_repaired"), "5")
             self.assertEqual(self._stdout_value(out_apply, "bad_ohs_bg_quarantined"), "1")
 
             conn = sqlite3.connect(str(db_path))
@@ -725,6 +739,7 @@ class TestOutreachCrmAdmin(unittest.TestCase):
                 conn.close()
 
             self.assertEqual(after["state_lic_bad"], ("TX", "adjacent_contractor", 0))
+            self.assertEqual(after["state_lic_work_email_bad"], ("TX", "adjacent_contractor", 1))
             self.assertEqual(after["apollo_bad"], ("CA", "core_consultant", 1))
             self.assertEqual(after["aiha_bad"], ("FL", "recoverable_consultant", 1))
             self.assertEqual(after["ohs_tracker_bad"], ("CA", "recoverable_consultant", 0))
