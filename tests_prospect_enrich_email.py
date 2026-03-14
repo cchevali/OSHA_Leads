@@ -77,6 +77,35 @@ class TestProspectEnrichEmail(unittest.TestCase):
         self.assertEqual(out["metrics"]["attempted"], 0)
         self.assertEqual(out["rows"][1]["email"], "already@example.com")
 
+    def test_max_sites_per_run_caps_attempts(self):
+        rows = [
+            {"firm": "Bassett Electric LLC", "contact_name": "John Bassett", "email": ""},
+            {"firm": "Acme Electric LLC", "contact_name": "Jane Acme", "email": ""},
+        ]
+        calls = []
+
+        def head_fetcher(url: str):  # type: ignore[no-untyped-def]
+            calls.append(url)
+            return {"status": 200, "url": url, "headers": {}}
+
+        with tempfile.TemporaryDirectory() as d:
+            out = enrich.enrich_autogrow_rows(
+                rows,
+                domain_enabled=True,
+                hunter_enabled=False,
+                hunter_api_key="",
+                max_sites_per_run=1,
+                sleep_ms=0,
+                hunter_usage_path=Path(d) / "hunter_usage.json",
+                head_fetcher=head_fetcher,
+            )
+
+        self.assertEqual(out["metrics"]["attempted"], 1)
+        self.assertEqual(out["metrics"]["skipped_max_sites"], 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(out["rows"][0]["email"], "john@bassettelectric.com")
+        self.assertEqual(out["rows"][1].get("email") or "", "")
+
     def test_hunter_usage_file_resets_on_month_rollover_and_cap_skip(self):
         with tempfile.TemporaryDirectory() as d:
             usage_path = Path(d) / "hunter_usage.json"
@@ -87,6 +116,7 @@ class TestProspectEnrichEmail(unittest.TestCase):
                 domain_enabled=False,
                 hunter_enabled=True,
                 hunter_api_key="hunter-key",
+                max_sites_per_run=25,
                 sleep_ms=0,
                 hunter_usage_path=usage_path,
                 head_fetcher=lambda _url: {"status": 200, "url": "", "headers": {}},
@@ -103,6 +133,7 @@ class TestProspectEnrichEmail(unittest.TestCase):
                 domain_enabled=True,
                 hunter_enabled=True,
                 hunter_api_key="hunter-key",
+                max_sites_per_run=25,
                 sleep_ms=0,
                 hunter_usage_path=usage_path,
                 head_fetcher=lambda _url: {"status": 200, "url": _url, "headers": {}},

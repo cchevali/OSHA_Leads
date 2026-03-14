@@ -17,6 +17,8 @@ param(
   [string] $ProspectAutoGrowStateLicTxLicenseTypes = '',
   [Nullable[int]] $ProspectEnrichDomainEnabled = $null,
   [Nullable[int]] $ProspectEnrichHunterEnabled = $null,
+  [Nullable[int]] $ProspectEnrichMaxSitesPerRun = $null,
+  [Nullable[int]] $ProspectEnrichHttpSleepMs = $null,
   [string] $HunterApiKey = '',
   [string] $ApolloApiKey = '',
   [Nullable[int]] $ApolloEnrichEnabled = $null,
@@ -388,6 +390,8 @@ try {
     'ProspectAutoGrowStateLicTxLicenseTypes',
     'ProspectEnrichDomainEnabled',
     'ProspectEnrichHunterEnabled',
+    'ProspectEnrichMaxSitesPerRun',
+    'ProspectEnrichHttpSleepMs',
     'HunterApiKey',
     'ApolloApiKey',
     'ApolloEnrichEnabled',
@@ -475,6 +479,12 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('ProspectEnrichHunterEnabled') -and $ProspectEnrichHunterEnabled -notin @(0, 1)) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectEnrichHunterEnabled'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectEnrichMaxSitesPerRun') -and $ProspectEnrichMaxSitesPerRun -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectEnrichMaxSitesPerRun'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectEnrichHttpSleepMs') -and $ProspectEnrichHttpSleepMs -lt 0) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectEnrichHttpSleepMs'
   }
   if ($PSBoundParameters.ContainsKey('TrialSendsLimitDefault') -and $TrialSendsLimitDefault -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TrialSendsLimitDefault'
@@ -707,6 +717,8 @@ try {
       $apolloLocationsModeValue = if (Map-HasValue $printMap 'APOLLO_PERSON_LOCATIONS_MODE') { ([string]$printMap['APOLLO_PERSON_LOCATIONS_MODE']).Trim() } else { 'state' }
       $prospectEnrichDomainEnabledValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_DOMAIN_ENABLED') { ([string]$printMap['PROSPECT_ENRICH_DOMAIN_ENABLED']).Trim() } else { '0' }
       $prospectEnrichHunterEnabledValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_HUNTER_ENABLED') { ([string]$printMap['PROSPECT_ENRICH_HUNTER_ENABLED']).Trim() } else { '0' }
+      $prospectEnrichMaxSitesPerRunValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_MAX_SITES_PER_RUN') { ([string]$printMap['PROSPECT_ENRICH_MAX_SITES_PER_RUN']).Trim() } else { '25' }
+      $prospectEnrichHttpSleepMsValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_HTTP_SLEEP_MS') { ([string]$printMap['PROSPECT_ENRICH_HTTP_SLEEP_MS']).Trim() } else { '750' }
       Write-Output ('ai_triage_enabled=' + $aiTriageEnabledValue)
       Write-Output ('ai_triage_openai_model=' + $aiTriageModelValue)
       Write-Output ('signal_freshness_max_days=' + $signalFreshnessMaxDaysValue)
@@ -718,6 +730,8 @@ try {
       Write-Output ('apollo_person_locations_mode=' + $apolloLocationsModeValue)
       Write-Output ('prospect_enrich_domain_enabled=' + $prospectEnrichDomainEnabledValue)
       Write-Output ('prospect_enrich_hunter_enabled=' + $prospectEnrichHunterEnabledValue)
+      Write-Output ('prospect_enrich_max_sites_per_run=' + $prospectEnrichMaxSitesPerRunValue)
+      Write-Output ('prospect_enrich_http_sleep_ms=' + $prospectEnrichHttpSleepMsValue)
       $taskSchedUserValue = if (Map-HasValue $printMap 'TASK_SCHED_USER') { ([string]$printMap['TASK_SCHED_USER']).Trim() } else { '' }
       $taskSchedPasswordPresent = if (Map-HasValue $printMap 'TASK_SCHED_PASSWORD') { 'YES' } else { 'NO' }
       Write-Output ('task_sched_user=' + $taskSchedUserValue)
@@ -897,6 +911,18 @@ try {
       Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_HUNTER_ENABLED' -Value ([string]$ProspectEnrichHunterEnabled) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'PROSPECT_ENRICH_HUNTER_ENABLED')) {
       Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_HUNTER_ENABLED' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectEnrichMaxSitesPerRun')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_MAX_SITES_PER_RUN' -Value ([string]$ProspectEnrichMaxSitesPerRun) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_ENRICH_MAX_SITES_PER_RUN')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_MAX_SITES_PER_RUN' -Value '25' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectEnrichHttpSleepMs')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_HTTP_SLEEP_MS' -Value ([string]$ProspectEnrichHttpSleepMs) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_ENRICH_HTTP_SLEEP_MS')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_HTTP_SLEEP_MS' -Value '750' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('HunterApiKey')) {
