@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from outreach import contact_normalization
 from outreach import crm_store
 from outreach import prospect_sources_apollo
 from outreach import prospect_sources_aiha
@@ -163,21 +164,11 @@ US_STATE_ABBREVIATIONS = set(us_state.US_STATE_ABBREVIATIONS)
 
 
 def _valid_email(value: str) -> bool:
-    email = (value or "").strip().lower()
-    if not email or "@" not in email:
-        return False
-    local, _, domain = email.partition("@")
-    if not local or not domain:
-        return False
-    if "." not in domain:
-        return False
-    if domain.startswith(".") or domain.endswith("."):
-        return False
-    return True
+    return contact_normalization.valid_email(value)
 
 
 def _normalize_email(value: str) -> str:
-    return (value or "").strip().lower()
+    return contact_normalization.normalize_email(value)
 
 
 def _email_local_part(email: str) -> str:
@@ -231,14 +222,11 @@ def _ascii_safe_text(value: str) -> str:
 
 
 def _email_domain(email: str) -> str:
-    e = _normalize_email(email)
-    if "@" not in e:
-        return ""
-    return e.split("@", 1)[1].strip().lower()
+    return contact_normalization.email_domain(email)
 
 
 def _domain_from_website(value: str) -> str:
-    text = _normalize_text(value)
+    text = contact_normalization.normalize_website(value)
     if not text:
         return ""
     try:

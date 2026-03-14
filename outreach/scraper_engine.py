@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from outreach import contact_normalization
+
 
 WARN_CRAWL4AI_NOT_INSTALLED = "WARN_CRAWL4AI_NOT_INSTALLED"
 WARN_PLAYWRIGHT_BROWSERS_MISSING = "WARN_PLAYWRIGHT_BROWSERS_MISSING"
@@ -24,19 +26,11 @@ def _normalize_text(value: Any) -> str:
 
 
 def _normalize_email(value: str) -> str:
-    return str(value or "").strip().lower()
+    return contact_normalization.normalize_email(value)
 
 
 def _valid_email(value: str) -> bool:
-    email = _normalize_email(value)
-    if "@" not in email:
-        return False
-    local, _, domain = email.partition("@")
-    if not local or not domain or "." not in domain:
-        return False
-    if domain.startswith(".") or domain.endswith("."):
-        return False
-    return True
+    return contact_normalization.valid_email(value)
 
 
 def _domain_from_website(url: str) -> str:

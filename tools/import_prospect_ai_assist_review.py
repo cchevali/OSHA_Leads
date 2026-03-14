@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import seed_recipients_pools as pools
 from outreach import crm_admin
+from outreach import contact_normalization
 from outreach import crm_store
 from outreach import run_prospect_generation as generation
 from outreach import us_state
@@ -71,7 +72,7 @@ def _default_batch_id(input_path: Path | None = None) -> str:
 
 
 def _normalize_email(value: str) -> str:
-    return generation._normalize_email(value)
+    return contact_normalization.normalize_email(value)
 
 
 def _normalize_state(value: str) -> str:
@@ -83,8 +84,8 @@ def _normalize_domain(value: str) -> str:
     if not text:
         return ""
     if "@" in text:
-        return generation._email_domain(text)
-    return generation._domain_from_website(text)
+        return contact_normalization.email_domain(text)
+    return generation._domain_from_website(contact_normalization.normalize_website(text))
 
 
 def _candidate_key(row: dict[str, str], email: str, domain: str, state: str) -> str:
@@ -106,7 +107,7 @@ def _prospect_id_for_email(email: str) -> str:
 
 
 def _parse_source_urls(raw: str) -> list[str]:
-    text = str(raw or "").strip()
+    text = contact_normalization.normalize_source_urls(raw)
     if not text:
         return []
     urls: list[str] = []
@@ -132,6 +133,66 @@ def _coerce_confidence(value: str) -> int:
     return max(0, min(100, parsed))
 
 
+def _malformed_row_error(*, row_number: int, field: str) -> ValueError:
+    return ValueError(f"malformed_row row={row_number} field={field}")
+
+
+def _normalize_review_field(*, field: str, value: str, row_number: int) -> str:
+    raw = str(value or "")
+    text = raw.strip()
+    has_markup = contact_normalization.has_markup_artifact(raw)
+    if field == "website":
+        normalized = contact_normalization.normalize_website(text)
+        if has_markup and (not normalized or contact_normalization.has_markup_artifact(normalized)):
+            raise _malformed_row_error(row_number=row_number, field=field)
+        return normalized
+    if field == "contact_name":
+        normalized = contact_normalization.normalize_contact_name(text)
+        if has_markup and (not normalized or contact_normalization.has_markup_artifact(normalized)):
+            raise _malformed_row_error(row_number=row_number, field=field)
+        return normalized
+    if field == "email":
+        normalized = contact_normalization.normalize_email(text)
+        if has_markup and not contact_normalization.valid_email(normalized):
+            raise _malformed_row_error(row_number=row_number, field=field)
+        return normalized
+    if field == "source_urls":
+        normalized = contact_normalization.normalize_source_urls(text)
+        if has_markup and (not normalized or contact_normalization.has_markup_artifact(normalized)):
+            raise _malformed_row_error(row_number=row_number, field=field)
+        return normalized
+    if field == "evidence_snippet":
+        normalized = contact_normalization.normalize_evidence_snippet(text)
+        if has_markup and (not normalized or contact_normalization.has_markup_artifact(normalized)):
+            raise _malformed_row_error(row_number=row_number, field=field)
+        return normalized
+    if field == "state":
+        return text.upper()
+    if field == "decision":
+        return text.lower()
+    return text
+
+
+def _normalize_review_rows(rows: list[dict[str, str]]) -> tuple[list[dict[str, str]], int, int]:
+    normalized_rows: list[dict[str, str]] = []
+    normalized_row_total = 0
+    normalized_field_total = 0
+    for row_number, row in enumerate(rows, start=2):
+        clean: dict[str, str] = {}
+        row_field_changes = 0
+        for field in REQUIRED_COLUMNS:
+            raw_value = "" if row.get(field) is None else str(row.get(field))
+            normalized_value = _normalize_review_field(field=field, value=raw_value, row_number=row_number)
+            clean[field] = normalized_value
+            if normalized_value != raw_value.strip():
+                row_field_changes += 1
+        if row_field_changes:
+            normalized_row_total += 1
+            normalized_field_total += row_field_changes
+        normalized_rows.append(clean)
+    return normalized_rows, normalized_row_total, normalized_field_total
+
+
 def _split_first(text: str, delimiter: str) -> tuple[str, str]:
     left, found, right = str(text or "").partition(delimiter)
     if not found:
@@ -155,16 +216,16 @@ def _parse_contact_block(value: str) -> tuple[str, str]:
     source = label or target
     website, contact_head = _split_first(source, ",")
     contact_name = " ".join(part for part in [contact_head, tail] if part).strip()
-    return website, contact_name
+    return contact_normalization.normalize_website(website), contact_normalization.normalize_contact_name(contact_name)
 
 
 def _parse_email_block(value: str) -> str:
     label, target, _tail = _parse_markdownish_field(value)
     if label and "@" in label:
-        return label.strip()
+        return contact_normalization.normalize_email(label)
     if target.lower().startswith("mailto:"):
-        return target.split(":", 1)[1].strip()
-    return label.strip() or target.strip()
+        return contact_normalization.normalize_email(target.split(":", 1)[1].strip())
+    return contact_normalization.normalize_email(label.strip() or target.strip())
 
 
 def _parse_source_blob(value: str) -> tuple[str, str, str]:
@@ -821,10 +882,17 @@ def _import_review_file(
     except Exception as exc:
         print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
         return 2, "INVALID_INPUT"
+    try:
+        rows, normalized_rows_total, normalized_fields_total = _normalize_review_rows(rows)
+    except Exception as exc:
+        print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
+        return 2, "INVALID_INPUT"
 
     now_iso = crm_store.utc_now_iso()
     source_hash = _sha256_file(input_path)
     _emit("AI_ASSIST_IMPORT_SOURCE_FILE_HASH", source_hash)
+    _emit("AI_ASSIST_IMPORT_NORMALIZED_ROWS", normalized_rows_total)
+    _emit("AI_ASSIST_IMPORT_NORMALIZED_FIELDS", normalized_fields_total)
 
     conn: sqlite3.Connection | None = None
     claim_state = "dry_run"
