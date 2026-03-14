@@ -414,7 +414,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
   -ProspectEnrichDomainEnabled 1 `
-  -ProspectEnrichAllowRoleInbox 0 `
+  -ProspectEnrichMaxSitesPerRun 25 `
+  -ProspectEnrichHttpSleepMs 750 `
   -ApolloApiKey <your_apollo_api_key> `
   -ApolloEnrichEnabled 1 `
   -ApolloEnrichMaxPerRun 50 `
@@ -430,7 +431,7 @@ This script:
 - Ensures `SIGNAL_FRESHNESS_MAX_DAYS` is set to `30` when missing (or to your explicit parameter value)
 - Ensures triage model defaults `AI_TRIAGE_ENABLED=0` and `AI_TRIAGE_OPENAI_MODEL=gpt-4.1-mini`
 - Ensures `OUTREACH_FALLBACK_ON_EMPTY_STATE` default `0` and `OUTREACH_SKIP_ROLE_INBOXES` default `1`
-- Ensures prospect enrichment defaults include `PROSPECT_ENRICH_DOMAIN_ENABLED=0`, `PROSPECT_ENRICH_HUNTER_ENABLED=0`, and `PROSPECT_ENRICH_ALLOW_ROLE_INBOX=0`
+- Ensures prospect enrichment defaults include `PROSPECT_ENRICH_DOMAIN_ENABLED=0`, `PROSPECT_ENRICH_HUNTER_ENABLED=0`, `PROSPECT_ENRICH_MAX_SITES_PER_RUN=25`, and `PROSPECT_ENRICH_HTTP_SLEEP_MS=750`
 - Ensures trial defaults `TRIAL_SENDS_LIMIT_DEFAULT`, `TRIAL_EXPIRED_BEHAVIOR_DEFAULT`, and optional `TRIAL_CONVERSION_URL` are managed in the same no-editor flow
 - Re-encrypts `.env.sops` on save
 - Refuses to run when `.env.sops` is staged (`ERR_ENV_SOPS_STAGED`)
@@ -518,7 +519,7 @@ Auto-growth (env-gated, optional):
 - Crawl4AI runtime keys (optional, default zero-cost): `PROSPECT_AUTOGROW_LLM_ENABLED` (default `0`), `PROSPECT_AUTOGROW_BCSP_CREDENTIALS`, `PROSPECT_AUTOGROW_BCSP_INDUSTRY`, `PROSPECT_AUTOGROW_STATE_LIC_TX_LICENSE_TYPES`.
 - OHS optional auth key (only if buyersguide pagination is work-email gated): `OHS_BG_STORAGE_STATE_PATH` (Playwright storage state JSON path).
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
-- Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_ALLOW_ROLE_INBOX` (default `0`), `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_MAX_PAGES_PER_SITE` (default `5`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (default `750`; when unset, falls back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`).
+- Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (canonical persisted default `750` via `scripts\set_outreach_env.ps1`; ad hoc runs fall back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS` when unset).
 - Source scope: implemented tokens are `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`; canonical production list is `AIHA,OHS_BG,STATE_LIC`, while `BCSP` remains disabled there until it yields net-new accepted rows).
 - Planned-but-unimplemented registry tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are rejected intentionally by `scripts\set_outreach_env.ps1` and `outreach\run_prospect_generation.py` until source modules land.
 - Cache paths:

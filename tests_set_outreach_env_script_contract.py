@@ -45,6 +45,8 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "ProspectAutoGrowBacklogTarget",
             "ProspectAutoGrowMaxFetchPagesPerRun",
             "ProspectAutoGrowHttpSleepMs",
+            "ProspectEnrichMaxSitesPerRun",
+            "ProspectEnrichHttpSleepMs",
             "ApolloApiKey",
             "ApolloEnrichEnabled",
             "ApolloEnrichMaxPerRun",
@@ -146,6 +148,12 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("apollo_person_locations_mode=", text)
         self.assertIn("task_sched_user=", text)
         self.assertIn("task_sched_password_present=", text)
+        self.assertIn("PROSPECT_ENRICH_MAX_SITES_PER_RUN", text)
+        self.assertIn("PROSPECT_ENRICH_HTTP_SLEEP_MS", text)
+        self.assertIn("prospect_enrich_max_sites_per_run=", text)
+        self.assertIn("prospect_enrich_http_sleep_ms=", text)
+        self.assertIn("invalid_ProspectEnrichMaxSitesPerRun", text)
+        self.assertIn("invalid_ProspectEnrichHttpSleepMs", text)
         self.assertIn("TASK_SCHED_USER", text)
         self.assertIn("TASK_SCHED_PASSWORD", text)
         self.assertIn("RUNTIME_ROLE", text)

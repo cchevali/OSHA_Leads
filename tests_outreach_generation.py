@@ -106,6 +106,8 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
             self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL", out)
             self.assertIn("GENERATOR_APOLLO_ENABLED=0", out)
+            self.assertIn("GENERATOR_ENRICH_MAX_SITES_PER_RUN=25", out)
+            self.assertIn("GENERATOR_ENRICH_HTTP_SLEEP_MS=800", out)
             self.assertFalse(out_path.exists(), msg="--print-config must not write output")
 
     def test_print_config_defaults_autogrow_states_to_tx_ca_fl(self):
@@ -1771,6 +1773,79 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_DEFAULT_SEND_ELIGIBLE_TOTAL=14", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=STATE_LIC state=TX", out)
             self.assertIn("backlog_credit=0", out)
+
+    def test_generator_passes_enrich_cap_and_sleep_config(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            state_lic_result = {
+                "rows": [
+                    {
+                        "firm": "BASSETT ELECTRIC LLC",
+                        "contact_name": "JOHN BASSETT",
+                        "email": "",
+                        "contact_email": "",
+                        "state": "TX",
+                        "city": "Houston",
+                        "title": "Electrical Contractor",
+                        "source": "STATE_LIC",
+                        "website": "",
+                    }
+                ],
+                "cache_path": data_dir / "prospect_generation" / "cache" / "state_lic" / "state_TX.json",
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "SOCRATA",
+                "diagnostics_path": None,
+            }
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "STATE_LIC",
+                "PROSPECT_ENRICH_DOMAIN_ENABLED": "1",
+                "PROSPECT_ENRICH_MAX_SITES_PER_RUN": "3",
+                "PROSPECT_ENRICH_HTTP_SLEEP_MS": "123",
+            }
+            buf = io.StringIO()
+            enrich_out = {
+                "rows": list(state_lic_result["rows"]),
+                "metrics": {
+                    "attempted": 0,
+                    "domain_resolved": 0,
+                    "email_guessed": 0,
+                    "hunter_attempted": 0,
+                    "hunter_verified": 0,
+                    "hunter_no_match": 0,
+                    "hunter_error": 0,
+                    "still_no_email": 0,
+                    "hunter_skipped_cap": 0,
+                    "skipped_max_sites": 0,
+                },
+                "diagnostics": [],
+            }
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_state_lic.fetch_state_lic_state_rows",
+                    return_value=state_lic_result,
+                ):
+                    with mock.patch(
+                        "outreach.run_prospect_generation.prospect_enrich_email.enrich_autogrow_rows",
+                        return_value=enrich_out,
+                    ) as enrich_mock:
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
+            self.assertEqual(rc, 0)
+            enrich_kwargs = enrich_mock.call_args.kwargs
+            self.assertEqual(enrich_kwargs["max_sites_per_run"], 3)
+            self.assertEqual(enrich_kwargs["sleep_ms"], 123)
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_ENRICH_MAX_SITES_PER_RUN=3", out)
+            self.assertIn("GENERATOR_ENRICH_HTTP_SLEEP_MS=123", out)
 
     def test_bcsp_source_emits_tokens(self):
         from outreach import run_prospect_generation as generator

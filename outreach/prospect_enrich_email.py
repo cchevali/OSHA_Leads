@@ -251,6 +251,7 @@ def enrich_autogrow_rows(
     domain_enabled: bool,
     hunter_enabled: bool,
     hunter_api_key: str,
+    max_sites_per_run: int | None = None,
     sleep_ms: int,
     hunter_usage_path: Path,
     head_fetcher=None,
@@ -268,6 +269,7 @@ def enrich_autogrow_rows(
         "hunter_error": 0,
         "still_no_email": 0,
         "hunter_skipped_cap": 0,
+        "skipped_max_sites": 0,
     }
     diagnostics: list[dict[str, Any]] = []
 
@@ -279,6 +281,12 @@ def enrich_autogrow_rows(
     domain_cache: dict[str, dict[str, Any]] = {}
     head_calls = 0
     hunter_calls = 0
+    resolved_max_sites: int | None = None
+    if max_sites_per_run is not None:
+        try:
+            resolved_max_sites = max(0, int(max_sites_per_run))
+        except Exception:
+            resolved_max_sites = 0
     hunter_usage = _read_hunter_usage(hunter_usage_path, now_utc=now_utc) if hunter_enabled else {"month": _current_month_key(now_utc), "calls": 0}
     hunter_key_present = bool(_normalize_text(hunter_api_key))
 
@@ -286,6 +294,9 @@ def enrich_autogrow_rows(
         firm = _normalize_text(row.get("firm") or row.get("company_name") or "")
         current_email = _normalize_email(row.get("email") or row.get("contact_email") or "")
         if not firm or _valid_email(current_email):
+            continue
+        if resolved_max_sites is not None and metrics["attempted"] >= resolved_max_sites:
+            metrics["skipped_max_sites"] += 1
             continue
 
         metrics["attempted"] += 1
