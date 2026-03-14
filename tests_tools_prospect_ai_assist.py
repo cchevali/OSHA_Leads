@@ -568,6 +568,68 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertEqual(rc, 0, msg=out.getvalue())
             self.assertIn("PASS_AI_ASSIST_IMPORT status=SKIPPED_ALREADY_COMPLETED", out.getvalue())
 
+    def test_completed_tracked_malformed_file_skips_before_normalization(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            db_path = data_dir / "crm.sqlite"
+            input_path = tmp / "prospect_ai_assist_review_20260312_reviewed.csv"
+            self._write_review_csv(
+                input_path,
+                [
+                    {
+                        "state": "TX",
+                        "decision": "accept",
+                        "firm": "SafeCo",
+                        "website": "https://safeco.example.com",
+                        "contact_name": "Taylor Safe",
+                        "title": "Owner",
+                        "email": "taylor@safeco.example.com",
+                        "source_urls": "https://safeco.example.com/contact",
+                        "confidence": "92",
+                        "evidence_snippet": "Broken [http",
+                    }
+                ],
+            )
+
+            conn = crm_store.connect(db_path)
+            try:
+                crm_store.init_schema(conn)
+                conn.execute(
+                    f"""
+                    INSERT INTO {crm_store.AI_ASSIST_IMPORT_BATCH_TABLE}(
+                        batch_id, source_path, source_filename, source_file_hash, status, started_at,
+                        completed_at, last_error, candidates_total, accepted_total, rejected_total,
+                        verified_total, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, '', 1, 1, 0, 1, ?, ?)
+                    """,
+                    (
+                        "2026-03-12_AIASSIST",
+                        str(input_path),
+                        input_path.name,
+                        import_tool._sha256_file(input_path),
+                        "completed",
+                        "2026-03-12T00:00:00+00:00",
+                        "2026-03-12T00:01:00+00:00",
+                        "2026-03-12T00:00:00+00:00",
+                        "2026-03-12T00:01:00+00:00",
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            out = io.StringIO()
+            err = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out), redirect_stderr(err):
+                rc = import_tool.main(["--input", str(input_path), "--batch", "2026-03-12_AIASSIST"])
+
+            self.assertEqual(rc, 0, msg=out.getvalue() + err.getvalue())
+            self.assertIn("PASS_AI_ASSIST_IMPORT status=SKIPPED_ALREADY_COMPLETED", out.getvalue())
+            self.assertNotIn("ERR_AI_ASSIST_IMPORT_INPUT", err.getvalue())
+
     def test_batch_hash_drift_fails_fast(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

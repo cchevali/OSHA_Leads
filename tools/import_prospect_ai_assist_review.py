@@ -561,6 +561,24 @@ def _load_batch_tracking_row(conn: sqlite3.Connection | None, batch_id: str) -> 
     ).fetchone()
 
 
+def _tracked_batch_state(
+    conn: sqlite3.Connection | None,
+    *,
+    batch_id: str,
+    source_hash: str,
+) -> tuple[str, sqlite3.Row | None]:
+    existing_row = _load_batch_tracking_row(conn, batch_id)
+    if existing_row is None:
+        return "", None
+    existing_hash = str(existing_row["source_file_hash"] or "").strip()
+    if existing_hash and existing_hash != source_hash:
+        raise ValueError(
+            f"{ERR_AI_ASSIST_IMPORT_DRIFT} batch_id={batch_id} "
+            f"expected_hash={existing_hash} got_hash={source_hash}"
+        )
+    return _batch_claim_state(existing_row, _utc_now()), existing_row
+
+
 def _batch_preview(rows: list[dict[str, str]]) -> tuple[set[str], Counter]:
     candidate_keys: set[str] = set()
     totals: Counter = Counter()
@@ -641,15 +659,11 @@ def _begin_batch_tracking(
     source_hash: str,
     now_iso: str,
 ) -> tuple[str, sqlite3.Row | None]:
-    existing_row = _load_batch_tracking_row(conn, batch_id)
-    if existing_row is not None:
-        existing_hash = str(existing_row["source_file_hash"] or "").strip()
-        if existing_hash and existing_hash != source_hash:
-            raise ValueError(
-                f"{ERR_AI_ASSIST_IMPORT_DRIFT} batch_id={batch_id} "
-                f"expected_hash={existing_hash} got_hash={source_hash}"
-            )
-    claim_state = _batch_claim_state(existing_row, _utc_now())
+    claim_state, existing_row = _tracked_batch_state(
+        conn,
+        batch_id=batch_id,
+        source_hash=source_hash,
+    )
     if claim_state in {"skip_completed", "skip_in_progress"}:
         return claim_state, existing_row
 
@@ -877,22 +891,8 @@ def _import_review_file(
         print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail=missing_input path={input_path}", file=sys.stderr)
         return 2, "MISSING_INPUT"
 
-    try:
-        rows = _load_csv_rows(input_path)
-    except Exception as exc:
-        print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
-        return 2, "INVALID_INPUT"
-    try:
-        rows, normalized_rows_total, normalized_fields_total = _normalize_review_rows(rows)
-    except Exception as exc:
-        print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
-        return 2, "INVALID_INPUT"
-
-    now_iso = crm_store.utc_now_iso()
     source_hash = _sha256_file(input_path)
     _emit("AI_ASSIST_IMPORT_SOURCE_FILE_HASH", source_hash)
-    _emit("AI_ASSIST_IMPORT_NORMALIZED_ROWS", normalized_rows_total)
-    _emit("AI_ASSIST_IMPORT_NORMALIZED_FIELDS", normalized_fields_total)
 
     conn: sqlite3.Connection | None = None
     claim_state = "dry_run"
@@ -905,6 +905,41 @@ def _import_review_file(
                 crm_store.ensure_database(db_path)
             conn = crm_store.connect(db_path)
             crm_store.init_schema(conn)
+
+        if conn is not None:
+            try:
+                tracked_state, _existing_tracking_row = _tracked_batch_state(
+                    conn,
+                    batch_id=batch_id,
+                    source_hash=source_hash,
+                )
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2, "DRIFT"
+            if tracked_state in {"skip_completed", "skip_in_progress"}:
+                _emit("AI_ASSIST_IMPORT_NORMALIZED_ROWS", 0)
+                _emit("AI_ASSIST_IMPORT_NORMALIZED_FIELDS", 0)
+                _emit("AI_ASSIST_IMPORT_BATCH_STATE", tracked_state)
+                if tracked_state == "skip_completed":
+                    print(f"{PASS_AI_ASSIST_IMPORT} status=SKIPPED_ALREADY_COMPLETED")
+                    return 0, "SKIPPED_ALREADY_COMPLETED"
+                print(f"{PASS_AI_ASSIST_IMPORT} status=SKIPPED_IN_PROGRESS")
+                return 0, "SKIPPED_IN_PROGRESS"
+
+        try:
+            rows = _load_csv_rows(input_path)
+        except Exception as exc:
+            print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
+            return 2, "INVALID_INPUT"
+        try:
+            rows, normalized_rows_total, normalized_fields_total = _normalize_review_rows(rows)
+        except Exception as exc:
+            print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
+            return 2, "INVALID_INPUT"
+
+        now_iso = crm_store.utc_now_iso()
+        _emit("AI_ASSIST_IMPORT_NORMALIZED_ROWS", normalized_rows_total)
+        _emit("AI_ASSIST_IMPORT_NORMALIZED_FIELDS", normalized_fields_total)
 
         if not dry_run and conn is not None:
             legacy_totals = _legacy_completed_batch_totals(conn, batch_id, rows)
