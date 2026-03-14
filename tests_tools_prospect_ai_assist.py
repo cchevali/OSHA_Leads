@@ -50,6 +50,11 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertIn("AI_ASSIST_DUMP_GAP_TOTAL=5", text)
             self.assertIn("AI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL=3", text)
             self.assertIn("MANUAL AI-ASSIST DISCOVERY AUGMENTATION", text)
+            self.assertIn("Return standard CSV only.", text)
+            self.assertIn("VALID ACCEPT EXAMPLE", text)
+            self.assertIn("VALID REJECT EXAMPLE", text)
+            self.assertIn("INVALID EXAMPLE - DO NOT RETURN ANYTHING LIKE THIS", text)
+            self.assertIn("No markdown links, no mailto links, no", text)
             self.assertFalse((data_dir / "audits" / "ai_assist" / "prospect_ai_assist_review_20260307.txt").exists())
 
     def test_dump_print_config_uses_default_max_rows_per_state_when_unset(self):
@@ -300,6 +305,141 @@ class TestProspectAiAssistTools(unittest.TestCase):
             )
             self.assertEqual(str(row["confidence"] or ""), "90")
             self.assertIn("Homepage says Jim established Cal Safety Solution in 2018", str(row["evidence_snippet"] or ""))
+
+    def test_normalize_review_rows_repairs_quoted_markdown_cells(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            input_path = tmp / "prospect_ai_assist_review_20260313_reviewed.csv"
+            self._write_review_csv(
+                input_path,
+                [
+                    {
+                        "state": "TX",
+                        "decision": "accept",
+                        "firm": "Berg Compliance Solutions",
+                        "website": "[https://bes-corp.com/",
+                        "contact_name": "Russell](https://bes-corp.com/%22,%22Russell) Carr",
+                        "title": "Founder & CEO",
+                        "email": "[rcarr@bes-corp.com](mailto:rcarr@bes-corp.com)",
+                        "source_urls": "[https://bes-corp.com/contact-us/our-team/|https://bes-corp.com/osha-texas-compliance-basics/](https://bes-corp.com/contact-us/our-team/|https://bes-corp.com/osha-texas-compliance-basics/)",
+                        "confidence": "95",
+                        "evidence_snippet": "Team page lists Russell Carr as Founder & CEO; business email shown.",
+                    }
+                ],
+            )
+
+            rows = import_tool._load_csv_rows(input_path)
+            normalized_rows, normalized_row_total, normalized_field_total = import_tool._normalize_review_rows(rows)
+
+            self.assertEqual(normalized_row_total, 1)
+            self.assertEqual(normalized_field_total, 4)
+            row = normalized_rows[0]
+            self.assertEqual(str(row["website"] or ""), "https://bes-corp.com")
+            self.assertEqual(str(row["contact_name"] or ""), "Russell Carr")
+            self.assertEqual(str(row["email"] or ""), "rcarr@bes-corp.com")
+            self.assertEqual(
+                str(row["source_urls"] or ""),
+                "https://bes-corp.com/contact-us/our-team/|https://bes-corp.com/osha-texas-compliance-basics/",
+            )
+
+    def test_import_rejects_unrepairable_markdown_email_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            input_path = tmp / "prospect_ai_assist_review_20260313_reviewed.csv"
+            self._write_review_csv(
+                input_path,
+                [
+                    {
+                        "state": "TX",
+                        "decision": "accept",
+                        "firm": "Broken Co",
+                        "website": "https://broken.example.com",
+                        "contact_name": "Broken Person",
+                        "title": "Owner",
+                        "email": "[owner@broken.example.com](mailto:other@broken.example.com)",
+                        "source_urls": "https://broken.example.com/contact",
+                        "confidence": "95",
+                        "evidence_snippet": "Owner listed on site",
+                    }
+                ],
+            )
+
+            out = io.StringIO()
+            err = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out), redirect_stderr(err):
+                rc = import_tool.main(["--input", str(input_path), "--dry-run", "--batch", "2026-03-13_AIASSIST"])
+
+            self.assertEqual(rc, 2, msg=out.getvalue() + err.getvalue())
+            self.assertIn("ERR_AI_ASSIST_IMPORT_INPUT detail=malformed_row row=2 field=email", err.getvalue())
+
+    def test_import_normalizes_quoted_markdown_rows_before_seed_and_audit(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            db_path = data_dir / "crm.sqlite"
+            input_path = tmp / "prospect_ai_assist_review_20260313_reviewed.csv"
+            self._write_review_csv(
+                input_path,
+                [
+                    {
+                        "state": "TX",
+                        "decision": "accept",
+                        "firm": "Berg Compliance Solutions",
+                        "website": "[https://bes-corp.com/",
+                        "contact_name": "Russell](https://bes-corp.com/%22,%22Russell) Carr",
+                        "title": "Founder & CEO",
+                        "email": "[rcarr@bes-corp.com](mailto:rcarr@bes-corp.com)",
+                        "source_urls": "[https://bes-corp.com/contact-us/our-team/|https://bes-corp.com/osha-texas-compliance-basics/](https://bes-corp.com/contact-us/our-team/|https://bes-corp.com/osha-texas-compliance-basics/)",
+                        "confidence": "95",
+                        "evidence_snippet": "Team page lists Russell Carr as Founder & CEO; business email shown.",
+                    }
+                ],
+            )
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
+                rc = import_tool.main(["--input", str(input_path), "--batch", "2026-03-13_AIASSIST"])
+
+            output = out.getvalue()
+            self.assertEqual(rc, 0, msg=output)
+            self.assertIn("AI_ASSIST_IMPORT_NORMALIZED_ROWS=1", output)
+            self.assertIn("AI_ASSIST_IMPORT_NORMALIZED_FIELDS=4", output)
+            self.assertIn("PASS_AI_ASSIST_IMPORT status=OK", output)
+
+            conn = crm_store.connect(db_path)
+            try:
+                prospect = conn.execute(
+                    """
+                    SELECT website, contact_name, email
+                    FROM prospects
+                    WHERE email = 'rcarr@bes-corp.com'
+                    """
+                ).fetchone()
+                audit = conn.execute(
+                    f"""
+                    SELECT website, contact_name, email, source_urls_json
+                    FROM {crm_store.AI_ASSIST_CANDIDATE_TABLE}
+                    WHERE batch_id = '2026-03-13_AIASSIST'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+            self.assertEqual(str(prospect[0] or ""), "https://bes-corp.com")
+            self.assertEqual(str(prospect[1] or ""), "Russell Carr")
+            self.assertEqual(str(prospect[2] or ""), "rcarr@bes-corp.com")
+            self.assertEqual(str(audit[0] or ""), "https://bes-corp.com")
+            self.assertEqual(str(audit[1] or ""), "Russell Carr")
+            self.assertEqual(str(audit[2] or ""), "rcarr@bes-corp.com")
+            self.assertEqual(
+                str(audit[3] or ""),
+                "[\"https://bes-corp.com/contact-us/our-team/\", \"https://bes-corp.com/osha-texas-compliance-basics/\"]",
+            )
 
     def test_pending_import_discovers_only_reviewed_csvs_oldest_first(self):
         with tempfile.TemporaryDirectory() as d:
