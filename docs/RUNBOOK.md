@@ -500,8 +500,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_a
 Operating rules:
 
 - The dump file lives under `${DATA_DIR}\audits\ai_assist\` (or `.\out\audits\ai_assist\`) and contains the exact CSV schema to return.
-- Review happens outside the repo; only the reviewed CSV is imported.
+- Review happens outside the repo; the reviewed file must keep the canonical name `prospect_ai_assist_review_YYYYMMDD_reviewed.csv` under `${DATA_DIR}\audits\ai_assist\` for pending auto-pickup.
+- External `reviewed_cleaned.csv` sidecars are not part of the intended workflow; the importer now normalizes known AI-output markdown/mailto artifacts in memory and fails fast on ambiguous malformed rows.
 - Import verifies domain/email shape, blocks free personal domains, enforces suppression and `do_not_contact`, dedupes against CRM and within the batch, audits every row, and only upserts verified accepts through the existing discovery/CRM contract.
+- Auto-pickup depends on the next live `run_prospect_replenish_daily.py` slot or an explicit manual import, not on the weekday name alone.
 - This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
 
 No-arg generation output path:

@@ -6,6 +6,8 @@ from typing import Callable
 
 import requests
 
+from outreach import contact_normalization
+
 
 SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
 ENRICH_URL = "https://api.apollo.io/api/v1/people/bulk_match"
@@ -116,14 +118,11 @@ def _normalize_state(value: str) -> str:
 
 
 def _normalize_email(value: str) -> str:
-    return str(value or "").strip().lower()
+    return contact_normalization.normalize_email(value)
 
 
 def _email_domain(email: str) -> str:
-    e = _normalize_email(email)
-    if "@" not in e:
-        return ""
-    return e.split("@", 1)[1].strip().lower()
+    return contact_normalization.email_domain(email)
 
 
 def _default_post_json(url: str, payload: dict, api_key: str) -> tuple[int, dict]:

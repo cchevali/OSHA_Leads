@@ -10,6 +10,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from outreach import contact_normalization
 from outreach import scraper_engine
 
 
@@ -167,19 +168,11 @@ def _normalize_text(value: str) -> str:
 
 
 def _normalize_email(value: str) -> str:
-    return _normalize_text(value).lower()
+    return contact_normalization.normalize_email(value)
 
 
 def _valid_email(value: str) -> bool:
-    email = _normalize_email(value)
-    if "@" not in email:
-        return False
-    local, _, domain = email.partition("@")
-    if not local or not domain or "." not in domain:
-        return False
-    if domain.startswith(".") or domain.endswith("."):
-        return False
-    return True
+    return contact_normalization.valid_email(value)
 
 
 def _normalize_state(value: str) -> str:
@@ -204,10 +197,7 @@ def _domain_from_website(value: str) -> str:
 
 
 def _email_domain(value: str) -> str:
-    email = _normalize_email(value)
-    if "@" not in email:
-        return ""
-    return email.split("@", 1)[1]
+    return contact_normalization.email_domain(value)
 
 
 def _domain_matches_any(host: str, domains: set[str]) -> bool:
