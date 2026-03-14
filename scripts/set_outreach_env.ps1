@@ -8,6 +8,7 @@ param(
   [Nullable[int]] $ProspectAutoGrowEnabled = $null,
   [Nullable[int]] $ProspectAutoGrowSafetyNetEnabled = $null,
   [Nullable[int]] $ProspectAiAssistReviewEnabled = $null,
+  [Nullable[int]] $ProspectAiAssistMaxRowsPerState = $null,
   [string] $ProspectAutoGrowStates = '',
   [string] $ProspectAutoGrowSources = '',
   [Nullable[int]] $ProspectAutoGrowBacklogTarget = $null,
@@ -378,6 +379,7 @@ try {
     'ProspectAutoGrowEnabled',
     'ProspectAutoGrowSafetyNetEnabled',
     'ProspectAiAssistReviewEnabled',
+    'ProspectAiAssistMaxRowsPerState',
     'ProspectAutoGrowStates',
     'ProspectAutoGrowSources',
     'ProspectAutoGrowBacklogTarget',
@@ -455,6 +457,9 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewEnabled') -and $ProspectAiAssistReviewEnabled -notin @(0, 1)) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAiAssistReviewEnabled'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectAiAssistMaxRowsPerState') -and $ProspectAiAssistMaxRowsPerState -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAiAssistMaxRowsPerState'
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowBacklogTarget') -and $ProspectAutoGrowBacklogTarget -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowBacklogTarget'
@@ -675,6 +680,8 @@ try {
       Write-Output ('outreach_skip_role_inboxes=' + $outreachSkipRoleInboxesValue)
       $prospectAiAssistReviewEnabledValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_ENABLED') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_ENABLED']).Trim() } else { '1' }
       Write-Output ('prospect_ai_assist_review_enabled=' + $prospectAiAssistReviewEnabledValue)
+      $prospectAiAssistMaxRowsPerStateValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE') { ([string]$printMap['PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE']).Trim() } else { '40' }
+      Write-Output ('prospect_ai_assist_max_rows_per_state=' + $prospectAiAssistMaxRowsPerStateValue)
       $aiTriageEnabledValue = '0'
       if (Map-HasValue $printMap 'AI_TRIAGE_ENABLED') {
         $rawAiEnabled = ([string]$printMap['AI_TRIAGE_ENABLED']).Trim().ToLowerInvariant()
@@ -834,6 +841,12 @@ try {
       Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_REVIEW_ENABLED' -Value '1' -TouchedList $touched
     }
 
+    if ($PSBoundParameters.ContainsKey('ProspectAiAssistMaxRowsPerState')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE' -Value ([string]$ProspectAiAssistMaxRowsPerState) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE' -Value '40' -TouchedList $touched
+    }
+
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowStates')) {
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_STATES' -Value (Normalize-OutreachStates $ProspectAutoGrowStates) -TouchedList $touched
     }
@@ -849,7 +862,7 @@ try {
       }
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SOURCES' -Value ($srcTokens -join ',') -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_SOURCES')) {
-      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SOURCES' -Value 'AIHA,OHS_BG' -TouchedList $touched
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SOURCES' -Value 'AIHA,OHS_BG,STATE_LIC' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowBacklogTarget')) {

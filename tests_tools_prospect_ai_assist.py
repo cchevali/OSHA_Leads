@@ -52,6 +52,32 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertIn("MANUAL AI-ASSIST DISCOVERY AUGMENTATION", text)
             self.assertFalse((data_dir / "audits" / "ai_assist" / "prospect_ai_assist_review_20260307.txt").exists())
 
+    def test_dump_print_config_uses_default_max_rows_per_state_when_unset(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            db_path = data_dir / "crm.sqlite"
+            conn = crm_store.connect(db_path)
+            try:
+                crm_store.init_schema(conn)
+            finally:
+                conn.close()
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "45"
+            env.pop("PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE", None)
+            with mock.patch.dict(os.environ, env, clear=True), redirect_stdout(out):
+                rc = dump_tool.main(["--print-config", "--for-date", "2026-03-07"])
+
+            self.assertEqual(rc, 0)
+            text = out.getvalue()
+            self.assertIn("AI_ASSIST_DUMP_MAX_ROWS_PER_STATE=40", text)
+            self.assertIn("AI_ASSIST_DUMP_GAP_TOTAL=45", text)
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL=40", text)
+
     def test_import_dry_run_does_not_create_db(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

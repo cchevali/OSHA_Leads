@@ -265,12 +265,75 @@ def _build_page_url(state: str, credential: str, offset: int) -> str:
     return f"{SEARCH_URL}?{urlencode(params)}"
 
 
-def doctor_probe_bcsp(timeout_sec: int = 10) -> dict[str, Any]:
+def probe_bcsp_state_search(
+    state: str = "TX",
+    credential: str = "CSP",
+    timeout_sec: int = 10,
+) -> dict[str, Any]:
+    state_norm = _normalize_text(state).upper() or "TX"
+    credential_norm = _normalize_text(credential) or "CSP"
+    url = _build_page_url(state_norm, credential_norm, 0)
     try:
-        resp = requests.get(BASE_URL, timeout=timeout_sec, headers={"User-Agent": USER_AGENT})
-        return {"ok": int(resp.status_code) == 200, "status": int(resp.status_code), "url": BASE_URL}
+        resp = requests.get(url, timeout=timeout_sec, headers={"User-Agent": USER_AGENT})
     except Exception as exc:
-        return {"ok": False, "status": 0, "url": BASE_URL, "error": f"{type(exc).__name__}:{exc}"}
+        return {
+            "ok": False,
+            "status": 0,
+            "url": url,
+            "reason": "request_failed",
+            "error": f"{type(exc).__name__}:{exc}",
+        }
+    status = int(resp.status_code)
+    if status != 200:
+        return {
+            "ok": False,
+            "status": status,
+            "url": url,
+            "reason": f"http_status_{status}",
+        }
+
+    html = str(resp.text or "")
+    rows, parse_mode = parse_bcsp_page(
+        html,
+        state=state_norm,
+        page_ref=f"credential={credential_norm}&start_on_page=0",
+    )
+    raw_listing_count = len(_listing_nodes(BeautifulSoup(html, "html.parser")))
+    if rows:
+        return {
+            "ok": True,
+            "status": status,
+            "url": url,
+            "reason": "state_search_ok",
+            "parse_mode": parse_mode,
+            "rows_found": len(rows),
+            "raw_listing_count": raw_listing_count,
+        }
+    if raw_listing_count > 0:
+        return {
+            "ok": False,
+            "status": status,
+            "url": url,
+            "reason": "unfiltered_global_results",
+            "parse_mode": parse_mode,
+            "rows_found": 0,
+            "raw_listing_count": raw_listing_count,
+            "error": "state_query_not_respected",
+        }
+    return {
+        "ok": False,
+        "status": status,
+        "url": url,
+        "reason": "parse_failed",
+        "parse_mode": parse_mode,
+        "rows_found": 0,
+        "raw_listing_count": raw_listing_count,
+        "error": "no_state_rows_parsed",
+    }
+
+
+def doctor_probe_bcsp(timeout_sec: int = 10) -> dict[str, Any]:
+    return probe_bcsp_state_search(timeout_sec=timeout_sec)
 
 
 def fetch_bcsp_state_rows(

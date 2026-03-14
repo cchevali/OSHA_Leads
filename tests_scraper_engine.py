@@ -18,6 +18,16 @@ class TestScraperEngine(unittest.TestCase):
         self.assertIn("jane@example.com", result["emails"])
         self.assertTrue(any("555" in p for p in result["phones"]))
 
+    def test_probe_source_availability_bcsp_uses_state_search_probe(self):
+        with mock.patch(
+            "outreach.prospect_sources_bcsp.doctor_probe_bcsp",
+            return_value={"ok": False, "reason": "unfiltered_global_results", "status": 200, "rows_found": 0},
+        ):
+            result = scraper_engine.probe_source_availability("BCSP")
+        self.assertFalse(result["available"])
+        self.assertEqual(result["reason"], "unfiltered_global_results")
+        self.assertEqual(result["rows_found"], 0)
+
     def test_extract_llm_optional_disabled_default(self):
         with mock.patch.dict(os.environ, {"PROSPECT_AUTOGROW_LLM_ENABLED": "0"}, clear=False):
             result = scraper_engine.extract_llm_optional("hello", instruction="extract rows")

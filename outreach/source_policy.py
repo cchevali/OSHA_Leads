@@ -115,6 +115,8 @@ def source_fit_defaults(source: str) -> tuple[str, int]:
     text = (source or "").strip().lower()
     if text.startswith("ai_assist_manual"):
         return "recoverable_consultant", 1
+    if text.startswith("state_lic_work_email"):
+        return "adjacent_contractor", 1
     if text.startswith("state_lic"):
         return "adjacent_contractor", 0
     if text.startswith("apollo"):
@@ -174,7 +176,7 @@ def autogrow_source_order(configured_tokens: Iterable[str]) -> list[str]:
 
 def counts_toward_consultant_backlog(source_token: str) -> bool:
     token = normalize_source_token(source_token)
-    return token in CONSULTANT_PRIMARY_SOURCES or token in CONSULTANT_OVERFLOW_SOURCES
+    return token == "STATE_LIC" or token in CONSULTANT_PRIMARY_SOURCES or token in CONSULTANT_OVERFLOW_SOURCES
 
 
 def is_secondary_source(source_token: str) -> bool:

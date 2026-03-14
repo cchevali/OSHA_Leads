@@ -18,7 +18,7 @@ from outreach import run_prospect_generation as generation
 from runtime_data_dir import resolve_data_dir
 
 ERR_AI_ASSIST_DUMP_CONFIG = "ERR_AI_ASSIST_DUMP_CONFIG"
-AI_ASSIST_DUMP_DEFAULT_MAX_ROWS_PER_STATE = 10
+AI_ASSIST_DUMP_DEFAULT_MAX_ROWS_PER_STATE = 40
 AI_ASSIST_DUMP_DEFAULT_BACKLOG_TARGET = 60
 AI_ASSIST_DUMP_DEFAULT_ENABLED = "1"
 

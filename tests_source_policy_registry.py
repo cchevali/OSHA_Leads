@@ -21,6 +21,11 @@ class TestSourcePolicyRegistry(unittest.TestCase):
         ordered = source_policy.autogrow_source_order(["STATE_LIC", "AIHA", "APOLLO"])
         self.assertEqual(ordered, ["AIHA", "APOLLO", "STATE_LIC"])
 
+    def test_state_lic_variant_defaults_and_backlog_credit(self):
+        self.assertEqual(source_policy.source_fit_defaults("STATE_LIC"), ("adjacent_contractor", 0))
+        self.assertEqual(source_policy.source_fit_defaults("STATE_LIC_WORK_EMAIL"), ("adjacent_contractor", 1))
+        self.assertTrue(source_policy.counts_toward_consultant_backlog("STATE_LIC"))
+
 
 if __name__ == "__main__":
     unittest.main()
