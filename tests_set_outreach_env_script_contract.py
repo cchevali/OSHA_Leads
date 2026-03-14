@@ -40,6 +40,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "ProspectAutoGrowEnabled",
             "ProspectAutoGrowSafetyNetEnabled",
             "ProspectAiAssistReviewEnabled",
+            "ProspectAiAssistMaxRowsPerState",
             "ProspectAutoGrowSources",
             "ProspectAutoGrowBacklogTarget",
             "ProspectAutoGrowMaxFetchPagesPerRun",
@@ -95,6 +96,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("PROSPECT_AUTOGROW_ENABLED", text)
         self.assertIn("PROSPECT_AUTOGROW_SAFETY_NET_ENABLED", text)
         self.assertIn("PROSPECT_AI_ASSIST_REVIEW_ENABLED", text)
+        self.assertIn("PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE", text)
         self.assertIn("PROSPECT_AUTOGROW_STATES", text)
         self.assertIn("PROSPECT_AUTOGROW_SOURCES", text)
         self.assertIn("autogrow_source_registry.json", text)
@@ -103,6 +105,8 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("OUTREACH_SKIP_ROLE_INBOXES", text)
         self.assertIn("outreach_skip_role_inboxes=", text)
         self.assertIn("prospect_ai_assist_review_enabled=", text)
+        self.assertIn("prospect_ai_assist_max_rows_per_state=", text)
+        self.assertIn("invalid_ProspectAiAssistMaxRowsPerState", text)
         self.assertIn("OHS_BG", text)
         self.assertIn("APOLLO", text)
         self.assertIn("unimplemented_ProspectAutoGrowSources", text)

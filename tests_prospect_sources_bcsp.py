@@ -77,6 +77,22 @@ class TestProspectSourcesBcsp(unittest.TestCase):
         self.assertEqual(len(result["rows"]), 1)
         self.assertEqual(result["rows"][0]["contact_name"], "Jane Doe")
 
+    def test_probe_state_search_reports_success_for_matching_state_rows(self):
+        response = type("Resp", (), {"status_code": 200, "text": self._read("page_tx_1.html")})()
+        with unittest.mock.patch("outreach.prospect_sources_bcsp.requests.get", return_value=response):
+            result = bcsp.probe_bcsp_state_search(state="TX", credential="CSP")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "state_search_ok")
+        self.assertEqual(result["rows_found"], 1)
+
+    def test_probe_state_search_reports_unfiltered_global_results(self):
+        response = type("Resp", (), {"status_code": 200, "text": self._read("page_tx_1.html")})()
+        with unittest.mock.patch("outreach.prospect_sources_bcsp.requests.get", return_value=response):
+            result = bcsp.probe_bcsp_state_search(state="CA", credential="CSP")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "unfiltered_global_results")
+        self.assertEqual(result["error"], "state_query_not_respected")
+
 
 if __name__ == "__main__":
     unittest.main()

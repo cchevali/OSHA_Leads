@@ -105,7 +105,20 @@ def probe_crawl4ai_runtime() -> dict[str, Any]:
 def probe_source_availability(source_key: str) -> dict[str, Any]:
     token = _normalize_text(source_key).upper()
     if token == "BCSP":
-        return {"source": token, "available": True, "reason": "http_html", "warn_token": ""}
+        from outreach import prospect_sources_bcsp
+
+        probe = prospect_sources_bcsp.doctor_probe_bcsp()
+        return {
+            "source": token,
+            "available": bool(probe.get("ok")),
+            "reason": str(probe.get("reason") or ("state_search_ok" if probe.get("ok") else "unknown")),
+            "warn_token": "",
+            "status": int(probe.get("status") or 0),
+            "url": str(probe.get("url") or ""),
+            "parse_mode": str(probe.get("parse_mode") or ""),
+            "rows_found": int(probe.get("rows_found") or 0),
+            "error": str(probe.get("error") or ""),
+        }
     if token == "OSHA_NEWS":
         runtime = probe_crawl4ai_runtime()
         if not runtime.get("crawl4ai_installed"):
