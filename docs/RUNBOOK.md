@@ -408,7 +408,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -ProspectAutoGrowEnabled 1 `
   -ProspectAutoGrowSafetyNetEnabled 1 `
   -ProspectAiAssistReviewEnabled 1 `
-  -ProspectAiAssistMaxRowsPerState 40 `
+  -ProspectAiAssistReviewRawTarget 30 `
+  -ProspectAiAssistReviewPacketSize 10 `
   -ProspectAutoGrowSources AIHA,OHS_BG,STATE_LIC `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
@@ -495,17 +496,27 @@ Recommended operator commands:
 cd C:\dev\OSHA_Leads
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1 --dry-run
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\reviewed_ai_assist.csv --batch 2026-03-07_AIASSIST
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_001_reviewed.csv --batch 2026-03-07_AIASSIST_P001
 ```
 
 Operating rules:
 
-- The dump file lives under `${DATA_DIR}\audits\ai_assist\` (or `.\out\audits\ai_assist\`) and contains the exact CSV schema to return.
-- Review happens outside the repo; the reviewed file must keep the canonical name `prospect_ai_assist_review_YYYYMMDD_reviewed.csv` under `${DATA_DIR}\audits\ai_assist\` for pending auto-pickup.
+- The dump writes a packet folder under `${DATA_DIR}\audits\ai_assist\YYYYMMDD_packets\` (or `.\out\audits\ai_assist\YYYYMMDD_packets\`) with `seed_packet_###.csv`, `prompt_research.txt`, `prompt_review.txt`, and `manifest.json`.
+- Default operator posture is: generate `30` raw firms, review them in `10`-firm packets, and import reviewed CSV only.
+- Review happens outside the repo, one packet at a time. Use the shared prompt files with each `seed_packet_###.csv`.
 - External `reviewed_cleaned.csv` sidecars are not part of the intended workflow; the importer now normalizes known AI-output markdown/mailto artifacts in memory and fails fast on ambiguous malformed rows.
 - Import verifies domain/email shape, blocks free personal domains, enforces suppression and `do_not_contact`, dedupes against CRM and within the batch, audits every row, and only upserts verified accepts through the existing discovery/CRM contract.
-- Auto-pickup depends on the next live `run_prospect_replenish_daily.py` slot or an explicit manual import, not on the weekday name alone.
+- Reviewed CSV import is explicit and manual. Replenishment never auto-imports reviewed AI-assist rows.
 - This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
+
+Packet review/import flow:
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_001_reviewed.csv --batch 2026-03-07_AIASSIST_P001
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_002_reviewed.csv --batch 2026-03-07_AIASSIST_P002
+```
 
 No-arg generation output path:
 
@@ -515,7 +526,7 @@ No-arg generation output path:
 
 Auto-growth (env-gated, optional):
 
-- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_STATES`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED`, `PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE`.
+- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_STATES`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED`, `PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET`, `PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE`.
 - Crawl4AI runtime keys (optional, default zero-cost): `PROSPECT_AUTOGROW_LLM_ENABLED` (default `0`), `PROSPECT_AUTOGROW_BCSP_CREDENTIALS`, `PROSPECT_AUTOGROW_BCSP_INDUSTRY`, `PROSPECT_AUTOGROW_STATE_LIC_TX_LICENSE_TYPES`.
 - OHS optional auth key (only if buyersguide pagination is work-email gated): `OHS_BG_STORAGE_STATE_PATH` (Playwright storage state JSON path).
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.

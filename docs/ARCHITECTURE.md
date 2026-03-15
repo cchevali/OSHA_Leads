@@ -37,8 +37,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - `run_prospect_generation.py --doctor`
    - `run_prospect_generation.py`
    - `run_prospect_discovery.py`
-   - `tools/dump_prospect_ai_assist_review.py` only when post-discovery backlog gap remains; this writes a manual review packet and does not mutate CRM, and now includes exact valid/invalid CSV examples to reduce markdown-format drift in manual AI review
-   - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG,STATE_LIC`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1`, and `PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE=40` when these keys are unset.
+   - `tools/dump_prospect_ai_assist_review.py` only when post-discovery backlog gap remains; it reads existing public-source autogrow cache artifacts, selects a deterministic global raw seed set, writes `seed_packet_###.csv` files plus shared prompts/manifest, and never mutates CRM.
+   - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG,STATE_LIC`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET=30`, and `PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE=10` when these keys are unset.
    - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
    - Planned tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are intentionally rejected by env/runtime validation until their source modules exist.
    - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
@@ -51,7 +51,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts `${DATA_DIR}/prospect_discovery/prospects_latest.csv` into `crm.sqlite`.
-3. Controlled discovery augmentation: `tools/import_prospect_ai_assist_review.py --input <reviewed.csv>` expects the canonical `_reviewed.csv` artifact, deterministically normalizes known markdown/mailto cell corruption, rejects ambiguous malformed rows, audits provenance in `crm.sqlite`, and then upserts verified accepts through the existing discovery/CRM contract with `source=ai_assist_manual` and `enrichment_lane=ai_assist`.
+3. Controlled discovery augmentation: `tools/import_prospect_ai_assist_review.py --input <reviewed.csv>` is an explicit manual import step for reviewed packet output, deterministically normalizes known markdown/mailto cell corruption, rejects ambiguous malformed rows, audits provenance in `crm.sqlite`, and then upserts verified accepts through the existing discovery/CRM contract with `source=ai_assist_manual` and `enrichment_lane=ai_assist`.
 4. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
 5. Daily run: `outreach/run_outreach_auto.py`
    - Resolves weekday rotation-selected state from `OUTREACH_STATES`, emits `OUTREACH_STATE_ROTATION_SELECTED` / `OUTREACH_STATE_EFFECTIVE_SEND`, and uses effective send-state batch id `<YYYY-MM-DD>_<STATE>` (optional fallback override via `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` when the rotation-selected state is depleted/below floor)

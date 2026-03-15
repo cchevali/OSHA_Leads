@@ -16,7 +16,8 @@ DEFAULT_AUTOGROW_ENABLED = "1"
 DEFAULT_AUTOGROW_SOURCES = "AIHA,OHS_BG,STATE_LIC"
 DEFAULT_AUTOGROW_SAFETY_NET_ENABLED = "1"
 DEFAULT_AI_ASSIST_REVIEW_ENABLED = "1"
-DEFAULT_AI_ASSIST_MAX_ROWS_PER_STATE = "40"
+DEFAULT_AI_ASSIST_REVIEW_RAW_TARGET = "30"
+DEFAULT_AI_ASSIST_REVIEW_PACKET_SIZE = "10"
 
 
 def _error(detail: str) -> int:
@@ -38,7 +39,8 @@ def _defaulted_env() -> dict[str, str]:
     env.setdefault("PROSPECT_AUTOGROW_SOURCES", DEFAULT_AUTOGROW_SOURCES)
     env.setdefault("PROSPECT_AUTOGROW_SAFETY_NET_ENABLED", DEFAULT_AUTOGROW_SAFETY_NET_ENABLED)
     env.setdefault("PROSPECT_AI_ASSIST_REVIEW_ENABLED", DEFAULT_AI_ASSIST_REVIEW_ENABLED)
-    env.setdefault("PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE", DEFAULT_AI_ASSIST_MAX_ROWS_PER_STATE)
+    env.setdefault("PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET", DEFAULT_AI_ASSIST_REVIEW_RAW_TARGET)
+    env.setdefault("PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE", DEFAULT_AI_ASSIST_REVIEW_PACKET_SIZE)
     return env
 
 
@@ -131,19 +133,13 @@ def _emit_effective_defaults(env: dict[str, str]) -> None:
         str(env.get("PROSPECT_AI_ASSIST_REVIEW_ENABLED") or ""),
     )
     _emit(
-        "PROSPECT_REPLENISH_EFFECTIVE_AI_ASSIST_MAX_ROWS_PER_STATE",
-        str(env.get("PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE") or ""),
+        "PROSPECT_REPLENISH_EFFECTIVE_AI_ASSIST_REVIEW_RAW_TARGET",
+        str(env.get("PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET") or ""),
     )
-
-
-def _run_ai_assist_pending_imports(*, dry_run: bool) -> int:
-    if bool(dry_run):
-        return 0
-    from tools import import_prospect_ai_assist_review as ai_assist_import
-
-    _emit("PROSPECT_REPLENISH_STAGE", "ai_assist_pending_import")
-    _emit("PROSPECT_REPLENISH_STAGE_COMMAND", "module:tools.import_prospect_ai_assist_review.run_pending_imports")
-    return int(ai_assist_import.run_pending_imports(dry_run=False))
+    _emit(
+        "PROSPECT_REPLENISH_EFFECTIVE_AI_ASSIST_REVIEW_PACKET_SIZE",
+        str(env.get("PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE") or ""),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -253,9 +249,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         if rc != 0:
             return rc
-        rc = _run_ai_assist_pending_imports(dry_run=False)
-        if rc != 0:
-            return rc
 
     rc, generation_text = _run_stage(
         repo_root=repo_root,
@@ -306,8 +299,24 @@ def main(argv: list[str] | None = None) -> int:
         _int_or_default(_last_token_value(ai_assist_text, "AI_ASSIST_DUMP_GAP_TOTAL"), 0),
     )
     _emit(
-        "PROSPECT_REPLENISH_AI_ASSIST_CANDIDATES_REQUESTED_TOTAL",
-        _int_or_default(_last_token_value(ai_assist_text, "AI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL"), 0),
+        "PROSPECT_REPLENISH_AI_ASSIST_RAW_TARGET",
+        _int_or_default(_last_token_value(ai_assist_text, "AI_ASSIST_PACKET_RAW_TARGET"), 0),
+    )
+    _emit(
+        "PROSPECT_REPLENISH_AI_ASSIST_PACKET_SIZE",
+        _int_or_default(_last_token_value(ai_assist_text, "AI_ASSIST_PACKET_SIZE"), 0),
+    )
+    _emit(
+        "PROSPECT_REPLENISH_AI_ASSIST_CANDIDATES_TOTAL",
+        _int_or_default(_last_token_value(ai_assist_text, "AI_ASSIST_PACKET_CANDIDATES_TOTAL"), 0),
+    )
+    _emit(
+        "PROSPECT_REPLENISH_AI_ASSIST_ROWS_WRITTEN",
+        _int_or_default(_last_token_value(ai_assist_text, "AI_ASSIST_PACKET_ROWS_WRITTEN"), 0),
+    )
+    _emit(
+        "PROSPECT_REPLENISH_AI_ASSIST_FILES_WRITTEN",
+        _int_or_default(_last_token_value(ai_assist_text, "AI_ASSIST_PACKET_FILES_WRITTEN"), 0),
     )
     _emit(
         "PROSPECT_REPLENISH_AI_ASSIST_OUTPUT_PATH",

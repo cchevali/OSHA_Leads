@@ -9,6 +9,8 @@ param(
   [Nullable[int]] $ProspectAutoGrowSafetyNetEnabled = $null,
   [Nullable[int]] $ProspectAiAssistReviewEnabled = $null,
   [Nullable[int]] $ProspectAiAssistMaxRowsPerState = $null,
+  [Nullable[int]] $ProspectAiAssistReviewRawTarget = $null,
+  [Nullable[int]] $ProspectAiAssistReviewPacketSize = $null,
   [string] $ProspectAutoGrowStates = '',
   [string] $ProspectAutoGrowSources = '',
   [Nullable[int]] $ProspectAutoGrowBacklogTarget = $null,
@@ -382,6 +384,8 @@ try {
     'ProspectAutoGrowSafetyNetEnabled',
     'ProspectAiAssistReviewEnabled',
     'ProspectAiAssistMaxRowsPerState',
+    'ProspectAiAssistReviewRawTarget',
+    'ProspectAiAssistReviewPacketSize',
     'ProspectAutoGrowStates',
     'ProspectAutoGrowSources',
     'ProspectAutoGrowBacklogTarget',
@@ -464,6 +468,12 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('ProspectAiAssistMaxRowsPerState') -and $ProspectAiAssistMaxRowsPerState -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAiAssistMaxRowsPerState'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewRawTarget') -and $ProspectAiAssistReviewRawTarget -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAiAssistReviewRawTarget'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewPacketSize') -and $ProspectAiAssistReviewPacketSize -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAiAssistReviewPacketSize'
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowBacklogTarget') -and $ProspectAutoGrowBacklogTarget -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowBacklogTarget'
@@ -692,6 +702,10 @@ try {
       Write-Output ('prospect_ai_assist_review_enabled=' + $prospectAiAssistReviewEnabledValue)
       $prospectAiAssistMaxRowsPerStateValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE') { ([string]$printMap['PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE']).Trim() } else { '40' }
       Write-Output ('prospect_ai_assist_max_rows_per_state=' + $prospectAiAssistMaxRowsPerStateValue)
+      $prospectAiAssistReviewRawTargetValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET']).Trim() } else { '30' }
+      Write-Output ('prospect_ai_assist_review_raw_target=' + $prospectAiAssistReviewRawTargetValue)
+      $prospectAiAssistReviewPacketSizeValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE']).Trim() } else { '10' }
+      Write-Output ('prospect_ai_assist_review_packet_size=' + $prospectAiAssistReviewPacketSizeValue)
       $aiTriageEnabledValue = '0'
       if (Map-HasValue $printMap 'AI_TRIAGE_ENABLED') {
         $rawAiEnabled = ([string]$printMap['AI_TRIAGE_ENABLED']).Trim().ToLowerInvariant()
@@ -859,6 +873,18 @@ try {
       Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE' -Value ([string]$ProspectAiAssistMaxRowsPerState) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE')) {
       Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE' -Value '40' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewRawTarget')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET' -Value ([string]$ProspectAiAssistReviewRawTarget) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET' -Value '30' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewPacketSize')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE' -Value ([string]$ProspectAiAssistReviewPacketSize) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE' -Value '10' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowStates')) {
