@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -17,7 +18,7 @@ from tools import import_prospect_ai_assist_review as import_tool
 class TestProspectAiAssistTools(unittest.TestCase):
     def _seed_crm_prospect(self, db_path: Path, *, firm: str, website: str, state: str = "TX", email: str = "") -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        effective_email = email or f"{firm.replace(' ', '').lower()}@seed.example.com"
+        effective_email = email or f"{firm.replace(' ', '').lower()}@seed-mail.test"
         conn = crm_store.connect(db_path)
         try:
             crm_store.init_schema(conn)
@@ -72,8 +73,8 @@ class TestProspectAiAssistTools(unittest.TestCase):
             tmp = Path(d)
             data_dir = tmp / "runtime"
             db_path = data_dir / "crm.sqlite"
-            self._seed_crm_prospect(db_path, firm="Known Safety Group", website="https://known.example.com", state="TX")
-            self._seed_crm_prospect(db_path, firm="Existing Firm LLC", website="https://other-existing.example.com", state="CA")
+            self._seed_crm_prospect(db_path, firm="Known Safety Group", website="https://knowncrm.test", state="TX")
+            self._seed_crm_prospect(db_path, firm="Existing Firm LLC", website="https://other-existingcrm.test", state="CA")
 
             self._write_cache_rows(
                 data_dir,
@@ -82,25 +83,25 @@ class TestProspectAiAssistTools(unittest.TestCase):
                 [
                     {
                         "firm": "Alpha Safety LLC",
-                        "website": "https://www.alpha.example.com",
+                        "website": "https://www.alpha-safety.co",
                         "state": "TX",
                         "source": "aiha_consultants_listing:10-11",
                     },
                     {
                         "firm": "Bravo Safety",
-                        "website": "https://bravo.example.com",
+                        "website": "https://bravo-safety.co",
                         "state": "TX",
                         "source": "aiha_consultants_listing:12-13",
                     },
                     {
                         "firm": "Known Safety Group",
-                        "website": "https://known.example.com",
+                        "website": "https://knowncrm.test",
                         "state": "TX",
                         "source": "aiha_consultants_listing:14-15",
                     },
                     {
                         "firm": "Existing Firm LLC",
-                        "website": "https://brand-new.example.com",
+                        "website": "https://brand-new-safety.co",
                         "state": "TX",
                         "source": "aiha_consultants_listing:16-17",
                     },
@@ -113,21 +114,21 @@ class TestProspectAiAssistTools(unittest.TestCase):
                 [
                     {
                         "firm": "Alpha Safety",
-                        "website": "https://alpha.example.com",
+                        "website": "https://alpha-safety.co",
                         "state": "CA",
                         "source": "ohs_buyers_guide:dup-alpha",
                         "source_url": "https://buyersguide.example.com/alpha",
                     },
                     {
                         "firm": "Charlie Safety",
-                        "website": "https://charlie.example.com",
+                        "website": "https://charlie-safety.co",
                         "state": "CA",
                         "source": "ohs_buyers_guide:charlie",
                         "source_url": "https://buyersguide.example.com/charlie",
                     },
                     {
                         "firm": "Delta Safety",
-                        "website": "https://delta.example.com",
+                        "website": "https://delta-safety.co",
                         "state": "CA",
                         "source": "ohs_buyers_guide:delta",
                         "source_url": "https://buyersguide.example.com/delta",
@@ -142,7 +143,15 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env["PROSPECT_AUTOGROW_STATES"] = "TX,CA"
             env["OUTREACH_STATES"] = "FL"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
-            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(
+                    dump_tool,
+                    "_current_run_started_at",
+                    return_value=datetime.fromisoformat("2026-03-07T09:10:11.123456-05:00"),
+                ),
+                redirect_stdout(out),
+            ):
                 rc = dump_tool.main(
                     [
                         "--for-date",
@@ -183,8 +192,9 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertEqual(manifest["packet_size"], 2)
             self.assertEqual(manifest["rows_written"], 4)
             self.assertEqual(manifest["packet_files_written"], 2)
+            self.assertEqual(manifest["run_token"], "R091011123456")
             self.assertEqual(manifest["packets"][0]["suggested_reviewed_filename"], "seed_packet_001_reviewed.csv")
-            self.assertEqual(manifest["packets"][0]["suggested_batch_id"], "2026-03-07_AIASSIST_P001")
+            self.assertEqual(manifest["packets"][0]["suggested_batch_id"], "2026-03-07_AIASSIST_R091011123456_P001")
             self.assertIsNone(manifest["packets"][0]["reviewed_rows"])
 
             with open(packet_dir / "seed_packet_001.csv", newline="", encoding="utf-8") as handle:
@@ -209,7 +219,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             tmp = Path(d)
             data_dir = tmp / "runtime"
             db_path = data_dir / "crm.sqlite"
-            self._seed_crm_prospect(db_path, firm="Unrelated", website="https://unrelated.example.com")
+            self._seed_crm_prospect(db_path, firm="Unrelated", website="https://unrelatedcrm.test")
             self._write_cache_rows(
                 data_dir,
                 "AIHA",
@@ -217,7 +227,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
                 [
                     {
                         "firm": "Solo Safety",
-                        "website": "https://solo.example.com",
+                        "website": "https://solo-safety.co",
                         "state": "TX",
                         "source": "aiha_consultants_listing:88",
                     }
@@ -252,6 +262,147 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertIn("AI_ASSIST_PACKET_FILES_WRITTEN=1", text)
             self.assertIn("WARN_AI_ASSIST_PACKET_SHORTFALL=1 requested=3 available=1 shortfall=2", text)
             self.assertFalse(packet_dir.exists())
+
+    def test_dump_default_packet_dir_and_batch_ids_are_unique_per_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "TX",
+                [
+                    {
+                        "firm": "Repeat Safe",
+                        "website": "https://repeat-safe.example.com",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:55",
+                    }
+                ],
+            )
+
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            out_one = io.StringIO()
+            out_two = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with (
+                    mock.patch.object(
+                        dump_tool,
+                        "_current_run_started_at",
+                        return_value=datetime.fromisoformat("2026-03-07T09:10:11.123456-05:00"),
+                    ),
+                    redirect_stdout(out_one),
+                ):
+                    rc_one = dump_tool.main(["--for-date", "2026-03-07", "--raw-target", "1", "--packet-size", "1"])
+                with (
+                    mock.patch.object(
+                        dump_tool,
+                        "_current_run_started_at",
+                        return_value=datetime.fromisoformat("2026-03-07T09:10:12.654321-05:00"),
+                    ),
+                    redirect_stdout(out_two),
+                ):
+                    rc_two = dump_tool.main(["--for-date", "2026-03-07", "--raw-target", "1", "--packet-size", "1"])
+
+            self.assertEqual(rc_one, 0, msg=out_one.getvalue())
+            self.assertEqual(rc_two, 0, msg=out_two.getvalue())
+            manifest_one = next(
+                line.split("=", 1)[1]
+                for line in out_one.getvalue().splitlines()
+                if line.startswith("AI_ASSIST_DUMP_OUTPUT_PATH=")
+            )
+            manifest_two = next(
+                line.split("=", 1)[1]
+                for line in out_two.getvalue().splitlines()
+                if line.startswith("AI_ASSIST_DUMP_OUTPUT_PATH=")
+            )
+            self.assertNotEqual(manifest_one, manifest_two)
+            manifest_one_payload = json.loads(Path(manifest_one).read_text(encoding="utf-8"))
+            manifest_two_payload = json.loads(Path(manifest_two).read_text(encoding="utf-8"))
+            self.assertEqual(manifest_one_payload["run_token"], "R091011123456")
+            self.assertEqual(manifest_two_payload["run_token"], "R091012654321")
+            self.assertNotEqual(
+                manifest_one_payload["packets"][0]["suggested_batch_id"],
+                manifest_two_payload["packets"][0]["suggested_batch_id"],
+            )
+            self.assertTrue(Path(manifest_one_payload["packet_dir"]).exists())
+            self.assertTrue(Path(manifest_two_payload["packet_dir"]).exists())
+
+    def test_dump_respects_explicit_non_packet_source_posture_without_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "TX",
+                [
+                    {
+                        "firm": "Should Not Leak In",
+                        "website": "https://no-fallback.example.com",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:77",
+                    }
+                ],
+            )
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_SOURCES"] = "APOLLO"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
+                rc = dump_tool.main(["--dry-run", "--for-date", "2026-03-07", "--raw-target", "1", "--packet-size", "1"])
+
+            self.assertEqual(rc, 0, msg=out.getvalue())
+            text = out.getvalue()
+            self.assertIn("AI_ASSIST_PACKET_SOURCES=none", text)
+            self.assertIn("AI_ASSIST_PACKET_CANDIDATES_TOTAL=0", text)
+            self.assertIn("AI_ASSIST_PACKET_ROWS_WRITTEN=0", text)
+            self.assertIn("WARN_AI_ASSIST_PACKET_NO_ELIGIBLE_SOURCES=1 configured=APOLLO", text)
+
+    def test_dump_excludes_crm_root_domain_matches_from_subdomain_records(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            db_path = data_dir / "crm.sqlite"
+            self._seed_crm_prospect(
+                db_path,
+                firm="Existing Root Domain Holder",
+                website="https://team.rootmatch.example.com",
+                state="TX",
+            )
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "TX",
+                [
+                    {
+                        "firm": "Fresh Safety",
+                        "website": "https://rootmatch.example.com",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:91",
+                    }
+                ],
+            )
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
+                rc = dump_tool.main(["--dry-run", "--for-date", "2026-03-07", "--raw-target", "1", "--packet-size", "1"])
+
+            self.assertEqual(rc, 0, msg=out.getvalue())
+            text = out.getvalue()
+            self.assertIn("AI_ASSIST_PACKET_CANDIDATES_TOTAL=0", text)
+            self.assertIn("AI_ASSIST_PACKET_ROWS_WRITTEN=0", text)
 
     def test_dump_print_config_prefers_autogrow_states_and_packet_defaults(self):
         with tempfile.TemporaryDirectory() as d:

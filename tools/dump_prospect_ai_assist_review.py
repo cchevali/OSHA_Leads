@@ -56,6 +56,10 @@ def _local_today_date() -> date:
     return datetime.now().astimezone().date()
 
 
+def _current_run_started_at() -> datetime:
+    return datetime.now().astimezone()
+
+
 def _parse_date(value: str) -> date:
     text = str(value or "").strip().lower()
     if not text or text == "today":
@@ -125,7 +129,16 @@ def _root_domain(domain: str) -> str:
     return ".".join(parts[-2:])
 
 
-def _resolve_source_tokens() -> list[str]:
+def _normalized_root_domains(domains: set[str]) -> set[str]:
+    normalized: set[str] = set()
+    for domain in set(domains or set()):
+        root = _root_domain(str(domain or ""))
+        if root:
+            normalized.add(root)
+    return normalized
+
+
+def _resolve_source_tokens() -> tuple[list[str], str]:
     configured_raw = str(os.getenv("PROSPECT_AUTOGROW_SOURCES", "")).strip()
     configured = (
         [token for token in configured_raw.split(",") if str(token or "").strip()]
@@ -137,14 +150,32 @@ def _resolve_source_tokens() -> list[str]:
     implemented = set(source_policy.implemented_autogrow_sources())
     filtered = [token for token in ordered if token in allowed and token in implemented]
     if filtered:
-        return filtered
-    return [token for token in AI_ASSIST_DEFAULT_AUTOGROW_SOURCES if token in implemented]
+        return filtered, ""
+    if configured_raw:
+        return [], ",".join([str(token or "").strip().upper() for token in configured if str(token or "").strip()])
+    return [token for token in AI_ASSIST_DEFAULT_AUTOGROW_SOURCES if token in implemented], ""
 
 
-def _resolve_output_paths(*, output: str, output_dir: str, for_date: date) -> tuple[Path, Path]:
+def _batch_run_token(run_started_at: datetime) -> str:
+    return f"R{run_started_at.strftime('%H%M%S%f')}"
+
+
+def _build_default_packet_dir(*, audits_root: Path, for_date: date, run_started_at: datetime) -> Path:
+    base_name = f"{for_date.strftime('%Y%m%d')}_{run_started_at.strftime('%H%M%S')}_packets"
+    candidate = (audits_root / base_name).resolve(strict=False)
+    suffix = 2
+    while candidate.exists():
+        candidate = (audits_root / f"{base_name}_{suffix:02d}").resolve(strict=False)
+        suffix += 1
+    return candidate
+
+
+def _resolve_output_paths(*, output: str, output_dir: str, for_date: date, run_started_at: datetime) -> tuple[Path, Path]:
     data_dir = resolve_data_dir(REPO_ROOT).effective_path
-    default_packet_dir = (data_dir / "audits" / "ai_assist" / f"{for_date.strftime('%Y%m%d')}_packets").resolve(
-        strict=False
+    default_packet_dir = _build_default_packet_dir(
+        audits_root=(data_dir / "audits" / "ai_assist"),
+        for_date=for_date,
+        run_started_at=run_started_at,
     )
     output_dir_text = str(output_dir or "").strip()
     output_text = str(output or "").strip()
@@ -379,6 +410,8 @@ def _review_prompt_text() -> str:
 def _build_manifest(
     *,
     run_date: date,
+    run_started_at: datetime,
+    run_token: str,
     packet_dir: Path,
     manifest_path: Path,
     states: list[str],
@@ -405,13 +438,15 @@ def _build_manifest(
                 "seed_packet_filename": path.name,
                 "input_rows": rows_in_packet,
                 "suggested_reviewed_filename": f"seed_packet_{idx:03d}_reviewed.csv",
-                "suggested_batch_id": f"{run_date.isoformat()}_AIASSIST_P{idx:03d}",
+                "suggested_batch_id": f"{run_date.isoformat()}_AIASSIST_{run_token}_P{idx:03d}",
                 "reviewed_rows": None,
             }
         )
     return {
         "manifest_version": 1,
         "run_date": run_date.isoformat(),
+        "run_started_at": run_started_at.isoformat(),
+        "run_token": run_token,
         "packet_dir": str(packet_dir),
         "manifest_path": str(manifest_path),
         "states": list(states),
@@ -448,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         run_date = _parse_date(args.for_date)
+        run_started_at = _current_run_started_at()
         state_scope = _resolve_state_scope(list(args.states or []))
         raw_target = int(args.raw_target or _int_env("PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET", AI_ASSIST_PACKET_DEFAULT_RAW_TARGET))
         packet_size = int(args.packet_size or _int_env("PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE", AI_ASSIST_PACKET_DEFAULT_SIZE))
@@ -462,11 +498,13 @@ def main(argv: list[str] | None = None) -> int:
     states = generation._states_for_selection(state_scope)
     enabled = _bool_env("PROSPECT_AI_ASSIST_REVIEW_ENABLED", AI_ASSIST_DUMP_DEFAULT_ENABLED)
     backlog_target = _int_env("PROSPECT_AUTOGROW_BACKLOG_TARGET", AI_ASSIST_DUMP_DEFAULT_BACKLOG_TARGET)
-    source_tokens = _resolve_source_tokens()
+    source_tokens, source_warning_configured = _resolve_source_tokens()
+    run_token = _batch_run_token(run_started_at)
     packet_dir, manifest_path = _resolve_output_paths(
         output=str(args.output or ""),
         output_dir=str(args.output_dir or ""),
         for_date=run_date,
+        run_started_at=run_started_at,
     )
     data_dir_resolution = resolve_data_dir(REPO_ROOT)
 
@@ -482,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
             suppressed_emails=suppressed_emails,
             backlog_target=backlog_target,
         )
-        crm_domains = generation._existing_crm_domains(conn)
+        crm_domains = _normalized_root_domains(generation._existing_crm_domains(conn))
         crm_firm_keys = _existing_crm_firm_keys(conn)
     finally:
         if conn is not None:
@@ -500,6 +538,8 @@ def main(argv: list[str] | None = None) -> int:
     packet_paths = [packet_dir / f"seed_packet_{idx:03d}.csv" for idx in range(1, len(packets) + 1)]
     manifest = _build_manifest(
         run_date=run_date,
+        run_started_at=run_started_at,
+        run_token=run_token,
         packet_dir=packet_dir,
         manifest_path=manifest_path,
         states=states,
@@ -521,6 +561,8 @@ def main(argv: list[str] | None = None) -> int:
     _emit("AI_ASSIST_DUMP_DATA_DIR", str(data_dir_resolution.effective_path))
     _emit("AI_ASSIST_DUMP_DATA_DIR_SOURCE", str(data_dir_resolution.source or "default"))
     _emit("AI_ASSIST_DUMP_FOR_DATE", run_date.isoformat())
+    _emit("AI_ASSIST_DUMP_RUN_STARTED_AT", run_started_at.isoformat())
+    _emit("AI_ASSIST_DUMP_RUN_TOKEN", run_token)
     _emit("AI_ASSIST_DUMP_STATES_SCOPE", ",".join(states))
     _emit("AI_ASSIST_DUMP_BACKLOG_TARGET", backlog_target)
     _emit("AI_ASSIST_DUMP_OUTPUT_DIR", str(packet_dir))
@@ -530,7 +572,7 @@ def main(argv: list[str] | None = None) -> int:
     _emit("AI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL", raw_target)
     _emit("AI_ASSIST_PACKET_DIR", str(packet_dir))
     _emit("AI_ASSIST_PACKET_MANIFEST_PATH", str(manifest_path))
-    _emit("AI_ASSIST_PACKET_SOURCES", ",".join(source_tokens))
+    _emit("AI_ASSIST_PACKET_SOURCES", ",".join(source_tokens) or "none")
     _emit("AI_ASSIST_PACKET_RAW_TARGET", raw_target)
     _emit("AI_ASSIST_PACKET_SIZE", packet_size)
     _emit("AI_ASSIST_PACKET_CANDIDATES_TOTAL", len(candidates))
@@ -547,6 +589,10 @@ def main(argv: list[str] | None = None) -> int:
     if shortfall > 0:
         print(
             f"WARN_AI_ASSIST_PACKET_SHORTFALL=1 requested={raw_target} available={len(candidates)} shortfall={shortfall}"
+        )
+    if source_warning_configured:
+        print(
+            f"WARN_AI_ASSIST_PACKET_NO_ELIGIBLE_SOURCES=1 configured={source_warning_configured}"
         )
 
     if args.print_config:

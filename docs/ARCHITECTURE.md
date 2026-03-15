@@ -37,7 +37,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - `run_prospect_generation.py --doctor`
    - `run_prospect_generation.py`
    - `run_prospect_discovery.py`
-   - `tools/dump_prospect_ai_assist_review.py` only when post-discovery backlog gap remains; it reads existing public-source autogrow cache artifacts, selects a deterministic global raw seed set, writes `seed_packet_###.csv` files plus shared prompts/manifest, and never mutates CRM.
+   - `tools/dump_prospect_ai_assist_review.py` only when post-discovery backlog gap remains; it reads existing public-source autogrow cache artifacts, selects a deterministic global raw seed set, writes per-run `seed_packet_###.csv` files plus shared prompts/manifest, and never mutates CRM.
    - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG,STATE_LIC`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET=30`, and `PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE=10` when these keys are unset.
    - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
    - Planned tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are intentionally rejected by env/runtime validation until their source modules exist.

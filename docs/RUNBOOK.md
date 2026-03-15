@@ -496,12 +496,13 @@ Recommended operator commands:
 cd C:\dev\OSHA_Leads
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1 --dry-run
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_001_reviewed.csv --batch 2026-03-07_AIASSIST_P001
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_001_reviewed.csv --batch <suggested_batch_id_from_manifest.json>
 ```
 
 Operating rules:
 
-- The dump writes a packet folder under `${DATA_DIR}\audits\ai_assist\YYYYMMDD_packets\` (or `.\out\audits\ai_assist\YYYYMMDD_packets\`) with `seed_packet_###.csv`, `prompt_research.txt`, `prompt_review.txt`, and `manifest.json`.
+- The dump writes a per-run packet folder under `${DATA_DIR}\audits\ai_assist\YYYYMMDD_HHMMSS_packets\` (or `.\out\audits\ai_assist\YYYYMMDD_HHMMSS_packets\`) with `seed_packet_###.csv`, `prompt_research.txt`, `prompt_review.txt`, and `manifest.json`.
+- Use the `suggested_batch_id` values from `manifest.json` when importing reviewed packet files; they are unique per run so multiple same-day packet sets do not collide.
 - Default operator posture is: generate `30` raw firms, review them in `10`-firm packets, and import reviewed CSV only.
 - Review happens outside the repo, one packet at a time. Use the shared prompt files with each `seed_packet_###.csv`.
 - External `reviewed_cleaned.csv` sidecars are not part of the intended workflow; the importer now normalizes known AI-output markdown/mailto artifacts in memory and fails fast on ambiguous malformed rows.
@@ -514,8 +515,8 @@ Packet review/import flow:
 ```powershell
 cd C:\dev\OSHA_Leads
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_001_reviewed.csv --batch 2026-03-07_AIASSIST_P001
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_002_reviewed.csv --batch 2026-03-07_AIASSIST_P002
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_001_reviewed.csv --batch <manifest.packets[0].suggested_batch_id>
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_002_reviewed.csv --batch <manifest.packets[1].suggested_batch_id>
 ```
 
 No-arg generation output path:

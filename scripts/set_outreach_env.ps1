@@ -700,8 +700,6 @@ try {
       Write-Output ('outreach_skip_role_inboxes=' + $outreachSkipRoleInboxesValue)
       $prospectAiAssistReviewEnabledValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_ENABLED') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_ENABLED']).Trim() } else { '1' }
       Write-Output ('prospect_ai_assist_review_enabled=' + $prospectAiAssistReviewEnabledValue)
-      $prospectAiAssistMaxRowsPerStateValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE') { ([string]$printMap['PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE']).Trim() } else { '40' }
-      Write-Output ('prospect_ai_assist_max_rows_per_state=' + $prospectAiAssistMaxRowsPerStateValue)
       $prospectAiAssistReviewRawTargetValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET']).Trim() } else { '30' }
       Write-Output ('prospect_ai_assist_review_raw_target=' + $prospectAiAssistReviewRawTargetValue)
       $prospectAiAssistReviewPacketSizeValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE']).Trim() } else { '10' }
@@ -871,8 +869,6 @@ try {
 
     if ($PSBoundParameters.ContainsKey('ProspectAiAssistMaxRowsPerState')) {
       Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE' -Value ([string]$ProspectAiAssistMaxRowsPerState) -TouchedList $touched
-    } elseif (-not (Map-HasValue $map 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE')) {
-      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE' -Value '40' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewRawTarget')) {
