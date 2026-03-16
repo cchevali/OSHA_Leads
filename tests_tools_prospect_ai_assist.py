@@ -1,10 +1,12 @@
 import csv
 import io
+import json
 import os
 import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +16,48 @@ from tools import import_prospect_ai_assist_review as import_tool
 
 
 class TestProspectAiAssistTools(unittest.TestCase):
+    def _seed_crm_prospect(self, db_path: Path, *, firm: str, website: str, state: str = "TX", email: str = "") -> None:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        effective_email = email or f"{firm.replace(' ', '').lower()}@seed-mail.test"
+        conn = crm_store.connect(db_path)
+        try:
+            crm_store.init_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO prospects(
+                    prospect_id, firm, contact_name, email, title, city, state, website, source,
+                    source_fit_tier, default_send_eligible, email_status, enrichment_lane,
+                    score, status, created_at
+                ) VALUES (?, ?, '', ?, '', '', ?, ?, 'seed', 'recoverable_consultant', 1, '', '', 0, 'new', ?)
+                """,
+                (
+                    f"seed_{firm}_{state}".replace(" ", "_").lower(),
+                    firm,
+                    effective_email,
+                    state,
+                    website,
+                    "2026-03-06T00:00:00+00:00",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _write_cache_rows(self, data_dir: Path, source_token: str, state: str, rows: list[dict[str, str]]) -> None:
+        cache_root = data_dir / "prospect_generation" / "cache"
+        cache_path = dump_tool.generation._source_cache_path_for_state(cache_root, source_token, state)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "source": source_token,
+                    "state": state,
+                    "rows": rows,
+                }
+            ),
+            encoding="utf-8",
+        )
+
     def _write_review_csv(self, path: Path, rows: list[dict[str, str]]) -> None:
         with open(path, "w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=list(import_tool.REQUIRED_COLUMNS))
@@ -24,64 +68,362 @@ class TestProspectAiAssistTools(unittest.TestCase):
     def _write_review_lines(self, path: Path, lines: list[str]) -> None:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    def test_dump_prints_gap_prompt_without_writing_in_dry_run(self):
+    def test_dump_writes_packetized_artifacts_with_seed_candidates(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             data_dir = tmp / "runtime"
             db_path = data_dir / "crm.sqlite"
-            conn = crm_store.connect(db_path)
-            try:
-                crm_store.init_schema(conn)
-            finally:
-                conn.close()
+            self._seed_crm_prospect(db_path, firm="Known Safety Group", website="https://knowncrm.test", state="TX")
+            self._seed_crm_prospect(db_path, firm="Existing Firm LLC", website="https://other-existingcrm.test", state="CA")
+
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "TX",
+                [
+                    {
+                        "firm": "Alpha Safety LLC",
+                        "website": "https://www.alpha-safety.co",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:10-11",
+                    },
+                    {
+                        "firm": "Bravo Safety",
+                        "website": "https://bravo-safety.co",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:12-13",
+                    },
+                    {
+                        "firm": "Known Safety Group",
+                        "website": "https://knowncrm.test",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:14-15",
+                    },
+                    {
+                        "firm": "Existing Firm LLC",
+                        "website": "https://brand-new-safety.co",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:16-17",
+                    },
+                ],
+            )
+            self._write_cache_rows(
+                data_dir,
+                "OHS_BG",
+                "CA",
+                [
+                    {
+                        "firm": "Alpha Safety",
+                        "website": "https://alpha-safety.co",
+                        "state": "CA",
+                        "source": "ohs_buyers_guide:dup-alpha",
+                        "source_url": "https://buyersguide.example.com/alpha",
+                    },
+                    {
+                        "firm": "Charlie Safety",
+                        "website": "https://charlie-safety.co",
+                        "state": "CA",
+                        "source": "ohs_buyers_guide:charlie",
+                        "source_url": "https://buyersguide.example.com/charlie",
+                    },
+                    {
+                        "firm": "Delta Safety",
+                        "website": "https://delta-safety.co",
+                        "state": "CA",
+                        "source": "ohs_buyers_guide:delta",
+                        "source_url": "https://buyersguide.example.com/delta",
+                    },
+                ],
+            )
+
+            out = io.StringIO()
+            output_dir = tmp / "prospect_ai_assist"
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["PROSPECT_AUTOGROW_STATES"] = "TX,CA"
+            env["OUTREACH_STATES"] = "FL"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(
+                    dump_tool,
+                    "_current_run_started_at",
+                    return_value=datetime.fromisoformat("2026-03-07T09:10:11.123456-05:00"),
+                ),
+                redirect_stdout(out),
+            ):
+                rc = dump_tool.main(
+                    [
+                        "--for-date",
+                        "2026-03-07",
+                        "--output-dir",
+                        str(output_dir),
+                        "--raw-target",
+                        "4",
+                        "--packet-size",
+                        "2",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            text = out.getvalue()
+            self.assertIn("AI_ASSIST_DUMP_STATES_SCOPE=TX,CA", text)
+            self.assertIn("AI_ASSIST_DUMP_RAW_TARGET=4", text)
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=4", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=4", text)
+            self.assertIn("AI_ASSIST_DUMP_PACKET_SIZE=2", text)
+            self.assertIn("AI_ASSIST_DUMP_PACKET_COUNT=2", text)
+
+            output_path = output_dir / "prospect_ai_assist_review_20260307.txt"
+            self.assertTrue(output_path.exists())
+            packet_dir = output_dir / "prospect_ai_assist_review_20260307_packets"
+            manifest_path = packet_dir / "manifest.json"
+            self.assertTrue(packet_dir.exists())
+            self.assertTrue(manifest_path.exists())
+            prompt_text = output_path.read_text(encoding="utf-8")
+            self.assertIn("# SEED CANDIDATES CSV:", prompt_text)
+            self.assertIn("state,firm,website,seed_source,seed_source_url", prompt_text)
+            self.assertIn("Alpha Safety LLC", prompt_text)
+            self.assertIn("Bravo Safety", prompt_text)
+            self.assertIn("Charlie Safety", prompt_text)
+            self.assertIn("Delta Safety", prompt_text)
+            self.assertNotIn("Known Safety Group", prompt_text)
+            self.assertNotIn("Existing Firm LLC", prompt_text)
+            self.assertIn(
+                dump_tool.prospect_sources_aiha.PAGE_URL_TEMPLATE.format(page_id="10-11"),
+                prompt_text,
+            )
+            self.assertIn("https://buyersguide.example.com/charlie", prompt_text)
+            self.assertIn(",".join(dump_tool.REVIEW_COLUMNS), prompt_text)
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["packet_count"], 2)
+            self.assertEqual(manifest["packet_size"], 2)
+            self.assertEqual(len(manifest["packets"]), 2)
+            self.assertEqual(manifest["packets"][0]["reviewed_import_filename"], "prospect_ai_assist_review_20260307_packet_001_reviewed.csv")
+            self.assertEqual(manifest["packets"][0]["suggested_batch_id"], "2026-03-07_AIASSIST_P001")
+
+            seed_packet_one = (packet_dir / "seed_packet_001.csv").read_text(encoding="utf-8")
+            review_packet_one = (packet_dir / "review_packet_001.txt").read_text(encoding="utf-8")
+            self.assertIn("Alpha Safety LLC", seed_packet_one)
+            self.assertIn("Bravo Safety", seed_packet_one)
+            self.assertNotIn("Charlie Safety", seed_packet_one)
+            self.assertIn("REVIEWED IMPORT FILENAME: prospect_ai_assist_review_20260307_packet_001_reviewed.csv", review_packet_one)
+            self.assertIn("SUGGESTED_BATCH_ID: 2026-03-07_AIASSIST_P001", review_packet_one)
+
+    def test_dump_dry_run_emits_shortfall_without_writing_artifacts(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            db_path = data_dir / "crm.sqlite"
+            self._seed_crm_prospect(db_path, firm="Unrelated", website="https://unrelatedcrm.test")
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "TX",
+                [
+                    {
+                        "firm": "Solo Safety",
+                        "website": "https://solo-safety.co",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:88",
+                    }
+                ],
+            )
+
+            out = io.StringIO()
+            output_dir = tmp / "dry_dump"
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
+                rc = dump_tool.main(
+                    [
+                        "--dry-run",
+                        "--for-date",
+                        "2026-03-07",
+                        "--output-dir",
+                        str(output_dir),
+                        "--raw-target",
+                        "3",
+                        "--packet-size",
+                        "2",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            text = out.getvalue()
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=1", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=1", text)
+            self.assertIn("AI_ASSIST_DUMP_PACKET_COUNT=1", text)
+            self.assertIn("WARN_AI_ASSIST_DUMP_SHORTFALL=1 requested=3 available=1 shortfall=2", text)
+            self.assertFalse(output_dir.exists())
+
+    def test_dump_default_path_is_stable_per_day(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "TX",
+                [
+                    {
+                        "firm": "Repeat Safe",
+                        "website": "https://repeat-safe.example.com",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:55",
+                    }
+                ],
+            )
+
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            out_one = io.StringIO()
+            out_two = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with (
+                    mock.patch.object(
+                        dump_tool,
+                        "_current_run_started_at",
+                        return_value=datetime.fromisoformat("2026-03-07T09:10:11.123456-05:00"),
+                    ),
+                    redirect_stdout(out_one),
+                ):
+                    rc_one = dump_tool.main(["--for-date", "2026-03-07", "--raw-target", "1"])
+                with (
+                    mock.patch.object(
+                        dump_tool,
+                        "_current_run_started_at",
+                        return_value=datetime.fromisoformat("2026-03-07T09:10:12.654321-05:00"),
+                    ),
+                    redirect_stdout(out_two),
+                ):
+                    rc_two = dump_tool.main(["--for-date", "2026-03-07", "--raw-target", "1"])
+
+            self.assertEqual(rc_one, 0, msg=out_one.getvalue())
+            self.assertEqual(rc_two, 0, msg=out_two.getvalue())
+            output_path_one = next(
+                line.split("=", 1)[1]
+                for line in out_one.getvalue().splitlines()
+                if line.startswith("AI_ASSIST_DUMP_OUTPUT_PATH=")
+            )
+            output_path_two = next(
+                line.split("=", 1)[1]
+                for line in out_two.getvalue().splitlines()
+                if line.startswith("AI_ASSIST_DUMP_OUTPUT_PATH=")
+            )
+            self.assertEqual(output_path_one, output_path_two)
+            self.assertTrue(Path(output_path_one).exists())
+            self.assertEqual(
+                Path(output_path_one),
+                data_dir / "audits" / "prospect_ai_assist" / "prospect_ai_assist_review_20260307.txt",
+            )
+            self.assertTrue((data_dir / "audits" / "prospect_ai_assist" / "prospect_ai_assist_review_20260307_packets").exists())
+
+    def test_dump_respects_explicit_source_posture_without_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "TX",
+                [
+                    {
+                        "firm": "Should Not Leak In",
+                        "website": "https://no-fallback.example.com",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:77",
+                    }
+                ],
+            )
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_SOURCES"] = "APOLLO"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
+                rc = dump_tool.main(["--dry-run", "--for-date", "2026-03-07", "--raw-target", "1"])
+
+            self.assertEqual(rc, 0, msg=out.getvalue())
+            text = out.getvalue()
+            self.assertIn("AI_ASSIST_DUMP_SOURCES=none", text)
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=0", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=0", text)
+            self.assertIn("WARN_AI_ASSIST_DUMP_NO_ELIGIBLE_SOURCES=1 configured=APOLLO", text)
+
+    def test_dump_excludes_crm_root_domain_matches_from_subdomain_records(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            db_path = data_dir / "crm.sqlite"
+            self._seed_crm_prospect(
+                db_path,
+                firm="Existing Root Domain Holder",
+                website="https://team.rootmatch.example.com",
+                state="TX",
+            )
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "TX",
+                [
+                    {
+                        "firm": "Fresh Safety",
+                        "website": "https://rootmatch.example.com",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:91",
+                    }
+                ],
+            )
 
             out = io.StringIO()
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
             env["OUTREACH_STATES"] = "TX"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
-            env["PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE"] = "3"
             with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
-                rc = dump_tool.main(["--dry-run", "--for-date", "2026-03-07"])
+                rc = dump_tool.main(["--dry-run", "--for-date", "2026-03-07", "--raw-target", "1"])
 
-            self.assertEqual(rc, 0)
+            self.assertEqual(rc, 0, msg=out.getvalue())
             text = out.getvalue()
-            self.assertIn("AI_ASSIST_DUMP_GAP_STATES=TX", text)
-            self.assertIn("AI_ASSIST_DUMP_GAP_TOTAL=5", text)
-            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL=3", text)
-            self.assertIn("MANUAL AI-ASSIST DISCOVERY AUGMENTATION", text)
-            self.assertIn("Return standard CSV only.", text)
-            self.assertIn("VALID ACCEPT EXAMPLE", text)
-            self.assertIn("VALID REJECT EXAMPLE", text)
-            self.assertIn("INVALID EXAMPLE - DO NOT RETURN ANYTHING LIKE THIS", text)
-            self.assertIn("No markdown links, no mailto links, no", text)
-            self.assertFalse((data_dir / "audits" / "ai_assist" / "prospect_ai_assist_review_20260307.txt").exists())
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=0", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=0", text)
 
-    def test_dump_print_config_uses_default_max_rows_per_state_when_unset(self):
+    def test_dump_print_config_prefers_autogrow_states_and_canonical_defaults(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             data_dir = tmp / "runtime"
             db_path = data_dir / "crm.sqlite"
-            conn = crm_store.connect(db_path)
-            try:
-                crm_store.init_schema(conn)
-            finally:
-                conn.close()
+            self._seed_crm_prospect(db_path, firm="Existing", website="https://existing.example.com")
 
             out = io.StringIO()
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
-            env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_STATES"] = "CA,TX"
+            env["OUTREACH_STATES"] = "FL"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "45"
-            env.pop("PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE", None)
             with mock.patch.dict(os.environ, env, clear=True), redirect_stdout(out):
                 rc = dump_tool.main(["--print-config", "--for-date", "2026-03-07"])
 
             self.assertEqual(rc, 0)
             text = out.getvalue()
-            self.assertIn("AI_ASSIST_DUMP_MAX_ROWS_PER_STATE=40", text)
-            self.assertIn("AI_ASSIST_DUMP_GAP_TOTAL=45", text)
-            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL=40", text)
+            self.assertIn("AI_ASSIST_DUMP_STATES_SCOPE=CA,TX", text)
+            self.assertIn("AI_ASSIST_DUMP_RAW_TARGET=30", text)
+            self.assertIn("AI_ASSIST_DUMP_GAP_TOTAL=89", text)
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL=30", text)
+            self.assertIn("AI_ASSIST_DUMP_PACKET_SIZE=10", text)
+            self.assertIn(
+                f"AI_ASSIST_DUMP_OUTPUT_DIR={(data_dir / 'audits' / 'prospect_ai_assist').resolve()}",
+                text,
+            )
 
     def test_import_dry_run_does_not_create_db(self):
         with tempfile.TemporaryDirectory() as d:
@@ -445,12 +787,13 @@ class TestProspectAiAssistTools(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             data_dir = tmp / "runtime"
-            review_dir = data_dir / "audits" / "ai_assist"
+            review_dir = data_dir / "imports" / "prospect_ai_assist"
             review_dir.mkdir(parents=True, exist_ok=True)
             (review_dir / "prospect_ai_assist_review_20260310.txt").write_text("prompt", encoding="utf-8")
             (review_dir / "prospect_ai_assist_review_20260310_reviewed_cleaned.csv").write_text("x", encoding="utf-8")
             first = review_dir / "prospect_ai_assist_review_20260309_reviewed.csv"
-            second = review_dir / "prospect_ai_assist_review_20260310_reviewed.csv"
+            second = review_dir / "prospect_ai_assist_review_20260310_packet_001_reviewed.csv"
+            third = review_dir / "prospect_ai_assist_review_20260310_packet_002_reviewed.csv"
             self._write_review_csv(
                 first,
                 [
@@ -485,6 +828,23 @@ class TestProspectAiAssistTools(unittest.TestCase):
                     }
                 ],
             )
+            self._write_review_csv(
+                third,
+                [
+                    {
+                        "state": "CA",
+                        "decision": "accept",
+                        "firm": "Three",
+                        "website": "https://three.example.com",
+                        "contact_name": "Three",
+                        "title": "Owner",
+                        "email": "three@three.example.com",
+                        "source_urls": "https://three.example.com/contact",
+                        "confidence": "92",
+                        "evidence_snippet": "Three",
+                    }
+                ],
+            )
 
             calls: list[tuple[str, str, bool]] = []
 
@@ -504,9 +864,58 @@ class TestProspectAiAssistTools(unittest.TestCase):
                 calls,
                 [
                     ("prospect_ai_assist_review_20260309_reviewed.csv", "2026-03-09_AIASSIST", True),
-                    ("prospect_ai_assist_review_20260310_reviewed.csv", "2026-03-10_AIASSIST", True),
+                    ("prospect_ai_assist_review_20260310_packet_001_reviewed.csv", "2026-03-10_AIASSIST_P001", True),
+                    ("prospect_ai_assist_review_20260310_packet_002_reviewed.csv", "2026-03-10_AIASSIST_P002", True),
                 ],
             )
+
+    def test_pending_import_accepts_legacy_audit_dir_with_warning(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            legacy_dir = data_dir / "audits" / "ai_assist"
+            legacy_dir.mkdir(parents=True, exist_ok=True)
+            input_path = legacy_dir / "prospect_ai_assist_review_20260309_reviewed.csv"
+            self._write_review_csv(
+                input_path,
+                [
+                    {
+                        "state": "TX",
+                        "decision": "accept",
+                        "firm": "Legacy One",
+                        "website": "https://legacy-one.example.com",
+                        "contact_name": "Legacy One",
+                        "title": "Owner",
+                        "email": "legacy@legacy-one.example.com",
+                        "source_urls": "https://legacy-one.example.com/contact",
+                        "confidence": "90",
+                        "evidence_snippet": "Legacy One",
+                    }
+                ],
+            )
+
+            calls: list[tuple[str, str, bool]] = []
+
+            def _fake_import(*, input_path: Path, batch_id_override: str = "", dry_run: bool = False):  # type: ignore[no-untyped-def]
+                calls.append((str(input_path.name), str(batch_id_override), bool(dry_run)))
+                return 0, "DRY_RUN"
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(import_tool, "_import_review_file", side_effect=_fake_import),
+                redirect_stdout(out),
+            ):
+                rc = import_tool.run_pending_imports(dry_run=True)
+
+            self.assertEqual(rc, 0, msg=out.getvalue())
+            self.assertEqual(
+                calls,
+                [("prospect_ai_assist_review_20260309_reviewed.csv", "2026-03-09_AIASSIST", True)],
+            )
+            self.assertIn("WARN_AI_ASSIST_PENDING_IMPORT_LEGACY_DIR=", out.getvalue())
 
     def test_completed_batch_same_hash_is_skipped_cleanly(self):
         with tempfile.TemporaryDirectory() as d:
@@ -567,6 +976,68 @@ class TestProspectAiAssistTools(unittest.TestCase):
 
             self.assertEqual(rc, 0, msg=out.getvalue())
             self.assertIn("PASS_AI_ASSIST_IMPORT status=SKIPPED_ALREADY_COMPLETED", out.getvalue())
+
+    def test_completed_tracked_malformed_file_skips_before_normalization(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            db_path = data_dir / "crm.sqlite"
+            input_path = tmp / "prospect_ai_assist_review_20260312_reviewed.csv"
+            self._write_review_csv(
+                input_path,
+                [
+                    {
+                        "state": "TX",
+                        "decision": "accept",
+                        "firm": "SafeCo",
+                        "website": "https://safeco.example.com",
+                        "contact_name": "Taylor Safe",
+                        "title": "Owner",
+                        "email": "taylor@safeco.example.com",
+                        "source_urls": "https://safeco.example.com/contact",
+                        "confidence": "92",
+                        "evidence_snippet": "Broken [http",
+                    }
+                ],
+            )
+
+            conn = crm_store.connect(db_path)
+            try:
+                crm_store.init_schema(conn)
+                conn.execute(
+                    f"""
+                    INSERT INTO {crm_store.AI_ASSIST_IMPORT_BATCH_TABLE}(
+                        batch_id, source_path, source_filename, source_file_hash, status, started_at,
+                        completed_at, last_error, candidates_total, accepted_total, rejected_total,
+                        verified_total, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, '', 1, 1, 0, 1, ?, ?)
+                    """,
+                    (
+                        "2026-03-12_AIASSIST",
+                        str(input_path),
+                        input_path.name,
+                        import_tool._sha256_file(input_path),
+                        "completed",
+                        "2026-03-12T00:00:00+00:00",
+                        "2026-03-12T00:01:00+00:00",
+                        "2026-03-12T00:00:00+00:00",
+                        "2026-03-12T00:01:00+00:00",
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            out = io.StringIO()
+            err = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out), redirect_stderr(err):
+                rc = import_tool.main(["--input", str(input_path), "--batch", "2026-03-12_AIASSIST"])
+
+            self.assertEqual(rc, 0, msg=out.getvalue() + err.getvalue())
+            self.assertIn("PASS_AI_ASSIST_IMPORT status=SKIPPED_ALREADY_COMPLETED", out.getvalue())
+            self.assertNotIn("ERR_AI_ASSIST_IMPORT_INPUT", err.getvalue())
 
     def test_batch_hash_drift_fails_fast(self):
         with tempfile.TemporaryDirectory() as d:

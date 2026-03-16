@@ -596,12 +596,17 @@ def _generation_hunter_usage_path(data_dir: Path) -> Path:
 
 
 def _parse_enrich_config(data_dir: Path) -> dict:
+    autogrow_sleep_ms = _parse_int_env(os.getenv("PROSPECT_AUTOGROW_HTTP_SLEEP_MS", ""), default=800, minimum=0)
+    raw_enrich_sleep_ms = _normalize_text(os.getenv("PROSPECT_ENRICH_HTTP_SLEEP_MS", ""))
+    enrich_sleep_ms = _parse_int_env(raw_enrich_sleep_ms, default=autogrow_sleep_ms, minimum=0)
     return {
         "domain_enabled": _bool_env(os.getenv("PROSPECT_ENRICH_DOMAIN_ENABLED", "0")),
         "hunter_enabled": _bool_env(os.getenv("PROSPECT_ENRICH_HUNTER_ENABLED", "0")),
         "hunter_api_key": _normalize_text(os.getenv("HUNTER_API_KEY", "")),
         "hunter_usage_path": _generation_hunter_usage_path(data_dir),
         "hunter_cap": prospect_enrich_email.HUNTER_FREE_MONTHLY_CAP,
+        "max_sites_per_run": _parse_int_env(os.getenv("PROSPECT_ENRICH_MAX_SITES_PER_RUN", ""), default=25, minimum=1),
+        "sleep_ms": enrich_sleep_ms,
     }
 
 
@@ -1152,6 +1157,7 @@ def _default_generator_enrich_metrics() -> dict[str, int]:
         "hunter_error": 0,
         "still_no_email": 0,
         "hunter_skipped_cap": 0,
+        "skipped_max_sites": 0,
     }
 
 
@@ -1167,6 +1173,7 @@ def _merge_generator_enrich_metrics(dest: dict[str, int], src: dict | None) -> N
         "hunter_error",
         "still_no_email",
         "hunter_skipped_cap",
+        "skipped_max_sites",
     ):
         dest[key] = int(dest.get(key, 0)) + int(source.get(key, 0) or 0)
 
@@ -1469,6 +1476,8 @@ def _print_tokens(
         "GENERATOR_ENRICH_MODE="
         f"{'dual_mode_provider_fallback' if provider_lane_enabled else 'pattern_only'}"
     )
+    print(f"GENERATOR_ENRICH_MAX_SITES_PER_RUN={int(enrich_cfg.get('max_sites_per_run') or 0)}")
+    print(f"GENERATOR_ENRICH_HTTP_SLEEP_MS={int(enrich_cfg.get('sleep_ms') or 0)}")
     print(f"GENERATOR_ENRICH_ATTEMPTED={int(enrich_metrics.get('attempted') or 0)}")
     print(f"GENERATOR_ENRICH_DOMAIN_RESOLVED={int(enrich_metrics.get('domain_resolved') or 0)}")
     print(f"GENERATOR_ENRICH_EMAIL_GUESSED={int(enrich_metrics.get('email_guessed') or 0)}")
@@ -1478,6 +1487,7 @@ def _print_tokens(
     print(f"GENERATOR_ENRICH_HUNTER_ERROR={int(enrich_metrics.get('hunter_error') or 0)}")
     print(f"GENERATOR_ENRICH_STILL_NO_EMAIL={int(enrich_metrics.get('still_no_email') or 0)}")
     print(f"GENERATOR_ENRICH_HUNTER_SKIPPED_CAP={int(enrich_metrics.get('hunter_skipped_cap') or 0)}")
+    print(f"GENERATOR_ENRICH_SKIPPED_MAX_SITES={int(enrich_metrics.get('skipped_max_sites') or 0)}")
     if print_availability:
         cp = dict(crawl_probe or {})
         print(f"crawl4ai_installed={'YES' if cp.get('crawl4ai_installed') else 'NO'}")
@@ -2054,7 +2064,8 @@ def main(argv: list[str] | None = None) -> int:
                     domain_enabled=bool(enrich_cfg.get("domain_enabled")),
                     hunter_enabled=(bool(enrich_cfg.get("hunter_enabled")) and not bool(args.dry_run)),
                     hunter_api_key=str(enrich_cfg.get("hunter_api_key") or ""),
-                    sleep_ms=int(autogrow_cfg.get("sleep_ms") or 0),
+                    max_sites_per_run=int(enrich_cfg.get("max_sites_per_run") or 0),
+                    sleep_ms=int(enrich_cfg.get("sleep_ms") or autogrow_cfg.get("sleep_ms") or 0),
                     hunter_usage_path=Path(enrich_cfg.get("hunter_usage_path") or _generation_hunter_usage_path(data_dir)),
                 )
                 rows_candidate = list(enrich_out.get("rows") or rows_candidate)

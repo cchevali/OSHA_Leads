@@ -1,6 +1,9 @@
 name: Ingest Evening + AI Review Dump (Self-Hosted)
 
 on:
+  schedule:
+    - cron: '45 0 * * *'
+    - cron: '45 1 * * *'
   workflow_dispatch:
 
 jobs:
@@ -10,7 +13,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Gate Exact 5:00 AM ET Weekday
+      - name: Gate Exact 8:45 PM ET Daily
         id: gate
         shell: powershell
         run: |
@@ -20,9 +23,8 @@ jobs:
           }
           $utcNow = [datetime]::UtcNow
           $etNow = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId($utcNow, 'Eastern Standard Time')
-          $isWeekday = ($etNow.DayOfWeek -ne 'Saturday' -and $etNow.DayOfWeek -ne 'Sunday')
-          $isTargetMinute = ($etNow.Hour -eq 5 -and $etNow.Minute -eq 0)
-          if ($isWeekday -and $isTargetMinute) {
+          $isTargetMinute = ($etNow.Hour -eq 20 -and $etNow.Minute -eq 45)
+          if ($isTargetMinute) {
             "run_now=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           } else {
             "run_now=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8

@@ -250,7 +250,9 @@ class TestOshaDetailCache(unittest.TestCase):
             )
             cache_db = tmp / "scoring" / "osha_detail_cache.sqlite"
             out = io.StringIO()
-            with mock.patch.object(odc.ingest_osha, "get_session", return_value=_FakeSession("<html></html>")):
+            with mock.patch.object(odc, "utc_now", return_value=FIXED_NOW_UTC), mock.patch.object(
+                odc.ingest_osha, "get_session", return_value=_FakeSession("<html></html>")
+            ):
                 with redirect_stdout(out):
                     result = odc.run_cache(
                         odc.CacheRunConfig(

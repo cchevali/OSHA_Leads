@@ -2443,11 +2443,14 @@ class TestOutreachRunAuto(unittest.TestCase):
                     }
                 )
 
+            recent_opened = date.today().isoformat()
+            recent_observed = f"{date.today().isoformat()}T12:00:00Z"
+            refresh_label = f"{date.today().isoformat()} 08:00 ET"
             recent_leads = [
                 {
                     "activity_nr": "111",
-                    "date_opened": "2026-03-04",
-                    "first_seen_at": "2026-03-05T12:00:00Z",
+                    "date_opened": recent_opened,
+                    "first_seen_at": recent_observed,
                     "site_state": "CA",
                     "site_city": "Los Angeles",
                     "inspection_type": "Complaint",
@@ -2485,7 +2488,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 ),
                 clear=True,
             ), mock.patch.object(
-                roa.gm, "_best_effort_recent_leads_and_refresh", return_value=(list(recent_leads), "2026-03-05 08:00 ET")
+                roa.gm, "_best_effort_recent_leads_and_refresh", return_value=(list(recent_leads), refresh_label)
             ), mock.patch.object(
                 roa.gm, "_load_local_suppression_set", return_value=set()
             ), mock.patch.object(
@@ -2540,9 +2543,9 @@ class TestOutreachRunAuto(unittest.TestCase):
                         batch="2026-02-18_CA",
                         template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_plain.txt"),
                         html_template_text=roa.gm._read_template_text(REPO_ROOT / "outreach" / "outreach_card.html"),
-                        recent_signals_lines="- Metro Safety Co (Los Angeles, CA) | Complaint | Opened 2026-03-04 | Observed 2026-03-05",
-                        recent_signals_html="<div>Metro Safety Co &middot; Observed 2026-03-05</div>",
-                        last_refresh_et="2026-03-05 08:00 ET",
+                        recent_signals_lines=f"- Metro Safety Co (Los Angeles, CA) | Complaint | Opened {recent_opened} | Observed {date.today().isoformat()}",
+                        recent_signals_html=f"<div>Metro Safety Co &middot; Observed {date.today().isoformat()}</div>",
+                        last_refresh_et=refresh_label,
                         signal_tokens=signal_tokens,
                         recent_leads=list(recent_leads),
                     )

@@ -37,8 +37,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - `run_prospect_generation.py --doctor`
    - `run_prospect_generation.py`
    - `run_prospect_discovery.py`
-   - `tools/dump_prospect_ai_assist_review.py` only when post-discovery backlog gap remains; this writes a manual review packet and does not mutate CRM, and now includes exact valid/invalid CSV examples to reduce markdown-format drift in manual AI review
-   - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG,STATE_LIC`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1`, and `PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE=40` when these keys are unset.
+   - Replenishment owns generation plus discovery only; it does not generate AI-assist review artifacts.
+   - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG,STATE_LIC`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1`, and `PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET=30` when these keys are unset.
    - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
    - Planned tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are intentionally rejected by env/runtime validation until their source modules exist.
    - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
@@ -47,13 +47,14 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - OSHA_NEWS uses a lazy-loaded Crawl4AI wrapper (`outreach/scraper_engine.py`) with warning-level degradation when Crawl4AI/Playwright browsers are unavailable.
    - STATE_LIC Phase 1 uses the Texas TDLR public Socrata dataset (`7358-krk7`) and provides licensed-business metadata including address/phone/county fields.
    - Generator-stage enrichment can promote qualifying `STATE_LIC` rows to persisted `STATE_LIC_WORK_EMAIL`, which stays in the `STATE_LIC` source family but is the only STATE_LIC variant that defaults to send-eligible.
-   - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering to populate existing `website`/`email` fields via domain resolution + pattern guesses.
+  - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering to populate existing `website`/`email` fields via domain resolution + pattern guesses, and is bounded by `PROSPECT_ENRICH_MAX_SITES_PER_RUN` plus `PROSPECT_ENRICH_HTTP_SLEEP_MS` so large source pulls do not stall the full replenish run.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts `${DATA_DIR}/prospect_discovery/prospects_latest.csv` into `crm.sqlite`.
-3. Controlled discovery augmentation: `tools/import_prospect_ai_assist_review.py --input <reviewed.csv>` expects the canonical `_reviewed.csv` artifact, deterministically normalizes known markdown/mailto cell corruption, rejects ambiguous malformed rows, audits provenance in `crm.sqlite`, and then upserts verified accepts through the existing discovery/CRM contract with `source=ai_assist_manual` and `enrichment_lane=ai_assist`.
-4. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
-5. Daily run: `outreach/run_outreach_auto.py`
+3. Nightly AI review artifacts: `scripts/scheduled/run_osha_ingest_evening.ps1` runs OSHA ingest, `tools/dump_signals_for_review.py`, and `tools/dump_prospect_ai_assist_review.py` at the shared 8:45 PM Eastern slot. Signals dumps land under `${DATA_DIR}\audits\signals_ai_review\`. Prospect dumps land under `${DATA_DIR}\audits\prospect_ai_assist\` as a daily summary plus deterministic packet slices (`seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`) so review volume can be split across multiple AI chats without changing import/scheduler ownership.
+4. Controlled discovery augmentation: reviewed prospect CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\` and are imported oldest-first by `tools/import_prospect_ai_assist_review.py --pending` before live outreach sends; packet-reviewed filenames use `prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv`, while a single reviewed file remains valid for manual/backfill cases. The importer normalizes known markdown/mailto cell corruption, rejects ambiguous malformed rows, audits provenance in `crm.sqlite`, and then upserts verified accepts through the existing discovery/CRM contract with `source=ai_assist_manual` and `enrichment_lane=ai_assist`.
+5. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
+6. Daily run: `outreach/run_outreach_auto.py`
    - Resolves weekday rotation-selected state from `OUTREACH_STATES`, emits `OUTREACH_STATE_ROTATION_SELECTED` / `OUTREACH_STATE_EFFECTIVE_SEND`, and uses effective send-state batch id `<YYYY-MM-DD>_<STATE>` (optional fallback override via `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` when the rotation-selected state is depleted/below floor)
    - Emits `OUTREACH_RAMP_READY` readiness token (manual daily-limit ramping remains operator-controlled)
    - Selects/prioritizes prospects from `prospects` table

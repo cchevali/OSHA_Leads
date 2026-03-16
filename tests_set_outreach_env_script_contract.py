@@ -41,10 +41,14 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "ProspectAutoGrowSafetyNetEnabled",
             "ProspectAiAssistReviewEnabled",
             "ProspectAiAssistMaxRowsPerState",
+            "ProspectAiAssistReviewRawTarget",
+            "ProspectAiAssistReviewPacketSize",
             "ProspectAutoGrowSources",
             "ProspectAutoGrowBacklogTarget",
             "ProspectAutoGrowMaxFetchPagesPerRun",
             "ProspectAutoGrowHttpSleepMs",
+            "ProspectEnrichMaxSitesPerRun",
+            "ProspectEnrichHttpSleepMs",
             "ApolloApiKey",
             "ApolloEnrichEnabled",
             "ApolloEnrichMaxPerRun",
@@ -97,6 +101,8 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("PROSPECT_AUTOGROW_SAFETY_NET_ENABLED", text)
         self.assertIn("PROSPECT_AI_ASSIST_REVIEW_ENABLED", text)
         self.assertIn("PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE", text)
+        self.assertIn("PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET", text)
+        self.assertIn("PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE", text)
         self.assertIn("PROSPECT_AUTOGROW_STATES", text)
         self.assertIn("PROSPECT_AUTOGROW_SOURCES", text)
         self.assertIn("autogrow_source_registry.json", text)
@@ -105,8 +111,11 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("OUTREACH_SKIP_ROLE_INBOXES", text)
         self.assertIn("outreach_skip_role_inboxes=", text)
         self.assertIn("prospect_ai_assist_review_enabled=", text)
-        self.assertIn("prospect_ai_assist_max_rows_per_state=", text)
+        self.assertIn("prospect_ai_assist_review_raw_target=", text)
+        self.assertIn("prospect_ai_assist_review_packet_size=", text)
         self.assertIn("invalid_ProspectAiAssistMaxRowsPerState", text)
+        self.assertIn("invalid_ProspectAiAssistReviewRawTarget", text)
+        self.assertIn("invalid_ProspectAiAssistReviewPacketSize", text)
         self.assertIn("OHS_BG", text)
         self.assertIn("APOLLO", text)
         self.assertIn("unimplemented_ProspectAutoGrowSources", text)
@@ -146,6 +155,12 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("apollo_person_locations_mode=", text)
         self.assertIn("task_sched_user=", text)
         self.assertIn("task_sched_password_present=", text)
+        self.assertIn("PROSPECT_ENRICH_MAX_SITES_PER_RUN", text)
+        self.assertIn("PROSPECT_ENRICH_HTTP_SLEEP_MS", text)
+        self.assertIn("prospect_enrich_max_sites_per_run=", text)
+        self.assertIn("prospect_enrich_http_sleep_ms=", text)
+        self.assertIn("invalid_ProspectEnrichMaxSitesPerRun", text)
+        self.assertIn("invalid_ProspectEnrichHttpSleepMs", text)
         self.assertIn("TASK_SCHED_USER", text)
         self.assertIn("TASK_SCHED_PASSWORD", text)
         self.assertIn("RUNTIME_ROLE", text)
@@ -164,6 +179,8 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("$dataDirSource = 'inherited'", text)
         self.assertIn("$dataDirSource = 'unchanged'", text)
         self.assertIn("Pass-Token $PASS_SET_OUTREACH_ENV_DATA_DIR", text)
+        self.assertNotIn("Write-Output ('prospect_ai_assist_max_rows_per_state='", text)
+        self.assertNotIn("} elseif (-not (Map-HasValue $map 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE')) {", text)
         self.assertNotIn("Write-Output ('OPENAI_API_KEY='", text)
         self.assertNotIn("Write-Output ('TASK_SCHED_PASSWORD='", text)
         self.assertNotIn("PROSPECT_AUTOGROWTH_ENABLED", text)

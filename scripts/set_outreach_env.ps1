@@ -9,6 +9,8 @@ param(
   [Nullable[int]] $ProspectAutoGrowSafetyNetEnabled = $null,
   [Nullable[int]] $ProspectAiAssistReviewEnabled = $null,
   [Nullable[int]] $ProspectAiAssistMaxRowsPerState = $null,
+  [Nullable[int]] $ProspectAiAssistReviewRawTarget = $null,
+  [Nullable[int]] $ProspectAiAssistReviewPacketSize = $null,
   [string] $ProspectAutoGrowStates = '',
   [string] $ProspectAutoGrowSources = '',
   [Nullable[int]] $ProspectAutoGrowBacklogTarget = $null,
@@ -17,6 +19,8 @@ param(
   [string] $ProspectAutoGrowStateLicTxLicenseTypes = '',
   [Nullable[int]] $ProspectEnrichDomainEnabled = $null,
   [Nullable[int]] $ProspectEnrichHunterEnabled = $null,
+  [Nullable[int]] $ProspectEnrichMaxSitesPerRun = $null,
+  [Nullable[int]] $ProspectEnrichHttpSleepMs = $null,
   [string] $HunterApiKey = '',
   [string] $ApolloApiKey = '',
   [Nullable[int]] $ApolloEnrichEnabled = $null,
@@ -380,6 +384,8 @@ try {
     'ProspectAutoGrowSafetyNetEnabled',
     'ProspectAiAssistReviewEnabled',
     'ProspectAiAssistMaxRowsPerState',
+    'ProspectAiAssistReviewRawTarget',
+    'ProspectAiAssistReviewPacketSize',
     'ProspectAutoGrowStates',
     'ProspectAutoGrowSources',
     'ProspectAutoGrowBacklogTarget',
@@ -388,6 +394,8 @@ try {
     'ProspectAutoGrowStateLicTxLicenseTypes',
     'ProspectEnrichDomainEnabled',
     'ProspectEnrichHunterEnabled',
+    'ProspectEnrichMaxSitesPerRun',
+    'ProspectEnrichHttpSleepMs',
     'HunterApiKey',
     'ApolloApiKey',
     'ApolloEnrichEnabled',
@@ -461,6 +469,12 @@ try {
   if ($PSBoundParameters.ContainsKey('ProspectAiAssistMaxRowsPerState') -and $ProspectAiAssistMaxRowsPerState -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAiAssistMaxRowsPerState'
   }
+  if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewRawTarget') -and $ProspectAiAssistReviewRawTarget -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAiAssistReviewRawTarget'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewPacketSize') -and $ProspectAiAssistReviewPacketSize -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAiAssistReviewPacketSize'
+  }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowBacklogTarget') -and $ProspectAutoGrowBacklogTarget -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowBacklogTarget'
   }
@@ -475,6 +489,12 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('ProspectEnrichHunterEnabled') -and $ProspectEnrichHunterEnabled -notin @(0, 1)) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectEnrichHunterEnabled'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectEnrichMaxSitesPerRun') -and $ProspectEnrichMaxSitesPerRun -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectEnrichMaxSitesPerRun'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectEnrichHttpSleepMs') -and $ProspectEnrichHttpSleepMs -lt 0) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectEnrichHttpSleepMs'
   }
   if ($PSBoundParameters.ContainsKey('TrialSendsLimitDefault') -and $TrialSendsLimitDefault -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_TrialSendsLimitDefault'
@@ -680,8 +700,10 @@ try {
       Write-Output ('outreach_skip_role_inboxes=' + $outreachSkipRoleInboxesValue)
       $prospectAiAssistReviewEnabledValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_ENABLED') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_ENABLED']).Trim() } else { '1' }
       Write-Output ('prospect_ai_assist_review_enabled=' + $prospectAiAssistReviewEnabledValue)
-      $prospectAiAssistMaxRowsPerStateValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE') { ([string]$printMap['PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE']).Trim() } else { '40' }
-      Write-Output ('prospect_ai_assist_max_rows_per_state=' + $prospectAiAssistMaxRowsPerStateValue)
+      $prospectAiAssistReviewRawTargetValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET']).Trim() } else { '30' }
+      Write-Output ('prospect_ai_assist_review_raw_target=' + $prospectAiAssistReviewRawTargetValue)
+      $prospectAiAssistReviewPacketSizeValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE']).Trim() } else { '10' }
+      Write-Output ('prospect_ai_assist_review_packet_size=' + $prospectAiAssistReviewPacketSizeValue)
       $aiTriageEnabledValue = '0'
       if (Map-HasValue $printMap 'AI_TRIAGE_ENABLED') {
         $rawAiEnabled = ([string]$printMap['AI_TRIAGE_ENABLED']).Trim().ToLowerInvariant()
@@ -707,6 +729,8 @@ try {
       $apolloLocationsModeValue = if (Map-HasValue $printMap 'APOLLO_PERSON_LOCATIONS_MODE') { ([string]$printMap['APOLLO_PERSON_LOCATIONS_MODE']).Trim() } else { 'state' }
       $prospectEnrichDomainEnabledValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_DOMAIN_ENABLED') { ([string]$printMap['PROSPECT_ENRICH_DOMAIN_ENABLED']).Trim() } else { '0' }
       $prospectEnrichHunterEnabledValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_HUNTER_ENABLED') { ([string]$printMap['PROSPECT_ENRICH_HUNTER_ENABLED']).Trim() } else { '0' }
+      $prospectEnrichMaxSitesPerRunValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_MAX_SITES_PER_RUN') { ([string]$printMap['PROSPECT_ENRICH_MAX_SITES_PER_RUN']).Trim() } else { '25' }
+      $prospectEnrichHttpSleepMsValue = if (Map-HasValue $printMap 'PROSPECT_ENRICH_HTTP_SLEEP_MS') { ([string]$printMap['PROSPECT_ENRICH_HTTP_SLEEP_MS']).Trim() } else { '750' }
       Write-Output ('ai_triage_enabled=' + $aiTriageEnabledValue)
       Write-Output ('ai_triage_openai_model=' + $aiTriageModelValue)
       Write-Output ('signal_freshness_max_days=' + $signalFreshnessMaxDaysValue)
@@ -718,6 +742,8 @@ try {
       Write-Output ('apollo_person_locations_mode=' + $apolloLocationsModeValue)
       Write-Output ('prospect_enrich_domain_enabled=' + $prospectEnrichDomainEnabledValue)
       Write-Output ('prospect_enrich_hunter_enabled=' + $prospectEnrichHunterEnabledValue)
+      Write-Output ('prospect_enrich_max_sites_per_run=' + $prospectEnrichMaxSitesPerRunValue)
+      Write-Output ('prospect_enrich_http_sleep_ms=' + $prospectEnrichHttpSleepMsValue)
       $taskSchedUserValue = if (Map-HasValue $printMap 'TASK_SCHED_USER') { ([string]$printMap['TASK_SCHED_USER']).Trim() } else { '' }
       $taskSchedPasswordPresent = if (Map-HasValue $printMap 'TASK_SCHED_PASSWORD') { 'YES' } else { 'NO' }
       Write-Output ('task_sched_user=' + $taskSchedUserValue)
@@ -843,8 +869,18 @@ try {
 
     if ($PSBoundParameters.ContainsKey('ProspectAiAssistMaxRowsPerState')) {
       Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE' -Value ([string]$ProspectAiAssistMaxRowsPerState) -TouchedList $touched
-    } elseif (-not (Map-HasValue $map 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE')) {
-      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_MAX_ROWS_PER_STATE' -Value '40' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewRawTarget')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET' -Value ([string]$ProspectAiAssistReviewRawTarget) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET' -Value '30' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewPacketSize')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE' -Value ([string]$ProspectAiAssistReviewPacketSize) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE' -Value '10' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowStates')) {
@@ -897,6 +933,18 @@ try {
       Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_HUNTER_ENABLED' -Value ([string]$ProspectEnrichHunterEnabled) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'PROSPECT_ENRICH_HUNTER_ENABLED')) {
       Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_HUNTER_ENABLED' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectEnrichMaxSitesPerRun')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_MAX_SITES_PER_RUN' -Value ([string]$ProspectEnrichMaxSitesPerRun) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_ENRICH_MAX_SITES_PER_RUN')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_MAX_SITES_PER_RUN' -Value '25' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ProspectEnrichHttpSleepMs')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_HTTP_SLEEP_MS' -Value ([string]$ProspectEnrichHttpSleepMs) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'PROSPECT_ENRICH_HTTP_SLEEP_MS')) {
+      Set-MapValue -Map $map -Key 'PROSPECT_ENRICH_HTTP_SLEEP_MS' -Value '750' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('HunterApiKey')) {

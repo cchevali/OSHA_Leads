@@ -82,7 +82,6 @@ class WrapperRunEvidence:
 
 JOBS: tuple[JobSpec, ...] = (
     JobSpec(name="inbound_triage", kind="interval", weekday_only=False, interval_minutes=15, max_attempts_per_slot=1),
-    JobSpec(name="ai_review_dump", kind="daily", weekday_only=True, target_hhmm="05:00", catchup_minutes=180),
     JobSpec(name="ingest_daily", kind="daily", weekday_only=True, target_hhmm="06:45", catchup_minutes=180),
     JobSpec(name="prospect_replenish_daily", kind="daily", weekday_only=True, target_hhmm="07:15", catchup_minutes=180),
     JobSpec(name="outreach_auto", kind="daily", weekday_only=True, target_hhmm="08:00", catchup_minutes=180),
@@ -330,18 +329,6 @@ def _job_commands(repo_root: Path, job_name: str, mode: str) -> list[list[str]]:
         return [
             _run_with_secrets_cmd(repo_root, "inbound_inbox_triage.py", ["--run-once", "--dry-run"]),
             _run_with_secrets_cmd(repo_root, "run_capture_sync.py", ["--dry-run"]),
-        ]
-
-    if job_name == "ai_review_dump":
-        dump_ps = repo_root / "scripts" / "dump_signals_for_ai_review.ps1"
-        if mode == "live":
-            return [
-                _run_with_secrets_cmd(repo_root, "run_osha_ingest_daily.py", ["--scope-mode", "outreach_plus_trial_live"]),
-                _powershell_file_cmd(dump_ps, ["-SinceDays", "14"]),
-            ]
-        return [
-            _run_with_secrets_cmd(repo_root, "run_osha_ingest_daily.py", ["--doctor"]),
-            _powershell_file_cmd(dump_ps, ["-SinceDays", "14", "-PrintConfig"]),
         ]
 
     if job_name == "ingest_daily":

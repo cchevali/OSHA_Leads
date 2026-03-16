@@ -19,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import seed_recipients_pools as pools
+import ai_assist_paths
 from outreach import crm_admin
 from outreach import contact_normalization
 from outreach import crm_store
@@ -43,7 +44,9 @@ REQUIRED_COLUMNS = (
     "confidence",
     "evidence_snippet",
 )
-PENDING_REVIEW_FILENAME_RE = re.compile(r"^prospect_ai_assist_review_(\d{8})_reviewed\.csv$")
+PENDING_REVIEW_FILENAME_RE = re.compile(
+    r"^prospect_ai_assist_review_(\d{8})(?:_packet_(\d{3}))?_reviewed\.csv$"
+)
 STALE_STARTED_MINUTES = 30
 TRACKING_STATUS_STARTED = "started"
 TRACKING_STATUS_COMPLETED = "completed"
@@ -67,7 +70,11 @@ def _default_batch_id(input_path: Path | None = None) -> str:
     match = PENDING_REVIEW_FILENAME_RE.match(path.name)
     if match:
         token = match.group(1)
-        return f"{token[:4]}-{token[4:6]}-{token[6:8]}_AIASSIST"
+        packet_token = str(match.group(2) or "").strip()
+        batch_id = f"{token[:4]}-{token[4:6]}-{token[6:8]}_AIASSIST"
+        if packet_token:
+            return f"{batch_id}_P{packet_token}"
+        return batch_id
     return f"{_local_today_stamp()}_AIASSIST"
 
 
@@ -356,19 +363,41 @@ def _sha256_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def _discover_pending_review_files(review_dir: Path) -> list[Path]:
-    if not review_dir.exists():
-        return []
-    rows: list[tuple[str, str, Path]] = []
-    for path in review_dir.iterdir():
-        if not path.is_file():
+def _discover_pending_review_files(
+    review_dirs: list[ai_assist_paths.PathCandidate],
+) -> list[tuple[Path, bool]]:
+    rows: list[tuple[str, int, int, str, Path, bool]] = []
+    for review_dir in review_dirs:
+        try:
+            if not review_dir.path.exists() or (not review_dir.path.is_dir()):
+                continue
+        except Exception:
             continue
-        match = PENDING_REVIEW_FILENAME_RE.match(path.name)
-        if not match:
-            continue
-        rows.append((match.group(1), path.name.lower(), path.resolve(strict=False)))
-    rows.sort(key=lambda item: (item[0], item[1]))
-    return [item[2] for item in rows]
+        for path in review_dir.path.iterdir():
+            if not path.is_file():
+                continue
+            match = PENDING_REVIEW_FILENAME_RE.match(path.name)
+            if not match:
+                continue
+            packet_number = int(match.group(2) or "0")
+            rows.append(
+                (
+                    match.group(1),
+                    1 if review_dir.is_legacy else 0,
+                    packet_number,
+                    path.name.lower(),
+                    path.resolve(strict=False),
+                    bool(review_dir.is_legacy),
+                )
+            )
+    rows.sort(key=lambda item: (item[0], item[2], item[1], item[3]))
+    return [(item[4], item[5]) for item in rows]
+
+
+def _pending_review_candidates() -> tuple[list[ai_assist_paths.PathCandidate], list[tuple[Path, bool]]]:
+    review_dirs = ai_assist_paths.prospect_pending_import_candidates(REPO_ROOT)
+    files = _discover_pending_review_files(review_dirs)
+    return review_dirs, files
 
 
 def _load_do_not_contact_sets(conn: sqlite3.Connection | None) -> tuple[set[str], set[str]]:
@@ -561,6 +590,24 @@ def _load_batch_tracking_row(conn: sqlite3.Connection | None, batch_id: str) -> 
     ).fetchone()
 
 
+def _tracked_batch_state(
+    conn: sqlite3.Connection | None,
+    *,
+    batch_id: str,
+    source_hash: str,
+) -> tuple[str, sqlite3.Row | None]:
+    existing_row = _load_batch_tracking_row(conn, batch_id)
+    if existing_row is None:
+        return "", None
+    existing_hash = str(existing_row["source_file_hash"] or "").strip()
+    if existing_hash and existing_hash != source_hash:
+        raise ValueError(
+            f"{ERR_AI_ASSIST_IMPORT_DRIFT} batch_id={batch_id} "
+            f"expected_hash={existing_hash} got_hash={source_hash}"
+        )
+    return _batch_claim_state(existing_row, _utc_now()), existing_row
+
+
 def _batch_preview(rows: list[dict[str, str]]) -> tuple[set[str], Counter]:
     candidate_keys: set[str] = set()
     totals: Counter = Counter()
@@ -641,15 +688,11 @@ def _begin_batch_tracking(
     source_hash: str,
     now_iso: str,
 ) -> tuple[str, sqlite3.Row | None]:
-    existing_row = _load_batch_tracking_row(conn, batch_id)
-    if existing_row is not None:
-        existing_hash = str(existing_row["source_file_hash"] or "").strip()
-        if existing_hash and existing_hash != source_hash:
-            raise ValueError(
-                f"{ERR_AI_ASSIST_IMPORT_DRIFT} batch_id={batch_id} "
-                f"expected_hash={existing_hash} got_hash={source_hash}"
-            )
-    claim_state = _batch_claim_state(existing_row, _utc_now())
+    claim_state, existing_row = _tracked_batch_state(
+        conn,
+        batch_id=batch_id,
+        source_hash=source_hash,
+    )
     if claim_state in {"skip_completed", "skip_in_progress"}:
         return claim_state, existing_row
 
@@ -877,22 +920,8 @@ def _import_review_file(
         print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail=missing_input path={input_path}", file=sys.stderr)
         return 2, "MISSING_INPUT"
 
-    try:
-        rows = _load_csv_rows(input_path)
-    except Exception as exc:
-        print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
-        return 2, "INVALID_INPUT"
-    try:
-        rows, normalized_rows_total, normalized_fields_total = _normalize_review_rows(rows)
-    except Exception as exc:
-        print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
-        return 2, "INVALID_INPUT"
-
-    now_iso = crm_store.utc_now_iso()
     source_hash = _sha256_file(input_path)
     _emit("AI_ASSIST_IMPORT_SOURCE_FILE_HASH", source_hash)
-    _emit("AI_ASSIST_IMPORT_NORMALIZED_ROWS", normalized_rows_total)
-    _emit("AI_ASSIST_IMPORT_NORMALIZED_FIELDS", normalized_fields_total)
 
     conn: sqlite3.Connection | None = None
     claim_state = "dry_run"
@@ -905,6 +934,41 @@ def _import_review_file(
                 crm_store.ensure_database(db_path)
             conn = crm_store.connect(db_path)
             crm_store.init_schema(conn)
+
+        if conn is not None:
+            try:
+                tracked_state, _existing_tracking_row = _tracked_batch_state(
+                    conn,
+                    batch_id=batch_id,
+                    source_hash=source_hash,
+                )
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2, "DRIFT"
+            if tracked_state in {"skip_completed", "skip_in_progress"}:
+                _emit("AI_ASSIST_IMPORT_NORMALIZED_ROWS", 0)
+                _emit("AI_ASSIST_IMPORT_NORMALIZED_FIELDS", 0)
+                _emit("AI_ASSIST_IMPORT_BATCH_STATE", tracked_state)
+                if tracked_state == "skip_completed":
+                    print(f"{PASS_AI_ASSIST_IMPORT} status=SKIPPED_ALREADY_COMPLETED")
+                    return 0, "SKIPPED_ALREADY_COMPLETED"
+                print(f"{PASS_AI_ASSIST_IMPORT} status=SKIPPED_IN_PROGRESS")
+                return 0, "SKIPPED_IN_PROGRESS"
+
+        try:
+            rows = _load_csv_rows(input_path)
+        except Exception as exc:
+            print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
+            return 2, "INVALID_INPUT"
+        try:
+            rows, normalized_rows_total, normalized_fields_total = _normalize_review_rows(rows)
+        except Exception as exc:
+            print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
+            return 2, "INVALID_INPUT"
+
+        now_iso = crm_store.utc_now_iso()
+        _emit("AI_ASSIST_IMPORT_NORMALIZED_ROWS", normalized_rows_total)
+        _emit("AI_ASSIST_IMPORT_NORMALIZED_FIELDS", normalized_fields_total)
 
         if not dry_run and conn is not None:
             legacy_totals = _legacy_completed_batch_totals(conn, batch_id, rows)
@@ -1185,20 +1249,23 @@ def _import_review_file(
 
 def run_pending_imports(*, dry_run: bool = False) -> int:
     data_dir_resolution = resolve_data_dir(REPO_ROOT)
-    review_dir = data_dir_resolution.effective_path / "audits" / "ai_assist"
-    files = _discover_pending_review_files(review_dir)
+    review_dirs, files = _pending_review_candidates()
     _emit("AI_ASSIST_PENDING_IMPORT_DATA_DIR", str(data_dir_resolution.effective_path))
     _emit("AI_ASSIST_PENDING_IMPORT_DATA_DIR_SOURCE", str(data_dir_resolution.source or "default"))
-    _emit("AI_ASSIST_PENDING_IMPORT_DIR", str(review_dir))
+    if review_dirs:
+        _emit("AI_ASSIST_PENDING_IMPORT_DIR", str(review_dirs[0].path))
+    _emit("AI_ASSIST_PENDING_IMPORT_DIRS", ";".join(str(candidate.path) for candidate in review_dirs) or "none")
     _emit("AI_ASSIST_PENDING_IMPORT_DISCOVERED_TOTAL", len(files))
     _emit("AI_ASSIST_PENDING_IMPORT_DRY_RUN", 1 if dry_run else 0)
 
     imported_batches = 0
     skipped_batches = 0
-    for input_path in files:
+    for input_path, used_legacy_dir in files:
         batch_id = _default_batch_id(input_path)
         _emit("AI_ASSIST_PENDING_IMPORT_FILE", str(input_path))
         _emit("AI_ASSIST_PENDING_IMPORT_BATCH_ID", batch_id)
+        if used_legacy_dir or ai_assist_paths.prospect_path_uses_legacy_dir(input_path, REPO_ROOT):
+            _emit("WARN_AI_ASSIST_PENDING_IMPORT_LEGACY_DIR", str(input_path))
         rc, status = _import_review_file(input_path=input_path, batch_id_override=batch_id, dry_run=dry_run)
         if rc != 0:
             return rc
@@ -1221,7 +1288,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Import reviewed AI-assist discovery augmentation batches.")
     ap.add_argument("--input", default="", help="Reviewed AI-assist CSV input path.")
     ap.add_argument("--batch", default="", help="Optional batch id override.")
-    ap.add_argument("--pending", action="store_true", help="Import pending reviewed files from DATA_DIR\\audits\\ai_assist.")
+    ap.add_argument(
+        "--pending",
+        action="store_true",
+        help="Import pending reviewed files from DATA_DIR\\imports\\prospect_ai_assist.",
+    )
     ap.add_argument("--print-config", action="store_true", help="Print resolved config and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Validate and report without mutating CRM.")
     return ap
@@ -1241,11 +1312,13 @@ def main(argv: list[str] | None = None) -> int:
     _emit("AI_ASSIST_IMPORT_EXPECTED_COLUMNS", ",".join(REQUIRED_COLUMNS))
 
     if args.pending:
-        review_dir = data_dir_resolution.effective_path / "audits" / "ai_assist"
-        files = _discover_pending_review_files(review_dir)
-        _emit("AI_ASSIST_PENDING_IMPORT_DIR", str(review_dir))
+        review_dirs, files = _pending_review_candidates()
+        if review_dirs:
+            _emit("AI_ASSIST_PENDING_IMPORT_DIR", str(review_dirs[0].path))
+        _emit("AI_ASSIST_PENDING_IMPORT_DIRS", ";".join(str(candidate.path) for candidate in review_dirs) or "none")
         _emit("AI_ASSIST_PENDING_IMPORT_DISCOVERED_TOTAL", len(files))
-        for idx, path in enumerate(files, start=1):
+        for idx, item in enumerate(files, start=1):
+            path, _used_legacy_dir = item
             _emit(f"AI_ASSIST_PENDING_IMPORT_FILE_{idx}", str(path))
         if args.print_config:
             _emit("AI_ASSIST_IMPORT_DRY_RUN", 1 if args.dry_run else 0)

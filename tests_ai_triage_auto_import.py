@@ -184,6 +184,55 @@ class TestAiTriageAutoImport(unittest.TestCase):
                 self.assertIn("imported=1", text)
                 self.assertIn("rejected_invalid=2", text)
 
+    def test_auto_import_prefers_canonical_signals_subdir_before_legacy_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            canonical_dir = data_dir / "imports" / "signals_ai_review"
+            legacy_dir = data_dir / "imports"
+            canonical_dir.mkdir(parents=True, exist_ok=True)
+            legacy_dir.mkdir(parents=True, exist_ok=True)
+
+            canonical_csv = canonical_dir / "ai_review_20260302.csv"
+            canonical_csv.write_text(
+                "activity_nr,ai_priority,ai_reason\n"
+                "prefer_canonical,HIGH,canonical folder wins\n",
+                encoding="utf-8",
+            )
+            legacy_csv = legacy_dir / "ai_review_20260303.csv"
+            legacy_csv.write_text(
+                "activity_nr,ai_priority,ai_reason\n"
+                "prefer_canonical,LOW,legacy root should not win\n",
+                encoding="utf-8",
+            )
+
+            now = time.time()
+            os.utime(canonical_csv, (now - 120, now - 120))
+            os.utime(legacy_csv, (now - 10, now - 10))
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "AI_TRIAGE_ENABLED": "1",
+                "AI_REVIEW_IMPORT_MAX_AGE_HOURS": "24",
+                "OPENAI_API_KEY": "",
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    result = ai_triage.get_or_compute(
+                        item_key="prefer_canonical",
+                        mode="trial_render",
+                        item={"activity_nr": "prefer_canonical"},
+                        detail_row={},
+                    )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(str(result.get("priority")), "HIGH")
+            text = out.getvalue()
+            self.assertIn("AI_REVIEW_AUTO_IMPORT_APPLIED", text)
+            self.assertIn("ai_review_20260302.csv", text)
+            self.assertNotIn("WARN_AI_REVIEW_AUTO_IMPORT_LEGACY_DIR=1", text)
+
 
 if __name__ == "__main__":
     unittest.main()

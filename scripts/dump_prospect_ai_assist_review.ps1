@@ -1,6 +1,8 @@
 param(
   [string]$ForDate = '',
   [string[]]$States = @(),
+  [Nullable[int]]$RawTarget = $null,
+  [Nullable[int]]$PacketSize = $null,
   [switch]$PrintConfig,
   [switch]$DryRun,
   [string]$OutputDir = '',
@@ -62,6 +64,21 @@ if ($PSBoundParameters.ContainsKey('States')) {
   Write-Output ('AI_ASSIST_DUMP_SCOPE=STATES states=' + $statesCsv)
 }
 
+if ($PSBoundParameters.ContainsKey('RawTarget')) {
+  if ($RawTarget -lt 1) {
+    Write-Output 'ERR_AI_ASSIST_DUMP_RAW_TARGET_INVALID detail=positive_integer_required'
+    exit 1
+  }
+  $toolArgs += @('--raw-target', ([string]$RawTarget))
+}
+if ($PSBoundParameters.ContainsKey('PacketSize')) {
+  if ($PacketSize -lt 1) {
+    Write-Output 'ERR_AI_ASSIST_DUMP_PACKET_SIZE_INVALID detail=positive_integer_required'
+    exit 1
+  }
+  $toolArgs += @('--packet-size', ([string]$PacketSize))
+}
+
 if ($PrintConfig) {
   $toolArgs += '--print-config'
 }
@@ -80,16 +97,37 @@ try {
   $allOutput = & $wrapper -- py -3 @toolArgs 2>&1
   $exitCode = $LASTEXITCODE
 
+  $outputDir = ''
   $outputPath = ''
+  $packetDir = ''
+  $manifestPath = ''
   foreach ($line in @($allOutput)) {
     $text = [string]$line
     Write-Output $text
+    if ($text -match '^AI_ASSIST_DUMP_OUTPUT_DIR=(.+)$') {
+      $outputDir = $matches[1].Trim()
+    }
     if ($text -match '^AI_ASSIST_DUMP_OUTPUT_PATH=(.+)$') {
       $outputPath = $matches[1].Trim()
     }
+    if ($text -match '^AI_ASSIST_PACKET_DIR=(.+)$') {
+      $packetDir = $matches[1].Trim()
+    }
+    if ($text -match '^AI_ASSIST_PACKET_MANIFEST_PATH=(.+)$') {
+      $manifestPath = $matches[1].Trim()
+    }
+  }
+  if ($outputDir) {
+    Write-Output ('AI_ASSIST_DUMP_OUTPUT_DIR=' + $outputDir)
   }
   if ($outputPath) {
     Write-Output ('AI_ASSIST_DUMP_OUTPUT_PATH=' + $outputPath)
+  }
+  if ($packetDir) {
+    Write-Output ('AI_ASSIST_PACKET_DIR=' + $packetDir)
+  }
+  if ($manifestPath) {
+    Write-Output ('AI_ASSIST_PACKET_MANIFEST_PATH=' + $manifestPath)
   }
   exit $exitCode
 }
