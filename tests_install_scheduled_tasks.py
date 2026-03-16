@@ -15,6 +15,10 @@ EXPECTED_INGEST_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
     r"C:\dev\OSHA_Leads\scripts\scheduled\run_osha_ingest_daily.ps1"
 )
+EXPECTED_INGEST_EVENING_TR = (
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
+    r"C:\dev\OSHA_Leads\scripts\scheduled\run_osha_ingest_evening.ps1"
+)
 EXPECTED_OUTREACH_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
     r"C:\dev\OSHA_Leads\scripts\scheduled\run_outreach_auto.ps1"
@@ -102,13 +106,13 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_MODE=print-config", out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_PRIMARY_SCHEDULER=runtime_tick_selfhosted", out)
-        self.assertIn("INSTALL_SCHEDULED_TASKS_RECOVERY_ONLY_COUNT=4", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_RECOVERY_ONLY_COUNT=5", out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=0", out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAY_SCHEDULE=MON,TUE,WED,THU,FRI", out)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_PRINT_CONFIG", out)
 
         tasks = _parse_task_config(out)
-        self.assertEqual(len(tasks), 5, msg=out)
+        self.assertEqual(len(tasks), 6, msg=out)
 
         ingest = [t for t in tasks.values() if t.get("NAME") == "OSHA_Osha_Ingest_Daily"]
         self.assertEqual(len(ingest), 1, msg=out)
@@ -123,6 +127,20 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertLess(len(EXPECTED_INGEST_TR), 261)
         self.assertEqual(int(ingest_task.get("TR_LENGTH", "0")), len(EXPECTED_INGEST_TR), msg=out)
         self._assert_future_boundary(ingest_task.get("START_BOUNDARY_LOCAL", ""), out)
+
+        ingest_evening = [t for t in tasks.values() if t.get("NAME") == "OSHA_Osha_Ingest_Evening"]
+        self.assertEqual(len(ingest_evening), 1, msg=out)
+        ingest_evening_task = ingest_evening[0]
+        self.assertEqual(ingest_evening_task.get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(ingest_evening_task.get("RECOVERY_ONLY"), "YES", msg=out)
+        self.assertEqual(ingest_evening_task.get("EXPECTED_STATE"), "Enabled", msg=out)
+        self.assertEqual(ingest_evening_task.get("WEEKDAYS"), "SUN,MON,TUE,WED,THU,FRI,SAT", msg=out)
+        self.assertEqual(ingest_evening_task.get("TIME"), "20:45", msg=out)
+        self.assertEqual(ingest_evening_task.get("RL"), "HIGHEST", msg=out)
+        self.assertEqual(ingest_evening_task.get("TR"), EXPECTED_INGEST_EVENING_TR, msg=out)
+        self.assertLess(len(EXPECTED_INGEST_EVENING_TR), 261)
+        self.assertEqual(int(ingest_evening_task.get("TR_LENGTH", "0")), len(EXPECTED_INGEST_EVENING_TR), msg=out)
+        self._assert_future_boundary(ingest_evening_task.get("START_BOUNDARY_LOCAL", ""), out)
 
         replenish = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Replenish_SafetyNet"]
         self.assertEqual(len(replenish), 1, msg=out)
@@ -187,6 +205,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("DRY_RUN_COMMAND_3=", out)
         self.assertIn("DRY_RUN_COMMAND_4=", out)
         self.assertIn("DRY_RUN_COMMAND_5=", out)
+        self.assertIn("DRY_RUN_COMMAND_6=", out)
         self.assertIn("DRY_RUN_STATE_COMMAND_1=schtasks /Change /TN \"\\OSHA_Osha_Ingest_Daily\" /Enable", out)
         self.assertIn("/RU \"DESKTOP-Q8QM4N9\\lever\" /RP ***REDACTED***", out)
         self.assertNotIn("dont-print-me", out)
@@ -196,6 +215,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("/SC WEEKLY /D MON,TUE,WED,THU,FRI", out)
         self.assertIn(EXPECTED_INBOUND_TR, out)
         self.assertIn(EXPECTED_INGEST_TR, out)
+        self.assertIn(EXPECTED_INGEST_EVENING_TR, out)
         self.assertIn(EXPECTED_REPLENISH_TR, out)
         self.assertIn(EXPECTED_FACS_TRIAL_TR, out)
         self.assertNotIn(r"C:\dev\OSHA_Leads\run_inbound_triage.ps1", out)

@@ -464,7 +464,7 @@ Use these commands instead of inline `py -3 -c "..."` one-liners. PowerShell quo
 
 ### Prospect Replenishment (Scheduled First)
 
-`run_runtime_tick.py` runs replenishment automatically at the daily due window. Use the canonical replenishment wrapper directly only for manual break-glass execution. It runs generation doctor -> generation -> discovery -> AI-assist dump in order, with the AI-assist stage only writing a manual review packet when post-discovery backlog gap still exists:
+`run_runtime_tick.py` runs replenishment automatically at the daily due window. Use the canonical replenishment wrapper directly only for manual break-glass execution. It runs generation doctor -> generation -> discovery in order. Nightly AI-review dumps are owned by the evening ingest wrapper, not by replenishment:
 
 ```powershell
 cd C:\dev\OSHA_Leads
@@ -488,35 +488,38 @@ Direct generation/discovery commands remain available for troubleshooting:
 
 ### Manual AI-Assist Discovery Augmentation
 
-Use this lane only as a controlled source-yield patch when the automatic replenishment run still leaves a thin-state backlog gap. Dump generation is automatic when the gap exists; CRM mutation stays manual-only.
+Use this lane when the nightly evening wrapper emits the prospect AI-assist dump and you want to review/import verified accepts. Dump generation is automatic on the shared nightly AI-review schedule; reviewed CSV import supports both pending-drop automation and manual backfills.
 
 Recommended operator commands:
 
 ```powershell
 cd C:\dev\OSHA_Leads
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1 --dry-run
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_001_reviewed.csv --batch <suggested_batch_id_from_manifest.json>
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1 -PacketSize 10
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --pending --dry-run
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --pending
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\prospect_ai_assist_review_20260315_packet_001_reviewed.csv --batch 2026-03-15_AIASSIST_P001
 ```
 
 Operating rules:
 
-- The dump writes a per-run packet folder under `${DATA_DIR}\audits\ai_assist\YYYYMMDD_HHMMSS_packets\` (or `.\out\audits\ai_assist\YYYYMMDD_HHMMSS_packets\`) with `seed_packet_###.csv`, `prompt_research.txt`, `prompt_review.txt`, and `manifest.json`.
-- Use the `suggested_batch_id` values from `manifest.json` when importing reviewed packet files; they are unique per run so multiple same-day packet sets do not collide.
-- Default operator posture is: generate `30` raw firms, review them in `10`-firm packets, and import reviewed CSV only.
-- Review happens outside the repo, one packet at a time. Use the shared prompt files with each `seed_packet_###.csv`.
+- The dump writes one daily summary text artifact under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus a sibling packet folder `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
+- The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, and `manifest.json` so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
+- Reviewed CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv` for packet review, or `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_reviewed.csv` for single-file/manual review.
+- `tools\import_prospect_ai_assist_review.py --pending` scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first, then packet order; `run_outreach_auto.py` calls the same pending-import path before live sends.
+- Legacy reviewed CSVs under `${DATA_DIR}\audits\ai_assist\` are still accepted temporarily and emit a warning token when consumed.
 - External `reviewed_cleaned.csv` sidecars are not part of the intended workflow; the importer now normalizes known AI-output markdown/mailto artifacts in memory and fails fast on ambiguous malformed rows.
 - Import verifies domain/email shape, blocks free personal domains, enforces suppression and `do_not_contact`, dedupes against CRM and within the batch, audits every row, and only upserts verified accepts through the existing discovery/CRM contract.
-- Reviewed CSV import is explicit and manual. Replenishment never auto-imports reviewed AI-assist rows.
+- Manual `--input` imports remain the backfill/correction path when you do not want to use the pending inbox.
 - This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
 
-Packet review/import flow:
+Canonical nightly schedule:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_001_reviewed.csv --batch <manifest.packets[0].suggested_batch_id>
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\seed_packet_002_reviewed.csv --batch <manifest.packets[1].suggested_batch_id>
+gh workflow view ingest-evening-ai-review-selfhosted.yml
+gh run list --workflow "Ingest Evening + AI Review Dump (Self-Hosted)" --limit 5
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\run_osha_ingest_evening.ps1
 ```
 
 No-arg generation output path:
@@ -544,6 +547,7 @@ Auto-growth (env-gated, optional):
   - Website enrichment: `${DATA_DIR}\prospect_generation\cache\website_email\<domain>.json` (TTL 14 days)
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
 - Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
+- Canonical production posture is to leave `PROSPECT_AUTOGROW_STATES` unset so `OUTREACH_STATES` stays the single scope of truth; print-config/doctor paths emit a drift warning when both are set and differ.
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
 - APOLLO v1 flow: People Search (`has_email=true` gating) + Bulk People Enrichment in batches of 10; no waterfall/webhook mode.
 - APOLLO consumes enrichment credits. Search can be low/no-credit; enrichment is credit-capped by `APOLLO_ENRICH_MAX_PER_RUN`.
@@ -852,7 +856,7 @@ Triage behavior contract:
 - Outreach path gate: `OUTREACH_TRIAGE_OVERLAY_ENABLED=1`
 - Cached/manual-reviewed AI overlay can raise or lower final digest priority, but it never unsuppresses a rules-suppressed signal.
 - AI cache lookup is attempted before OpenAI API access; cached/manual-reviewed priorities can apply even when `OPENAI_API_KEY` is missing.
-- Trial/outreach send paths auto-import the newest `ai_review_*.csv` once per process from `C:\osha_data\imports` (fallback `${DATA_DIR}\imports`) unless overridden.
+- Trial/outreach send paths auto-import the newest `ai_review_*.csv` once per process from `C:\osha_data\imports\signals_ai_review` (fallback `${DATA_DIR}\imports\signals_ai_review`, then legacy root `imports`) unless overridden.
 - If AI is enabled but unavailable for uncached signals (missing key/network/API error), execution degrades to rules-only and emits `WARN_AI_TRIAGE_UNAVAILABLE` plus `AI_TRIAGE_UNAVAILABLE=1`.
 
 Triage env keys:
@@ -939,8 +943,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_a
 ```powershell
 cd C:\dev\OSHA_Leads
 py -3 tools\import_ai_triage.py --print-config
-py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv --dry-run
-py -3 tools\import_ai_triage.py --input .\out\audits\ai_triage_review.csv
+py -3 tools\import_ai_triage.py --input .\out\imports\signals_ai_review\ai_review_20260315.csv --dry-run
+py -3 tools\import_ai_triage.py --input .\out\imports\signals_ai_review\ai_review_20260315.csv
 ```
 
 Auto-import notes:
@@ -949,7 +953,7 @@ Auto-import notes:
 - With defaults, only files modified within the last 24 hours are auto-imported.
 - Manual `tools\import_ai_triage.py` remains supported for deterministic operator backfills/re-runs.
 
-### Nightly AI triage dump (manual)
+### Nightly AI Review Cycle
 
 Canonical manual command path (always loads secrets/DATA_DIR via wrapper):
 
@@ -960,7 +964,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_a
 
 Evening scheduler note:
 
-- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with `--scope-mode outreach_plus_trial_live` before dumping AI review signals.
+- `.github\workflows\ingest-evening-ai-review-selfhosted.yml` and `scripts\scheduled\run_osha_ingest_evening.ps1` are the single canonical nightly AI-review generator at `20:45` America/New_York, all 7 days.
+- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with `--scope-mode outreach_plus_trial_live`, then writes signals dumps to `${DATA_DIR}\audits\signals_ai_review\signals_for_ai_review_YYYYMMDD.txt`, then writes prospect dumps to `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus packet slices under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
+- Reviewed signals CSV drops belong under `${DATA_DIR}\imports\signals_ai_review\ai_review_YYYYMMDD.csv`; auto-import prefers that folder and falls back to legacy root `imports` only during migration.
 - WA/OR can still be zero on a given day when upstream data has no in-window records.
 
 Common variants:
@@ -1052,7 +1058,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_tomorrow_a
 
 Notes:
 
-- The prep script auto-selects the newest `ai_review_*.csv` from `C:\osha_data\imports` (fallback: `${DATA_DIR}\imports`) unless `-AiReviewCsv` is passed.
+- The prep script auto-selects the newest `ai_review_*.csv` from `C:\osha_data\imports\signals_ai_review` (fallback: `${DATA_DIR}\imports\signals_ai_review`, then legacy root `imports`) unless `-AiReviewCsv` is passed.
 - It auto-creates `${DATA_DIR}\suppression.csv` (or `.\out\suppression.csv`) with header `email` in `-Apply` mode when missing.
 - Required AI gates for overlay behavior:
 - `AI_TRIAGE_ENABLED=1`
@@ -1341,7 +1347,7 @@ schtasks.exe /Query /TN \OSHA_Osha_Ingest_Daily /V /FO LIST
 1. Update `suppression.csv` with yesterday's unsubscribes/bounces.
 2. Confirm generation run produced `${DATA_DIR}\prospect_discovery\prospects_latest.csv` (or `.\out\prospect_discovery\prospects_latest.csv`).
 3. Confirm discovery run populated/updated prospects in `crm.sqlite`.
-4. If replenishment emitted an AI-assist dump under `${DATA_DIR}\audits\ai_assist\`, review it and import verified accepts before the next business-day send pool.
+4. If the evening wrapper emitted a prospect AI-assist dump under `${DATA_DIR}\audits\prospect_ai_assist\`, place the reviewed CSV under `${DATA_DIR}\imports\prospect_ai_assist\` so the pending importer can apply it before the next business-day send pool.
 5. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with contacted/skipped/new-replies-trials-conversions.
 6. Use `outreach\crm_admin.py mark` to record `replied`, `trial_started`, `converted`, or `do_not_contact`.
 

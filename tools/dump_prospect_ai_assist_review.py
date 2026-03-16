@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -17,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import ai_assist_paths
 from outreach import crm_store
 from outreach import prospect_sources_aiha
 from outreach import run_prospect_generation as generation
@@ -27,11 +30,23 @@ from runtime_data_dir import resolve_data_dir
 ERR_AI_ASSIST_DUMP_CONFIG = "ERR_AI_ASSIST_DUMP_CONFIG"
 AI_ASSIST_DUMP_DEFAULT_BACKLOG_TARGET = 60
 AI_ASSIST_DUMP_DEFAULT_ENABLED = "1"
-AI_ASSIST_PACKET_DEFAULT_RAW_TARGET = 30
-AI_ASSIST_PACKET_DEFAULT_SIZE = 10
+AI_ASSIST_DUMP_DEFAULT_RAW_TARGET = 30
+AI_ASSIST_DUMP_DEFAULT_PACKET_SIZE = 10
 AI_ASSIST_DEFAULT_AUTOGROW_SOURCES = ("AIHA", "OHS_BG", "STATE_LIC")
-AI_ASSIST_PACKET_PUBLIC_SOURCES = ("AIHA", "OHS_BG", "BCSP", "OSHA_NEWS", "STATE_LIC")
-SEED_PACKET_COLUMNS = ("firm", "website", "state", "seed_source", "seed_source_url")
+AI_ASSIST_PUBLIC_SOURCES = ("AIHA", "OHS_BG", "BCSP", "OSHA_NEWS", "STATE_LIC")
+SEED_COLUMNS = ("state", "firm", "website", "seed_source", "seed_source_url")
+REVIEW_COLUMNS = (
+    "state",
+    "decision",
+    "firm",
+    "website",
+    "contact_name",
+    "title",
+    "email",
+    "source_urls",
+    "confidence",
+    "evidence_snippet",
+)
 COMMON_MULTI_LABEL_TLDS = {
     "co.uk",
     "org.uk",
@@ -46,6 +61,7 @@ COMMON_MULTI_LABEL_TLDS = {
     "com.sg",
     "com.hk",
 }
+AI_ASSIST_PACKET_MANIFEST_SCHEMA = "ai_assist_packet_manifest_v1"
 
 
 def _emit(key: str, value: str | int) -> None:
@@ -146,7 +162,7 @@ def _resolve_source_tokens() -> tuple[list[str], str]:
         else list(AI_ASSIST_DEFAULT_AUTOGROW_SOURCES)
     )
     ordered = source_policy.autogrow_source_order(configured)
-    allowed = set(AI_ASSIST_PACKET_PUBLIC_SOURCES)
+    allowed = set(AI_ASSIST_PUBLIC_SOURCES)
     implemented = set(source_policy.implemented_autogrow_sources())
     filtered = [token for token in ordered if token in allowed and token in implemented]
     if filtered:
@@ -160,35 +176,52 @@ def _batch_run_token(run_started_at: datetime) -> str:
     return f"R{run_started_at.strftime('%H%M%S%f')}"
 
 
-def _build_default_packet_dir(*, audits_root: Path, for_date: date, run_started_at: datetime) -> Path:
-    base_name = f"{for_date.strftime('%Y%m%d')}_{run_started_at.strftime('%H%M%S')}_packets"
-    candidate = (audits_root / base_name).resolve(strict=False)
-    suffix = 2
-    while candidate.exists():
-        candidate = (audits_root / f"{base_name}_{suffix:02d}").resolve(strict=False)
-        suffix += 1
-    return candidate
-
-
-def _resolve_output_paths(*, output: str, output_dir: str, for_date: date, run_started_at: datetime) -> tuple[Path, Path]:
-    data_dir = resolve_data_dir(REPO_ROOT).effective_path
-    default_packet_dir = _build_default_packet_dir(
-        audits_root=(data_dir / "audits" / "ai_assist"),
-        for_date=for_date,
-        run_started_at=run_started_at,
-    )
-    output_dir_text = str(output_dir or "").strip()
+def _resolve_output_path(*, output: str, output_dir: str, for_date: date) -> tuple[Path, Path]:
+    default_output_dir = ai_assist_paths.prospect_audit_dir(repo_root=REPO_ROOT)
+    filename = f"prospect_ai_assist_review_{for_date.strftime('%Y%m%d')}.txt"
     output_text = str(output or "").strip()
+    output_dir_text = str(output_dir or "").strip()
     if output_text:
-        manifest_path = Path(output_text).expanduser().resolve(strict=False)
-        packet_dir = (
-            Path(output_dir_text).expanduser().resolve(strict=False)
-            if output_dir_text
-            else manifest_path.parent.resolve(strict=False)
-        )
-        return packet_dir, manifest_path
-    packet_dir = Path(output_dir_text).expanduser().resolve(strict=False) if output_dir_text else default_packet_dir
-    return packet_dir, (packet_dir / "manifest.json").resolve(strict=False)
+        out_path = Path(output_text).expanduser().resolve(strict=False)
+    else:
+        out_dir = Path(output_dir_text).expanduser().resolve(strict=False) if output_dir_text else default_output_dir
+        out_path = (out_dir / filename).resolve(strict=False)
+    return out_path.parent.resolve(strict=False), out_path.resolve(strict=False)
+
+
+def _packet_dir_for_output_path(output_path: Path) -> Path:
+    return (output_path.parent / f"{output_path.stem}_packets").resolve(strict=False)
+
+
+def _packet_manifest_path(packet_dir: Path) -> Path:
+    return (packet_dir / "manifest.json").resolve(strict=False)
+
+
+def _packet_seed_filename(packet_number: int) -> str:
+    return f"seed_packet_{packet_number:03d}.csv"
+
+
+def _packet_prompt_filename(packet_number: int) -> str:
+    return f"review_packet_{packet_number:03d}.txt"
+
+
+def _packet_review_filename(run_date: date, packet_number: int) -> str:
+    return f"prospect_ai_assist_review_{run_date.strftime('%Y%m%d')}_packet_{packet_number:03d}_reviewed.csv"
+
+
+def _packet_batch_id(run_date: date, packet_number: int) -> str:
+    return f"{run_date.isoformat()}_AIASSIST_P{packet_number:03d}"
+
+
+def _chunk_rows(rows: list[dict[str, Any]], packet_size: int) -> list[list[dict[str, Any]]]:
+    size = max(1, int(packet_size))
+    return [rows[idx : idx + size] for idx in range(0, len(rows), size)]
+
+
+def _reset_output_dir(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -197,28 +230,6 @@ def _atomic_write_text(path: Path, text: str) -> None:
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
-        os.replace(tmp_name, str(path))
-    finally:
-        try:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
-        except Exception:
-            pass
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    _atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
-
-
-def _atomic_write_csv(path: Path, rows: list[dict[str, str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=str(path.parent))
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(SEED_PACKET_COLUMNS))
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({column: str(row.get(column) or "") for column in SEED_PACKET_COLUMNS})
         os.replace(tmp_name, str(path))
     finally:
         try:
@@ -294,6 +305,7 @@ def _derive_seed_source_url(row: dict[str, Any], seed_source: str) -> str:
 
 def _candidate_row(
     *,
+    expected_state: str,
     source_token: str,
     row: dict[str, Any],
     crm_domains: set[str],
@@ -302,7 +314,10 @@ def _candidate_row(
     firm = _normalize_text(row.get("firm") or row.get("company_name") or "")
     website = generation.contact_normalization.normalize_website(str(row.get("website") or ""))
     state = generation._normalize_us_state(str(row.get("state") or ""))
+    expected_state_normalized = generation._normalize_us_state(str(expected_state or ""))
     if not firm or not website or not state:
+        return None
+    if expected_state_normalized and state != expected_state_normalized:
         return None
     domain = generation._domain_from_website(website)
     root_domain = _root_domain(domain)
@@ -340,6 +355,7 @@ def _collect_candidates(
             cache_path = generation._source_cache_path_for_state(cache_root, source_token, state)
             for row in _load_cache_rows(cache_path):
                 candidate = _candidate_row(
+                    expected_state=state,
                     source_token=source_token,
                     row=row,
                     crm_domains=crm_domains,
@@ -369,113 +385,139 @@ def _collect_candidates(
     return deduped
 
 
-def _packet_rows(rows: list[dict[str, Any]], packet_size: int) -> list[list[dict[str, str]]]:
-    packets: list[list[dict[str, str]]] = []
-    current: list[dict[str, str]] = []
+def _csv_block(*, fieldnames: tuple[str, ...], rows: list[dict[str, Any]]) -> str:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=list(fieldnames), lineterminator="\n")
+    writer.writeheader()
     for row in rows:
-        current.append({column: str(row.get(column) or "") for column in SEED_PACKET_COLUMNS})
-        if len(current) >= packet_size:
-            packets.append(current)
-            current = []
-    if current:
-        packets.append(current)
-    return packets
+        writer.writerow({field: str(row.get(field) or "") for field in fieldnames})
+    return buffer.getvalue().strip()
 
 
-def _research_prompt_text() -> str:
-    return (
-        "Use one seed_packet_###.csv at a time.\n"
-        "Visit each firm's website before returning any row.\n"
-        "Check the about, team, leadership, and contact pages first.\n"
-        "Return CSV only with this exact header:\n"
-        "state,decision,firm,website,contact_name,title,email,source_urls,confidence,evidence_snippet\n"
-        "Rules:\n"
-        "- Use decision=accept only for rows with a named person and a business email.\n"
-        "- Use decision=reject when the firm is not a fit, the site is dead, or evidence is weak.\n"
-        "- Use source_urls with | between multiple URLs.\n"
-        "- No markdown, no code fences, no commentary.\n"
-    )
+def _seed_rows(selected_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{field: str(row.get(field) or "") for field in SEED_COLUMNS} for row in selected_rows]
 
 
-def _review_prompt_text() -> str:
-    return (
-        "Review the returned reviewed CSV before import.\n"
-        "Reject any row that uses an inferred contact, generic role only, duplicate firm/domain, or missing named person.\n"
-        "Reject rows with free-email domains, weak evidence, dead websites, or contacts not clearly tied to the firm.\n"
-        "Keep only rows that are business-relevant and supported by direct website evidence.\n"
-        "Output the same reviewed CSV schema only.\n"
-    )
-
-
-def _build_manifest(
+def _build_prompt_text(
     *,
     run_date: date,
-    run_started_at: datetime,
-    run_token: str,
-    packet_dir: Path,
-    manifest_path: Path,
-    states: list[str],
-    gap_rows: list[dict[str, int | str]],
-    source_tokens: list[str],
+    backlog_target: int,
     raw_target: int,
-    packet_size: int,
-    candidates_total: int,
+    source_tokens: list[str],
+    gap_rows: list[dict[str, int | str]],
     selected_rows: list[dict[str, Any]],
-    packet_files: list[Path],
-) -> dict[str, Any]:
-    gap_total = sum(int(row["gap"] or 0) for row in gap_rows)
-    shortfall = max(0, raw_target - len(selected_rows))
-    packets: list[dict[str, Any]] = []
-    for idx, path in enumerate(packet_files, start=1):
-        rows_in_packet = packet_size
-        if idx == len(packet_files) and len(selected_rows) % packet_size:
-            rows_in_packet = len(selected_rows) % packet_size
-        elif not packet_files:
-            rows_in_packet = 0
-        packets.append(
-            {
-                "packet_index": idx,
-                "seed_packet_filename": path.name,
-                "input_rows": rows_in_packet,
-                "suggested_reviewed_filename": f"seed_packet_{idx:03d}_reviewed.csv",
-                "suggested_batch_id": f"{run_date.isoformat()}_AIASSIST_{run_token}_P{idx:03d}",
-                "reviewed_rows": None,
-            }
+    packet_number: int | None = None,
+    packet_count: int = 0,
+    packet_size: int = 0,
+    reviewed_filename: str = "",
+    suggested_batch_id: str = "",
+    reviewed_drop_dir: Path | None = None,
+) -> str:
+    lines = [
+        "# ============================================================",
+        "# OSHA_LEADS - MANUAL AI-ASSIST DISCOVERY AUGMENTATION",
+        "# ============================================================",
+        "#",
+        "# PURPOSE:",
+        "# This is a controlled discovery augmentation lane for thin-state",
+        "# consultant replenishment. It is not a sending workflow and it",
+        "# does not bypass the repo's canonical discovery -> CRM path.",
+        "#",
+        "# WHEN TO USE:",
+        "# Normal AIHA/OHS_BG replenishment and discovery already ran, but",
+        "# one or more states are still below the backlog target.",
+        "#",
+        "# TARGET ICP:",
+        "# Business contacts only for safety consultants and boutique",
+        "# OSHA-facing firms. Prefer owner, founder, principal, partner,",
+        "# president, or managing consultant roles at firms that actively",
+        "# sell OSHA/safety consulting services.",
+        "#",
+        "# RULES:",
+        "# - Business contacts only. No personal emails, no sensitive data.",
+        "# - No outreach copy, cadence, score, or send-rule changes.",
+        "# - Use the seed candidates below as the canonical research queue.",
+        "# - Visit the firm website before returning any row.",
+        "# - Return only rows you are confident are real, business-relevant",
+        "#   consultant prospects for the listed state.",
+        "# - Use business email addresses tied to the firm domain.",
+        "# - Return standard CSV only.",
+        "# - Use source_urls with | between multiple URLs in one field.",
+        "# - Quote any field that contains a comma.",
+        "# - Escape embedded double quotes by doubling them.",
+        "# - Use plain text only. No markdown links, no mailto links, no",
+        "#   code fences, no surrounding brackets, and no commentary.",
+        "# - confidence must be an integer 0-100.",
+        "# - evidence_snippet must be short, factual provenance.",
+        "# - Return ONLY the CSV block. No commentary before or after.",
+        "#",
+        "# OUTPUT CSV HEADER:",
+        "# state,decision,firm,website,contact_name,title,email,source_urls,confidence,evidence_snippet",
+        "# Use decision=accept for rows to import and decision=reject for rows to keep visible but blocked.",
+        "#",
+        '# VALID ACCEPT EXAMPLE:',
+        '# TX,accept,"Safety Compliance Management, Inc.",https://www.scm-safety.com,Paul Gantt,President and Founder,info@scm-safety.com,https://www.scm-safety.com/team/paul-gantt-csp-chst-cet/|https://www.scm-safety.com,95,"President and Founder; San Ramon, CA; info@scm-safety.com on site"',
+        "# VALID REJECT EXAMPLE:",
+        "# TX,reject,Example Safety Group,https://example-safety.com,Alex Example,Owner,alex@example-safety.com,https://example-safety.com/about,35,Role or state fit is uncertain; keep blocked for manual review",
+        "# INVALID EXAMPLE - DO NOT RETURN ANYTHING LIKE THIS:",
+        '# TX,accept,Example Safety Group,[https://example-safety.com/,"Alex](https://example-safety.com/%22,%22Alex) Example",Owner,[alex@example-safety.com](mailto:alex@example-safety.com),[https://example-safety.com/about|https://example-safety.com/contact](https://example-safety.com/about|https://example-safety.com/contact),95,Owner listed on site',
+        "#",
+        f"# RUN DATE: {run_date.isoformat()}",
+        f"# BACKLOG TARGET: {backlog_target}",
+        f"# RAW TARGET: {raw_target}",
+        f"# SOURCES: {','.join(source_tokens) or 'none'}",
+        f"# PACKET SIZE: {packet_size if packet_size > 0 else len(selected_rows)}",
+        "#",
+        "# GAP STATES:",
+    ]
+    if gap_rows:
+        for row in gap_rows:
+            lines.append(
+                "# - "
+                f"{row['state']}: backlog_current={int(row['backlog_current'] or 0)} "
+                f"crm_total={int(row['crm_total'] or 0)} gap={int(row['gap'] or 0)}"
+            )
+    else:
+        lines.append("# - none")
+
+    if packet_number is not None and packet_count > 0:
+        lines.extend(
+            [
+                "#",
+                f"# PACKET: {packet_number:03d}/{packet_count:03d}",
+                f"# PACKET ROWS: {len(selected_rows)}",
+            ]
         )
-    return {
-        "manifest_version": 1,
-        "run_date": run_date.isoformat(),
-        "run_started_at": run_started_at.isoformat(),
-        "run_token": run_token,
-        "packet_dir": str(packet_dir),
-        "manifest_path": str(manifest_path),
-        "states": list(states),
-        "gap_states": [str(row.get("state") or "") for row in gap_rows],
-        "gap_total": gap_total,
-        "sources": list(source_tokens),
-        "raw_target": raw_target,
-        "packet_size": packet_size,
-        "candidates_total": candidates_total,
-        "rows_written": len(selected_rows),
-        "packet_files_written": len(packet_files),
-        "shortfall": shortfall,
-        "shortfall_warning": 1 if shortfall > 0 else 0,
-        "prompt_research_filename": "prompt_research.txt",
-        "prompt_review_filename": "prompt_review.txt",
-        "packets": packets,
-    }
+        if reviewed_filename:
+            lines.append(f"# REVIEWED IMPORT FILENAME: {reviewed_filename}")
+        if suggested_batch_id:
+            lines.append(f"# SUGGESTED_BATCH_ID: {suggested_batch_id}")
+        if reviewed_drop_dir is not None:
+            lines.append(f"# DROP REVIEWED CSV IN: {reviewed_drop_dir}")
+
+    lines.extend(
+        [
+            "#",
+            "# SEED CANDIDATES CSV:",
+            _csv_block(fieldnames=SEED_COLUMNS, rows=_seed_rows(selected_rows)),
+            "#",
+            "# RETURN CSV NOW:",
+            ",".join(REVIEW_COLUMNS),
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="Emit packetized AI-assist seed review artifacts from existing autogrow cache rows.")
+    ap = argparse.ArgumentParser(description="Emit a nightly AI-assist review dump from existing autogrow cache rows.")
     ap.add_argument("--for-date", default="", help="Optional YYYY-MM-DD date override.")
     ap.add_argument("--states", nargs="+", default=[], help="Optional explicit state scope (comma-separated or list form).")
     ap.add_argument("--raw-target", type=int, default=0, help="Optional raw seed target override.")
-    ap.add_argument("--packet-size", type=int, default=0, help="Optional seed packet size override.")
+    ap.add_argument("--packet-size", type=int, default=0, help="Optional per-packet review size override.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved config and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Do not write output.")
-    ap.add_argument("--output-dir", default="", help="Optional packet output directory override.")
-    ap.add_argument("--output", default="", help="Optional manifest.json path override.")
+    ap.add_argument("--output-dir", default="", help="Optional dump output directory override.")
+    ap.add_argument("--output", default="", help="Optional full dump path override.")
     return ap
 
 
@@ -485,8 +527,8 @@ def main(argv: list[str] | None = None) -> int:
         run_date = _parse_date(args.for_date)
         run_started_at = _current_run_started_at()
         state_scope = _resolve_state_scope(list(args.states or []))
-        raw_target = int(args.raw_target or _int_env("PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET", AI_ASSIST_PACKET_DEFAULT_RAW_TARGET))
-        packet_size = int(args.packet_size or _int_env("PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE", AI_ASSIST_PACKET_DEFAULT_SIZE))
+        raw_target = int(args.raw_target or _int_env("PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET", AI_ASSIST_DUMP_DEFAULT_RAW_TARGET))
+        packet_size = int(args.packet_size or _int_env("PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE", AI_ASSIST_DUMP_DEFAULT_PACKET_SIZE))
         if raw_target < 1:
             raise ValueError("raw_target_invalid")
         if packet_size < 1:
@@ -500,13 +542,15 @@ def main(argv: list[str] | None = None) -> int:
     backlog_target = _int_env("PROSPECT_AUTOGROW_BACKLOG_TARGET", AI_ASSIST_DUMP_DEFAULT_BACKLOG_TARGET)
     source_tokens, source_warning_configured = _resolve_source_tokens()
     run_token = _batch_run_token(run_started_at)
-    packet_dir, manifest_path = _resolve_output_paths(
+    out_dir, out_path = _resolve_output_path(
         output=str(args.output or ""),
         output_dir=str(args.output_dir or ""),
         for_date=run_date,
-        run_started_at=run_started_at,
     )
+    packet_dir = _packet_dir_for_output_path(out_path)
+    manifest_path = _packet_manifest_path(packet_dir)
     data_dir_resolution = resolve_data_dir(REPO_ROOT)
+    reviewed_drop_dir = ai_assist_paths.prospect_import_dir(repo_root=REPO_ROOT)
 
     conn: sqlite3.Connection | None = None
     db_path = crm_store.crm_db_path()
@@ -534,22 +578,16 @@ def main(argv: list[str] | None = None) -> int:
         crm_firm_keys=crm_firm_keys,
     )
     selected_rows = candidates[:raw_target]
-    packets = _packet_rows(selected_rows, packet_size)
-    packet_paths = [packet_dir / f"seed_packet_{idx:03d}.csv" for idx in range(1, len(packets) + 1)]
-    manifest = _build_manifest(
+    packets = _chunk_rows(selected_rows, packet_size) if selected_rows else []
+    prompt_text = _build_prompt_text(
         run_date=run_date,
-        run_started_at=run_started_at,
-        run_token=run_token,
-        packet_dir=packet_dir,
-        manifest_path=manifest_path,
-        states=states,
-        gap_rows=gap_rows,
-        source_tokens=source_tokens,
+        backlog_target=backlog_target,
         raw_target=raw_target,
-        packet_size=packet_size,
-        candidates_total=len(candidates),
+        source_tokens=source_tokens,
+        gap_rows=gap_rows,
         selected_rows=selected_rows,
-        packet_files=packet_paths,
+        packet_count=len(packets),
+        packet_size=packet_size,
     )
     gap_total = sum(int(row["gap"] or 0) for row in gap_rows)
     shortfall = max(0, raw_target - len(selected_rows))
@@ -557,6 +595,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if data_dir_resolution.warning_token:
         print(data_dir_resolution.warning_token)
+    scope_drift_warning = generation._autogrow_scope_drift_warning_token(prefix="WARN_AI_ASSIST_DUMP_SCOPE_DRIFT")
+    if scope_drift_warning:
+        print(scope_drift_warning)
     _emit("AI_ASSIST_DUMP_ENABLED", enabled)
     _emit("AI_ASSIST_DUMP_DATA_DIR", str(data_dir_resolution.effective_path))
     _emit("AI_ASSIST_DUMP_DATA_DIR_SOURCE", str(data_dir_resolution.source or "default"))
@@ -565,20 +606,20 @@ def main(argv: list[str] | None = None) -> int:
     _emit("AI_ASSIST_DUMP_RUN_TOKEN", run_token)
     _emit("AI_ASSIST_DUMP_STATES_SCOPE", ",".join(states))
     _emit("AI_ASSIST_DUMP_BACKLOG_TARGET", backlog_target)
-    _emit("AI_ASSIST_DUMP_OUTPUT_DIR", str(packet_dir))
-    _emit("AI_ASSIST_DUMP_OUTPUT_PATH", str(manifest_path))
+    _emit("AI_ASSIST_DUMP_OUTPUT_DIR", str(out_dir))
+    _emit("AI_ASSIST_DUMP_OUTPUT_PATH", str(out_path))
+    _emit("AI_ASSIST_DUMP_PACKET_SIZE", packet_size)
+    _emit("AI_ASSIST_DUMP_PACKET_COUNT", len(packets))
+    _emit("AI_ASSIST_PACKET_DIR", str(packet_dir))
+    _emit("AI_ASSIST_PACKET_MANIFEST_PATH", str(manifest_path))
     _emit("AI_ASSIST_DUMP_GAP_STATES", gap_states_csv or "none")
     _emit("AI_ASSIST_DUMP_GAP_TOTAL", gap_total)
     _emit("AI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL", raw_target)
-    _emit("AI_ASSIST_PACKET_DIR", str(packet_dir))
-    _emit("AI_ASSIST_PACKET_MANIFEST_PATH", str(manifest_path))
-    _emit("AI_ASSIST_PACKET_SOURCES", ",".join(source_tokens) or "none")
-    _emit("AI_ASSIST_PACKET_RAW_TARGET", raw_target)
-    _emit("AI_ASSIST_PACKET_SIZE", packet_size)
-    _emit("AI_ASSIST_PACKET_CANDIDATES_TOTAL", len(candidates))
-    _emit("AI_ASSIST_PACKET_ROWS_WRITTEN", len(selected_rows))
-    _emit("AI_ASSIST_PACKET_FILES_WRITTEN", len(packet_paths))
-    _emit("AI_ASSIST_PACKET_SHORTFALL", shortfall)
+    _emit("AI_ASSIST_DUMP_SOURCES", ",".join(source_tokens) or "none")
+    _emit("AI_ASSIST_DUMP_RAW_TARGET", raw_target)
+    _emit("AI_ASSIST_DUMP_CANDIDATES_TOTAL", len(candidates))
+    _emit("AI_ASSIST_DUMP_ROWS_WRITTEN", len(selected_rows))
+    _emit("AI_ASSIST_DUMP_SHORTFALL", shortfall)
 
     for row in gap_rows:
         state = str(row["state"] or "")
@@ -587,13 +628,9 @@ def main(argv: list[str] | None = None) -> int:
         _emit(f"AI_ASSIST_DUMP_STATE_{state}_GAP", int(row["gap"] or 0))
 
     if shortfall > 0:
-        print(
-            f"WARN_AI_ASSIST_PACKET_SHORTFALL=1 requested={raw_target} available={len(candidates)} shortfall={shortfall}"
-        )
+        print(f"WARN_AI_ASSIST_DUMP_SHORTFALL=1 requested={raw_target} available={len(candidates)} shortfall={shortfall}")
     if source_warning_configured:
-        print(
-            f"WARN_AI_ASSIST_PACKET_NO_ELIGIBLE_SOURCES=1 configured={source_warning_configured}"
-        )
+        print(f"WARN_AI_ASSIST_DUMP_NO_ELIGIBLE_SOURCES=1 configured={source_warning_configured}")
 
     if args.print_config:
         return 0
@@ -606,17 +643,70 @@ def main(argv: list[str] | None = None) -> int:
         _emit("AI_ASSIST_DUMP_SKIPPED", "1 reason=no_gap")
         return 0
 
+    if prompt_text:
+        print(prompt_text, end="")
+
     if args.dry_run:
         return 0
 
-    packet_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_write_text(packet_dir / "prompt_research.txt", _research_prompt_text())
-    _atomic_write_text(packet_dir / "prompt_review.txt", _review_prompt_text())
-    for packet_path, packet_rows in zip(packet_paths, packets):
-        _atomic_write_csv(packet_path, packet_rows)
-    _atomic_write_json(manifest_path, manifest)
+    _atomic_write_text(out_path, prompt_text)
+    _reset_output_dir(packet_dir)
+    manifest_packets: list[dict[str, Any]] = []
+    for packet_number, packet_rows in enumerate(packets, start=1):
+        seed_csv_path = (packet_dir / _packet_seed_filename(packet_number)).resolve(strict=False)
+        prompt_packet_path = (packet_dir / _packet_prompt_filename(packet_number)).resolve(strict=False)
+        reviewed_filename = _packet_review_filename(run_date, packet_number)
+        suggested_batch_id = _packet_batch_id(run_date, packet_number)
+        _atomic_write_text(seed_csv_path, _csv_block(fieldnames=SEED_COLUMNS, rows=_seed_rows(packet_rows)).rstrip() + "\n")
+        _atomic_write_text(
+            prompt_packet_path,
+            _build_prompt_text(
+                run_date=run_date,
+                backlog_target=backlog_target,
+                raw_target=raw_target,
+                source_tokens=source_tokens,
+                gap_rows=gap_rows,
+                selected_rows=packet_rows,
+                packet_number=packet_number,
+                packet_count=len(packets),
+                packet_size=packet_size,
+                reviewed_filename=reviewed_filename,
+                suggested_batch_id=suggested_batch_id,
+                reviewed_drop_dir=reviewed_drop_dir,
+            ),
+        )
+        manifest_packets.append(
+            {
+                "packet_number": packet_number,
+                "row_count": len(packet_rows),
+                "seed_csv_path": str(seed_csv_path),
+                "review_prompt_path": str(prompt_packet_path),
+                "reviewed_import_filename": reviewed_filename,
+                "reviewed_import_path": str((reviewed_drop_dir / reviewed_filename).resolve(strict=False)),
+                "suggested_batch_id": suggested_batch_id,
+            }
+        )
+    manifest_payload = {
+        "schema_version": AI_ASSIST_PACKET_MANIFEST_SCHEMA,
+        "run_date": run_date.isoformat(),
+        "run_started_at": run_started_at.isoformat(),
+        "run_token": run_token,
+        "output_path": str(out_path),
+        "packet_dir": str(packet_dir),
+        "packet_size": packet_size,
+        "packet_count": len(packets),
+        "raw_target": raw_target,
+        "selected_row_count": len(selected_rows),
+        "candidate_count": len(candidates),
+        "gap_total": gap_total,
+        "states_scope": states,
+        "sources": source_tokens,
+        "reviewed_drop_dir": str(reviewed_drop_dir),
+        "packets": manifest_packets,
+    }
+    _atomic_write_text(manifest_path, json.dumps(manifest_payload, indent=2) + "\n")
     _emit("AI_ASSIST_DUMP_WRITTEN", 1)
-    _emit("AI_ASSIST_DUMP_OUTPUT_PATH", str(manifest_path))
+    _emit("AI_ASSIST_DUMP_OUTPUT_PATH", str(out_path))
     return 0
 
 

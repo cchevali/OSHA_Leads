@@ -389,6 +389,23 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(eligible + excluded, crm_total)
             self.assertEqual(self._extract_token_int(out, "GENERATOR_ROWS_READ"), eligible)
 
+    def test_print_config_warns_when_autogrow_scope_differs_from_outreach_scope(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            p = self._run(
+                ["--print-config", "--for-date", "2026-02-18"],
+                {
+                    "DATA_DIR": str(data_dir),
+                    "OUTREACH_STATES": "TX,CA,FL",
+                    "PROSPECT_AUTOGROW_STATES": "TX,CA,NY",
+                },
+            )
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("WARN_AUTOGROW_SCOPE_DRIFT=1 outreach_states=TX,CA,FL autogrow_states=TX,CA,NY", out)
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL", out)
+
     def test_states_all_disables_state_mismatch_filtering(self):
         from outreach import crm_store
 

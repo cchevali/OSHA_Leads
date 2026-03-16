@@ -71,7 +71,6 @@ if ($PSBoundParameters.ContainsKey('RawTarget')) {
   }
   $toolArgs += @('--raw-target', ([string]$RawTarget))
 }
-
 if ($PSBoundParameters.ContainsKey('PacketSize')) {
   if ($PacketSize -lt 1) {
     Write-Output 'ERR_AI_ASSIST_DUMP_PACKET_SIZE_INVALID detail=positive_integer_required'
@@ -98,12 +97,16 @@ try {
   $allOutput = & $wrapper -- py -3 @toolArgs 2>&1
   $exitCode = $LASTEXITCODE
 
+  $outputDir = ''
   $outputPath = ''
   $packetDir = ''
   $manifestPath = ''
   foreach ($line in @($allOutput)) {
     $text = [string]$line
     Write-Output $text
+    if ($text -match '^AI_ASSIST_DUMP_OUTPUT_DIR=(.+)$') {
+      $outputDir = $matches[1].Trim()
+    }
     if ($text -match '^AI_ASSIST_DUMP_OUTPUT_PATH=(.+)$') {
       $outputPath = $matches[1].Trim()
     }
@@ -114,14 +117,17 @@ try {
       $manifestPath = $matches[1].Trim()
     }
   }
+  if ($outputDir) {
+    Write-Output ('AI_ASSIST_DUMP_OUTPUT_DIR=' + $outputDir)
+  }
+  if ($outputPath) {
+    Write-Output ('AI_ASSIST_DUMP_OUTPUT_PATH=' + $outputPath)
+  }
   if ($packetDir) {
     Write-Output ('AI_ASSIST_PACKET_DIR=' + $packetDir)
   }
   if ($manifestPath) {
     Write-Output ('AI_ASSIST_PACKET_MANIFEST_PATH=' + $manifestPath)
-  }
-  if ($outputPath) {
-    Write-Output ('AI_ASSIST_DUMP_OUTPUT_PATH=' + $outputPath)
   }
   exit $exitCode
 }

@@ -68,7 +68,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
     def _write_review_lines(self, path: Path, lines: list[str]) -> None:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    def test_dump_packets_candidates_with_dedupe_exclusion_prompts_and_manifest(self):
+    def test_dump_writes_packetized_artifacts_with_seed_candidates(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             data_dir = tmp / "runtime"
@@ -137,7 +137,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             )
 
             out = io.StringIO()
-            packet_dir = tmp / "packets"
+            output_dir = tmp / "prospect_ai_assist"
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
             env["PROSPECT_AUTOGROW_STATES"] = "TX,CA"
@@ -157,7 +157,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
                         "--for-date",
                         "2026-03-07",
                         "--output-dir",
-                        str(packet_dir),
+                        str(output_dir),
                         "--raw-target",
                         "4",
                         "--packet-size",
@@ -168,51 +168,48 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertEqual(rc, 0)
             text = out.getvalue()
             self.assertIn("AI_ASSIST_DUMP_STATES_SCOPE=TX,CA", text)
-            self.assertIn("AI_ASSIST_PACKET_RAW_TARGET=4", text)
-            self.assertIn("AI_ASSIST_PACKET_SIZE=2", text)
-            self.assertIn("AI_ASSIST_PACKET_CANDIDATES_TOTAL=4", text)
-            self.assertIn("AI_ASSIST_PACKET_ROWS_WRITTEN=4", text)
-            self.assertIn("AI_ASSIST_PACKET_FILES_WRITTEN=2", text)
+            self.assertIn("AI_ASSIST_DUMP_RAW_TARGET=4", text)
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=4", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=4", text)
+            self.assertIn("AI_ASSIST_DUMP_PACKET_SIZE=2", text)
+            self.assertIn("AI_ASSIST_DUMP_PACKET_COUNT=2", text)
 
+            output_path = output_dir / "prospect_ai_assist_review_20260307.txt"
+            self.assertTrue(output_path.exists())
+            packet_dir = output_dir / "prospect_ai_assist_review_20260307_packets"
             manifest_path = packet_dir / "manifest.json"
+            self.assertTrue(packet_dir.exists())
             self.assertTrue(manifest_path.exists())
-            self.assertTrue((packet_dir / "prompt_research.txt").exists())
-            self.assertTrue((packet_dir / "prompt_review.txt").exists())
-            self.assertTrue((packet_dir / "seed_packet_001.csv").exists())
-            self.assertTrue((packet_dir / "seed_packet_002.csv").exists())
-
-            prompt_research = (packet_dir / "prompt_research.txt").read_text(encoding="utf-8")
-            prompt_review = (packet_dir / "prompt_review.txt").read_text(encoding="utf-8")
-            self.assertIn("Visit each firm's website before returning any row.", prompt_research)
-            self.assertIn("Return CSV only with this exact header:", prompt_research)
-            self.assertIn("Reject any row that uses an inferred contact", prompt_review)
+            prompt_text = output_path.read_text(encoding="utf-8")
+            self.assertIn("# SEED CANDIDATES CSV:", prompt_text)
+            self.assertIn("state,firm,website,seed_source,seed_source_url", prompt_text)
+            self.assertIn("Alpha Safety LLC", prompt_text)
+            self.assertIn("Bravo Safety", prompt_text)
+            self.assertIn("Charlie Safety", prompt_text)
+            self.assertIn("Delta Safety", prompt_text)
+            self.assertNotIn("Known Safety Group", prompt_text)
+            self.assertNotIn("Existing Firm LLC", prompt_text)
+            self.assertIn(
+                dump_tool.prospect_sources_aiha.PAGE_URL_TEMPLATE.format(page_id="10-11"),
+                prompt_text,
+            )
+            self.assertIn("https://buyersguide.example.com/charlie", prompt_text)
+            self.assertIn(",".join(dump_tool.REVIEW_COLUMNS), prompt_text)
 
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual(manifest["raw_target"], 4)
+            self.assertEqual(manifest["packet_count"], 2)
             self.assertEqual(manifest["packet_size"], 2)
-            self.assertEqual(manifest["rows_written"], 4)
-            self.assertEqual(manifest["packet_files_written"], 2)
-            self.assertEqual(manifest["run_token"], "R091011123456")
-            self.assertEqual(manifest["packets"][0]["suggested_reviewed_filename"], "seed_packet_001_reviewed.csv")
-            self.assertEqual(manifest["packets"][0]["suggested_batch_id"], "2026-03-07_AIASSIST_R091011123456_P001")
-            self.assertIsNone(manifest["packets"][0]["reviewed_rows"])
+            self.assertEqual(len(manifest["packets"]), 2)
+            self.assertEqual(manifest["packets"][0]["reviewed_import_filename"], "prospect_ai_assist_review_20260307_packet_001_reviewed.csv")
+            self.assertEqual(manifest["packets"][0]["suggested_batch_id"], "2026-03-07_AIASSIST_P001")
 
-            with open(packet_dir / "seed_packet_001.csv", newline="", encoding="utf-8") as handle:
-                packet_one_rows = list(csv.DictReader(handle))
-            with open(packet_dir / "seed_packet_002.csv", newline="", encoding="utf-8") as handle:
-                packet_two_rows = list(csv.DictReader(handle))
-
-            packet_rows = packet_one_rows + packet_two_rows
-            firms = [row["firm"] for row in packet_rows]
-            self.assertEqual(firms, ["Alpha Safety LLC", "Bravo Safety", "Charlie Safety", "Delta Safety"])
-            self.assertNotIn("Known Safety Group", firms)
-            self.assertNotIn("Existing Firm LLC", firms)
-            self.assertEqual(packet_one_rows[0]["seed_source"], "aiha_consultants_listing:10-11")
-            self.assertEqual(
-                packet_one_rows[0]["seed_source_url"],
-                dump_tool.prospect_sources_aiha.PAGE_URL_TEMPLATE.format(page_id="10-11"),
-            )
-            self.assertEqual(packet_two_rows[0]["seed_source_url"], "https://buyersguide.example.com/charlie")
+            seed_packet_one = (packet_dir / "seed_packet_001.csv").read_text(encoding="utf-8")
+            review_packet_one = (packet_dir / "review_packet_001.txt").read_text(encoding="utf-8")
+            self.assertIn("Alpha Safety LLC", seed_packet_one)
+            self.assertIn("Bravo Safety", seed_packet_one)
+            self.assertNotIn("Charlie Safety", seed_packet_one)
+            self.assertIn("REVIEWED IMPORT FILENAME: prospect_ai_assist_review_20260307_packet_001_reviewed.csv", review_packet_one)
+            self.assertIn("SUGGESTED_BATCH_ID: 2026-03-07_AIASSIST_P001", review_packet_one)
 
     def test_dump_dry_run_emits_shortfall_without_writing_artifacts(self):
         with tempfile.TemporaryDirectory() as d:
@@ -235,7 +232,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             )
 
             out = io.StringIO()
-            packet_dir = tmp / "dry_packets"
+            output_dir = tmp / "dry_dump"
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
             env["OUTREACH_STATES"] = "TX"
@@ -247,7 +244,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
                         "--for-date",
                         "2026-03-07",
                         "--output-dir",
-                        str(packet_dir),
+                        str(output_dir),
                         "--raw-target",
                         "3",
                         "--packet-size",
@@ -257,13 +254,74 @@ class TestProspectAiAssistTools(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             text = out.getvalue()
-            self.assertIn("AI_ASSIST_PACKET_CANDIDATES_TOTAL=1", text)
-            self.assertIn("AI_ASSIST_PACKET_ROWS_WRITTEN=1", text)
-            self.assertIn("AI_ASSIST_PACKET_FILES_WRITTEN=1", text)
-            self.assertIn("WARN_AI_ASSIST_PACKET_SHORTFALL=1 requested=3 available=1 shortfall=2", text)
-            self.assertFalse(packet_dir.exists())
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=1", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=1", text)
+            self.assertIn("AI_ASSIST_DUMP_PACKET_COUNT=1", text)
+            self.assertIn("WARN_AI_ASSIST_DUMP_SHORTFALL=1 requested=3 available=1 shortfall=2", text)
 
-    def test_dump_default_packet_dir_and_batch_ids_are_unique_per_run(self):
+    def test_dump_skips_cross_state_and_invalid_website_cache_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            db_path = data_dir / "crm.sqlite"
+            self._seed_crm_prospect(db_path, firm="Known", website="https://known.test", state="TX")
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "FL",
+                [
+                    {
+                        "firm": "Boundary Row",
+                        "website": "https://boundary.example",
+                        "state": "CT",
+                        "source": "aiha_consultants_listing:26-27",
+                    },
+                    {
+                        "firm": "Label Bleed Row",
+                        "website": "https://Contact:RobertC.Klein,CIH",
+                        "state": "FL",
+                        "source": "aiha_consultants_listing:26-27",
+                    },
+                    {
+                        "firm": "Valid Florida Row",
+                        "website": "https://valid-fl.example",
+                        "state": "FL",
+                        "source": "aiha_consultants_listing:26-27",
+                    },
+                ],
+            )
+
+            out = io.StringIO()
+            output_dir = tmp / "prospect_ai_assist"
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["PROSPECT_AUTOGROW_STATES"] = "FL"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
+                rc = dump_tool.main(
+                    [
+                        "--for-date",
+                        "2026-03-15",
+                        "--output-dir",
+                        str(output_dir),
+                        "--raw-target",
+                        "5",
+                        "--packet-size",
+                        "2",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            text = out.getvalue()
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=1", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=1", text)
+            prompt_text = (output_dir / "prospect_ai_assist_review_20260315.txt").read_text(encoding="utf-8")
+            self.assertIn("Valid Florida Row", prompt_text)
+            self.assertNotIn("Boundary Row", prompt_text)
+            self.assertNotIn("Label Bleed Row", prompt_text)
+            self.assertTrue((output_dir / "prospect_ai_assist_review_20260315_packets" / "review_packet_001.txt").exists())
+
+    def test_dump_default_path_is_stable_per_day(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             data_dir = tmp / "runtime"
@@ -296,7 +354,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
                     ),
                     redirect_stdout(out_one),
                 ):
-                    rc_one = dump_tool.main(["--for-date", "2026-03-07", "--raw-target", "1", "--packet-size", "1"])
+                    rc_one = dump_tool.main(["--for-date", "2026-03-07", "--raw-target", "1"])
                 with (
                     mock.patch.object(
                         dump_tool,
@@ -305,33 +363,29 @@ class TestProspectAiAssistTools(unittest.TestCase):
                     ),
                     redirect_stdout(out_two),
                 ):
-                    rc_two = dump_tool.main(["--for-date", "2026-03-07", "--raw-target", "1", "--packet-size", "1"])
+                    rc_two = dump_tool.main(["--for-date", "2026-03-07", "--raw-target", "1"])
 
             self.assertEqual(rc_one, 0, msg=out_one.getvalue())
             self.assertEqual(rc_two, 0, msg=out_two.getvalue())
-            manifest_one = next(
+            output_path_one = next(
                 line.split("=", 1)[1]
                 for line in out_one.getvalue().splitlines()
                 if line.startswith("AI_ASSIST_DUMP_OUTPUT_PATH=")
             )
-            manifest_two = next(
+            output_path_two = next(
                 line.split("=", 1)[1]
                 for line in out_two.getvalue().splitlines()
                 if line.startswith("AI_ASSIST_DUMP_OUTPUT_PATH=")
             )
-            self.assertNotEqual(manifest_one, manifest_two)
-            manifest_one_payload = json.loads(Path(manifest_one).read_text(encoding="utf-8"))
-            manifest_two_payload = json.loads(Path(manifest_two).read_text(encoding="utf-8"))
-            self.assertEqual(manifest_one_payload["run_token"], "R091011123456")
-            self.assertEqual(manifest_two_payload["run_token"], "R091012654321")
-            self.assertNotEqual(
-                manifest_one_payload["packets"][0]["suggested_batch_id"],
-                manifest_two_payload["packets"][0]["suggested_batch_id"],
+            self.assertEqual(output_path_one, output_path_two)
+            self.assertTrue(Path(output_path_one).exists())
+            self.assertEqual(
+                Path(output_path_one),
+                data_dir / "audits" / "prospect_ai_assist" / "prospect_ai_assist_review_20260307.txt",
             )
-            self.assertTrue(Path(manifest_one_payload["packet_dir"]).exists())
-            self.assertTrue(Path(manifest_two_payload["packet_dir"]).exists())
+            self.assertTrue((data_dir / "audits" / "prospect_ai_assist" / "prospect_ai_assist_review_20260307_packets").exists())
 
-    def test_dump_respects_explicit_non_packet_source_posture_without_fallback(self):
+    def test_dump_respects_explicit_source_posture_without_fallback(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             data_dir = tmp / "runtime"
@@ -357,14 +411,14 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env["PROSPECT_AUTOGROW_SOURCES"] = "APOLLO"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
             with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
-                rc = dump_tool.main(["--dry-run", "--for-date", "2026-03-07", "--raw-target", "1", "--packet-size", "1"])
+                rc = dump_tool.main(["--dry-run", "--for-date", "2026-03-07", "--raw-target", "1"])
 
             self.assertEqual(rc, 0, msg=out.getvalue())
             text = out.getvalue()
-            self.assertIn("AI_ASSIST_PACKET_SOURCES=none", text)
-            self.assertIn("AI_ASSIST_PACKET_CANDIDATES_TOTAL=0", text)
-            self.assertIn("AI_ASSIST_PACKET_ROWS_WRITTEN=0", text)
-            self.assertIn("WARN_AI_ASSIST_PACKET_NO_ELIGIBLE_SOURCES=1 configured=APOLLO", text)
+            self.assertIn("AI_ASSIST_DUMP_SOURCES=none", text)
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=0", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=0", text)
+            self.assertIn("WARN_AI_ASSIST_DUMP_NO_ELIGIBLE_SOURCES=1 configured=APOLLO", text)
 
     def test_dump_excludes_crm_root_domain_matches_from_subdomain_records(self):
         with tempfile.TemporaryDirectory() as d:
@@ -397,14 +451,14 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env["OUTREACH_STATES"] = "TX"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
             with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
-                rc = dump_tool.main(["--dry-run", "--for-date", "2026-03-07", "--raw-target", "1", "--packet-size", "1"])
+                rc = dump_tool.main(["--dry-run", "--for-date", "2026-03-07", "--raw-target", "1"])
 
             self.assertEqual(rc, 0, msg=out.getvalue())
             text = out.getvalue()
-            self.assertIn("AI_ASSIST_PACKET_CANDIDATES_TOTAL=0", text)
-            self.assertIn("AI_ASSIST_PACKET_ROWS_WRITTEN=0", text)
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=0", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=0", text)
 
-    def test_dump_print_config_prefers_autogrow_states_and_packet_defaults(self):
+    def test_dump_print_config_prefers_autogrow_states_and_canonical_defaults(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             data_dir = tmp / "runtime"
@@ -422,11 +476,16 @@ class TestProspectAiAssistTools(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             text = out.getvalue()
+            self.assertIn("WARN_AI_ASSIST_DUMP_SCOPE_DRIFT=1 outreach_states=FL autogrow_states=CA,TX", text)
             self.assertIn("AI_ASSIST_DUMP_STATES_SCOPE=CA,TX", text)
-            self.assertIn("AI_ASSIST_PACKET_RAW_TARGET=30", text)
-            self.assertIn("AI_ASSIST_PACKET_SIZE=10", text)
+            self.assertIn("AI_ASSIST_DUMP_RAW_TARGET=30", text)
             self.assertIn("AI_ASSIST_DUMP_GAP_TOTAL=89", text)
             self.assertIn("AI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL=30", text)
+            self.assertIn("AI_ASSIST_DUMP_PACKET_SIZE=10", text)
+            self.assertIn(
+                f"AI_ASSIST_DUMP_OUTPUT_DIR={(data_dir / 'audits' / 'prospect_ai_assist').resolve()}",
+                text,
+            )
 
     def test_import_dry_run_does_not_create_db(self):
         with tempfile.TemporaryDirectory() as d:
@@ -790,12 +849,13 @@ class TestProspectAiAssistTools(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             data_dir = tmp / "runtime"
-            review_dir = data_dir / "audits" / "ai_assist"
+            review_dir = data_dir / "imports" / "prospect_ai_assist"
             review_dir.mkdir(parents=True, exist_ok=True)
             (review_dir / "prospect_ai_assist_review_20260310.txt").write_text("prompt", encoding="utf-8")
             (review_dir / "prospect_ai_assist_review_20260310_reviewed_cleaned.csv").write_text("x", encoding="utf-8")
             first = review_dir / "prospect_ai_assist_review_20260309_reviewed.csv"
-            second = review_dir / "prospect_ai_assist_review_20260310_reviewed.csv"
+            second = review_dir / "prospect_ai_assist_review_20260310_packet_001_reviewed.csv"
+            third = review_dir / "prospect_ai_assist_review_20260310_packet_002_reviewed.csv"
             self._write_review_csv(
                 first,
                 [
@@ -830,6 +890,23 @@ class TestProspectAiAssistTools(unittest.TestCase):
                     }
                 ],
             )
+            self._write_review_csv(
+                third,
+                [
+                    {
+                        "state": "CA",
+                        "decision": "accept",
+                        "firm": "Three",
+                        "website": "https://three.example.com",
+                        "contact_name": "Three",
+                        "title": "Owner",
+                        "email": "three@three.example.com",
+                        "source_urls": "https://three.example.com/contact",
+                        "confidence": "92",
+                        "evidence_snippet": "Three",
+                    }
+                ],
+            )
 
             calls: list[tuple[str, str, bool]] = []
 
@@ -849,9 +926,58 @@ class TestProspectAiAssistTools(unittest.TestCase):
                 calls,
                 [
                     ("prospect_ai_assist_review_20260309_reviewed.csv", "2026-03-09_AIASSIST", True),
-                    ("prospect_ai_assist_review_20260310_reviewed.csv", "2026-03-10_AIASSIST", True),
+                    ("prospect_ai_assist_review_20260310_packet_001_reviewed.csv", "2026-03-10_AIASSIST_P001", True),
+                    ("prospect_ai_assist_review_20260310_packet_002_reviewed.csv", "2026-03-10_AIASSIST_P002", True),
                 ],
             )
+
+    def test_pending_import_accepts_legacy_audit_dir_with_warning(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            legacy_dir = data_dir / "audits" / "ai_assist"
+            legacy_dir.mkdir(parents=True, exist_ok=True)
+            input_path = legacy_dir / "prospect_ai_assist_review_20260309_reviewed.csv"
+            self._write_review_csv(
+                input_path,
+                [
+                    {
+                        "state": "TX",
+                        "decision": "accept",
+                        "firm": "Legacy One",
+                        "website": "https://legacy-one.example.com",
+                        "contact_name": "Legacy One",
+                        "title": "Owner",
+                        "email": "legacy@legacy-one.example.com",
+                        "source_urls": "https://legacy-one.example.com/contact",
+                        "confidence": "90",
+                        "evidence_snippet": "Legacy One",
+                    }
+                ],
+            )
+
+            calls: list[tuple[str, str, bool]] = []
+
+            def _fake_import(*, input_path: Path, batch_id_override: str = "", dry_run: bool = False):  # type: ignore[no-untyped-def]
+                calls.append((str(input_path.name), str(batch_id_override), bool(dry_run)))
+                return 0, "DRY_RUN"
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(import_tool, "_import_review_file", side_effect=_fake_import),
+                redirect_stdout(out),
+            ):
+                rc = import_tool.run_pending_imports(dry_run=True)
+
+            self.assertEqual(rc, 0, msg=out.getvalue())
+            self.assertEqual(
+                calls,
+                [("prospect_ai_assist_review_20260309_reviewed.csv", "2026-03-09_AIASSIST", True)],
+            )
+            self.assertIn("WARN_AI_ASSIST_PENDING_IMPORT_LEGACY_DIR=", out.getvalue())
 
     def test_completed_batch_same_hash_is_skipped_cleanly(self):
         with tempfile.TemporaryDirectory() as d:

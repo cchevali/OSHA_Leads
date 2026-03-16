@@ -77,7 +77,9 @@ function New-TaskDefinition(
 
 function Get-TaskDefinitions([string]$RepoRoot) {
   $weekdaySpec = 'MON,TUE,WED,THU,FRI'
+  $dailySpec = 'SUN,MON,TUE,WED,THU,FRI,SAT'
   $ingestRunner = Join-Path $RepoRoot 'scripts\scheduled\run_osha_ingest_daily.ps1'
+  $ingestEveningRunner = Join-Path $RepoRoot 'scripts\scheduled\run_osha_ingest_evening.ps1'
   $replenishRunner = Join-Path $RepoRoot 'scripts\scheduled\run_prospect_replenish_daily.ps1'
   $inboundRunner = Join-Path $RepoRoot 'scripts\scheduled\run_inbound_triage.ps1'
   $facsTrialRunner = Join-Path $RepoRoot 'scripts\scheduled\run_trial_facs_daily.ps1'
@@ -85,6 +87,7 @@ function Get-TaskDefinitions([string]$RepoRoot) {
 
   return @(
     (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '06:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestRunner) -RecoveryOnly:$true),
+    (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Evening' -ScheduleType 'weekly' -Weekdays $dailySpec -StartTime '20:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestEveningRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Prospect_Replenish_SafetyNet' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $replenishRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Outreach_Auto_SafetyNet' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $outreachRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Trial_FACS_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '09:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $facsTrialRunner) -RecoveryOnly:$true),

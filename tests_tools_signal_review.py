@@ -644,7 +644,7 @@ class TestSignalReviewTools(unittest.TestCase):
 
             self.assertEqual(code, 0)
             text = out.getvalue()
-            expected_dir = str((dump_tool.REPO_ROOT / "out" / "audits").resolve(strict=False))
+            expected_dir = str((dump_tool.REPO_ROOT / "out" / "audits" / "signals_ai_review").resolve(strict=False))
             self.assertIn(f"AI_REVIEW_DUMP_OUTPUT_DIR={expected_dir}", text)
             self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
 
@@ -702,7 +702,7 @@ class TestSignalReviewTools(unittest.TestCase):
 
             self.assertEqual(code, 0)
             text = out.getvalue()
-            expected_dir = str((data_dir / "audits").resolve(strict=False))
+            expected_dir = str((data_dir / "audits" / "signals_ai_review").resolve(strict=False))
             self.assertIn(f"AI_REVIEW_DUMP_OUTPUT_DIR={expected_dir}", text)
             self.assertIn("AI_REVIEW_DUMP_OUTPUT_PATH=", text)
 
@@ -1037,7 +1037,7 @@ class TestSignalReviewTools(unittest.TestCase):
             self.assertEqual(code, 0)
             text = out.getvalue()
             expected_data_dir = str((dump_tool.REPO_ROOT / "out").resolve(strict=False))
-            expected_audits = str((dump_tool.REPO_ROOT / "out" / "audits").resolve(strict=False))
+            expected_audits = str((dump_tool.REPO_ROOT / "out" / "audits" / "signals_ai_review").resolve(strict=False))
             self.assertIn("WARN_DATA_DIR_NOT_ABSOLUTE=1 value=out behavior=UNSET_FOR_CHILD", text)
             self.assertIn(f"AI_REVIEW_DUMP_DATA_DIR={expected_data_dir}", text)
             self.assertIn("AI_REVIEW_DUMP_DATA_DIR_SOURCE=default", text)

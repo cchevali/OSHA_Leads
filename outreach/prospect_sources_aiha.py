@@ -8,6 +8,8 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
+from outreach import contact_normalization
+
 TOC_URL = "https://info.aiha.org/consultants-listing/toc/"
 PAGE_URL_TEMPLATE = "https://info.aiha.org/consultants-listing/{page_id}"
 USER_AGENT = "OSHA_Leads/1.0 (+https://microflowops.com)"
@@ -123,6 +125,13 @@ def _cache_is_fresh(payload: dict, as_of: datetime | None = None) -> bool:
     if age is None:
         return False
     return age < CACHE_MAX_AGE_DAYS
+
+
+def _rows_for_state(rows: list[dict] | None, state: str) -> list[dict]:
+    state_norm = _normalize_state_abbrev(state)
+    if not state_norm:
+        return []
+    return [row for row in list(rows or []) if _normalize_state_abbrev(str(row.get("state") or "")) == state_norm]
 
 
 def _read_cache(path: Path) -> dict | None:
@@ -302,9 +311,9 @@ def _extract_website(text: str) -> str:
     raw = _normalize_text(match.group(1)).replace(" ", "")
     if not raw:
         return ""
-    if raw.lower().startswith("http://") or raw.lower().startswith("https://"):
-        return raw
-    return f"https://{raw.lstrip('/')}"
+    if raw.lower().startswith(("contact:", "contactemail:", "specialty:")):
+        return ""
+    return contact_normalization.canonicalize_http_url(raw)
 
 
 def _extract_emails(text: str) -> list[str]:
@@ -543,7 +552,7 @@ def fetch_aiha_state_rows(
     cache_path = _cache_path(cache_dir, state_norm)
     cached_payload = _read_cache(cache_path)
     if cached_payload and _cache_is_fresh(cached_payload):
-        rows = list(cached_payload.get("rows") or [])
+        rows = _rows_for_state(list(cached_payload.get("rows") or []), state_norm)
         reject_counts = dict(cached_payload.get("reject_counts") or {})
         row_diagnostics = list(cached_payload.get("row_diagnostics") or [])
         return {
@@ -584,7 +593,7 @@ def fetch_aiha_state_rows(
             page_parse = parse_aiha_page_with_diagnostics(page_html=page_html, page_id=page_id)
             page_mode = str(page_parse.get("mode") or "FAILED")
             page_modes.append(page_mode)
-            page_rows = list(page_parse.get("rows") or [])
+            page_rows = _rows_for_state(list(page_parse.get("rows") or []), state_norm)
             all_rows.extend(page_rows)
             for token, count in dict(page_parse.get("reject_counts") or {}).items():
                 if token in AIHA_REJECT_TOKENS:

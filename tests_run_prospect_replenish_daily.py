@@ -22,17 +22,14 @@ class TestRunProspectReplenishDaily(unittest.TestCase):
         self.assertIn("PROSPECT_REPLENISH_EFFECTIVE_AUTOGROW_ENABLED=1", out)
         self.assertIn("PROSPECT_REPLENISH_EFFECTIVE_AUTOGROW_SOURCES=AIHA,OHS_BG,STATE_LIC", out)
         self.assertIn("PROSPECT_REPLENISH_EFFECTIVE_SAFETY_NET_ENABLED=1", out)
-        self.assertIn("PROSPECT_REPLENISH_EFFECTIVE_AI_ASSIST_REVIEW_ENABLED=1", out)
-        self.assertIn("PROSPECT_REPLENISH_EFFECTIVE_AI_ASSIST_REVIEW_RAW_TARGET=30", out)
-        self.assertIn("PROSPECT_REPLENISH_EFFECTIVE_AI_ASSIST_REVIEW_PACKET_SIZE=10", out)
         self.assertIn("run_prospect_generation.py --doctor", out)
         self.assertIn("run_prospect_generation.py", out)
         self.assertIn("run_prospect_discovery.py", out)
-        self.assertIn("tools/dump_prospect_ai_assist_review.py", out)
+        self.assertNotIn("tools/dump_prospect_ai_assist_review.py", out)
         self.assertIn("PASS_PROSPECT_REPLENISH_PRINT_CONFIG status=OK", out)
         self.assertIn("PASS_PROSPECT_REPLENISH_COMPLETE status=PRINT_CONFIG", out)
 
-    def test_live_mode_runs_doctor_then_generation_then_discovery_then_ai_assist_dump(self):
+    def test_live_mode_runs_doctor_then_generation_then_discovery(self):
         calls: list[list[str]] = []
 
         def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
@@ -52,18 +49,7 @@ class TestRunProspectReplenishDaily(unittest.TestCase):
                 )
             if "run_prospect_discovery.py" in parts:
                 return self._proc(0, stdout="DISCOVERY_ROWS_READ=17\nDISCOVERY_PROSPECTS_UPSERTED=14\n")
-            return self._proc(
-                0,
-                stdout=(
-                    "AI_ASSIST_DUMP_GAP_TOTAL=5\n"
-                    "AI_ASSIST_PACKET_RAW_TARGET=30\n"
-                    "AI_ASSIST_PACKET_SIZE=10\n"
-                    "AI_ASSIST_PACKET_CANDIDATES_TOTAL=22\n"
-                    "AI_ASSIST_PACKET_ROWS_WRITTEN=20\n"
-                    "AI_ASSIST_PACKET_FILES_WRITTEN=2\n"
-                    "AI_ASSIST_DUMP_OUTPUT_PATH=C:\\osha_data\\audits\\ai_assist\\20260307_packets\\manifest.json\n"
-                ),
-            )
+            raise AssertionError(f"unexpected command: {parts}")
 
         with mock.patch.object(replenish.subprocess, "run", side_effect=_run):
             buf = io.StringIO()
@@ -71,26 +57,18 @@ class TestRunProspectReplenishDaily(unittest.TestCase):
                 rc = replenish.main([])
         out = buf.getvalue()
         self.assertEqual(rc, 0, msg=out)
-        self.assertEqual(len(calls), 4, msg=str(calls))
+        self.assertEqual(len(calls), 3, msg=str(calls))
         self.assertIn("run_prospect_generation.py", calls[0])
         self.assertIn("--doctor", calls[0])
         self.assertIn("run_prospect_generation.py", calls[1])
         self.assertNotIn("--doctor", calls[1])
         self.assertIn("run_prospect_discovery.py", calls[2])
-        self.assertIn("tools/dump_prospect_ai_assist_review.py", calls[3])
         self.assertIn("PROSPECT_REPLENISH_SELECTED_STATE=TX", out)
         self.assertIn("PROSPECT_REPLENISH_BACKLOG_CURRENT=11", out)
         self.assertIn("PROSPECT_REPLENISH_NEW_NEEDED=49", out)
         self.assertIn("PROSPECT_REPLENISH_GENERATOR_ROWS_WRITTEN=17", out)
         self.assertIn("PROSPECT_REPLENISH_DISCOVERY_ROWS_READ=17", out)
         self.assertIn("PROSPECT_REPLENISH_DISCOVERY_PROSPECTS_UPSERTED=14", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_GAP_TOTAL=5", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_RAW_TARGET=30", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_PACKET_SIZE=10", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_CANDIDATES_TOTAL=22", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_ROWS_WRITTEN=20", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_FILES_WRITTEN=2", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_OUTPUT_PATH=C:\\osha_data\\audits\\ai_assist\\20260307_packets\\manifest.json", out)
         self.assertIn("PASS_PROSPECT_REPLENISH_COMPLETE status=OK", out)
 
     def test_dry_run_skips_live_discovery_import_and_never_calls_outreach(self):
@@ -111,17 +89,7 @@ class TestRunProspectReplenishDaily(unittest.TestCase):
                 )
             if "run_prospect_discovery.py" in parts:
                 return self._proc(0, stdout="PASS_DISCOVERY_PRINT_CONFIG data_dir=C:\\osha_data\n")
-            return self._proc(
-                0,
-                stdout=(
-                    "AI_ASSIST_DUMP_GAP_TOTAL=0\n"
-                    "AI_ASSIST_PACKET_RAW_TARGET=30\n"
-                    "AI_ASSIST_PACKET_SIZE=10\n"
-                    "AI_ASSIST_PACKET_CANDIDATES_TOTAL=0\n"
-                    "AI_ASSIST_PACKET_ROWS_WRITTEN=0\n"
-                    "AI_ASSIST_PACKET_FILES_WRITTEN=0\n"
-                ),
-            )
+            raise AssertionError(f"unexpected command: {parts}")
 
         with mock.patch.object(replenish.subprocess, "run", side_effect=_run):
             buf = io.StringIO()
@@ -129,24 +97,16 @@ class TestRunProspectReplenishDaily(unittest.TestCase):
                 rc = replenish.main(["--dry-run", "--for-date", "2026-03-05"])
         out = buf.getvalue()
         self.assertEqual(rc, 0, msg=out)
-        self.assertEqual(len(calls), 3, msg=str(calls))
+        self.assertEqual(len(calls), 2, msg=str(calls))
         self.assertIn("run_prospect_generation.py", calls[0])
         self.assertIn("--dry-run", calls[0])
         self.assertIn("--for-date", calls[0])
         self.assertIn("2026-03-05", calls[0])
         self.assertIn("run_prospect_discovery.py", calls[1])
         self.assertIn("--print-config", calls[1])
-        self.assertIn("tools/dump_prospect_ai_assist_review.py", calls[2])
-        self.assertIn("--dry-run", calls[2])
         self.assertNotIn("run_outreach_auto.py", " ".join(" ".join(c) for c in calls))
         self.assertIn("PROSPECT_REPLENISH_DISCOVERY_ROWS_READ=0", out)
         self.assertIn("PROSPECT_REPLENISH_DISCOVERY_PROSPECTS_UPSERTED=0", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_GAP_TOTAL=0", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_RAW_TARGET=30", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_PACKET_SIZE=10", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_CANDIDATES_TOTAL=0", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_ROWS_WRITTEN=0", out)
-        self.assertIn("PROSPECT_REPLENISH_AI_ASSIST_FILES_WRITTEN=0", out)
         self.assertIn("PASS_PROSPECT_REPLENISH_COMPLETE status=DRY_RUN", out)
 
     def test_live_mode_fails_fast_on_stage_error(self):

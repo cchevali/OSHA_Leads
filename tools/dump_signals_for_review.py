@@ -29,6 +29,7 @@ from scoring import paths as scoring_paths
 from scoring import triage_overlay
 
 import send_digest_email as sde
+import ai_assist_paths
 from runtime_data_dir import resolve_data_dir
 
 AI_REVIEW_HEADER_LINES = [
@@ -542,7 +543,7 @@ def _load_subscriber_review_targets(definitions: dict[str, dict[str, Any]]) -> l
 
 
 def _resolve_default_audits_dir() -> Path:
-    return (resolve_data_dir(REPO_ROOT).effective_path / "audits").resolve(strict=False)
+    return ai_assist_paths.signals_audit_dir(repo_root=REPO_ROOT)
 
 
 def _resolve_output_path(

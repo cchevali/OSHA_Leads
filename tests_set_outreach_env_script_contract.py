@@ -83,6 +83,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "ERR_SET_OUTREACH_ENV_VERIFY",
             "ERR_SET_OUTREACH_ENV_PRINT_CONFIG",
             "ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS",
+            "WARN_SET_OUTREACH_ENV_SCOPE_DRIFT",
             "PASS_SET_OUTREACH_ENV_APPLY",
             "PASS_SET_OUTREACH_ENV_VERIFY",
             "PASS_SET_OUTREACH_ENV_PRINT_CONFIG",
@@ -113,9 +114,12 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("prospect_ai_assist_review_enabled=", text)
         self.assertIn("prospect_ai_assist_review_raw_target=", text)
         self.assertIn("prospect_ai_assist_review_packet_size=", text)
+        self.assertIn("outreach_states=", text)
+        self.assertIn("prospect_autogrow_states=", text)
         self.assertIn("invalid_ProspectAiAssistMaxRowsPerState", text)
         self.assertIn("invalid_ProspectAiAssistReviewRawTarget", text)
         self.assertIn("invalid_ProspectAiAssistReviewPacketSize", text)
+        self.assertIn("invalid_ProspectAutoGrowStates", text)
         self.assertIn("OHS_BG", text)
         self.assertIn("APOLLO", text)
         self.assertIn("unimplemented_ProspectAutoGrowSources", text)
@@ -168,6 +172,10 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("ARTIFACT_SYNC_DIR", text)
         self.assertIn("TASK_LOG_ROOT", text)
         self.assertIn("RUN_SUMMARY_ROOT", text)
+        self.assertIn("Remove-MapKey", text)
+        self.assertIn("Get-ScopeDriftWarning", text)
+        self.assertIn("Remove-MapKey -Map $map -Key 'PROSPECT_AUTOGROW_STATES' -TouchedList $touched", text)
+        self.assertIn("Write-Output $scopeDriftWarning", text)
         self.assertIn("runtime_role=", text)
         self.assertIn("canonical_hostname=", text)
         self.assertIn("artifact_sync_dir=", text)

@@ -11,6 +11,7 @@ from typing import Any
 
 import requests
 
+import ai_assist_paths
 from scoring import paths as scoring_paths
 
 
@@ -108,37 +109,20 @@ def _auto_import_max_age_hours() -> float:
     return n
 
 
-def _candidate_import_dirs() -> list[Path]:
-    data_dir_imports = scoring_paths.data_root() / "imports"
-    raw_candidates = [
-        (os.getenv("AI_REVIEW_IMPORT_DIR") or "").strip(),
-        r"C:\osha_data\imports",
-        str(data_dir_imports),
-    ]
-    out: list[Path] = []
-    seen: set[str] = set()
-    for raw in raw_candidates:
-        if not raw:
-            continue
-        path = Path(raw).expanduser().resolve(strict=False)
-        key = str(path).lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(path)
-    return out
+def _candidate_import_dirs() -> list[ai_assist_paths.PathCandidate]:
+    return ai_assist_paths.signals_import_candidates()
 
 
-def _find_newest_ai_review_csv(dirs: list[Path]) -> Path | None:
+def _find_newest_ai_review_csv(dirs: list[ai_assist_paths.PathCandidate]) -> tuple[Path | None, bool]:
     for directory in dirs:
         try:
-            if not directory.exists() or (not directory.is_dir()):
+            if not directory.path.exists() or (not directory.path.is_dir()):
                 continue
         except Exception:
             continue
         newest: Path | None = None
         newest_mtime = -1.0
-        for candidate in directory.glob("ai_review_*.csv"):
+        for candidate in directory.path.glob("ai_review_*.csv"):
             try:
                 if not candidate.is_file():
                     continue
@@ -149,8 +133,8 @@ def _find_newest_ai_review_csv(dirs: list[Path]) -> Path | None:
                 newest = candidate.resolve(strict=False)
                 newest_mtime = mtime
         if newest is not None:
-            return newest
-    return None
+            return newest, bool(directory.is_legacy)
+    return None, False
 
 
 def _file_age_hours(path: Path) -> float:
@@ -244,11 +228,13 @@ def _maybe_auto_import_ai_review_csv_once(
         return
 
     dirs = _candidate_import_dirs()
-    dirs_token = ";".join([str(path) for path in dirs]) or "none"
-    newest = _find_newest_ai_review_csv(dirs)
+    dirs_token = ";".join([str(candidate.path) for candidate in dirs]) or "none"
+    newest, used_legacy_dir = _find_newest_ai_review_csv(dirs)
     if newest is None:
         print(f"WARN_AI_REVIEW_AUTO_IMPORT_MISSING dirs={dirs_token} pattern=ai_review_*.csv")
         return
+    if used_legacy_dir or ai_assist_paths.signals_path_uses_legacy_dir(newest):
+        print(f"WARN_AI_REVIEW_AUTO_IMPORT_LEGACY_DIR=1 path={newest}")
 
     try:
         age_hours = _file_age_hours(newest)

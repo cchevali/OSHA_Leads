@@ -28,6 +28,9 @@ class TestContactNormalization(unittest.TestCase):
             "https://example.com/about|https://example.com/contact",
         )
 
+    def test_canonicalize_http_url_rejects_label_bleed_host(self):
+        self.assertEqual(contact_normalization.canonicalize_http_url("https://Contact:RobertC.Klein,CIH"), "")
+
     def test_normalize_contact_name_and_evidence_strip_markdown_noise(self):
         self.assertEqual(
             contact_normalization.normalize_contact_name("Russell](https://example.com/%22,%22Russell) Carr"),
