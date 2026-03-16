@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=147d6f09a5398dbf35141563d75f4ce37ea6956c
-PACK_BUILD_UTC=2026-03-15T15:58:31Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=a7568f04061d0c0e3275a1d150badd2dc32130b0acb48c18965a8042c87b7639 docs/DECISIONS.md=169cc2fa51cb18ba29cad103cbe457428d8de012571c81b2150a4ccd53003b3b docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=a0d204041f5f23639dc0f4a3bece260155de44734c1f116fe26b22cf4bdc3e2f docs/TODO.md=542082411548559bf73ec7939766b0358fadc2d387a15613eb3a1b4e7455ce4f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=e071ac316958e1bad7d253d46211e3b5d3135b83dbcb46daf24d3af6318435e5
+PACK_GIT_SHA=8ee17e3db99b733cf707e98b1e046de2b1383d68
+PACK_BUILD_UTC=2026-03-16T03:46:19Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=36783d3cf58d7187e430110886cb3a1f961661a524399e1b374a58842ba53532 docs/DECISIONS.md=169cc2fa51cb18ba29cad103cbe457428d8de012571c81b2150a4ccd53003b3b docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=9679381dbb46860a17b1084e06007f62599af2f021e4c572a57b685339ba05f8 docs/TODO.md=542082411548559bf73ec7939766b0358fadc2d387a15613eb3a1b4e7455ce4f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=55d88eb24d55d16a36673e88485a594a9ad83c78e2822ebe886abe083182bea1
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -142,7 +142,10 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts `${DATA_DIR}/prospect_discovery/prospects_latest.csv` into `crm.sqlite`.
-3. Nightly AI review artifacts: `scripts/scheduled/run_osha_ingest_evening.ps1` runs OSHA ingest, `tools/dump_signals_for_review.py`, and `tools/dump_prospect_ai_assist_review.py` at the shared 8:45 PM Eastern slot. Signals dumps land under `${DATA_DIR}\audits\signals_ai_review\`. Prospect dumps land under `${DATA_DIR}\audits\prospect_ai_assist\` as a daily summary plus deterministic packet slices (`seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`) so review volume can be split across multiple AI chats without changing import/scheduler ownership.
+3. Nightly AI review artifacts: `scripts/scheduled/run_osha_ingest_evening.ps1` runs OSHA ingest, `tools/dump_signals_for_review.py`, and `tools/dump_prospect_ai_assist_review.py` at the shared 8:45 PM Eastern slot. Signals dumps land under `${DATA_DIR}\audits\signals_ai_review\`. Prospect dumps land under `${DATA_DIR}\audits\prospect_ai_assist\` as a daily summary plus deterministic packet slices (`seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`, `packet_status.txt`) so review volume can be split across multiple AI chats without changing import/scheduler ownership.
+   - Prospect AI-assist seed packets can now include partial-but-actionable rows from canonical default sources when `firm` + `state` are present and at least one strong locator exists (`website`, `phone`, `city`, `address`, `license_number`, `seed_source_url`, or `source_record_id`).
+   - Blank `website` values are expected for some `STATE_LIC` seeds; operators use the provided city/phone/address/license/source context during manual AI review, and reviewed imports still remain the only path that can write accepted rows into CRM.
+   - `manifest.json` and `packet_status.txt` record candidate/exclusion counts so "no packets" runs are diagnosable without changing discovery/import behavior.
 4. Controlled discovery augmentation: reviewed prospect CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\` and are imported oldest-first by `tools/import_prospect_ai_assist_review.py --pending` before live outreach sends; packet-reviewed filenames use `prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv`, while a single reviewed file remains valid for manual/backfill cases. The importer normalizes known markdown/mailto cell corruption, rejects ambiguous malformed rows, audits provenance in `crm.sqlite`, and then upserts verified accepts through the existing discovery/CRM contract with `source=ai_assist_manual` and `enrichment_lane=ai_assist`.
 5. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
 6. Daily run: `outreach/run_outreach_auto.py`
@@ -1127,7 +1130,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_a
 Operating rules:
 
 - The dump writes one daily summary text artifact under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus a sibling packet folder `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
-- The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, and `manifest.json` so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
+- The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`, and `packet_status.txt` so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
+- `seed_packet_###.csv` now uses `firm,website,state,city,phone,address,seed_source,seed_source_url,source_record_id,license_number` and may include rows with blank `website`.
+- Blank `website` values are expected for `STATE_LIC` rows; use the provided city/phone/address/license/source URL context during manual AI review and reject rows when no named principal/contact can be verified.
+- `packet_status.txt` gives the fast operator read: if packets exist it reports packet count plus how many selected rows had blank websites; if no packets exist it reports `NO PACKETS TODAY` plus the top exclusion counts.
+- `manifest.json` records candidate counts before/after filters, exclusion counters, included-without-website count, and source breakdown so packet eligibility failures are diagnosable without changing the controlled import lane.
 - Reviewed CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv` for packet review, or `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_reviewed.csv` for single-file/manual review.
 - `tools\import_prospect_ai_assist_review.py --pending` scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first, then packet order; `run_outreach_auto.py` calls the same pending-import path before live sends.
 - Legacy reviewed CSVs under `${DATA_DIR}\audits\ai_assist\` are still accepted temporarily and emit a warning token when consumed.
@@ -1135,6 +1142,7 @@ Operating rules:
 - Import verifies domain/email shape, blocks free personal domains, enforces suppression and `do_not_contact`, dedupes against CRM and within the batch, audits every row, and only upserts verified accepts through the existing discovery/CRM contract.
 - Manual `--input` imports remain the backfill/correction path when you do not want to use the pending inbox.
 - This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
+- No packets means there were no seed rows meeting the relaxed minimum-locator rule after state, CRM, and duplicate filters; reviewed CSV imports remain the only route that can upsert accepted CRM rows.
 
 Canonical nightly schedule:
 

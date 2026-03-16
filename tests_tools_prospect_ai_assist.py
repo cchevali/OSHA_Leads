@@ -68,6 +68,10 @@ class TestProspectAiAssistTools(unittest.TestCase):
     def _write_review_lines(self, path: Path, lines: list[str]) -> None:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    def _read_seed_rows(self, path: Path) -> list[dict[str, str]]:
+        with open(path, "r", newline="", encoding="utf-8") as handle:
+            return list(csv.DictReader(handle))
+
     def test_dump_writes_packetized_artifacts_with_seed_candidates(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -169,7 +173,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             text = out.getvalue()
             self.assertIn("AI_ASSIST_DUMP_STATES_SCOPE=TX,CA", text)
             self.assertIn("AI_ASSIST_DUMP_RAW_TARGET=4", text)
-            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=4", text)
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=5", text)
             self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=4", text)
             self.assertIn("AI_ASSIST_DUMP_PACKET_SIZE=2", text)
             self.assertIn("AI_ASSIST_DUMP_PACKET_COUNT=2", text)
@@ -182,11 +186,17 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertTrue(manifest_path.exists())
             prompt_text = output_path.read_text(encoding="utf-8")
             self.assertIn("# SEED CANDIDATES CSV:", prompt_text)
-            self.assertIn("state,firm,website,seed_source,seed_source_url", prompt_text)
+            self.assertIn(
+                "firm,website,state,city,phone,address,seed_source,seed_source_url,source_record_id,license_number",
+                prompt_text,
+            )
+            self.assertIn("website may be blank", prompt_text)
+            self.assertIn("Do not invent websites or emails", prompt_text)
+            self.assertIn("Return reject if no named principal/contact can be verified", prompt_text)
             self.assertIn("Alpha Safety LLC", prompt_text)
             self.assertIn("Bravo Safety", prompt_text)
             self.assertIn("Charlie Safety", prompt_text)
-            self.assertIn("Delta Safety", prompt_text)
+            self.assertNotIn("Delta Safety", prompt_text)
             self.assertNotIn("Known Safety Group", prompt_text)
             self.assertNotIn("Existing Firm LLC", prompt_text)
             self.assertIn(
@@ -197,19 +207,36 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertIn(",".join(dump_tool.REVIEW_COLUMNS), prompt_text)
 
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema_version"], "ai_assist_packet_manifest_v2")
             self.assertEqual(manifest["packet_count"], 2)
             self.assertEqual(manifest["packet_size"], 2)
+            self.assertEqual(manifest["candidate_count_before_filters"], 7)
+            self.assertEqual(manifest["candidate_count_after_filters"], 5)
+            self.assertEqual(manifest["candidate_count"], 5)
+            self.assertEqual(manifest["excluded_already_in_crm"], 2)
+            self.assertEqual(manifest["excluded_duplicate_seed"], 0)
+            self.assertEqual(manifest["included_without_website"], 0)
+            self.assertEqual(manifest["source_breakdown"], {"AIHA": 2, "OHS_BG": 3})
             self.assertEqual(len(manifest["packets"]), 2)
             self.assertEqual(manifest["packets"][0]["reviewed_import_filename"], "prospect_ai_assist_review_20260307_packet_001_reviewed.csv")
             self.assertEqual(manifest["packets"][0]["suggested_batch_id"], "2026-03-07_AIASSIST_P001")
 
             seed_packet_one = (packet_dir / "seed_packet_001.csv").read_text(encoding="utf-8")
             review_packet_one = (packet_dir / "review_packet_001.txt").read_text(encoding="utf-8")
+            packet_status = (packet_dir / "packet_status.txt").read_text(encoding="utf-8")
             self.assertIn("Alpha Safety LLC", seed_packet_one)
             self.assertIn("Bravo Safety", seed_packet_one)
             self.assertNotIn("Charlie Safety", seed_packet_one)
+            self.assertIn(
+                "firm,website,state,city,phone,address,seed_source,seed_source_url,source_record_id,license_number",
+                seed_packet_one,
+            )
             self.assertIn("REVIEWED IMPORT FILENAME: prospect_ai_assist_review_20260307_packet_001_reviewed.csv", review_packet_one)
             self.assertIn("SUGGESTED_BATCH_ID: 2026-03-07_AIASSIST_P001", review_packet_one)
+            self.assertIn("website may be blank", review_packet_one)
+            self.assertIn("Do not invent websites or emails", review_packet_one)
+            self.assertIn("PACKETS READY: 2", packet_status)
+            self.assertIn("ROWS WITH BLANK WEBSITE: 0", packet_status)
 
     def test_dump_dry_run_emits_shortfall_without_writing_artifacts(self):
         with tempfile.TemporaryDirectory() as d:
@@ -313,13 +340,93 @@ class TestProspectAiAssistTools(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             text = out.getvalue()
-            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=1", text)
-            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=1", text)
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=2", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=2", text)
             prompt_text = (output_dir / "prospect_ai_assist_review_20260315.txt").read_text(encoding="utf-8")
             self.assertIn("Valid Florida Row", prompt_text)
+            self.assertIn("Label Bleed Row", prompt_text)
             self.assertNotIn("Boundary Row", prompt_text)
-            self.assertNotIn("Label Bleed Row", prompt_text)
             self.assertTrue((output_dir / "prospect_ai_assist_review_20260315_packets" / "review_packet_001.txt").exists())
+
+    def test_dump_allows_state_lic_blank_website_rows_with_city_or_phone(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            output_dir = tmp / "prospect_ai_assist"
+            self._write_cache_rows(
+                data_dir,
+                "STATE_LIC",
+                "TX",
+                [
+                    {
+                        "business_name": "City Licensed Co",
+                        "state": "TX",
+                        "business_city_state_zip": "Houston TX 77002",
+                        "business_address_line1": "123 Main St",
+                        "license_number": "EC-12345",
+                        "source_detail": "tdlr:EC-12345",
+                        "source": "STATE_LIC",
+                    },
+                    {
+                        "business_name": "Phone Licensed Co",
+                        "state": "TX",
+                        "business_telephone": "(713) 555-9000",
+                        "source": "STATE_LIC",
+                    },
+                ],
+            )
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
+                rc = dump_tool.main(
+                    [
+                        "--for-date",
+                        "2026-03-15",
+                        "--output-dir",
+                        str(output_dir),
+                        "--raw-target",
+                        "5",
+                        "--packet-size",
+                        "10",
+                    ]
+                )
+
+            self.assertEqual(rc, 0, msg=out.getvalue())
+            text = out.getvalue()
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=2", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=2", text)
+
+            packet_dir = output_dir / "prospect_ai_assist_review_20260315_packets"
+            seed_rows = self._read_seed_rows(packet_dir / "seed_packet_001.csv")
+            review_text = (packet_dir / "review_packet_001.txt").read_text(encoding="utf-8")
+            packet_status = (packet_dir / "packet_status.txt").read_text(encoding="utf-8")
+            manifest = json.loads((packet_dir / "manifest.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                list(seed_rows[0].keys()),
+                list(dump_tool.SEED_COLUMNS),
+            )
+            self.assertEqual(seed_rows[0]["firm"], "City Licensed Co")
+            self.assertEqual(seed_rows[0]["website"], "")
+            self.assertEqual(seed_rows[0]["state"], "TX")
+            self.assertEqual(seed_rows[0]["city"], "Houston")
+            self.assertEqual(seed_rows[0]["address"], "123 Main St")
+            self.assertEqual(seed_rows[0]["source_record_id"], "tdlr:EC-12345")
+            self.assertEqual(seed_rows[0]["license_number"], "EC-12345")
+            self.assertEqual(seed_rows[1]["firm"], "Phone Licensed Co")
+            self.assertEqual(seed_rows[1]["website"], "")
+            self.assertEqual(seed_rows[1]["phone"], "(713) 555-9000")
+            self.assertIn("website may be blank", review_text)
+            self.assertIn("Use city/phone/address/license/source URL context to identify the business", review_text)
+            self.assertIn("Do not invent websites or emails", review_text)
+            self.assertEqual(manifest["included_without_website"], 2)
+            self.assertEqual(manifest["source_breakdown"], {"STATE_LIC": 2})
+            self.assertIn("PACKETS READY: 1", packet_status)
+            self.assertIn("ROWS WITH BLANK WEBSITE: 2", packet_status)
 
     def test_dump_default_path_is_stable_per_day(self):
         with tempfile.TemporaryDirectory() as d:
@@ -384,6 +491,186 @@ class TestProspectAiAssistTools(unittest.TestCase):
                 data_dir / "audits" / "prospect_ai_assist" / "prospect_ai_assist_review_20260307.txt",
             )
             self.assertTrue((data_dir / "audits" / "prospect_ai_assist" / "prospect_ai_assist_review_20260307_packets").exists())
+
+    def test_dump_reports_no_packets_with_exclusion_diagnostics(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            output_dir = tmp / "prospect_ai_assist"
+            db_path = data_dir / "crm.sqlite"
+            self._seed_crm_prospect(db_path, firm="Known Safety Group", website="https://knowncrm.test", state="TX")
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "TX",
+                [
+                    {
+                        "firm": "",
+                        "website": "https://blank-firm.example.com",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:01",
+                    },
+                    {
+                        "firm": "Known Safety Group",
+                        "website": "https://new-known.example.com",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:04",
+                    },
+                ],
+            )
+            self._write_cache_rows(
+                data_dir,
+                "OHS_BG",
+                "TX",
+                [
+                    {
+                        "firm": "Wrong State Co",
+                        "website": "https://wrong-state.example.com",
+                        "state": "CA",
+                        "source": "ohs_buyers_guide:02",
+                    },
+                    {
+                        "firm": "No Locator Co",
+                        "website": "",
+                        "state": "TX",
+                        "source": "ohs_buyers_guide:03",
+                    },
+                ],
+            )
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
+                rc = dump_tool.main(
+                    [
+                        "--for-date",
+                        "2026-03-15",
+                        "--output-dir",
+                        str(output_dir),
+                        "--raw-target",
+                        "5",
+                        "--packet-size",
+                        "2",
+                    ]
+                )
+
+            self.assertEqual(rc, 0, msg=out.getvalue())
+            packet_dir = output_dir / "prospect_ai_assist_review_20260315_packets"
+            manifest = json.loads((packet_dir / "manifest.json").read_text(encoding="utf-8"))
+            packet_status = (packet_dir / "packet_status.txt").read_text(encoding="utf-8")
+            self.assertEqual(manifest["packet_count"], 0)
+            self.assertEqual(manifest["candidate_count_before_filters"], 4)
+            self.assertEqual(manifest["candidate_count_after_filters"], 0)
+            self.assertEqual(manifest["excluded_bad_firm"], 1)
+            self.assertEqual(manifest["excluded_state_mismatch"], 1)
+            self.assertEqual(manifest["excluded_missing_minimum_locator"], 1)
+            self.assertEqual(manifest["excluded_already_in_crm"], 1)
+            self.assertEqual(manifest["excluded_duplicate_seed"], 0)
+            self.assertEqual(manifest["included_without_website"], 0)
+            self.assertIn("NO PACKETS TODAY", packet_status)
+            self.assertIn("excluded_bad_firm=1", packet_status)
+            self.assertIn("excluded_state_mismatch=1", packet_status)
+            self.assertIn("excluded_missing_minimum_locator=1", packet_status)
+            self.assertIn("excluded_already_in_crm=1", packet_status)
+
+    def test_dump_deterministic_packet_slicing_with_mixed_blank_website_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            output_dir = tmp / "prospect_ai_assist"
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "TX",
+                [
+                    {
+                        "firm": "Alpha Safety",
+                        "website": "https://alpha.example.com",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:11",
+                    }
+                ],
+            )
+            self._write_cache_rows(
+                data_dir,
+                "OHS_BG",
+                "TX",
+                [
+                    {
+                        "firm": "Bravo Safety",
+                        "website": "https://bravo.example.com",
+                        "state": "TX",
+                        "source": "ohs_buyers_guide:11",
+                        "source_url": "https://buyersguide.example.com/bravo",
+                    }
+                ],
+            )
+            self._write_cache_rows(
+                data_dir,
+                "STATE_LIC",
+                "TX",
+                [
+                    {
+                        "business_name": "Charlie License Co",
+                        "state": "TX",
+                        "business_city_state_zip": "Austin TX 78701",
+                        "license_number": "EC-777",
+                        "source_detail": "tdlr:EC-777",
+                        "source": "STATE_LIC",
+                    }
+                ],
+            )
+
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            out_one = io.StringIO()
+            out_two = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False):
+                with redirect_stdout(out_one):
+                    rc_one = dump_tool.main(
+                        [
+                            "--for-date",
+                            "2026-03-15",
+                            "--output-dir",
+                            str(output_dir),
+                            "--raw-target",
+                            "3",
+                            "--packet-size",
+                            "2",
+                        ]
+                    )
+                packet_dir = output_dir / "prospect_ai_assist_review_20260315_packets"
+                first_seed_one = (packet_dir / "seed_packet_001.csv").read_text(encoding="utf-8")
+                second_seed_one = (packet_dir / "seed_packet_002.csv").read_text(encoding="utf-8")
+                with redirect_stdout(out_two):
+                    rc_two = dump_tool.main(
+                        [
+                            "--for-date",
+                            "2026-03-15",
+                            "--output-dir",
+                            str(output_dir),
+                            "--raw-target",
+                            "3",
+                            "--packet-size",
+                            "2",
+                        ]
+                    )
+                first_seed_two = (packet_dir / "seed_packet_001.csv").read_text(encoding="utf-8")
+                second_seed_two = (packet_dir / "seed_packet_002.csv").read_text(encoding="utf-8")
+
+            self.assertEqual(rc_one, 0, msg=out_one.getvalue())
+            self.assertEqual(rc_two, 0, msg=out_two.getvalue())
+            self.assertEqual(first_seed_one, first_seed_two)
+            self.assertEqual(second_seed_one, second_seed_two)
+            self.assertIn("Alpha Safety", first_seed_one)
+            self.assertIn("Bravo Safety", first_seed_one)
+            self.assertIn("Charlie License Co", second_seed_one)
+            self.assertIn(",,TX,Austin,,,STATE_LIC", second_seed_one)
 
     def test_dump_respects_explicit_source_posture_without_fallback(self):
         with tempfile.TemporaryDirectory() as d:

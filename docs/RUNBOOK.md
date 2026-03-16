@@ -504,7 +504,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_a
 Operating rules:
 
 - The dump writes one daily summary text artifact under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus a sibling packet folder `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
-- The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, and `manifest.json` so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
+- The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`, and `packet_status.txt` so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
+- `seed_packet_###.csv` now uses `firm,website,state,city,phone,address,seed_source,seed_source_url,source_record_id,license_number` and may include rows with blank `website`.
+- Blank `website` values are expected for `STATE_LIC` rows; use the provided city/phone/address/license/source URL context during manual AI review and reject rows when no named principal/contact can be verified.
+- `packet_status.txt` gives the fast operator read: if packets exist it reports packet count plus how many selected rows had blank websites; if no packets exist it reports `NO PACKETS TODAY` plus the top exclusion counts.
+- `manifest.json` records candidate counts before/after filters, exclusion counters, included-without-website count, and source breakdown so packet eligibility failures are diagnosable without changing the controlled import lane.
 - Reviewed CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv` for packet review, or `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_reviewed.csv` for single-file/manual review.
 - `tools\import_prospect_ai_assist_review.py --pending` scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first, then packet order; `run_outreach_auto.py` calls the same pending-import path before live sends.
 - Legacy reviewed CSVs under `${DATA_DIR}\audits\ai_assist\` are still accepted temporarily and emit a warning token when consumed.
@@ -512,6 +516,7 @@ Operating rules:
 - Import verifies domain/email shape, blocks free personal domains, enforces suppression and `do_not_contact`, dedupes against CRM and within the batch, audits every row, and only upserts verified accepts through the existing discovery/CRM contract.
 - Manual `--input` imports remain the backfill/correction path when you do not want to use the pending inbox.
 - This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
+- No packets means there were no seed rows meeting the relaxed minimum-locator rule after state, CRM, and duplicate filters; reviewed CSV imports remain the only route that can upsert accepted CRM rows.
 
 Canonical nightly schedule:
 

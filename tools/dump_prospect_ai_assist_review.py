@@ -11,6 +11,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,18 @@ AI_ASSIST_DUMP_DEFAULT_RAW_TARGET = 30
 AI_ASSIST_DUMP_DEFAULT_PACKET_SIZE = 10
 AI_ASSIST_DEFAULT_AUTOGROW_SOURCES = ("AIHA", "OHS_BG", "STATE_LIC")
 AI_ASSIST_PUBLIC_SOURCES = ("AIHA", "OHS_BG", "BCSP", "OSHA_NEWS", "STATE_LIC")
-SEED_COLUMNS = ("state", "firm", "website", "seed_source", "seed_source_url")
+SEED_COLUMNS = (
+    "firm",
+    "website",
+    "state",
+    "city",
+    "phone",
+    "address",
+    "seed_source",
+    "seed_source_url",
+    "source_record_id",
+    "license_number",
+)
 REVIEW_COLUMNS = (
     "state",
     "decision",
@@ -61,7 +73,23 @@ COMMON_MULTI_LABEL_TLDS = {
     "com.sg",
     "com.hk",
 }
-AI_ASSIST_PACKET_MANIFEST_SCHEMA = "ai_assist_packet_manifest_v1"
+CITY_STATE_ZIP_RE = re.compile(r"^(.+?)\s+([A-Z]{2})\s+\d")
+AI_ASSIST_PACKET_MANIFEST_SCHEMA = "ai_assist_packet_manifest_v2"
+DEDUP_LOCATOR_PRECEDENCE = (
+    "license_number",
+    "phone",
+    "address",
+    "city",
+    "seed_source_url",
+    "source_record_id",
+)
+EXCLUSION_KEYS = (
+    "excluded_missing_minimum_locator",
+    "excluded_already_in_crm",
+    "excluded_bad_firm",
+    "excluded_state_mismatch",
+    "excluded_duplicate_seed",
+)
 
 
 def _emit(key: str, value: str | int) -> None:
@@ -213,6 +241,10 @@ def _packet_batch_id(run_date: date, packet_number: int) -> str:
     return f"{run_date.isoformat()}_AIASSIST_P{packet_number:03d}"
 
 
+def _packet_status_path(packet_dir: Path) -> Path:
+    return (packet_dir / "packet_status.txt").resolve(strict=False)
+
+
 def _chunk_rows(rows: list[dict[str, Any]], packet_size: int) -> list[list[dict[str, Any]]]:
     size = max(1, int(packet_size))
     return [rows[idx : idx + size] for idx in range(0, len(rows), size)]
@@ -303,6 +335,114 @@ def _derive_seed_source_url(row: dict[str, Any], seed_source: str) -> str:
     return ""
 
 
+def _clean_seed_website(value: Any) -> str:
+    website = generation.contact_normalization.normalize_website(str(value or ""))
+    return website if generation._domain_from_website(website) else ""
+
+
+def _parse_city_state_zip(value: Any, fallback_state: str) -> tuple[str, str]:
+    text = _normalize_text(value)
+    if not text:
+        return "", generation._normalize_us_state(str(fallback_state or ""))
+    match = CITY_STATE_ZIP_RE.search(text)
+    if not match:
+        return text, generation._normalize_us_state(str(fallback_state or ""))
+    city = _normalize_text(match.group(1))
+    state = generation._normalize_us_state(str(match.group(2) or "")) or generation._normalize_us_state(str(fallback_state or ""))
+    return city, state
+
+
+def _normalize_locator_value(field: str, value: Any) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    if field == "phone":
+        digits = re.sub(r"[^0-9]", "", text)
+        return digits or text.lower()
+    if field == "license_number":
+        return re.sub(r"[^A-Z0-9]", "", text.upper())
+    if field == "source_record_id":
+        return text.lower()
+    if field == "seed_source_url":
+        return text.lower()
+    return text.lower()
+
+
+def _primary_locator(seed: dict[str, Any]) -> tuple[str, str]:
+    root_domain = _normalize_text(seed.get("root_domain") or "").lower()
+    if root_domain:
+        return "website", root_domain
+    for field in DEDUP_LOCATOR_PRECEDENCE:
+        locator_value = _normalize_locator_value(field, seed.get(field) or "")
+        if locator_value:
+            return field, locator_value
+    return "", ""
+
+
+def _row_city_and_state(row: dict[str, Any], *, fallback_state: str = "") -> tuple[str, str]:
+    city = _normalize_text(row.get("city") or "")
+    state = generation._normalize_us_state(str(row.get("state") or fallback_state or ""))
+    if city:
+        return city, state
+    parsed_city, parsed_state = _parse_city_state_zip(row.get("business_city_state_zip") or "", state or fallback_state)
+    return parsed_city, generation._normalize_us_state(parsed_state or state or fallback_state)
+
+
+def _normalize_seed_row_generic(*, source_token: str, row: dict[str, Any]) -> dict[str, Any]:
+    city, state = _row_city_and_state(row)
+    seed_source = _normalize_text(row.get("source") or source_token) or source_token
+    return {
+        "firm": _normalize_text(row.get("firm") or row.get("company_name") or row.get("business_name") or ""),
+        "website": _clean_seed_website(row.get("website") or ""),
+        "state": state,
+        "city": city,
+        "phone": _normalize_text(row.get("phone") or row.get("business_telephone") or ""),
+        "address": _normalize_text(row.get("address") or row.get("business_address_line1") or ""),
+        "seed_source": seed_source,
+        "seed_source_url": _derive_seed_source_url(row, seed_source),
+        "source_record_id": _normalize_text(row.get("source_detail") or row.get("prospect_id") or ""),
+        "license_number": _normalize_text(row.get("license_number") or ""),
+        "source_token": source_token,
+    }
+
+
+def _normalize_seed_row_state_lic(*, source_token: str, row: dict[str, Any]) -> dict[str, Any]:
+    city, state = _row_city_and_state(row, fallback_state=str(row.get("state") or ""))
+    seed_source = _normalize_text(row.get("source") or source_token) or source_token
+    return {
+        "firm": _normalize_text(row.get("business_name") or row.get("company_name") or row.get("firm") or ""),
+        "website": _clean_seed_website(row.get("website") or ""),
+        "state": state,
+        "city": city,
+        "phone": _normalize_text(row.get("business_telephone") or row.get("phone") or ""),
+        "address": _normalize_text(row.get("business_address_line1") or row.get("address") or ""),
+        "seed_source": seed_source,
+        "seed_source_url": _derive_seed_source_url(row, seed_source),
+        "source_record_id": _normalize_text(row.get("source_detail") or row.get("prospect_id") or ""),
+        "license_number": _normalize_text(row.get("license_number") or ""),
+        "source_token": source_token,
+    }
+
+
+def _normalize_seed_row(*, source_token: str, row: dict[str, Any]) -> dict[str, Any]:
+    if source_token == "STATE_LIC":
+        seed = _normalize_seed_row_state_lic(source_token=source_token, row=row)
+    else:
+        seed = _normalize_seed_row_generic(source_token=source_token, row=row)
+    firm_key = _normalize_firm_key(str(seed.get("firm") or ""))
+    root_domain = _root_domain(generation._domain_from_website(str(seed.get("website") or "")))
+    locator_type, locator_value = _primary_locator({**seed, "root_domain": root_domain})
+    seed.update(
+        {
+            "firm_key": firm_key,
+            "root_domain": root_domain,
+            "locator_type": locator_type,
+            "locator_value": locator_value,
+        }
+    )
+    return seed
+
+
 def _candidate_row(
     *,
     expected_state: str,
@@ -310,33 +450,21 @@ def _candidate_row(
     row: dict[str, Any],
     crm_domains: set[str],
     crm_firm_keys: set[str],
-) -> dict[str, Any] | None:
-    firm = _normalize_text(row.get("firm") or row.get("company_name") or "")
-    website = generation.contact_normalization.normalize_website(str(row.get("website") or ""))
-    state = generation._normalize_us_state(str(row.get("state") or ""))
+) -> tuple[dict[str, Any] | None, str]:
+    seed = _normalize_seed_row(source_token=source_token, row=row)
     expected_state_normalized = generation._normalize_us_state(str(expected_state or ""))
-    if not firm or not website or not state:
-        return None
-    if expected_state_normalized and state != expected_state_normalized:
-        return None
-    domain = generation._domain_from_website(website)
-    root_domain = _root_domain(domain)
-    firm_key = _normalize_firm_key(firm)
-    if not root_domain or not firm_key:
-        return None
-    if root_domain in crm_domains or firm_key in crm_firm_keys:
-        return None
-    seed_source = _normalize_text(row.get("source") or source_token) or source_token
-    return {
-        "firm": firm,
-        "website": website,
-        "state": state,
-        "seed_source": seed_source,
-        "seed_source_url": _derive_seed_source_url(row, seed_source),
-        "source_token": source_token,
-        "firm_key": firm_key,
-        "root_domain": root_domain,
-    }
+    state = str(seed.get("state") or "")
+    if not str(seed.get("firm_key") or ""):
+        return None, "excluded_bad_firm"
+    if not state or (expected_state_normalized and state != expected_state_normalized):
+        return None, "excluded_state_mismatch"
+    if not str(seed.get("locator_value") or ""):
+        return None, "excluded_missing_minimum_locator"
+    root_domain = str(seed.get("root_domain") or "")
+    firm_key = str(seed.get("firm_key") or "")
+    if (root_domain and root_domain in crm_domains) or firm_key in crm_firm_keys:
+        return None, "excluded_already_in_crm"
+    return seed, ""
 
 
 def _collect_candidates(
@@ -346,15 +474,18 @@ def _collect_candidates(
     source_tokens: list[str],
     crm_domains: set[str],
     crm_firm_keys: set[str],
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     cache_root = data_dir / "prospect_generation" / "cache"
     candidates: list[dict[str, Any]] = []
     source_priority = {token: idx for idx, token in enumerate(source_tokens)}
+    counters = Counter({key: 0 for key in EXCLUSION_KEYS})
+    candidate_count_before_filters = 0
     for source_token in source_tokens:
         for state in states:
             cache_path = generation._source_cache_path_for_state(cache_root, source_token, state)
             for row in _load_cache_rows(cache_path):
-                candidate = _candidate_row(
+                candidate_count_before_filters += 1
+                candidate, exclusion_key = _candidate_row(
                     expected_state=state,
                     source_token=source_token,
                     row=row,
@@ -363,26 +494,57 @@ def _collect_candidates(
                 )
                 if candidate is not None:
                     candidates.append(candidate)
+                elif exclusion_key:
+                    counters[exclusion_key] += 1
     ordered = sorted(
         candidates,
         key=lambda row: (
             source_priority.get(str(row.get("source_token") or ""), 9999),
             str(row.get("firm_key") or ""),
-            str(row.get("root_domain") or ""),
             str(row.get("state") or ""),
+            str(row.get("root_domain") or ""),
+            str(row.get("locator_type") or ""),
+            str(row.get("locator_value") or ""),
             str(row.get("seed_source") or ""),
+            str(row.get("source_record_id") or ""),
             str(row.get("website") or ""),
         ),
     )
     deduped: list[dict[str, Any]] = []
-    seen_pairs: set[tuple[str, str]] = set()
+    seen_pairs: set[tuple[str, str, str, str]] = set()
     for row in ordered:
-        pair = (str(row.get("firm_key") or ""), str(row.get("root_domain") or ""))
+        root_domain = str(row.get("root_domain") or "")
+        if root_domain:
+            pair = (
+                str(row.get("firm_key") or ""),
+                str(row.get("state") or ""),
+                "website",
+                root_domain,
+            )
+        else:
+            pair = (
+                str(row.get("firm_key") or ""),
+                str(row.get("state") or ""),
+                str(row.get("locator_type") or ""),
+                str(row.get("locator_value") or ""),
+            )
         if pair in seen_pairs:
+            counters["excluded_duplicate_seed"] += 1
             continue
         seen_pairs.add(pair)
         deduped.append(row)
-    return deduped
+    source_breakdown = Counter(str(row.get("source_token") or "") for row in deduped if str(row.get("source_token") or ""))
+    return {
+        "candidates": deduped,
+        "candidate_count_before_filters": int(candidate_count_before_filters),
+        "candidate_count_after_filters": len(deduped),
+        "excluded_missing_minimum_locator": int(counters["excluded_missing_minimum_locator"]),
+        "excluded_already_in_crm": int(counters["excluded_already_in_crm"]),
+        "excluded_bad_firm": int(counters["excluded_bad_firm"]),
+        "excluded_state_mismatch": int(counters["excluded_state_mismatch"]),
+        "excluded_duplicate_seed": int(counters["excluded_duplicate_seed"]),
+        "source_breakdown": {key: int(source_breakdown[key]) for key in sorted(source_breakdown.keys())},
+    }
 
 
 def _csv_block(*, fieldnames: tuple[str, ...], rows: list[dict[str, Any]]) -> str:
@@ -396,6 +558,28 @@ def _csv_block(*, fieldnames: tuple[str, ...], rows: list[dict[str, Any]]) -> st
 
 def _seed_rows(selected_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{field: str(row.get(field) or "") for field in SEED_COLUMNS} for row in selected_rows]
+
+
+def _packet_status_text(
+    *,
+    packet_count: int,
+    selected_row_count: int,
+    included_without_website: int,
+    diagnostics: dict[str, Any],
+) -> str:
+    if packet_count > 0:
+        return (
+            f"PACKETS READY: {packet_count}\n"
+            f"SELECTED ROWS: {selected_row_count}\n"
+            f"ROWS WITH BLANK WEBSITE: {included_without_website}\n"
+        )
+    exclusion_lines: list[str] = []
+    for key, value in sorted(
+        ((key, int(diagnostics.get(key) or 0)) for key in EXCLUSION_KEYS),
+        key=lambda item: (-item[1], item[0]),
+    ):
+        exclusion_lines.append(f"{key}={value}")
+    return "NO PACKETS TODAY\n" + "\n".join(exclusion_lines[:5]) + "\n"
 
 
 def _build_prompt_text(
@@ -437,9 +621,13 @@ def _build_prompt_text(
         "# - Business contacts only. No personal emails, no sensitive data.",
         "# - No outreach copy, cadence, score, or send-rule changes.",
         "# - Use the seed candidates below as the canonical research queue.",
-        "# - Visit the firm website before returning any row.",
+        "# - website may be blank for valid seed rows, especially STATE_LIC.",
+        "# - Prefer website review when present, but do not require it.",
+        "# - Use city/phone/address/license/source URL context to identify the business.",
         "# - Return only rows you are confident are real, business-relevant",
         "#   consultant prospects for the listed state.",
+        "# - Return reject if no named principal/contact can be verified.",
+        "# - Do not invent websites or emails.",
         "# - Use business email addresses tied to the firm domain.",
         "# - Return standard CSV only.",
         "# - Use source_urls with | between multiple URLs in one field.",
@@ -577,8 +765,10 @@ def main(argv: list[str] | None = None) -> int:
         crm_domains=crm_domains,
         crm_firm_keys=crm_firm_keys,
     )
-    selected_rows = candidates[:raw_target]
+    candidate_rows = list(candidates.get("candidates") or [])
+    selected_rows = candidate_rows[:raw_target]
     packets = _chunk_rows(selected_rows, packet_size) if selected_rows else []
+    included_without_website = sum(1 for row in selected_rows if not str(row.get("website") or "").strip())
     prompt_text = _build_prompt_text(
         run_date=run_date,
         backlog_target=backlog_target,
@@ -617,7 +807,7 @@ def main(argv: list[str] | None = None) -> int:
     _emit("AI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL", raw_target)
     _emit("AI_ASSIST_DUMP_SOURCES", ",".join(source_tokens) or "none")
     _emit("AI_ASSIST_DUMP_RAW_TARGET", raw_target)
-    _emit("AI_ASSIST_DUMP_CANDIDATES_TOTAL", len(candidates))
+    _emit("AI_ASSIST_DUMP_CANDIDATES_TOTAL", int(candidates.get("candidate_count_after_filters") or 0))
     _emit("AI_ASSIST_DUMP_ROWS_WRITTEN", len(selected_rows))
     _emit("AI_ASSIST_DUMP_SHORTFALL", shortfall)
 
@@ -628,7 +818,10 @@ def main(argv: list[str] | None = None) -> int:
         _emit(f"AI_ASSIST_DUMP_STATE_{state}_GAP", int(row["gap"] or 0))
 
     if shortfall > 0:
-        print(f"WARN_AI_ASSIST_DUMP_SHORTFALL=1 requested={raw_target} available={len(candidates)} shortfall={shortfall}")
+        print(
+            f"WARN_AI_ASSIST_DUMP_SHORTFALL=1 requested={raw_target} "
+            f"available={int(candidates.get('candidate_count_after_filters') or 0)} shortfall={shortfall}"
+        )
     if source_warning_configured:
         print(f"WARN_AI_ASSIST_DUMP_NO_ELIGIBLE_SOURCES=1 configured={source_warning_configured}")
 
@@ -686,6 +879,15 @@ def main(argv: list[str] | None = None) -> int:
                 "suggested_batch_id": suggested_batch_id,
             }
         )
+    _atomic_write_text(
+        _packet_status_path(packet_dir),
+        _packet_status_text(
+            packet_count=len(packets),
+            selected_row_count=len(selected_rows),
+            included_without_website=included_without_website,
+            diagnostics=candidates,
+        ),
+    )
     manifest_payload = {
         "schema_version": AI_ASSIST_PACKET_MANIFEST_SCHEMA,
         "run_date": run_date.isoformat(),
@@ -697,7 +899,16 @@ def main(argv: list[str] | None = None) -> int:
         "packet_count": len(packets),
         "raw_target": raw_target,
         "selected_row_count": len(selected_rows),
-        "candidate_count": len(candidates),
+        "candidate_count": int(candidates.get("candidate_count_after_filters") or 0),
+        "candidate_count_before_filters": int(candidates.get("candidate_count_before_filters") or 0),
+        "candidate_count_after_filters": int(candidates.get("candidate_count_after_filters") or 0),
+        "excluded_missing_minimum_locator": int(candidates.get("excluded_missing_minimum_locator") or 0),
+        "excluded_already_in_crm": int(candidates.get("excluded_already_in_crm") or 0),
+        "excluded_bad_firm": int(candidates.get("excluded_bad_firm") or 0),
+        "excluded_state_mismatch": int(candidates.get("excluded_state_mismatch") or 0),
+        "excluded_duplicate_seed": int(candidates.get("excluded_duplicate_seed") or 0),
+        "included_without_website": included_without_website,
+        "source_breakdown": candidates.get("source_breakdown") or {},
         "gap_total": gap_total,
         "states_scope": states,
         "sources": source_tokens,
