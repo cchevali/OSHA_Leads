@@ -488,6 +488,26 @@ def _parse_states(raw: str) -> list[str]:
     return us_state.parse_state_csv(raw, strict_us=True)
 
 
+def _autogrow_scope_drift_details() -> tuple[str, str] | None:
+    outreach_states = _parse_states(os.getenv("OUTREACH_STATES", ""))
+    autogrow_states = _parse_states(os.getenv("PROSPECT_AUTOGROW_STATES", ""))
+    if not outreach_states or not autogrow_states:
+        return None
+    outreach_csv = ",".join(outreach_states)
+    autogrow_csv = ",".join(autogrow_states)
+    if not outreach_csv or not autogrow_csv or outreach_csv == autogrow_csv:
+        return None
+    return outreach_csv, autogrow_csv
+
+
+def _autogrow_scope_drift_warning_token(*, prefix: str = "WARN_AUTOGROW_SCOPE_DRIFT") -> str:
+    details = _autogrow_scope_drift_details()
+    if not details:
+        return ""
+    outreach_csv, autogrow_csv = details
+    return f"{prefix}=1 outreach_states={outreach_csv} autogrow_states={autogrow_csv}"
+
+
 def _resolve_state_scope(override_raw: str, env_states_default: list[str]) -> list[str] | None:
     text = _normalize_text(override_raw)
     if not text:
@@ -1390,6 +1410,9 @@ def _print_tokens(
     print(f"GENERATOR_OUTPUT_PATH={path.resolve()}")
     print(f"GENERATOR_ROWS_READ={rows_read}")
     print(f"GENERATOR_ROWS_WRITTEN={rows_written}")
+    scope_drift_warning = _autogrow_scope_drift_warning_token()
+    if scope_drift_warning:
+        print(scope_drift_warning)
 
     scope_all = bool(autogrow.get("state_scope_all"))
     raw_scope = None if scope_all else list(autogrow.get("state_scope") or [])
@@ -1815,7 +1838,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"{ERR_GENERATOR_FAILED} stage=autogrow_config err={exc}", file=sys.stderr)
         return 2
+    scope_drift_warning = _autogrow_scope_drift_warning_token()
     if args.doctor:
+        if scope_drift_warning:
+            print(scope_drift_warning)
         return _run_generator_doctor(
             diagnostics_dir=diagnostics_dir,
             autogrow_sources=list(autogrow_cfg.get("sources") or []),

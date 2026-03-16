@@ -547,6 +547,7 @@ Auto-growth (env-gated, optional):
   - Website enrichment: `${DATA_DIR}\prospect_generation\cache\website_email\<domain>.json` (TTL 14 days)
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
 - Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
+- Canonical production posture is to leave `PROSPECT_AUTOGROW_STATES` unset so `OUTREACH_STATES` stays the single scope of truth; print-config/doctor paths emit a drift warning when both are set and differ.
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
 - APOLLO v1 flow: People Search (`has_email=true` gating) + Bulk People Enrichment in batches of 10; no waterfall/webhook mode.
 - APOLLO consumes enrichment credits. Search can be low/no-credit; enrichment is credit-capped by `APOLLO_ENRICH_MAX_PER_RUN`.

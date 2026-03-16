@@ -476,6 +476,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             text = out.getvalue()
+            self.assertIn("WARN_AI_ASSIST_DUMP_SCOPE_DRIFT=1 outreach_states=FL autogrow_states=CA,TX", text)
             self.assertIn("AI_ASSIST_DUMP_STATES_SCOPE=CA,TX", text)
             self.assertIn("AI_ASSIST_DUMP_RAW_TARGET=30", text)
             self.assertIn("AI_ASSIST_DUMP_GAP_TOTAL=89", text)

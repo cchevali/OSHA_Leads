@@ -72,6 +72,7 @@ $ERR_SET_OUTREACH_ENV_WRITE = 'ERR_SET_OUTREACH_ENV_WRITE'
 $ERR_SET_OUTREACH_ENV_VERIFY = 'ERR_SET_OUTREACH_ENV_VERIFY'
 $ERR_SET_OUTREACH_ENV_PRINT_CONFIG = 'ERR_SET_OUTREACH_ENV_PRINT_CONFIG'
 $ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS = 'ERR_SET_OUTREACH_ENV_PRINT_CONFIG_MISSING_KEYS'
+$WARN_SET_OUTREACH_ENV_SCOPE_DRIFT = 'WARN_SET_OUTREACH_ENV_SCOPE_DRIFT'
 
 $PASS_SET_OUTREACH_ENV_APPLY = 'PASS_SET_OUTREACH_ENV_APPLY'
 $PASS_SET_OUTREACH_ENV_VERIFY = 'PASS_SET_OUTREACH_ENV_VERIFY'
@@ -247,6 +248,22 @@ function Set-MapValue($Map, [string]$Key, [string]$Value, $TouchedList) {
   if ($TouchedList -notcontains $Key) {
     [void]$TouchedList.Add($Key)
   }
+}
+
+function Remove-MapKey($Map, [string]$Key, $TouchedList) {
+  if (-not $Map.Contains($Key)) { return }
+  [void]$Map.Remove($Key)
+  if ($TouchedList -notcontains $Key) {
+    [void]$TouchedList.Add($Key)
+  }
+}
+
+function Get-ScopeDriftWarning($Map) {
+  $outreachStates = if (Map-HasValue $Map 'OUTREACH_STATES') { Normalize-OutreachStates ([string]$Map['OUTREACH_STATES']) } else { '' }
+  $prospectAutoGrowStates = if (Map-HasValue $Map 'PROSPECT_AUTOGROW_STATES') { Normalize-OutreachStates ([string]$Map['PROSPECT_AUTOGROW_STATES']) } else { '' }
+  if (-not $outreachStates -or -not $prospectAutoGrowStates) { return '' }
+  if ($outreachStates -ceq $prospectAutoGrowStates) { return '' }
+  return ($WARN_SET_OUTREACH_ENV_SCOPE_DRIFT + ' outreach_states=' + $outreachStates + ' autogrow_states=' + $prospectAutoGrowStates)
 }
 
 function Ensure-ToolsAndFiles([string]$EnvSopsPath) {
@@ -474,6 +491,12 @@ try {
   }
   if ($PSBoundParameters.ContainsKey('ProspectAiAssistReviewPacketSize') -and $ProspectAiAssistReviewPacketSize -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAiAssistReviewPacketSize'
+  }
+  if ($PSBoundParameters.ContainsKey('ProspectAutoGrowStates')) {
+    $rawProspectAutoGrowStates = ([string]$ProspectAutoGrowStates).Trim()
+    if ($rawProspectAutoGrowStates -and -not (Normalize-OutreachStates $ProspectAutoGrowStates)) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowStates'
+    }
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowBacklogTarget') -and $ProspectAutoGrowBacklogTarget -lt 1) {
     Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ProspectAutoGrowBacklogTarget'
@@ -704,6 +727,10 @@ try {
       Write-Output ('prospect_ai_assist_review_raw_target=' + $prospectAiAssistReviewRawTargetValue)
       $prospectAiAssistReviewPacketSizeValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE']).Trim() } else { '10' }
       Write-Output ('prospect_ai_assist_review_packet_size=' + $prospectAiAssistReviewPacketSizeValue)
+      $outreachStatesValue = if (Map-HasValue $printMap 'OUTREACH_STATES') { ([string]$printMap['OUTREACH_STATES']).Trim() } else { 'TX' }
+      $prospectAutoGrowStatesValue = if (Map-HasValue $printMap 'PROSPECT_AUTOGROW_STATES') { ([string]$printMap['PROSPECT_AUTOGROW_STATES']).Trim() } else { '(unset)' }
+      Write-Output ('outreach_states=' + $outreachStatesValue)
+      Write-Output ('prospect_autogrow_states=' + $prospectAutoGrowStatesValue)
       $aiTriageEnabledValue = '0'
       if (Map-HasValue $printMap 'AI_TRIAGE_ENABLED') {
         $rawAiEnabled = ([string]$printMap['AI_TRIAGE_ENABLED']).Trim().ToLowerInvariant()
@@ -764,6 +791,10 @@ try {
       Write-Output ('run_summary_root=' + $runSummaryRootOut)
       $printDataDir = if (Map-HasValue $printMap 'DATA_DIR') { ([string]$printMap['DATA_DIR']).Trim() } else { 'out' }
       Pass-Token $PASS_SET_OUTREACH_ENV_DATA_DIR ('value=' + $printDataDir + ' source=unchanged')
+      $scopeDriftWarning = Get-ScopeDriftWarning $printMap
+      if ($scopeDriftWarning) {
+        Write-Output $scopeDriftWarning
+      }
       Pass-Token $PASS_SET_OUTREACH_ENV_COMPLETE 'mode=print_config'
       exit 0
     }
@@ -884,7 +915,12 @@ try {
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowStates')) {
-      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_STATES' -Value (Normalize-OutreachStates $ProspectAutoGrowStates) -TouchedList $touched
+      $rawProspectAutoGrowStates = ([string]$ProspectAutoGrowStates).Trim()
+      if (-not $rawProspectAutoGrowStates) {
+        Remove-MapKey -Map $map -Key 'PROSPECT_AUTOGROW_STATES' -TouchedList $touched
+      } else {
+        Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_STATES' -Value (Normalize-OutreachStates $ProspectAutoGrowStates) -TouchedList $touched
+      }
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowSources')) {
@@ -1143,6 +1179,13 @@ try {
     }
     $verifyMap = Parse-DotenvMap $verifyPlain
     foreach ($k in $touched) {
+      $expectedHasKey = $map.Contains($k)
+      if (-not $expectedHasKey) {
+        if ($verifyMap.Contains($k)) {
+          Fail-Token $ERR_SET_OUTREACH_ENV_VERIFY ('value_mismatch key=' + $k + ' expected=removed')
+        }
+        continue
+      }
       if (-not $verifyMap.Contains($k)) {
         Fail-Token $ERR_SET_OUTREACH_ENV_VERIFY ('missing_key=' + $k)
       }
@@ -1151,6 +1194,10 @@ try {
       }
     }
     Pass-Token $PASS_SET_OUTREACH_ENV_VERIFY ('verified_keys=' + $touched.Count)
+    $scopeDriftWarning = Get-ScopeDriftWarning $verifyMap
+    if ($scopeDriftWarning) {
+      Write-Output $scopeDriftWarning
+    }
 
     $expectedCore = ''
     if ($map.Contains('STRIPE_PRICE_ID_CORE')) { $expectedCore = [string]$map['STRIPE_PRICE_ID_CORE'] }

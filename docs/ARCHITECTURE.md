@@ -39,7 +39,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - `run_prospect_discovery.py`
    - Replenishment owns generation plus discovery only; it does not generate AI-assist review artifacts.
    - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG,STATE_LIC`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1`, and `PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET=30` when these keys are unset.
-   - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+   - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`, though canonical production keeps it unset so `OUTREACH_STATES` remains the single scope of truth).
    - Planned tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are intentionally rejected by env/runtime validation until their source modules exist.
    - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
    - APOLLO remains opt-in/overflow and is not in default replenishment sources.

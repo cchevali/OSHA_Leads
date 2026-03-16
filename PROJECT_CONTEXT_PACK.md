@@ -2,8 +2,8 @@
 
 PACK_GIT_SHA=147d6f09a5398dbf35141563d75f4ce37ea6956c
 PACK_BUILD_UTC=2026-03-15T15:58:31Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=71b8f90cc19b2147f681c838c2339b8e3d54b377b203bf88c008a065d0968c31 docs/DECISIONS.md=169cc2fa51cb18ba29cad103cbe457428d8de012571c81b2150a4ccd53003b3b docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=60549a2af2a45b89abb887950c62ee7c2b6caa6ecd6b6dd37657324e3ecaf87d docs/TODO.md=542082411548559bf73ec7939766b0358fadc2d387a15613eb3a1b4e7455ce4f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=5f8cf6a2fc543610ee368c59b4f7f4d7416e1feeaeabf6207df310f035f2febe
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=a7568f04061d0c0e3275a1d150badd2dc32130b0acb48c18965a8042c87b7639 docs/DECISIONS.md=169cc2fa51cb18ba29cad103cbe457428d8de012571c81b2150a4ccd53003b3b docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=a0d204041f5f23639dc0f4a3bece260155de44734c1f116fe26b22cf4bdc3e2f docs/TODO.md=542082411548559bf73ec7939766b0358fadc2d387a15613eb3a1b4e7455ce4f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=e071ac316958e1bad7d253d46211e3b5d3135b83dbcb46daf24d3af6318435e5
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -130,7 +130,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - `run_prospect_discovery.py`
    - Replenishment owns generation plus discovery only; it does not generate AI-assist review artifacts.
    - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG,STATE_LIC`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1`, and `PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET=30` when these keys are unset.
-   - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`).
+   - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`, though canonical production keeps it unset so `OUTREACH_STATES` remains the single scope of truth).
    - Planned tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are intentionally rejected by env/runtime validation until their source modules exist.
    - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
    - APOLLO remains opt-in/overflow and is not in default replenishment sources.
@@ -1170,6 +1170,7 @@ Auto-growth (env-gated, optional):
   - Website enrichment: `${DATA_DIR}\prospect_generation\cache\website_email\<domain>.json` (TTL 14 days)
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
 - Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
+- Canonical production posture is to leave `PROSPECT_AUTOGROW_STATES` unset so `OUTREACH_STATES` stays the single scope of truth; print-config/doctor paths emit a drift warning when both are set and differ.
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
 - APOLLO v1 flow: People Search (`has_email=true` gating) + Bulk People Enrichment in batches of 10; no waterfall/webhook mode.
 - APOLLO consumes enrichment credits. Search can be low/no-credit; enrichment is credit-capped by `APOLLO_ENRICH_MAX_PER_RUN`.

@@ -595,6 +595,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if data_dir_resolution.warning_token:
         print(data_dir_resolution.warning_token)
+    scope_drift_warning = generation._autogrow_scope_drift_warning_token(prefix="WARN_AI_ASSIST_DUMP_SCOPE_DRIFT")
+    if scope_drift_warning:
+        print(scope_drift_warning)
     _emit("AI_ASSIST_DUMP_ENABLED", enabled)
     _emit("AI_ASSIST_DUMP_DATA_DIR", str(data_dir_resolution.effective_path))
     _emit("AI_ASSIST_DUMP_DATA_DIR_SOURCE", str(data_dir_resolution.source or "default"))
