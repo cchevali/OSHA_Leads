@@ -11,6 +11,8 @@ _HTTP_URL_RE = re.compile(r"https?://[^\s<>\[\]\"'|)]+", flags=re.I)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]*)\)")
 _MARKDOWN_TARGET_RE = re.compile(r"\]\([^)]*\)")
 _MAILTO_RE = re.compile(r"mailto:[^\s)>]+", flags=re.I)
+_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", flags=re.I)
+_IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 _MARKUP_HINTS = ("mailto:", "[http", "](http", "](mailto:", "%22,%22")
 
 
@@ -69,6 +71,26 @@ def email_domain(value: str) -> str:
     return email.split("@", 1)[1].strip().lower()
 
 
+def _valid_host(host: str) -> bool:
+    text = normalize_text(host).strip().lower().rstrip(".")
+    if not text:
+        return False
+    if any(token in text for token in (" ", "/", "\\", ",", ";", "_", "@")):
+        return False
+    if text == "localhost":
+        return True
+    if _IPV4_RE.fullmatch(text):
+        return all(0 <= int(part) <= 255 for part in text.split("."))
+    labels = [label for label in text.split(".") if label]
+    if len(labels) < 2:
+        return False
+    if any(not _HOST_LABEL_RE.fullmatch(label) for label in labels):
+        return False
+    if labels[-1].isdigit():
+        return False
+    return True
+
+
 def canonicalize_http_url(value: str) -> str:
     raw = normalize_text(value).strip("[]()<>\"'.,; ")
     if not raw:
@@ -78,16 +100,20 @@ def canonicalize_http_url(value: str) -> str:
     except Exception:
         return ""
     scheme = (parsed.scheme or "https").strip().lower()
-    host = (parsed.netloc or parsed.path or "").strip().lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    host = normalize_text(parsed.hostname or (parsed.path if not parsed.netloc else "")).strip().lower().rstrip(".,;:")
     path = parsed.path if parsed.netloc else ""
-    if not host:
+    if not _valid_host(host):
         return ""
-    host = host.rstrip(".,;:")
-    if not host:
-        return ""
+    netloc = host if port is None else f"{host}:{port}"
     if path == "/":
         path = ""
-    return urlunparse((scheme, host, path, "", parsed.query, ""))
+    return urlunparse((scheme, netloc, path, "", parsed.query, ""))
 
 
 def extract_http_urls(value: str) -> list[str]:

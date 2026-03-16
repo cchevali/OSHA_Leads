@@ -36,6 +36,20 @@ class TestProspectSourcesAiha(unittest.TestCase):
         self.assertEqual(rows[0]["email"], "dana@deltarisk.com")
         self.assertEqual(rows[0]["state"], "FL")
 
+    def test_parse_aiha_page_missing_website_does_not_turn_contact_into_url(self):
+        page_html = """
+        <html><body>
+        <div id="text-container">
+        <p>Coastal Safety LLC Commercial 760 Montauk Avenue New London, CT 06320 USA Website: Contact: Robert C. Klein, CIH Contact Email: coastal.safety.llc@sbcglobal.net Specialty: 5 Consulting</p>
+        </div>
+        </body></html>
+        """
+        rows, mode = aiha.parse_aiha_page(page_html, "26-27")
+        self.assertEqual(mode, "TEXT_CONTAINER")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["website"], "")
+        self.assertEqual(rows[0]["state"], "CT")
+
     def test_parse_aiha_page_failed(self):
         rows, mode = aiha.parse_aiha_page(self._read("page_failed.html"), "00-01")
         self.assertEqual(mode, "FAILED")
@@ -144,6 +158,78 @@ class TestProspectSourcesAiha(unittest.TestCase):
             self.assertEqual(result["rows"][0]["email"], "cache@example.com")
             self.assertIn("reject_counts", result)
             self.assertIn("row_diagnostics", result)
+
+    def test_fetch_filters_cross_state_rows_from_fresh_cache(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cache_dir = root / "cache"
+            diagnostics_dir = root / "diagnostics"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            fetched_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            cache_payload = {
+                "source": "aiha_consultants_listing",
+                "state": "FL",
+                "fetched_at_utc": fetched_at,
+                "pages_fetched": 1,
+                "parse_mode": "TEXT_CONTAINER",
+                "rows": [
+                    {"email": "ct@example.com", "state": "CT", "firm": "Boundary CT"},
+                    {"email": "fl@example.com", "state": "FL", "firm": "Florida Safe"},
+                ],
+                "reject_counts": {token: 0 for token in aiha.AIHA_REJECT_TOKENS},
+                "row_diagnostics": [],
+            }
+            cache_path = aiha._cache_path(cache_dir, "FL")
+            cache_path.write_text(json.dumps(cache_payload), encoding="utf-8")
+
+            result = aiha.fetch_aiha_state_rows(
+                state="FL",
+                run_date=date(2026, 3, 15),
+                max_pages=6,
+                sleep_ms=0,
+                cache_dir=cache_dir,
+                diagnostics_dir=diagnostics_dir,
+                allow_cache_write=False,
+            )
+
+            self.assertTrue(result["cache_used"])
+            self.assertEqual(len(result["rows"]), 1)
+            self.assertEqual(result["rows"][0]["state"], "FL")
+            self.assertEqual(result["rows"][0]["email"], "fl@example.com")
+
+    def test_fetch_filters_cross_state_rows_before_caching(self):
+        toc_html = self._read("toc.html")
+        page_html = """
+        <html><body>
+        <div id="text-container">
+        <p>Coastal Safety LLC Commercial 760 Montauk Avenue New London, CT 06320 USA Website: Contact: Robert C. Klein, CIH Contact Email: coastal.safety.llc@sbcglobal.net Specialty: 5 Consulting</p>
+        <p>Delta Risk Advisors Commercial 100 Main St Tampa, FL 33602 USA Website: delta-risk.example Contact: Dana Owner Contact Email: dana@delta-risk.example Specialty: 5 Consulting</p>
+        </div>
+        </body></html>
+        """
+
+        def fake_fetcher(url: str):
+            if "toc" in url:
+                return 200, toc_html
+            return 200, page_html
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            result = aiha.fetch_aiha_state_rows(
+                state="FL",
+                run_date=date(2026, 3, 15),
+                max_pages=1,
+                sleep_ms=0,
+                cache_dir=root / "cache",
+                diagnostics_dir=root / "diagnostics",
+                fetcher=fake_fetcher,
+                allow_cache_write=False,
+            )
+
+        rows = list(result.get("rows") or [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["firm"], "Delta Risk Advisors")
+        self.assertEqual(rows[0]["state"], "FL")
 
     def test_fetch_failed_writes_diagnostics(self):
         with tempfile.TemporaryDirectory() as d:

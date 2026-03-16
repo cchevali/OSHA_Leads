@@ -305,6 +305,7 @@ def _derive_seed_source_url(row: dict[str, Any], seed_source: str) -> str:
 
 def _candidate_row(
     *,
+    expected_state: str,
     source_token: str,
     row: dict[str, Any],
     crm_domains: set[str],
@@ -313,7 +314,10 @@ def _candidate_row(
     firm = _normalize_text(row.get("firm") or row.get("company_name") or "")
     website = generation.contact_normalization.normalize_website(str(row.get("website") or ""))
     state = generation._normalize_us_state(str(row.get("state") or ""))
+    expected_state_normalized = generation._normalize_us_state(str(expected_state or ""))
     if not firm or not website or not state:
+        return None
+    if expected_state_normalized and state != expected_state_normalized:
         return None
     domain = generation._domain_from_website(website)
     root_domain = _root_domain(domain)
@@ -351,6 +355,7 @@ def _collect_candidates(
             cache_path = generation._source_cache_path_for_state(cache_root, source_token, state)
             for row in _load_cache_rows(cache_path):
                 candidate = _candidate_row(
+                    expected_state=state,
                     source_token=source_token,
                     row=row,
                     crm_domains=crm_domains,

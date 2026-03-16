@@ -226,7 +226,7 @@ def _email_domain(email: str) -> str:
 
 
 def _domain_from_website(value: str) -> str:
-    text = contact_normalization.normalize_website(value)
+    text = contact_normalization.canonicalize_http_url(str(value or ""))
     if not text:
         return ""
     try:

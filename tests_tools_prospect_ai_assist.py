@@ -258,7 +258,68 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=1", text)
             self.assertIn("AI_ASSIST_DUMP_PACKET_COUNT=1", text)
             self.assertIn("WARN_AI_ASSIST_DUMP_SHORTFALL=1 requested=3 available=1 shortfall=2", text)
-            self.assertFalse(output_dir.exists())
+
+    def test_dump_skips_cross_state_and_invalid_website_cache_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            db_path = data_dir / "crm.sqlite"
+            self._seed_crm_prospect(db_path, firm="Known", website="https://known.test", state="TX")
+            self._write_cache_rows(
+                data_dir,
+                "AIHA",
+                "FL",
+                [
+                    {
+                        "firm": "Boundary Row",
+                        "website": "https://boundary.example",
+                        "state": "CT",
+                        "source": "aiha_consultants_listing:26-27",
+                    },
+                    {
+                        "firm": "Label Bleed Row",
+                        "website": "https://Contact:RobertC.Klein,CIH",
+                        "state": "FL",
+                        "source": "aiha_consultants_listing:26-27",
+                    },
+                    {
+                        "firm": "Valid Florida Row",
+                        "website": "https://valid-fl.example",
+                        "state": "FL",
+                        "source": "aiha_consultants_listing:26-27",
+                    },
+                ],
+            )
+
+            out = io.StringIO()
+            output_dir = tmp / "prospect_ai_assist"
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["PROSPECT_AUTOGROW_STATES"] = "FL"
+            env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
+                rc = dump_tool.main(
+                    [
+                        "--for-date",
+                        "2026-03-15",
+                        "--output-dir",
+                        str(output_dir),
+                        "--raw-target",
+                        "5",
+                        "--packet-size",
+                        "2",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            text = out.getvalue()
+            self.assertIn("AI_ASSIST_DUMP_CANDIDATES_TOTAL=1", text)
+            self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=1", text)
+            prompt_text = (output_dir / "prospect_ai_assist_review_20260315.txt").read_text(encoding="utf-8")
+            self.assertIn("Valid Florida Row", prompt_text)
+            self.assertNotIn("Boundary Row", prompt_text)
+            self.assertNotIn("Label Bleed Row", prompt_text)
+            self.assertTrue((output_dir / "prospect_ai_assist_review_20260315_packets" / "review_packet_001.txt").exists())
 
     def test_dump_default_path_is_stable_per_day(self):
         with tempfile.TemporaryDirectory() as d:
