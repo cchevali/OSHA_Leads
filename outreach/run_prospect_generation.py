@@ -331,6 +331,30 @@ def _row_has_nonfree_work_email(row: dict[str, object]) -> bool:
     return _email_domain(email) not in pools.FREE_EMAIL_DOMAINS
 
 
+def _format_count_map(values: dict[str, object] | Counter | None) -> str:
+    items: list[tuple[str, int]] = []
+    for key, value in dict(values or {}).items():
+        try:
+            count = int(value or 0)
+        except Exception:
+            count = 0
+        items.append((_ascii_safe_text(str(key or "") or "UNKNOWN"), count))
+    ordered = sorted(items, key=lambda item: (-item[1], item[0]))
+    return "|".join(f"{key}:{count}" for key, count in ordered) if ordered else "none"
+
+
+def _split_state_lic_consultant_rows(rows: list[dict[str, str]]) -> tuple[list[dict[str, str]], Counter]:
+    accepted: list[dict[str, str]] = []
+    rejected: Counter = Counter()
+    for row in list(rows or []):
+        annotated = prospect_sources_state_lic.annotate_state_lic_row(row)
+        if bool(annotated.get("state_lic_consultant_eligible")):
+            accepted.append(annotated)
+        else:
+            rejected["fit_mismatch"] += 1
+    return accepted, rejected
+
+
 def _promote_state_lic_work_email_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     promoted_rows: list[dict[str, str]] = []
     for row in list(rows or []):
@@ -1377,6 +1401,16 @@ def _print_source_result_tokens(source_key: str, result: dict, rejected: Counter
     print(f"{prefix}_PAGE_PARSE_MODE={result.get('parse_mode') or 'FAILED'}")
     print(f"{prefix}_ROWS_CANDIDATE={int(result.get('rows_candidate') or 0)}")
     print(f"{prefix}_ROWS_ACCEPTED={int(result.get('rows_accepted') or 0)}")
+    if token == TDLR_STATE_LIC_SOURCE_KEY:
+        effective_license_types = list(result.get("effective_license_types") or prospect_sources_state_lic.resolve_state_lic_license_types())
+        print(
+            f"{prefix}_EFFECTIVE_LICENSE_TYPES="
+            f"{','.join(_ascii_safe_text(str(item or '')) for item in effective_license_types if str(item or '').strip()) or 'none'}"
+        )
+        print(
+            f"{prefix}_CANDIDATE_LICENSE_TYPE_BREAKDOWN="
+            f"{_format_count_map(result.get('license_type_breakdown') or {})}"
+        )
     if rejected is None:
         return
     for reject_key in AUTOGROW_REJECT_KEYS:
@@ -2084,6 +2118,15 @@ def main(argv: list[str] | None = None) -> int:
                 apollo_enrich_limit=apollo_limit_for_state,
             )
             rows_candidate = list(result.get("rows") or [])
+            source_candidate_count = len(rows_candidate)
+            fit_gate_rejected: Counter = Counter()
+            if source_token == TDLR_STATE_LIC_SOURCE_KEY:
+                result["effective_license_types"] = list(
+                    result.get("effective_license_types") or prospect_sources_state_lic.resolve_state_lic_license_types()
+                )
+                result["license_type_breakdown"] = prospect_sources_state_lic.summarize_state_lic_license_types(rows_candidate)
+                rows_candidate, fit_gate_rejected = _split_state_lic_consultant_rows(rows_candidate)
+                result["rows_fit_eligible"] = len(rows_candidate)
             if rows_candidate:
                 enrich_out = prospect_enrich_email.enrich_autogrow_rows(
                     rows=rows_candidate,
@@ -2118,6 +2161,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_token=source_token,
                 apollo_allow_role_inbox=bool(apollo_cfg.get("allow_role_inbox")),
             )
+            rejected.update(fit_gate_rejected)
             accepted_rows = filtered_rows[:remaining_slots]
             sendable_accepted = sum(
                 1
@@ -2130,7 +2174,7 @@ def main(argv: list[str] | None = None) -> int:
 
             source_prefix = source_prefix_map.get(source_token, "")
             if source_prefix:
-                detail[f"{source_prefix}_candidate"] = len(rows_candidate)
+                detail[f"{source_prefix}_candidate"] = int(source_candidate_count)
                 detail[f"{source_prefix}_accepted"] = len(accepted_rows)
                 detail[f"{source_prefix}_max_fetch_pages"] = int(effective_max_fetch_pages)
                 detail[f"{source_prefix}_pages_fetched"] = int(result.get("pages_fetched") or 0)
@@ -2228,7 +2272,7 @@ def main(argv: list[str] | None = None) -> int:
                     extra_source_rejected["OSHA_NEWS"] = osha_news_rejected
                 elif source_token == "STATE_LIC":
                     state_lic_result.update(result)
-                    state_lic_result["rows_candidate"] = len(rows_candidate)
+                    state_lic_result["rows_candidate"] = int(source_candidate_count)
                     state_lic_result["rows_accepted"] = len(accepted_rows)
                     state_lic_rejected = rejected
                     extra_source_rejected["STATE_LIC"] = state_lic_rejected

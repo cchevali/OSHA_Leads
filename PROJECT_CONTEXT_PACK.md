@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=147d6f09a5398dbf35141563d75f4ce37ea6956c
-PACK_BUILD_UTC=2026-03-15T15:58:31Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=a7568f04061d0c0e3275a1d150badd2dc32130b0acb48c18965a8042c87b7639 docs/DECISIONS.md=169cc2fa51cb18ba29cad103cbe457428d8de012571c81b2150a4ccd53003b3b docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=a0d204041f5f23639dc0f4a3bece260155de44734c1f116fe26b22cf4bdc3e2f docs/TODO.md=542082411548559bf73ec7939766b0358fadc2d387a15613eb3a1b4e7455ce4f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=e071ac316958e1bad7d253d46211e3b5d3135b83dbcb46daf24d3af6318435e5
+PACK_GIT_SHA=8ee17e3db99b733cf707e98b1e046de2b1383d68
+PACK_BUILD_UTC=2026-03-16T03:46:19Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=4fe264ffbcf6f70aecb12e8a32c33dab64bf7e291d8ad44257673a58c205c2d5 docs/DECISIONS.md=169cc2fa51cb18ba29cad103cbe457428d8de012571c81b2150a4ccd53003b3b docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=95adc74fdf610ec8ee15aa8a58a1cc5fc8108c3c030dd953a84d5d03ae6939bb docs/TODO.md=542082411548559bf73ec7939766b0358fadc2d387a15613eb3a1b4e7455ce4f docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=9a6989e318bbab8b6713fee0507f292eb2f4afad9bb7291eece5b5054566b056
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -137,12 +137,16 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - BCSP uses plain HTTP parsing (`search_results.php`) and remains implemented but outside the canonical production source list until state-scoped searches produce net-new accepted rows; doctor/probe output now reports state-search readiness instead of shallow base-page reachability.
    - OSHA_NEWS uses a lazy-loaded Crawl4AI wrapper (`outreach/scraper_engine.py`) with warning-level degradation when Crawl4AI/Playwright browsers are unavailable.
    - STATE_LIC Phase 1 uses the Texas TDLR public Socrata dataset (`7358-krk7`) and provides licensed-business metadata including address/phone/county fields.
-   - Generator-stage enrichment can promote qualifying `STATE_LIC` rows to persisted `STATE_LIC_WORK_EMAIL`, which stays in the `STATE_LIC` source family but is the only STATE_LIC variant that defaults to send-eligible.
+   - STATE_LIC now applies a shared deterministic consultant-fit gate before generator enrichment/promotion and before AI-assist packet inclusion. Broad TX contractor inventory remains cached/observable, but only rows with explicit safety/compliance/environmental/risk/training-style consultant signals are eligible for consultant backlog credit or review packets.
+   - Generator-stage enrichment can promote qualifying consultant-fit `STATE_LIC` rows to persisted `STATE_LIC_WORK_EMAIL`, which stays in the `STATE_LIC` source family but is the only STATE_LIC variant that defaults to send-eligible.
   - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering to populate existing `website`/`email` fields via domain resolution + pattern guesses, and is bounded by `PROSPECT_ENRICH_MAX_SITES_PER_RUN` plus `PROSPECT_ENRICH_HTTP_SLEEP_MS` so large source pulls do not stall the full replenish run.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts `${DATA_DIR}/prospect_discovery/prospects_latest.csv` into `crm.sqlite`.
-3. Nightly AI review artifacts: `scripts/scheduled/run_osha_ingest_evening.ps1` runs OSHA ingest, `tools/dump_signals_for_review.py`, and `tools/dump_prospect_ai_assist_review.py` at the shared 8:45 PM Eastern slot. Signals dumps land under `${DATA_DIR}\audits\signals_ai_review\`. Prospect dumps land under `${DATA_DIR}\audits\prospect_ai_assist\` as a daily summary plus deterministic packet slices (`seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`) so review volume can be split across multiple AI chats without changing import/scheduler ownership.
+3. Nightly AI review artifacts: `scripts/scheduled/run_osha_ingest_evening.ps1` runs OSHA ingest, `tools/dump_signals_for_review.py`, and `tools/dump_prospect_ai_assist_review.py` at the shared 8:45 PM Eastern slot. Signals dumps land under `${DATA_DIR}\audits\signals_ai_review\`. Prospect dumps land under `${DATA_DIR}\audits\prospect_ai_assist\` as a daily summary plus deterministic packet slices (`seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`, `packet_status.txt`) so review volume can be split across multiple AI chats without changing import/scheduler ownership.
+   - Prospect AI-assist seed packets can now include partial-but-actionable rows from canonical default sources when `firm` + `state` are present and at least one strong locator exists (`website`, `phone`, `city`, `address`, `license_number`, `seed_source_url`, or `source_record_id`).
+   - Blank `website` values are expected for some `STATE_LIC` seeds; operators use the provided city/phone/address/license/source context during manual AI review, and reviewed imports still remain the only path that can write accepted rows into CRM.
+   - `manifest.json` and `packet_status.txt` record candidate/exclusion counts, including `excluded_state_lic_fit_mismatch` plus license-type breakdowns, so "no packets" runs are diagnosable without changing discovery/import behavior.
 4. Controlled discovery augmentation: reviewed prospect CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\` and are imported oldest-first by `tools/import_prospect_ai_assist_review.py --pending` before live outreach sends; packet-reviewed filenames use `prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv`, while a single reviewed file remains valid for manual/backfill cases. The importer normalizes known markdown/mailto cell corruption, rejects ambiguous malformed rows, audits provenance in `crm.sqlite`, and then upserts verified accepts through the existing discovery/CRM contract with `source=ai_assist_manual` and `enrichment_lane=ai_assist`.
 5. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
 6. Daily run: `outreach/run_outreach_auto.py`
@@ -1127,7 +1131,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_a
 Operating rules:
 
 - The dump writes one daily summary text artifact under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus a sibling packet folder `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
-- The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, and `manifest.json` so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
+- The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`, and `packet_status.txt` so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
+- `seed_packet_###.csv` now uses `firm,website,state,city,phone,address,seed_source,seed_source_url,source_record_id,license_number` and may include rows with blank `website`.
+- Blank `website` values are expected for consultant-fit `STATE_LIC` rows; use the provided city/phone/address/license/source URL context during manual AI review and reject rows when no named principal/contact can be verified.
+- `STATE_LIC` packets now follow a consultant-only precision posture: contractor-heavy TX license inventory can still be cached and counted, but rows without explicit consultant/safety/compliance/environmental fit signals are excluded before packet slicing.
+- `packet_status.txt` gives the fast operator read: if packets exist it reports packet count plus how many selected rows had blank websites; if no packets exist it reports `NO PACKETS TODAY` plus the top exclusion counts, including `excluded_state_lic_fit_mismatch` when contractor rows were filtered out.
+- `manifest.json` records candidate counts before/after filters, exclusion counters, included-without-website count, source breakdown, and `state_lic_license_type_breakdown` so packet eligibility failures are diagnosable without changing the controlled import lane.
 - Reviewed CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv` for packet review, or `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_reviewed.csv` for single-file/manual review.
 - `tools\import_prospect_ai_assist_review.py --pending` scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first, then packet order; `run_outreach_auto.py` calls the same pending-import path before live sends.
 - Legacy reviewed CSVs under `${DATA_DIR}\audits\ai_assist\` are still accepted temporarily and emit a warning token when consumed.
@@ -1135,6 +1144,7 @@ Operating rules:
 - Import verifies domain/email shape, blocks free personal domains, enforces suppression and `do_not_contact`, dedupes against CRM and within the batch, audits every row, and only upserts verified accepts through the existing discovery/CRM contract.
 - Manual `--input` imports remain the backfill/correction path when you do not want to use the pending inbox.
 - This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
+- No packets means there were no seed rows meeting the relaxed minimum-locator rule after state, CRM, and duplicate filters; reviewed CSV imports remain the only route that can upsert accepted CRM rows.
 
 Canonical nightly schedule:
 
@@ -1159,6 +1169,7 @@ Auto-growth (env-gated, optional):
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
 - Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (canonical persisted default `750` via `scripts\set_outreach_env.ps1`; ad hoc runs fall back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS` when unset).
 - Source scope: implemented tokens are `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`; canonical production list is `AIHA,OHS_BG,STATE_LIC`, while `BCSP` remains disabled there until it yields net-new accepted rows).
+- `STATE_LIC` remains implemented in the canonical list, but only consultant-fit rows are eligible for AI-assist packets, consultant backlog credit, and `STATE_LIC_WORK_EMAIL` promotion.
 - Planned-but-unimplemented registry tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are rejected intentionally by `scripts\set_outreach_env.ps1` and `outreach\run_prospect_generation.py` until source modules land.
 - Cache paths:
   - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
@@ -1217,7 +1228,7 @@ Generator emits machine-readable lines:
 - `GENERATOR_AIHA_*`
 - `GENERATOR_OHS_BG_*`
 - `GENERATOR_APOLLO_*`
-- `GENERATOR_BCSP_*`, `GENERATOR_OSHA_NEWS_*`, `GENERATOR_STATE_LIC_*`
+- `GENERATOR_BCSP_*`, `GENERATOR_OSHA_NEWS_*`, `GENERATOR_STATE_LIC_*` (including effective TX license types, candidate license-type breakdown, and `GENERATOR_STATE_LIC_REJECTED_FIT_MISMATCH`)
 - `crawl4ai_installed`, `playwright_browsers_installed`, `<SOURCE>_available` (via `--print-config`)
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_WEBSITE_ENRICH_*`, `GENERATOR_WEBSITE_ENRICH_NEEDS_REVIEW_PATH`
