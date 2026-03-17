@@ -107,7 +107,7 @@ class TestProspectSourcesStateLic(unittest.TestCase):
         )
         self.assertFalse(fit["state_lic_consultant_eligible"])
         self.assertEqual(fit["state_lic_fit_status"], "fit_mismatch")
-        self.assertIn("-hvac", fit["state_lic_fit_reasons"])
+        self.assertIn("-air_conditioning", fit["state_lic_fit_reasons"])
         self.assertIn("-contractor", fit["state_lic_fit_reasons"])
 
     def test_consultant_fit_accepts_safety_environmental_firm(self):
@@ -122,8 +122,8 @@ class TestProspectSourcesStateLic(unittest.TestCase):
         self.assertTrue(fit["state_lic_consultant_eligible"])
         self.assertEqual(fit["state_lic_fit_status"], "consultant_candidate")
         self.assertGreater(int(fit["state_lic_fit_score"]), 0)
-        self.assertIn("+environmental", fit["state_lic_fit_reasons"])
         self.assertIn("+safety", fit["state_lic_fit_reasons"])
+        self.assertIn("+compliance", fit["state_lic_fit_reasons"])
 
     def test_consultant_fit_is_deterministic_for_mixed_ambiguous_name(self):
         kwargs = {
@@ -141,6 +141,18 @@ class TestProspectSourcesStateLic(unittest.TestCase):
         self.assertEqual(first["state_lic_fit_status"], "fit_mismatch")
         self.assertIn("+safety", first["state_lic_fit_reasons"])
         self.assertIn("-hvac", first["state_lic_fit_reasons"])
+
+    def test_plain_environmental_is_neutral_without_other_positive_cues(self):
+        fit = state_lic.evaluate_state_lic_consultant_fit(
+            firm="Environmental Matters LLC",
+            owner_name="Taylor Neutral",
+            license_type="Electrical Contractor",
+            license_subtype="Class B",
+            city="Austin",
+            source_detail="tdlr:EC-301",
+        )
+        self.assertFalse(fit["state_lic_consultant_eligible"])
+        self.assertNotIn("+environmental", fit["state_lic_fit_reasons"])
 
 
 if __name__ == "__main__":

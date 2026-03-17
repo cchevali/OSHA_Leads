@@ -33,6 +33,7 @@ from outreach import prospect_sources_ohs_bg
 from outreach import prospect_sources_osha_news
 from outreach import prospect_sources_state_lic
 from outreach import scraper_engine
+from outreach import state_lic_precision
 from outreach import source_policy
 from outreach import us_state
 import seed_recipients_pools as pools
@@ -348,7 +349,9 @@ def _split_state_lic_consultant_rows(rows: list[dict[str, str]]) -> tuple[list[d
     rejected: Counter = Counter()
     for row in list(rows or []):
         annotated = prospect_sources_state_lic.annotate_state_lic_row(row)
-        if bool(annotated.get("state_lic_consultant_eligible")):
+        precision = state_lic_precision.classify_state_lic_row(annotated, mode="consultant_fit")
+        annotated.update(precision)
+        if bool(precision.get("state_lic_consultant_fit")):
             accepted.append(annotated)
         else:
             rejected["fit_mismatch"] += 1
@@ -360,7 +363,9 @@ def _promote_state_lic_work_email_rows(rows: list[dict[str, str]]) -> list[dict[
     for row in list(rows or []):
         updated = dict(row)
         source = _normalize_text(updated.get("source") or TDLR_STATE_LIC_SOURCE_KEY)
-        if _source_family(source) == "STATE_LIC" and _row_has_nonfree_work_email(updated):
+        precision = state_lic_precision.classify_state_lic_row(updated, mode="send_eligible")
+        updated.update(precision)
+        if _source_family(source) == "STATE_LIC" and bool(precision.get("state_lic_send_eligible")):
             updated["source"] = TDLR_STATE_LIC_WORK_EMAIL_SOURCE_KEY
             updated["source_fit_tier"] = "adjacent_contractor"
             updated["default_send_eligible"] = "1"
