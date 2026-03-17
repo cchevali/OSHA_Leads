@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep:*)",
+      "Bash(wc -l /c/dev/OSHA_Leads/.claude/worktrees/zen-newton/*.py)",
+      "Bash(ls -1 /c/dev/OSHA_Leads/.claude/worktrees/zen-newton/*.md)",
+      "Bash(find /c/dev/OSHA_Leads/.claude/worktrees/zen-newton -type f \\\\\\(-name *prospect* -o -name *filter* -o -name *score* \\\\\\))",
+      "Bash(grep -E \"\\\\.\\(ts|tsx|js|jsx|py\\)$\")",
+      "Bash(ls -lh /c/dev/OSHA_Leads/.claude/worktrees/zen-newton/outreach/*.py)",
+      "Bash(grep -l \"def.*prospect\\\\|prospect.*source\" /c/dev/OSHA_Leads/.claude/worktrees/zen-newton/outreach/*.py)",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(ls -lh /c/dev/OSHA_Leads/.claude/worktrees/zen-newton/*ai_assist*)"
+    ]
+  }
+}

@@ -1,0 +1,304 @@
+﻿# Wally Trial Runbook
+
+Do NOT click Task Scheduler "Run" - it will email Wally. Use `--doctor` or `--preflight-only` for checks.
+
+## Laptop Readiness (No Scheduling)
+
+The laptop is for testing/dev only. Task Scheduler runs on the PC (local machine) that will do the live send.
+
+Canonical readiness sequence (from repo root):
+
+```powershell
+.\run_with_secrets.ps1 --diagnostics --check-decrypt
+# success marker: decrypt_ok=True
+
+py -3 run_wally_trial.py --doctor
+# success markers: DOCTOR_OK and scheduler_check=SKIPPED
+```
+
+## Night-Before PC Check (Trial Daily)
+
+Run this on the PC that hosts Task Scheduler (PC-only check), and also send a **non-mutating** daily preview to Chase only:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py --test-send-daily --doctor-check-scheduler
+# success markers:
+# - DOCTOR_OK (and scheduler_check=OK)
+# - TEST_SEND ... state_mutation=NO
+# - QUALITY_SUMMARY variant=daily_new_since_last_send ...
+```
+
+## Supported Production Setup
+
+Only one production setup is supported:
+1. Place a real `.env` file in repo root (`C:\dev\OSHA_Leads\.env`) using `.env.template`.
+2. Use `run_wally_trial_daily.bat` from Task Scheduler.
+3. Ensure the batch starts with `cd /d C:\dev\OSHA_Leads` so `.env` is loaded reliably.
+
+## 1) Create `.env` from Template
+
+```powershell
+copy .env.template .env
+```
+
+Required keys in `.env`:
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USER`
+- `SMTP_PASS`
+- `BRAND_NAME`
+- `MAILING_ADDRESS`
+
+Optional keys:
+- `BRAND_LEGAL_NAME` (if used)
+- `FROM_EMAIL` / `FROM_NAME` (if applicable)
+- `UNSUB_ENDPOINT_BASE` (+ `UNSUB_SECRET` when one-click is enabled)
+
+## 2) Seed Territory + Subscriber + Recipients
+
+```powershell
+python setup_wally_trial.py
+```
+
+This creates/updates:
+- `territories.TX_TRIANGLE_V1`
+- `subscribers.wally_trial` with:
+  - `trial_length_days=14`
+  - `active=1`
+  - `send_time_local=08:00`
+  - `timezone=America/Chicago`
+  - `content_filter=high_medium`
+  - `include_low_fallback=1`
+  - `recipients_json=["wgs@indigocompliance.com","brandon@indigoenergyservices.com"]`
+- `customers/wally_trial_tx_triangle_v1.json`
+
+Config hygiene:
+- Real customer configs with recipient emails must remain **untracked** (`customers/*.json` is gitignored).
+- Only sanitized `*.example.json` files are committed, e.g. `customers/wally_trial_tx_triangle_v1.example.json`.
+- Do **not** force-add real configs.
+
+## 3) Preflight-Only Check (Required Before Live)
+
+```powershell
+python run_wally_trial.py wally_trial_tx_triangle_v1.json --preflight-only
+```
+
+Behavior:
+- Exit `0` with `PREFLIGHT_OK` when config is complete.
+- Exit nonzero with one concise error line:
+  - `CONFIG_ERROR missing variables: ...`
+
+## 3b) Doctor (Non-Sending Health Check)
+
+```powershell
+python run_wally_trial.py wally_trial_tx_triangle_v1.json --doctor
+```
+
+Behavior:
+- Prints `DOCTOR_OK` (exit `0`) when config/env checks pass.
+- Prints `DOCTOR_FAIL ...` (exit `1`) when a required check fails.
+- Scheduler verification is PC-only (Task Scheduler state lives on the local machine).
+- By default, `--doctor` skips scheduler verification and prints: `DOCTOR_NOTE scheduler_check=SKIPPED (opt-in)`.
+- Opt-in scheduler verification:
+  - `python run_wally_trial.py wally_trial_tx_triangle_v1.json --doctor --doctor-check-scheduler`
+  - Prints `DOCTOR_NOTE scheduler_check=SKIPPED ...` if the task is missing or `schtasks` is unavailable.
+  - Fails (`DOCTOR_FAIL scheduler_check=BAD ...`) if a task exists but its `/TR` action does not match the expected `run_wally_trial_daily.bat` action string.
+## Reliability Sequence (Before Any Live Send)
+
+Recommended operator sequence before `--send-live` (keeps onboarding email-only and reduces surprises):
+
+```powershell
+# A) Onboarding preflight (parse/validate the YES reply block; no writes)
+python onboard_subscriber.py --preflight --reply-block-file out\\yes_reply.txt
+
+# B) Onboarding dry-run (writes subscriber + customer config; no confirmation emails)
+python onboard_subscriber.py --dry-run --reply-block-file out\\yes_reply.txt
+
+# C) Trial runtime config preflight (no send)
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key wally_trial --customer customers\\wally_trial_tx_triangle_v1.json --print-config
+
+# D) Trial daily dry-run (renders daily path; no live send)
+.\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key wally_trial --customer customers\\wally_trial_tx_triangle_v1.json --test-send-daily --dry-run
+```
+
+Artifacts:
+- `logs/YYYY-MM-DD/onboard_subscriber_<subscriber_key>_{preflight|dry_run|live}.json`
+- `logs/YYYY-MM-DD/deliver_daily_<subscriber_key>_<mode>_{preflight|dry_run}.json`
+
+## 4) Ingest Last 14 Days (TX)
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --states TX --since-days 14 --max-details 500
+```
+
+## 5) Dry-Run + Preview + Counts
+
+```powershell
+python run_wally_trial.py wally_trial_tx_triangle_v1.json --lookback-days 14 --chase-email cchevali@gmail.com
+```
+
+Outputs:
+- `out/wally_trial_daily_counts_<today>.csv`
+- preview dry-run email to Chase (recipient override)
+
+## 6) First Live Send
+
+```powershell
+python run_wally_trial.py wally_trial_tx_triangle_v1.json --send-live --chase-email cchevali@gmail.com
+```
+
+Operator verification (after first live send):
+- Open `out/email_log.csv` and confirm two rows for the same run timestamp (one for `wgs@indigocompliance.com`, one for `brandon@indigoenergyservices.com`) with `status=sent`.
+- Confirm both recipients received separate individually-addressed messages (no CC).
+
+## 7) Enable 9:00 AM Schedule (ET)
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py wally_trial_tx_triangle_v1.json --enable-schedule
+```
+
+Task name: `OSHA Wally Trial Daily`
+
+Use `--enable-schedule` as the canonical setup method. It creates/updates the task using `TASK_SCHED_USER` + `TASK_SCHED_PASSWORD` and verifies both exact `/TR` and non-interactive logon mode (`Password`), failing fast on Task Scheduler drift.
+
+Set scheduler credentials once via secrets helper:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -TaskSchedUser "DESKTOP-Q8QM4N9\lever" -TaskSchedPassword "<TASK_SCHED_PASSWORD>"
+```
+
+Verify an existing task without changing it:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py wally_trial_tx_triangle_v1.json --check-schedule
+```
+
+Note: Windows Task Scheduler runs in host timezone. For an 8:00 AM CT delivery on a PC set to Eastern Time, schedule the task for 9:00 AM ET.
+Note: Task Scheduler runs on the local PC. The machine must be on at the scheduled time (9:00 AM ET for Texas Triangle).
+
+### Task Scheduler Action (Exact)
+
+Use this exact action to avoid trailing-quote regressions:
+
+- Program/script: `C:\Windows\System32\cmd.exe`
+- Add arguments: `/c ""C:\dev\OSHA_Leads\run_wally_trial_daily.bat""`
+- Start in: `C:\dev\OSHA_Leads`
+
+Expected `/TR` string (what `--check-schedule` verifies):
+- `cmd /c ""C:\dev\OSHA_Leads\run_wally_trial_daily.bat""`
+
+Expected logon mode (what `--check-schedule` verifies):
+- `Password` (must not be `Interactive only`)
+
+
+
+## Go-Live Minimum (Trial Scope Freeze)
+
+Minimum safeguards required for the Wally trial:
+- Preflight must pass (DB connectivity, subscriber gating, required send envs).
+- Suppression/unsubscribe enforcement must be active (suppression list accessible).
+- Idempotency guard enabled to prevent same-day duplicate sends (`send_log`).
+- Single operator/admin failure alert on any preflight failure or send exception.
+- Scheduler set to **9:00 AM ET** (8:00 AM CT) and PC is on at run time.
+
+Anything beyond the above is optional/post-trial.
+
+## Preflight (Scheduler Safety)
+
+Run this once before enabling the schedule to ensure DB connectivity and env readiness:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_wally_trial.py wally_trial_tx_triangle_v1.json --preflight-only
+```
+
+Expected output:
+- `PREFLIGHT_OK`
+- No `PREFLIGHT_ERROR` lines
+
+Latest preflight output: [PREFLIGHT_OK] DB connectivity, subscriber gating, and recipients validated
+
+
+## Run Artifacts
+
+Each run writes artifacts to:
+- `out/runs/<run_id>/preflight_result.json`
+- `out/runs/<run_id>/send_result.json`
+- `out/latest.json` (points to most recent run)
+
+Digest hash definition (for idempotent send guard):
+- SHA256 of JSON payload with sorted lead identifiers plus: `mode`, `territory_code`, `content_filter`, `include_low_fallback`.
+
+## Logging and Alerting
+
+- Pipeline run logs: `out/run_log_YYYY-MM-DD.txt`
+- Email attempts: `out/email_log.csv`
+- Suppression actions: `out/suppression_log.csv`
+- Append-only unsubscribe events: `out/unsubscribe_events.csv`
+- Scheduled task log: `out/wally_trial_task.log`
+- Failure alerts/errors: emitted by `run_trial_daily.py` output in `out/wally_trial_task.log` (it invokes `deliver_daily.py` under the trial runtime)
+
+## Split-Ledger Guard Remediation
+
+If a live run emits `ERR_TRIAL_LEDGER_SPLIT`, reconcile ledgers before retrying live send.
+
+Expected error token:
+- `ERR_TRIAL_LEDGER_SPLIT subscriber_key=<key> primary_db=<path> secondary_db=<path> reason=<...>`
+
+Run dry-run reconcile first, then apply:
+
+```powershell
+.\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers --source-crm-db C:\dev\OSHA_Leads\out\crm_light.sqlite --crm-db C:\osha_data\crm_light.sqlite --scope all --dry-run
+.\run_with_secrets.ps1 -- py -3 run_trial_admin.py reconcile-ledgers --source-crm-db C:\dev\OSHA_Leads\out\crm_light.sqlite --crm-db C:\osha_data\crm_light.sqlite --scope all --apply
+```
+
+Batch logging behavior:
+- Task log captures full stdout/stderr for each run.
+- Adds explicit `CONFIG_ERROR detected` line when preflight/config errors are found.
+- Adds explicit success/failure line per run.
+
+### Schedule + Window Invariants (Must Be Present)
+
+Use these log lines to confirm the scheduler and live-send guard are working:
+
+- `SCHEDULE_SANITY argv=...` is printed at process start in `out/wally_trial_task.log`.
+- If you see `SCHEDULE_SANITY WARNING suspicious_trailing_quote=...`, fix the Task Scheduler action so it does **not** end in a stray quote (e.g., `run_wally_trial_daily.bat"`).
+- `WINDOW_CHECK now_local=... send_time_local=... window_start=... window_end=... window_ok=YES/NO` appears in `out/run_log_YYYY-MM-DD.txt` for every send attempt (including dry-runs).
+- `SEND_START mode=LIVE intended_recipient_count=2` confirms the live path. If it says `mode=SAFE`, the gate reason is printed (e.g., `gate=missing --send-live`, `gate=send_enabled=0`, `gate=allow_live_send=false`, `gate=outside send window`).
+
+Quick validation checklist (after a scheduled run):
+1. `out/wally_trial_task.log` contains `SCHEDULE_SANITY` and no trailing-quote warning.
+2. `out/run_log_YYYY-MM-DD.txt` contains `WINDOW_CHECK ... window_ok=YES`.
+3. `out/run_log_YYYY-MM-DD.txt` contains `SEND_START mode=LIVE intended_recipient_count=2`.
+4. `out/email_log.csv` has two rows for `wgs@indigocompliance.com` and `brandon@indigoenergyservices.com`.
+
+### Daily Verify In 10 Seconds
+
+Open the latest logs and confirm these three lines exist:
+1. `SCHEDULE_SANITY`
+2. `WINDOW_CHECK ... window_ok=YES`
+3. `SEND_START mode=LIVE`
+
+### Makeup Send (Missed Daily)
+
+If the scheduled send was missed and the current time is **outside** the configured window:
+1. Temporarily widen the window by setting `send_window_minutes` to `180` in `customers\wally_trial_tx_triangle_v1.json`.
+2. Run `run_wally_trial_daily.bat` once.
+3. Verify logs show:
+   - `WINDOW_CHECK ... window_ok=YES`
+   - `SEND_START mode=LIVE`
+
+Important: `--send-live` is still required in the batch/script, so widening the window alone does **not** enable live sending.
+
+## Troubleshooting (Common Live Failures)
+
+- `Zoho alias/from not authorized`: check SMTP/send error details in `out/email_log.csv`, full command output in `out/run_log_*.txt`, and scheduled runs in `out/wally_trial_task.log`.
+- `Task Scheduler wrong working directory`: verify scheduler command and `cd /d C:\dev\OSHA_Leads` usage in `run_wally_trial_daily.bat`, then inspect `out/wally_trial_task.log` and `out/run_log_*.txt`.
+- `SPF/DKIM/DMARC alignment warnings`: verify sender/domain settings, then correlate delivery outcomes in `out/email_log.csv`; config issues surface as `CONFIG_ERROR ...` in logs/output.
+
+Last verification: 2026-02-05 | python -m unittest -v (OK)
+
+## Optional / Post-Trial
+
+- Territory health diagnostics (admin-only).
+- Extended analytics or dashboards.
+- Additional gating or volume controls beyond the minimum safeguards above.

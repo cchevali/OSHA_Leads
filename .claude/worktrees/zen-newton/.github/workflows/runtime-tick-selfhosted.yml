@@ -1,0 +1,66 @@
+name: Runtime Tick (Self-Hosted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Execution mode: live, doctor, or dry_run."
+        required: false
+        default: "live"
+      job:
+        description: "Job name or all."
+        required: false
+        default: "all"
+      now_local:
+        description: "Optional local timestamp override (YYYY-MM-DDTHH:MM)."
+        required: false
+        default: ""
+      force:
+        description: "Force selected job(s) regardless of schedule windows."
+        required: false
+        default: "false"
+  schedule:
+    - cron: "*/15 * * * *"
+
+concurrency:
+  group: runtime-tick-selfhosted
+  cancel-in-progress: false
+
+jobs:
+  runtime_tick:
+    runs-on: [self-hosted, windows, osha-pc-canonical]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Tick Args
+        id: args
+        shell: cmd
+        run: >
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+          .\scripts\build_runtime_tick_args.ps1
+          -GithubEventName "${{ github.event_name }}"
+          -Mode "${{ inputs.mode }}"
+          -Job "${{ inputs.job }}"
+          -NowLocal "${{ inputs.now_local }}"
+          -Force "${{ inputs.force }}"
+
+      - name: Run Runtime Tick
+        shell: cmd
+        run: >
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+          .\scripts\run_runtime_tick_workflow.ps1
+          -WorkspacePath "%GITHUB_WORKSPACE%"
+          -CommandArgs "${{ steps.args.outputs.cmd_args }}"
+
+      - name: Upload Runtime Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-tick-artifacts-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            C:\osha_data\out\task_logs\**
+            C:\osha_data\out\run_summaries\**
+            C:\osha_data\out\backups\**
+            C:\osha_data\runtime\status\**

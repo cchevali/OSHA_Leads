@@ -1,0 +1,9 @@
+﻿{
+  "customer_id": "sunbelt_ca_pilot",
+  "states": ["TX", "CA", "FL"],
+  "opened_window_days": 30,
+  "new_only_days": 1,
+  "top_k_overall": 25,
+  "top_k_per_state": 10,
+  "email_recipients": ["you@example.com"]
+}

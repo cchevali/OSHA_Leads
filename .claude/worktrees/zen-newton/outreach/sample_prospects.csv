@@ -1,0 +1,8 @@
+prospect_id,first_name,last_name,firm,title,email,state,city,territory_code,source,notes
+txw2_0001,Ana,Lopez,Lopez Industrial Services,Owner,ana.lopez@sampleco.test,TX,Houston,TX_W2,synthetic,Primary contact
+txw2_0002,Chris,Nguyen,Nguyen Safety Consulting,Principal,chris.nguyen@sampleco.test,TX,Dallas,TX_W2,synthetic,
+txw2_0003,Jordan,Patel,Patel Manufacturing,Operations Manager,jordan.patel@sampleco.test,TX,Austin,TX_W2,synthetic,
+txw2_0003_dup,Jordan,Patel,Patel Manufacturing,Operations Manager,Jordan.Patel@sampleco.test,TX,Austin,TX_W2,synthetic,Intentional duplicate email (case)
+caw1_0001,Maya,Chen,Chen Construction,Project Manager,maya.chen@sampleco.test,CA,Los Angeles,CA_W1,synthetic,
+caw1_0002,Riley,Smith,Smith Warehousing,Warehouse Manager,riley.smith@sampleco.test,CA,San Diego,CA_W1,synthetic,
+caw1_0003,Sam,Garcia,Garcia Logistics,Safety Manager,sam.garcia@sampleco.test,CA,Sacramento,CA_W1,synthetic,

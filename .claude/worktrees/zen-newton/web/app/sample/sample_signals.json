@@ -1,0 +1,20 @@
+[
+  {
+    "territory_id": "TX",
+    "territory_name": "Texas",
+    "updated_at_utc": null,
+    "rows": []
+  },
+  {
+    "territory_id": "CA",
+    "territory_name": "California",
+    "updated_at_utc": null,
+    "rows": []
+  },
+  {
+    "territory_id": "FL",
+    "territory_name": "Florida",
+    "updated_at_utc": null,
+    "rows": []
+  }
+]

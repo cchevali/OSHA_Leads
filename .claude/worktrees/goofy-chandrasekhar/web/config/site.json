@@ -1,0 +1,14 @@
+{
+  "siteUrl": "https://microflowops.com",
+  "brandName": "MicroFlowOps",
+  "legalName": "MicroFlowOps",
+  "mailingAddress": "11539 Links Dr, Reston, VA 20190",
+  "ctaEmail": "support@microflowops.com",
+  "ctaSampleSubject": "Requesting a trial feed (OSHA Activity Signals)",
+  "ctaSampleBody": "Hi MicroFlowOps,\n\nI would like to request a trial feed.\n\nOrganization:\nMetros to cover (cities or states are fine too):\nRecipients:\nPreferred delivery time (optional):\n\nThanks",
+  "ctaTerritorySubject": "Coverage details",
+  "ctaTerritoryBody": "Hi MicroFlowOps,\n\nOrganization:\nMetros to cover (cities or states are fine too):\nRecipients:\nPreferred delivery time (optional):\n\nThanks",
+  "stripePaymentLink": "https://buy.stripe.com/28EfZh0aid4Ncup1KD4Ja00",
+  "stripePaymentLinkCore": "https://buy.stripe.com/9B6bJ19KS4yh3XTexp4Ja01",
+  "stripePaymentLinkMulti": "https://buy.stripe.com/5kQ7sL3mu6Gp51XfBt4Ja02"
+}

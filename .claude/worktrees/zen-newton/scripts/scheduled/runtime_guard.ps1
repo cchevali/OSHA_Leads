@@ -1,0 +1,337 @@
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+
+function Resolve-PythonExePath {
+  $forced = ([string]$env:PYTHON_EXE).Trim()
+  if ($forced -and (Test-Path -LiteralPath $forced)) {
+    try {
+      return (Resolve-Path -LiteralPath $forced).Path
+    }
+    catch {
+      return $forced
+    }
+  }
+
+  $candidates = New-Object System.Collections.Generic.List[string]
+  $localAppData = ([string]$env:LOCALAPPDATA).Trim()
+  $programData = ([string]$env:ProgramData).Trim()
+  if ($programData) {
+    [void]$candidates.Add((Join-Path $programData 'OSHA_Leads\python\python.exe'))
+    [void]$candidates.Add((Join-Path $programData 'OSHA_Leads\Python313\python.exe'))
+  }
+  if ($localAppData) {
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python313\python.exe'))
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python312\python.exe'))
+    [void]$candidates.Add((Join-Path $localAppData 'Programs\Python\Python311\python.exe'))
+  }
+  if ([string]$env:ProgramFiles) {
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python313\python.exe'))
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python312\python.exe'))
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python311\python.exe'))
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python310\python.exe'))
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'Python\python.exe'))
+  }
+  if ([string]${env:ProgramFiles(x86)}) {
+    [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python313\python.exe'))
+    [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python312\python.exe'))
+    [void]$candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Python311\python.exe'))
+  }
+
+  foreach ($candidate in @($candidates)) {
+    if (-not $candidate) {
+      continue
+    }
+    if (Test-Path -LiteralPath $candidate) {
+      try {
+        return (Resolve-Path -LiteralPath $candidate).Path
+      }
+      catch {
+        return $candidate
+      }
+    }
+  }
+
+  $pythonCmd = Get-Command -Name python -ErrorAction SilentlyContinue
+  if ($pythonCmd -and $pythonCmd.Source -and (Test-Path -LiteralPath $pythonCmd.Source)) {
+    try {
+      return (Resolve-Path -LiteralPath $pythonCmd.Source).Path
+    }
+    catch {
+      return $pythonCmd.Source
+    }
+  }
+
+  foreach ($root in @('C:\Users\lever', 'C:\Users\Public')) {
+    $candidate = Join-Path $root 'AppData\Local\Programs\Python\Python313\python.exe'
+    if (Test-Path -LiteralPath $candidate) {
+      try {
+        return (Resolve-Path -LiteralPath $candidate).Path
+      }
+      catch {
+        return $candidate
+      }
+    }
+  }
+
+  return $null
+}
+
+function Resolve-PythonCommand {
+  $resolvedExe = Resolve-PythonExePath
+  if ($resolvedExe) {
+    return @{
+      Exe = $resolvedExe
+      ArgsPrefix = @()
+    }
+  }
+
+  if (Get-Command -Name py -ErrorAction SilentlyContinue) {
+    return @{
+      Exe = 'py'
+      ArgsPrefix = @('-3')
+    }
+  }
+
+  $pythonCmd = Get-Command -Name python -ErrorAction SilentlyContinue
+  if ($pythonCmd -and $pythonCmd.Source) {
+    return @{
+      Exe = $pythonCmd.Source
+      ArgsPrefix = @()
+    }
+  }
+
+  throw 'ERR_RUNTIME_GUARD_PYTHON_MISSING'
+}
+
+function Invoke-RuntimePreflight {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepoRoot,
+    [ValidateSet('scheduled', 'manual')][string]$Mode = 'manual',
+    [ValidateSet('send', 'write', 'read')][string]$Intent = 'read',
+    [bool]$DryRun = $false,
+    [string]$TaskLogRoot = '',
+    [string]$RunSummaryRoot = '',
+    [bool]$RequireConfirmLiveSend = $false,
+    [bool]$ConfirmLiveSend = $false,
+    [scriptblock]$EmitLine = $null
+  )
+
+  $runtimeGuardPy = Join-Path $RepoRoot 'runtime_guard.py'
+  if (-not (Test-Path -LiteralPath $runtimeGuardPy)) {
+    throw ('ERR_RUNTIME_GUARD_MISSING path=' + $runtimeGuardPy)
+  }
+
+  $python = Resolve-PythonCommand
+  $cmd = @($python.ArgsPrefix) + @($runtimeGuardPy, 'preflight', '--mode', $Mode, '--intent', $Intent)
+  if ($DryRun) { $cmd += '--dry-run' }
+  if ($TaskLogRoot) { $cmd += @('--task-log-root', $TaskLogRoot) }
+  if ($RunSummaryRoot) { $cmd += @('--run-summary-root', $RunSummaryRoot) }
+  if ($RequireConfirmLiveSend) { $cmd += '--require-confirm-live-send' }
+  if ($ConfirmLiveSend) { $cmd += '--confirm-live-send' }
+
+  $output = & $python.Exe @cmd 2>&1
+  $exitCode = [int]$LASTEXITCODE
+
+  $values = @{}
+  foreach ($line in @($output)) {
+    $text = [string]$line
+    if ($EmitLine) {
+      & $EmitLine $text | Out-Null
+    } else {
+      Write-Output $text
+    }
+    if ($text -match '^([A-Z0-9_]+)=(.*)$') {
+      $values[$matches[1]] = $matches[2]
+    }
+  }
+
+  if ($values.ContainsKey('MFO_RUNTIME_MODE')) {
+    $env:MFO_RUNTIME_MODE = [string]$values['MFO_RUNTIME_MODE']
+  } else {
+    $env:MFO_RUNTIME_MODE = $Mode
+  }
+
+  if ($values.ContainsKey('MFO_TRUSTED_SCHEDULED')) {
+    $env:MFO_TRUSTED_SCHEDULED = [string]$values['MFO_TRUSTED_SCHEDULED']
+  } else {
+    $env:MFO_TRUSTED_SCHEDULED = '0'
+  }
+
+  if ($values.ContainsKey('RUNTIME_DATA_DIR')) {
+    $env:MFO_DATA_DIR_EFFECTIVE = [string]$values['RUNTIME_DATA_DIR']
+  }
+  if ($values.ContainsKey('RUNTIME_DATA_DIR_SOURCE')) {
+    $env:MFO_DATA_DIR_SOURCE = [string]$values['RUNTIME_DATA_DIR_SOURCE']
+  }
+
+  foreach ($k in @('RUNTIME_HOSTNAME','RUNTIME_USERNAME','RUNTIME_ROLE','RUNTIME_CANONICAL_HOSTNAME','RUNTIME_CANONICAL_HOST_MATCH','RUNTIME_TRUSTED_SCHEDULED','RUNTIME_DATA_DIR','RUNTIME_DATA_DIR_SOURCE','RUNTIME_REPO_ROOT','RUNTIME_DB_OSHA','RUNTIME_DB_CRM','RUNTIME_DB_CRM_LIGHT','RUNTIME_TIMEZONE','RUNTIME_GIT_SHA')) {
+    if ($values.ContainsKey($k)) {
+      Set-Item -Path ('Env:' + $k) -Value ([string]$values[$k])
+    }
+  }
+
+  $pythonExe = [string]$python.Exe
+  if ($pythonExe -and [System.IO.Path]::IsPathRooted($pythonExe)) {
+    $env:PYTHON_EXE = $pythonExe
+  }
+
+  return @{
+    Ok = ($exitCode -eq 0)
+    ExitCode = $exitCode
+    Values = $values
+    Lines = @($output | ForEach-Object { [string]$_ })
+  }
+}
+
+function Resolve-EffectiveDataDir {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepoRoot
+  )
+
+  $effective = ([string]$env:MFO_DATA_DIR_EFFECTIVE).Trim()
+  if ($effective) {
+    return $effective
+  }
+
+  $dataDir = ([string]$env:DATA_DIR).Trim()
+  if ($dataDir -and [System.IO.Path]::IsPathRooted($dataDir)) {
+    return $dataDir
+  }
+
+  return (Join-Path $RepoRoot 'out')
+}
+
+function Test-RuntimeTickDailySlotAlreadyCompleted {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepoRoot,
+    [Parameter(Mandatory = $true)][string]$JobName,
+    [Parameter(Mandatory = $true)][datetime]$NowLocal,
+    [scriptblock]$EmitLine = $null
+  )
+
+  $dataDir = Resolve-EffectiveDataDir -RepoRoot $RepoRoot
+  $statePath = Join-Path $dataDir ('runtime\status\jobs\' + $JobName + '.json')
+  $slotKey = $NowLocal.ToString('yyyy-MM-dd')
+  if (-not (Test-Path -LiteralPath $statePath)) {
+    return @{
+      Skip = $false
+      SlotKey = $slotKey
+      StatePath = $statePath
+      Detail = 'state_missing'
+    }
+  }
+
+  try {
+    $raw = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8
+    $state = $raw | ConvertFrom-Json
+  }
+  catch {
+    $detail = 'state_unreadable'
+    if ($EmitLine) {
+      & $EmitLine ('WARN_RUNTIME_TICK_STATE_UNREADABLE job=' + $JobName + ' state_path=' + $statePath + ' detail=' + $detail) | Out-Null
+    }
+    return @{
+      Skip = $false
+      SlotKey = $slotKey
+      StatePath = $statePath
+      Detail = $detail
+    }
+  }
+
+  $lastSlotKey = ([string]$state.last_slot_key).Trim()
+  $lastResult = ([string]$state.last_result).Trim().ToLowerInvariant()
+  $detail = 'state_present'
+  $skip = ($lastSlotKey -eq $slotKey -and $lastResult -eq 'ran')
+  if ($skip -and $EmitLine) {
+    $summaryPath = ([string]$state.last_run_summary_json_path).Trim()
+    & $EmitLine (
+      'WRAPPER_RUNTIME_TICK_SKIP job=' + $JobName + ' slot=' + $slotKey + ' state_path=' + $statePath +
+      ' summary_json=' + $summaryPath
+    ) | Out-Null
+  }
+
+  return @{
+    Skip = $skip
+    SlotKey = $slotKey
+    StatePath = $statePath
+    Detail = $detail
+  }
+}
+
+function Get-RuntimeTickIntervalSlotKey {
+  param(
+    [Parameter(Mandatory = $true)][datetime]$NowLocal,
+    [Parameter(Mandatory = $true)][int]$IntervalMinutes
+  )
+
+  if ($IntervalMinutes -le 0) {
+    throw 'ERR_RUNTIME_TICK_INTERVAL_INVALID'
+  }
+
+  $slotMinute = [math]::Floor([double]$NowLocal.Minute / [double]$IntervalMinutes) * $IntervalMinutes
+  $slotLocal = [datetime]::new($NowLocal.Year, $NowLocal.Month, $NowLocal.Day, $NowLocal.Hour, [int]$slotMinute, 0, $NowLocal.Kind)
+  return $slotLocal.ToString('yyyy-MM-ddTHH:mm')
+}
+
+function Test-RuntimeTickIntervalSlotAlreadyHandled {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepoRoot,
+    [Parameter(Mandatory = $true)][string]$JobName,
+    [Parameter(Mandatory = $true)][datetime]$NowLocal,
+    [int]$IntervalMinutes = 15,
+    [scriptblock]$EmitLine = $null
+  )
+
+  $dataDir = Resolve-EffectiveDataDir -RepoRoot $RepoRoot
+  $statePath = Join-Path $dataDir ('runtime\\status\\jobs\\' + $JobName + '.json')
+  $slotKey = Get-RuntimeTickIntervalSlotKey -NowLocal $NowLocal -IntervalMinutes $IntervalMinutes
+  if (-not (Test-Path -LiteralPath $statePath)) {
+    return @{
+      Skip = $false
+      SlotKey = $slotKey
+      StatePath = $statePath
+      Detail = 'state_missing'
+      LastResult = ''
+    }
+  }
+
+  try {
+    $raw = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8
+    $state = $raw | ConvertFrom-Json
+  }
+  catch {
+    $detail = 'state_unreadable'
+    if ($EmitLine) {
+      & $EmitLine ('WARN_RUNTIME_TICK_STATE_UNREADABLE job=' + $JobName + ' state_path=' + $statePath + ' detail=' + $detail) | Out-Null
+    }
+    return @{
+      Skip = $false
+      SlotKey = $slotKey
+      StatePath = $statePath
+      Detail = $detail
+      LastResult = ''
+    }
+  }
+
+  $lastSlotKey = ([string]$state.last_slot_key).Trim()
+  $lastResult = ([string]$state.last_result).Trim().ToLowerInvariant()
+  $detail = 'state_present'
+  $skipResults = @('ran', 'reconciled', 'skipped')
+  $skip = ($lastSlotKey -eq $slotKey -and $skipResults -contains $lastResult)
+  if ($skip -and $EmitLine) {
+    $summaryPath = ([string]$state.last_run_summary_json_path).Trim()
+    & $EmitLine (
+      'WRAPPER_RUNTIME_TICK_SKIP job=' + $JobName + ' slot=' + $slotKey + ' last_result=' + $lastResult +
+      ' state_path=' + $statePath + ' summary_json=' + $summaryPath
+    ) | Out-Null
+  }
+
+  return @{
+    Skip = $skip
+    SlotKey = $slotKey
+    StatePath = $statePath
+    Detail = $detail
+    LastResult = $lastResult
+  }
+}
