@@ -499,11 +499,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_a
 .\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --pending --dry-run
 .\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --pending
 .\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\prospect_ai_assist_review_20260315_packet_001_reviewed.csv --batch 2026-03-15_AIASSIST_P001
+.\run_with_secrets.ps1 -- py -3 tools\prospect_growth_decision_pack.py --days 14
 ```
 
 Operating rules:
 
 - The dump writes one daily summary text artifact under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus a sibling packet folder `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
+- The read-only prospect growth decision pack writes `${DATA_DIR}\audits\prospect_growth\prospect_growth_decision_pack_YYYYMMDD_HHMMSS.txt` plus a sibling `.json` file for the same run; use it to review source yield, freshness, backlog posture, and the bounded-next-step recommendation without changing outreach behavior.
 - The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`, `packet_status.txt`, and additive `seed_index.json` provenance so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
 - `seed_packet_###.csv` now uses `firm,website,state,city,phone,address,seed_source,seed_source_url,source_record_id,license_number,seed_id`; reviewed CSV output keeps the existing review fields and adds trailing `seed_id`. Legacy reviewed CSVs without `seed_id` still import.
 - Blank `website` values are expected for some `STATE_LIC` review seeds; use the provided city/phone/address/license/source URL context during manual AI review and reject rows when no named principal/contact can be verified.
