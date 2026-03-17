@@ -80,32 +80,39 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _write_manifest(self, data_dir: Path, *, date_token: str, run_started_at: str) -> None:
+    def _write_manifest(
+        self,
+        data_dir: Path,
+        *,
+        date_token: str,
+        run_started_at: str,
+        raw_target: int = 5,
+        selected_row_count: int = 2,
+        include_raw_target: bool = True,
+    ) -> None:
         packet_dir = data_dir / "audits" / "prospect_ai_assist" / f"prospect_ai_assist_review_{date_token}_packets"
         packet_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = packet_dir / "manifest.json"
+        payload = {
+            "schema_version": "ai_assist_packet_manifest_v2",
+            "run_date": f"{date_token[:4]}-{date_token[4:6]}-{date_token[6:8]}",
+            "run_started_at": run_started_at,
+            "selected_row_count": selected_row_count,
+            "packet_count": 1,
+            "candidate_count_before_filters": 4,
+            "candidate_count_after_filters": 2,
+            "included_without_website": 1,
+            "state_lic_cap_limited_count": 0,
+            "top_exclusion_reasons": [{"reason": "excluded_already_in_crm", "count": 2}],
+        }
+        if include_raw_target:
+            payload["raw_target"] = raw_target
         manifest_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": "ai_assist_packet_manifest_v2",
-                    "run_date": f"{date_token[:4]}-{date_token[4:6]}-{date_token[6:8]}",
-                    "run_started_at": run_started_at,
-                    "raw_target": 5,
-                    "selected_row_count": 2,
-                    "packet_count": 1,
-                    "candidate_count_before_filters": 4,
-                    "candidate_count_after_filters": 2,
-                    "included_without_website": 1,
-                    "state_lic_cap_limited_count": 0,
-                    "top_exclusion_reasons": [{"reason": "excluded_already_in_crm", "count": 2}],
-                },
-                indent=2,
-            )
-            + "\n",
+            json.dumps(payload, indent=2) + "\n",
             encoding="utf-8",
         )
         (packet_dir / "packet_status.txt").write_text(
-            "PACKETS READY: 1\nSELECTED ROWS: 2\nROWS WITH BLANK WEBSITE: 1\n",
+            f"PACKETS READY: 1\nSELECTED ROWS: {selected_row_count}\nROWS WITH BLANK WEBSITE: 1\n",
             encoding="utf-8",
         )
 
@@ -198,7 +205,15 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
             "PROSPECT_ENRICH_HTTP_SLEEP_MS": "250",
         }
 
-    def _build_sample_runtime(self, data_dir: Path) -> None:
+    def _build_sample_runtime(
+        self,
+        data_dir: Path,
+        *,
+        manifest_selected_row_count: int = 2,
+        manifest_raw_target: int = 5,
+        include_manifest: bool = True,
+        include_manifest_raw_target: bool = True,
+    ) -> None:
         db_path = data_dir / "crm.sqlite"
         self._seed_prospect(
             db_path,
@@ -257,11 +272,15 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
             cache_max_age_days=7,
             rows=[],
         )
-        self._write_manifest(
-            data_dir,
-            date_token="20260315",
-            run_started_at="2026-03-15T20:00:00-04:00",
-        )
+        if include_manifest:
+            self._write_manifest(
+                data_dir,
+                date_token="20260315",
+                run_started_at="2026-03-15T20:00:00-04:00",
+                raw_target=manifest_raw_target,
+                selected_row_count=manifest_selected_row_count,
+                include_raw_target=include_manifest_raw_target,
+            )
         self._write_review_file(data_dir, date_token="20260315")
 
     def test_print_config_and_dry_run_are_read_only(self):
@@ -278,7 +297,7 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
                 rc = growth_tool.main(["--print-config"])
             self.assertEqual(rc, 0)
             self.assertIn("PROSPECT_GROWTH_STATES=TX,CA", out.getvalue())
-            self.assertIn("PROSPECT_GROWTH_SOURCES=AIHA,OHS_BG,STATE_LIC,BCSP", out.getvalue())
+            self.assertIn("PROSPECT_GROWTH_SOURCES=AIHA,OHS_BG,STATE_LIC", out.getvalue())
 
             dry_run_out = io.StringIO()
             with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
@@ -292,6 +311,12 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
             self.assertIn("AI-ASSIST REVIEW OUTCOMES BY SOURCE/STATE", text)
             self.assertIn("TX / AIHA: reviewed_accepts_14d=1", text)
             self.assertIn("CA / OHS_BG: reviewed_accepts_14d=0 reviewed_rejects_14d=1", text)
+            self.assertIn("STATE LIC SHADOW PACKET PROFILES", text)
+            self.assertIn("STATE_LIC_SHADOW_COUNTS_ARE_DIAGNOSTIC_ONLY=1", text)
+            self.assertIn("EXHAUST_AIHA_OHS_BG_EXISTING_INVENTORY: RECOMMEND", text)
+            self.assertIn("REMOVE_STATE_LIC_AC_CONTRACTOR_FETCHES: RECOMMEND", text)
+            self.assertIn("REPORT_STATE_LIC_SHADOW_PACKET_COUNTS: RECOMMEND", text)
+            self.assertIn("NEW_SOURCE_REQUIRED: TRIGGER - cycle_selected=2 target=5", text)
             self.assertFalse((data_dir / "audits" / "prospect_growth").exists())
 
     def test_tool_writes_text_and_json_artifacts(self):
@@ -320,17 +345,70 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
             report_text = text_path.read_text(encoding="utf-8")
             self.assertIn("DETERMINISTIC RECOMMENDATIONS", report_text)
             self.assertIn("KEEP_CURRENT_ARCHITECTURE: RECOMMEND", report_text)
-            self.assertIn("ENABLE_BOUNDED_ENRICHMENT_NEXT", report_text)
+            self.assertIn("EXHAUST_AIHA_OHS_BG_EXISTING_INVENTORY: RECOMMEND", report_text)
+            self.assertIn("NEW_SOURCE_REQUIRED: TRIGGER - cycle_selected=2 target=5", report_text)
+            self.assertIn("STATE_LIC_SHADOW_COUNTS_ARE_DIAGNOSTIC_ONLY=1", report_text)
 
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["window_days"], 14)
             self.assertEqual(payload["review_attribution_strategy"], "files")
             self.assertIn("recommendations", payload)
+            self.assertEqual(payload["state_lic_shadow_counts_are_diagnostic_only"], 1)
+            self.assertIn("state_lic_shadow_packet_profiles", payload)
+            recommendation_index = {row["key"]: row for row in payload["recommendations"]}
+            self.assertEqual(
+                list(recommendation_index.keys()),
+                [
+                    "KEEP_CURRENT_ARCHITECTURE",
+                    "EXHAUST_AIHA_OHS_BG_EXISTING_INVENTORY",
+                    "REMOVE_STATE_LIC_AC_CONTRACTOR_FETCHES",
+                    "REPORT_STATE_LIC_SHADOW_PACKET_COUNTS",
+                    "NEW_SOURCE_REQUIRED",
+                ],
+            )
+            self.assertEqual(recommendation_index["NEW_SOURCE_REQUIRED"]["status"], "TRIGGER")
             review_index = {
                 (row["state"], row["source"]): row for row in payload["review_outcomes"]
             }
             self.assertEqual(review_index[("TX", "AIHA")]["reviewed_accepts"], 1)
             self.assertEqual(review_index[("CA", "OHS_BG")]["reviewed_rejects"], 1)
+
+    def test_new_source_required_holds_when_cycle_meets_target(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "runtime"
+            self._build_sample_runtime(
+                data_dir,
+                manifest_selected_row_count=5,
+                manifest_raw_target=5,
+            )
+            env = self._test_env(data_dir)
+            fixed_now = datetime.fromisoformat("2026-03-16T22:00:00-04:00")
+
+            dry_run_out = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                growth_tool, "_now_local", return_value=fixed_now
+            ), redirect_stdout(dry_run_out):
+                rc = growth_tool.main(["--days", "14", "--dry-run"])
+            self.assertEqual(rc, 0)
+            self.assertIn("NEW_SOURCE_REQUIRED: HOLD - cycle_selected=5 target=5", dry_run_out.getvalue())
+
+    def test_missing_manifest_emits_explicit_new_source_required_error_token(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "runtime"
+            self._build_sample_runtime(data_dir, include_manifest=False)
+            env = self._test_env(data_dir)
+            fixed_now = datetime.fromisoformat("2026-03-16T22:00:00-04:00")
+
+            dry_run_out = io.StringIO()
+            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
+                growth_tool, "_now_local", return_value=fixed_now
+            ), redirect_stdout(dry_run_out):
+                rc = growth_tool.main(["--days", "14", "--dry-run"])
+            self.assertEqual(rc, 0)
+            self.assertIn(
+                "NEW_SOURCE_REQUIRED: ERR_NEW_SOURCE_REQUIRED_MANIFEST_MISSING=1 - cycle_manifest_missing",
+                dry_run_out.getvalue(),
+            )
 
     def test_wrapper_exists_and_uses_secrets_wrapper(self):
         wrapper = Path(__file__).resolve().parent / "scripts" / "prospect_growth_decision_pack.ps1"

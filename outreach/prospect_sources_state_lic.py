@@ -18,7 +18,6 @@ SOCRATA_URL = "https://data.texas.gov/resource/7358-krk7.json"
 USER_AGENT = "OSHA_Leads/1.0 (+https://microflowops.com)"
 CACHE_MAX_AGE_DAYS = 3
 DEFAULT_TDLR_LICENSE_TYPES = [
-    "A/C Contractor",
     "Electrical Contractor",
     "Elevator Contractor",
     "Appliance Installation Contractor",

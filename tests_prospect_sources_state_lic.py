@@ -1,8 +1,10 @@
 import json
+import os
 import tempfile
 import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from outreach import prospect_sources_state_lic as state_lic
 
@@ -95,6 +97,28 @@ class TestProspectSourcesStateLic(unittest.TestCase):
                 allow_cache_write=False,
             )
         self.assertEqual(result["parse_mode"], "UNSUPPORTED_STATE")
+
+    def test_default_tx_license_types_exclude_ac_contractor_and_env_override_still_wins(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            self.assertEqual(
+                state_lic._parse_license_types_env(),
+                [
+                    "Electrical Contractor",
+                    "Elevator Contractor",
+                    "Appliance Installation Contractor",
+                ],
+            )
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PROSPECT_AUTOGROW_STATE_LIC_TX_LICENSE_TYPES": "A/C Contractor,Electrical Contractor",
+            },
+            clear=False,
+        ):
+            self.assertEqual(
+                state_lic._parse_license_types_env(),
+                ["A/C Contractor", "Electrical Contractor"],
+            )
 
     def test_consultant_fit_rejects_generic_hvac_contractor(self):
         fit = state_lic.evaluate_state_lic_consultant_fit(

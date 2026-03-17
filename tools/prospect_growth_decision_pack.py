@@ -30,6 +30,8 @@ DEFAULT_WINDOW_DAYS = 14
 MANIFEST_WINDOW_DAYS = 7
 RECOMMEND = "RECOMMEND"
 HOLD = "HOLD"
+TRIGGER = "TRIGGER"
+ERR_NEW_SOURCE_REQUIRED_MANIFEST_MISSING = "ERR_NEW_SOURCE_REQUIRED_MANIFEST_MISSING=1"
 
 
 def _emit(key: str, value: str | int) -> None:
@@ -89,25 +91,12 @@ def _json_load(path: Path) -> dict[str, Any] | list[Any] | None:
         return None
 
 
-def _analysis_source_tokens(configured_sources: list[str], states: list[str], data_dir: Path) -> list[str]:
+def _analysis_source_tokens(configured_sources: list[str]) -> list[str]:
     ordered: list[str] = []
     for token in list(configured_sources or []):
         normalized = source_policy.normalize_source_token(token)
         if normalized and normalized not in ordered:
             ordered.append(normalized)
-
-    if source_policy.is_autogrow_source_implemented("BCSP") and "BCSP" not in ordered:
-        ordered.append("BCSP")
-
-    cache_root = data_dir / "prospect_generation" / "cache"
-    for token in source_policy.implemented_autogrow_sources():
-        if token in ordered or token == "OSHA_NEWS":
-            continue
-        for state in list(states or []):
-            path = generation._source_cache_path_for_state(cache_root, token, state)
-            if path.exists():
-                ordered.append(token)
-                break
     return ordered
 
 
@@ -115,7 +104,7 @@ def _config_snapshot(now_local: datetime) -> dict[str, Any]:
     data_dir_resolution = resolve_data_dir(REPO_ROOT)
     states = generation._states_for_selection(dump_tool._resolve_state_scope([]))
     configured_sources, source_warning = dump_tool._resolve_source_tokens()
-    analysis_sources = _analysis_source_tokens(configured_sources, states, data_dir_resolution.effective_path)
+    analysis_sources = _analysis_source_tokens(configured_sources)
     backlog_target = dump_tool._int_env(
         "PROSPECT_AUTOGROW_BACKLOG_TARGET",
         dump_tool.AI_ASSIST_DUMP_DEFAULT_BACKLOG_TARGET,
@@ -426,6 +415,7 @@ def _recent_manifest_history(
                 "run_started_at": run_started_at.isoformat(),
                 "manifest_path": str(manifest_path.resolve(strict=False)),
                 "packet_status_path": str(packet_status_path.resolve(strict=False)),
+                "raw_target_present": "raw_target" in payload,
                 "raw_target": int(payload.get("raw_target") or 0),
                 "selected_row_count": int(payload.get("selected_row_count") or 0),
                 "packet_count": int(payload.get("packet_count") or 0),
@@ -635,14 +625,10 @@ def _freshness_index(rows: list[dict[str, Any]]) -> dict[str, Counter[str]]:
     return out
 
 
-def _manifest_rollup(rows: list[dict[str, Any]]) -> dict[str, int]:
-    out = Counter()
-    for row in list(rows or []):
-        out["raw_target"] += int(row.get("raw_target") or 0)
-        out["selected_row_count"] += int(row.get("selected_row_count") or 0)
-        out["included_without_website"] += int(row.get("included_without_website") or 0)
-        out["state_lic_cap_limited_count"] += int(row.get("state_lic_cap_limited_count") or 0)
-    return dict(out)
+def _manifest_target(config: dict[str, Any], manifest_row: dict[str, Any]) -> int:
+    if bool(manifest_row.get("raw_target_present")):
+        return int(manifest_row.get("raw_target") or 0)
+    return int(config.get("ai_assist_raw_target") or 0)
 
 
 def _recommendations(
@@ -650,101 +636,96 @@ def _recommendations(
     config: dict[str, Any],
     backlog_rows: list[dict[str, Any]],
     funnel_rows: list[dict[str, Any]],
-    review_rows: list[dict[str, Any]],
-    freshness_rows: list[dict[str, Any]],
     manifest_rows: list[dict[str, Any]],
     funnel_diagnostics: dict[str, Any],
+    state_lic_shadow_packet_profiles: dict[str, Any],
 ) -> list[dict[str, Any]]:
     source_totals = _aggregate_source_metrics(funnel_rows)
-    freshness = _freshness_index(freshness_rows)
     gap_total = sum(int(row.get("gap") or 0) for row in list(backlog_rows or []))
-    manifest_rollup = _manifest_rollup(manifest_rows)
     latest_manifest = dict(manifest_rows[0]) if manifest_rows else {}
     state_lic = source_totals.get("STATE_LIC", Counter())
     aiha = source_totals.get("AIHA", Counter())
     ohs_bg = source_totals.get("OHS_BG", Counter())
-    bcsp = source_totals.get("BCSP", Counter())
     primary_consultant_fit = int(aiha.get("consultant_fit_rows", 0)) + int(ohs_bg.get("consultant_fit_rows", 0))
     primary_imported = int(aiha.get("discovery_imported_rows", 0)) + int(ohs_bg.get("discovery_imported_rows", 0))
     primary_sendable = int(aiha.get("send_eligible_rows", 0)) + int(ohs_bg.get("send_eligible_rows", 0))
-    state_lic_reviewed = 0
-    state_lic_accepts = 0
-    for row in list(review_rows or []):
-        if str(row.get("source") or "") != "STATE_LIC":
-            continue
-        state_lic_reviewed += int(row.get("reviewed_accepts", 0) or 0) + int(row.get("reviewed_rejects", 0) or 0)
-        state_lic_accepts += int(row.get("reviewed_accepts", 0) or 0)
-    state_lic_accept_rate = _safe_percent(state_lic_accepts, state_lic_reviewed)
+    production_shadow_total = int(
+        ((state_lic_shadow_packet_profiles.get(dump_tool.STATE_LIC_SHADOW_PROFILE_PRODUCTION) or {}).get("total") or 0)
+    )
+    default_shadow_total = int(
+        (
+            (state_lic_shadow_packet_profiles.get(dump_tool.STATE_LIC_SHADOW_PROFILE_DEFAULT_CLASSES_ONLY) or {}).get("total")
+            or 0
+        )
+    )
+    all_shadow_total = int(
+        (
+            (state_lic_shadow_packet_profiles.get(dump_tool.STATE_LIC_SHADOW_PROFILE_ALL_CONTRACTOR_ONLY) or {}).get("total")
+            or 0
+        )
+    )
+
+    cycle_target = _manifest_target(config, latest_manifest) if latest_manifest else int(config.get("ai_assist_raw_target") or 0)
+    cycle_selected = int(latest_manifest.get("selected_row_count") or 0) if latest_manifest else 0
+    keep_current_evidence = (
+        f"configured_sources={','.join(list(config.get('configured_sources') or [])) or 'none'} "
+        f"cycle_selected={cycle_selected} target={cycle_target}"
+        if latest_manifest
+        else f"configured_sources={','.join(list(config.get('configured_sources') or [])) or 'none'} cycle_manifest=missing"
+    )
 
     keep_current = {
         "key": "KEEP_CURRENT_ARCHITECTURE",
         "status": RECOMMEND,
-        "evidence": (
-            f"backlog_gap_total={gap_total}; configured_sources={','.join(list(config.get('configured_sources') or [])) or 'none'}; "
-            f"latest_manifest_selected={int(latest_manifest.get('selected_row_count') or 0)}/"
-            f"{int(latest_manifest.get('raw_target') or 0)}"
-        ),
+        "evidence": keep_current_evidence,
     }
 
-    demote_state_lic = {
-        "key": "DEMOTE_STATE_LIC_TO_AUGMENT_ONLY",
+    exhaust_primary_inventory = {
+        "key": "EXHAUST_AIHA_OHS_BG_EXISTING_INVENTORY",
         "status": RECOMMEND,
         "evidence": (
-            f"STATE_LIC raw={int(state_lic.get('fetched_cache_rows', 0))} consultant_fit={int(state_lic.get('consultant_fit_rows', 0))} "
-            f"selected={int(state_lic.get('selected_packet_rows', 0))}; "
-            f"hard_negatives={int((funnel_diagnostics.get('aggregated_exclusions') or {}).get('excluded_state_lic_hard_negative_class', 0))}; "
-            f"review_accept_rate_14d={state_lic_accept_rate}%"
+            f"gap_total={gap_total} aiha_consultant_fit={int(aiha.get('consultant_fit_rows', 0))} "
+            f"ohs_bg_consultant_fit={int(ohs_bg.get('consultant_fit_rows', 0))} "
+            f"primary_send_eligible_14d={primary_sendable} primary_imported_14d={primary_imported}"
         ),
     }
 
-    enrichment_enabled = bool(int((config.get("enrichment") or {}).get("domain_enabled", 0))) or bool(
-        int((config.get("enrichment") or {}).get("hunter_enabled", 0))
-    )
-    bcsp_failed_or_stale = (
-        int(bcsp.get("fetched_cache_rows", 0)) == 0
-        and int(freshness.get("BCSP", Counter()).get("stale", 0)) + int(freshness.get("BCSP", Counter()).get("stale_missing", 0)) > 0
-    )
-    enable_bounded_enrichment = {
-        "key": "ENABLE_BOUNDED_ENRICHMENT_NEXT",
-        "status": HOLD if enrichment_enabled else (RECOMMEND if primary_consultant_fit > 0 and gap_total > primary_sendable else HOLD),
+    remove_state_lic_ac_fetches = {
+        "key": "REMOVE_STATE_LIC_AC_CONTRACTOR_FETCHES",
+        "status": RECOMMEND,
         "evidence": (
-            f"primary_consultant_fit={primary_consultant_fit} primary_imported_14d={primary_imported} "
-            f"primary_send_eligible_14d={primary_sendable} enrichment_enabled={1 if enrichment_enabled else 0}"
+            f"state_lic_raw={int(state_lic.get('fetched_cache_rows', 0))} "
+            f"state_lic_hard_negatives={int((funnel_diagnostics.get('aggregated_exclusions') or {}).get('excluded_state_lic_hard_negative_class', 0))}"
         ),
     }
 
-    reprobe_bcsp = {
-        "key": "RE-PROBE_BCSP",
-        "status": RECOMMEND if (enable_bounded_enrichment["status"] != RECOMMEND and bcsp_failed_or_stale) else HOLD,
+    report_state_lic_shadow_packet_counts = {
+        "key": "REPORT_STATE_LIC_SHADOW_PACKET_COUNTS",
+        "status": RECOMMEND,
         "evidence": (
-            f"BCSP consultant_fit={int(bcsp.get('consultant_fit_rows', 0))} imported_14d={int(bcsp.get('discovery_imported_rows', 0))} "
-            f"freshness_stale={int(freshness.get('BCSP', Counter()).get('stale', 0)) + int(freshness.get('BCSP', Counter()).get('stale_missing', 0))}"
+            f"production_total={production_shadow_total} default_classes_only_total={default_shadow_total} "
+            f"all_contractor_only_total={all_shadow_total}"
         ),
     }
 
-    new_source_required_status = HOLD
-    if (
-        enable_bounded_enrichment["status"] != RECOMMEND
-        and reprobe_bcsp["status"] != RECOMMEND
-        and gap_total > 0
-        and primary_consultant_fit <= 0
-        and primary_imported <= 0
-    ):
-        new_source_required_status = RECOMMEND
-    new_source_required = {
-        "key": "NEW_SOURCE_REQUIRED",
-        "status": new_source_required_status,
-        "evidence": (
-            f"gap_total={gap_total} primary_consultant_fit={primary_consultant_fit} primary_imported_14d={primary_imported} "
-            f"manifest_selected_7d={int(manifest_rollup.get('selected_row_count', 0))}"
-        ),
-    }
+    if latest_manifest:
+        new_source_required = {
+            "key": "NEW_SOURCE_REQUIRED",
+            "status": TRIGGER if cycle_selected < cycle_target else HOLD,
+            "evidence": f"cycle_selected={cycle_selected} target={cycle_target}",
+        }
+    else:
+        new_source_required = {
+            "key": "NEW_SOURCE_REQUIRED",
+            "status": ERR_NEW_SOURCE_REQUIRED_MANIFEST_MISSING,
+            "evidence": "cycle_manifest_missing",
+        }
 
     return [
         keep_current,
-        demote_state_lic,
-        enable_bounded_enrichment,
-        reprobe_bcsp,
+        exhaust_primary_inventory,
+        remove_state_lic_ac_fetches,
+        report_state_lic_shadow_packet_counts,
         new_source_required,
     ]
 
@@ -837,6 +818,20 @@ def _render_text_report(report: dict[str, Any]) -> str:
             for state, value in sorted(dict((report.get("state_starvation") or {}).get("state_blank_selected") or {}).items())
         )
     )
+    shadow_profiles = dict(report.get("state_lic_shadow_packet_profiles") or {})
+    lines.extend(["", "STATE LIC SHADOW PACKET PROFILES"])
+    lines.append("STATE_LIC_SHADOW_COUNTS_ARE_DIAGNOSTIC_ONLY=1")
+    lines.append(
+        f"- measured_stage: {shadow_profiles.get('measured_stage') or 'unknown'} (post-filter, pre-review-cap)"
+    )
+    for profile in dump_tool.STATE_LIC_SHADOW_PACKET_PROFILES:
+        profile_counts = dict(shadow_profiles.get(profile) or {})
+        by_state = dict(profile_counts.get("by_state") or {})
+        lines.append(
+            "- "
+            f"{profile}: total={int(profile_counts.get('total') or 0)} "
+            f"by_state={' | '.join(f'{state}={int(value or 0)}' for state, value in sorted(by_state.items())) or 'none'}"
+        )
 
     lines.extend(["", "CRM INVENTORY POSTURE"])
     for row in list(report.get("backlog_posture") or []):
@@ -879,6 +874,8 @@ def _build_report(*, days: int, now_local: datetime) -> dict[str, Any]:
     if db_path.exists():
         conn = crm_store.connect(db_path)
     try:
+        crm_domains, crm_firm_keys = _crm_domains_and_firms(conn)
+        feedback_snapshot = dump_tool._state_lic_feedback_snapshot(conn)
         funnel_rows, funnel_diagnostics, state_starvation = _current_funnel_snapshot(
             data_dir=data_dir,
             conn=conn,
@@ -911,6 +908,14 @@ def _build_report(*, days: int, now_local: datetime) -> dict[str, Any]:
             states=list(config.get("outreach_states") or []),
             source_tokens=list(config.get("analysis_sources") or []),
         )
+        state_lic_shadow_packet_profiles = dump_tool._state_lic_shadow_packet_profiles(
+            data_dir=data_dir,
+            states=list(config.get("outreach_states") or []),
+            source_tokens=list(config.get("analysis_sources") or []),
+            crm_domains=crm_domains,
+            crm_firm_keys=crm_firm_keys,
+            feedback_snapshot=feedback_snapshot,
+        )
     finally:
         if conn is not None:
             conn.close()
@@ -927,10 +932,9 @@ def _build_report(*, days: int, now_local: datetime) -> dict[str, Any]:
         config=config,
         backlog_rows=backlog_rows,
         funnel_rows=merged_funnel_rows,
-        review_rows=review_rows,
-        freshness_rows=freshness_rows,
         manifest_rows=manifest_rows,
         funnel_diagnostics=funnel_diagnostics,
+        state_lic_shadow_packet_profiles=state_lic_shadow_packet_profiles,
     )
     return {
         "generated_at": now_local.isoformat(),
@@ -945,6 +949,8 @@ def _build_report(*, days: int, now_local: datetime) -> dict[str, Any]:
         "backlog_posture": backlog_rows,
         "crm_inventory_counts": inventory_rows,
         "freshness": freshness_rows,
+        "state_lic_shadow_counts_are_diagnostic_only": 1,
+        "state_lic_shadow_packet_profiles": state_lic_shadow_packet_profiles,
         "recommendations": recommendations,
     }
 

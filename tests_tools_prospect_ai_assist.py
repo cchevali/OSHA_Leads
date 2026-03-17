@@ -750,6 +750,68 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertIn("AI_ASSIST_DUMP_SOURCE_STATE_LIC_REVIEW_ELIGIBLE=0", text)
             self.assertIn("AI_ASSIST_DUMP_SOURCE_STATE_LIC_EXCLUDED_STATE_LIC_HARD_NEGATIVE_CLASS=1", text)
 
+    def test_state_lic_shadow_packet_profiles_are_candidate_stage_only_and_surgical(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            self._write_cache_rows(
+                data_dir,
+                "STATE_LIC",
+                "TX",
+                [
+                    {
+                        "business_name": "Metro Safety Compliance Group",
+                        "state": "TX",
+                        "business_city_state_zip": "Houston TX 77002",
+                        "license_type": "Electrical Contractor",
+                        "license_number": "EC-100",
+                        "source_detail": "tdlr:EC-100",
+                        "source": "STATE_LIC",
+                    },
+                    {
+                        "business_name": "Summit Safety Compliance Group",
+                        "state": "TX",
+                        "business_city_state_zip": "Dallas TX 75001",
+                        "license_type": "General Contractor",
+                        "license_number": "GC-200",
+                        "source_detail": "tdlr:GC-200",
+                        "source": "STATE_LIC",
+                    },
+                    {
+                        "business_name": "Metro HVAC Services LLC",
+                        "state": "TX",
+                        "business_city_state_zip": "Austin TX 78701",
+                        "license_type": "A/C Contractor",
+                        "license_number": "AC-300",
+                        "source_detail": "tdlr:AC-300",
+                        "source": "STATE_LIC",
+                    },
+                    {
+                        "business_name": "Plain Electrical Contractor Group",
+                        "state": "TX",
+                        "license_type": "Electrical Contractor",
+                        "source": "STATE_LIC",
+                    },
+                ],
+            )
+
+            profiles = dump_tool._state_lic_shadow_packet_profiles(
+                data_dir=data_dir,
+                states=["TX"],
+                source_tokens=["STATE_LIC"],
+                crm_domains=set(),
+                crm_firm_keys=set(),
+                feedback_snapshot=dump_tool._state_lic_feedback_snapshot(None),
+            )
+
+            self.assertEqual(profiles["measured_stage"], "candidates")
+            self.assertEqual(profiles["production"]["total"], 0)
+            self.assertEqual(profiles["production"]["by_state"], {"TX": 0})
+            self.assertEqual(profiles["default_classes_only"]["total"], 1)
+            self.assertEqual(profiles["default_classes_only"]["by_state"], {"TX": 1})
+            self.assertEqual(profiles["all_contractor_only"]["total"], 2)
+            self.assertEqual(profiles["all_contractor_only"]["by_state"], {"TX": 2})
+
     def test_dump_excludes_state_lic_rows_missing_identity_or_review_anchors(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
