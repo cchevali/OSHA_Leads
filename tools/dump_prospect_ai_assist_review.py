@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 import ai_assist_paths
 from outreach import crm_store
 from outreach import prospect_sources_aiha
+from outreach import prospect_sources_state_lic
 from outreach import run_prospect_generation as generation
 from outreach import source_policy
 from outreach.prospect_enrich_email import CORP_SUFFIXES
@@ -88,12 +89,112 @@ EXCLUSION_KEYS = (
     "excluded_already_in_crm",
     "excluded_bad_firm",
     "excluded_state_mismatch",
+    "excluded_state_lic_fit_mismatch",
     "excluded_duplicate_seed",
+)
+DIAGNOSTIC_STAGE_KEYS = (
+    "raw",
+    "identity_ready",
+    "review_eligible",
+    "safety_passed",
+    "candidates",
+    "selected",
+)
+STATE_LIC_REVIEW_ANCHOR_FIELDS = (
+    "website",
+    "phone",
+    "address",
+    "city",
+    "license_number",
+    "seed_source_url",
+    "source_record_id",
 )
 
 
 def _emit(key: str, value: str | int) -> None:
     print(f"{key}={value}")
+
+
+def _stage_counter_template() -> Counter[str]:
+    return Counter({key: 0 for key in DIAGNOSTIC_STAGE_KEYS})
+
+
+def _exclusion_counter_template() -> Counter[str]:
+    return Counter({key: 0 for key in EXCLUSION_KEYS})
+
+
+def _ordered_stage_counts_by_source(
+    counts_by_source: dict[str, Counter[str]],
+    source_tokens: list[str],
+) -> dict[str, dict[str, int]]:
+    ordered: dict[str, dict[str, int]] = {}
+    for source_token in list(source_tokens or []):
+        source_counts = counts_by_source.get(source_token) or _stage_counter_template()
+        ordered[source_token] = {
+            key: int(source_counts.get(key, 0))
+            for key in DIAGNOSTIC_STAGE_KEYS
+        }
+    return ordered
+
+
+def _ordered_exclusion_counts_by_source(
+    counts_by_source: dict[str, Counter[str]],
+    source_tokens: list[str],
+) -> dict[str, int]:
+    ordered: dict[str, int] = {}
+    for source_token in list(source_tokens or []):
+        ordered[source_token] = int(sum((counts_by_source.get(source_token) or _exclusion_counter_template()).values()))
+    return ordered
+
+
+def _ordered_exclusion_counts_by_source_and_reason(
+    counts_by_source: dict[str, Counter[str]],
+    source_tokens: list[str],
+) -> dict[str, dict[str, int]]:
+    ordered: dict[str, dict[str, int]] = {}
+    for source_token in list(source_tokens or []):
+        source_counts = counts_by_source.get(source_token) or _exclusion_counter_template()
+        ordered[source_token] = {
+            key: int(source_counts.get(key, 0))
+            for key in EXCLUSION_KEYS
+            if int(source_counts.get(key, 0)) > 0
+        }
+    return ordered
+
+
+def _ordered_nonzero_counter(counter: Counter[str]) -> dict[str, int]:
+    ordered: dict[str, int] = {}
+    for key, value in sorted(
+        ((str(key or ""), int(value or 0)) for key, value in counter.items()),
+        key=lambda item: item[0],
+    ):
+        if value > 0:
+            ordered[key] = value
+    return ordered
+
+
+def _top_exclusion_reasons(counter: Counter[str], *, limit: int = 5) -> list[dict[str, int | str]]:
+    ordered = sorted(
+        ((key, int(counter.get(key, 0))) for key in EXCLUSION_KEYS if int(counter.get(key, 0)) > 0),
+        key=lambda item: (-item[1], item[0]),
+    )
+    return [{"reason": key, "count": count} for key, count in ordered[: max(1, int(limit))]]
+
+
+def _source_selection_breakdown(rows: list[dict[str, Any]], source_tokens: list[str]) -> dict[str, int]:
+    counter = Counter(
+        str(row.get("source_token") or "")
+        for row in list(rows or [])
+        if str(row.get("source_token") or "")
+    )
+    ordered: dict[str, int] = {}
+    for source_token in list(source_tokens or []):
+        ordered[source_token] = int(counter.get(source_token, 0))
+    return ordered
+
+
+def _reason_token_stdout_suffix(reason: str) -> str:
+    return re.sub(r"[^A-Z0-9_]", "_", str(reason or "").upper())
 
 
 def _local_today_date() -> date:
@@ -407,6 +508,7 @@ def _normalize_seed_row_generic(*, source_token: str, row: dict[str, Any]) -> di
 
 
 def _normalize_seed_row_state_lic(*, source_token: str, row: dict[str, Any]) -> dict[str, Any]:
+    annotated = prospect_sources_state_lic.annotate_state_lic_row(row)
     city, state = _row_city_and_state(row, fallback_state=str(row.get("state") or ""))
     seed_source = _normalize_text(row.get("source") or source_token) or source_token
     return {
@@ -421,6 +523,10 @@ def _normalize_seed_row_state_lic(*, source_token: str, row: dict[str, Any]) -> 
         "source_record_id": _normalize_text(row.get("source_detail") or row.get("prospect_id") or ""),
         "license_number": _normalize_text(row.get("license_number") or ""),
         "source_token": source_token,
+        "state_lic_fit_status": _normalize_text(annotated.get("state_lic_fit_status") or ""),
+        "state_lic_fit_score": int(annotated.get("state_lic_fit_score") or 0),
+        "state_lic_fit_reasons": _normalize_text(annotated.get("state_lic_fit_reasons") or ""),
+        "state_lic_consultant_eligible": bool(annotated.get("state_lic_consultant_eligible")),
     }
 
 
@@ -438,33 +544,62 @@ def _normalize_seed_row(*, source_token: str, row: dict[str, Any]) -> dict[str, 
             "root_domain": root_domain,
             "locator_type": locator_type,
             "locator_value": locator_value,
+            "fit_sort_bucket": (0 if bool(seed.get("state_lic_consultant_eligible")) else 1) if source_token == "STATE_LIC" else 0,
+            "fit_sort_score": int(seed.get("state_lic_fit_score") or 0) if source_token == "STATE_LIC" else 0,
         }
     )
     return seed
 
 
-def _candidate_row(
-    *,
-    expected_state: str,
-    source_token: str,
-    row: dict[str, Any],
-    crm_domains: set[str],
-    crm_firm_keys: set[str],
-) -> tuple[dict[str, Any] | None, str]:
-    seed = _normalize_seed_row(source_token=source_token, row=row)
+def _identity_exclusion_key(*, seed: dict[str, Any], expected_state: str) -> str:
     expected_state_normalized = generation._normalize_us_state(str(expected_state or ""))
     state = str(seed.get("state") or "")
     if not str(seed.get("firm_key") or ""):
-        return None, "excluded_bad_firm"
+        return "excluded_bad_firm"
     if not state or (expected_state_normalized and state != expected_state_normalized):
-        return None, "excluded_state_mismatch"
+        return "excluded_state_mismatch"
+    return ""
+
+
+def _review_eligibility_exclusion_key(*, seed: dict[str, Any], source_token: str) -> str:
+    if source_token == "STATE_LIC":
+        for field in STATE_LIC_REVIEW_ANCHOR_FIELDS:
+            if _normalize_text(seed.get(field) or ""):
+                return ""
+        return "excluded_missing_minimum_locator"
     if not str(seed.get("locator_value") or ""):
-        return None, "excluded_missing_minimum_locator"
+        return "excluded_missing_minimum_locator"
+    return ""
+
+
+def _crm_safety_exclusion_key(
+    *,
+    seed: dict[str, Any],
+    crm_domains: set[str],
+    crm_firm_keys: set[str],
+) -> str:
     root_domain = str(seed.get("root_domain") or "")
     firm_key = str(seed.get("firm_key") or "")
     if (root_domain and root_domain in crm_domains) or firm_key in crm_firm_keys:
-        return None, "excluded_already_in_crm"
-    return seed, ""
+        return "excluded_already_in_crm"
+    return ""
+
+
+def _dedupe_pair(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    root_domain = str(row.get("root_domain") or "")
+    if root_domain:
+        return (
+            str(row.get("firm_key") or ""),
+            str(row.get("state") or ""),
+            "website",
+            root_domain,
+        )
+    return (
+        str(row.get("firm_key") or ""),
+        str(row.get("state") or ""),
+        str(row.get("locator_type") or ""),
+        str(row.get("locator_value") or ""),
+    )
 
 
 def _collect_candidates(
@@ -476,30 +611,66 @@ def _collect_candidates(
     crm_firm_keys: set[str],
 ) -> dict[str, Any]:
     cache_root = data_dir / "prospect_generation" / "cache"
-    candidates: list[dict[str, Any]] = []
+    review_candidates: list[dict[str, Any]] = []
     source_priority = {token: idx for idx, token in enumerate(source_tokens)}
-    counters = Counter({key: 0 for key in EXCLUSION_KEYS})
+    counters = _exclusion_counter_template()
+    stage_counts_by_source: dict[str, Counter[str]] = {
+        source_token: _stage_counter_template()
+        for source_token in list(source_tokens or [])
+    }
+    exclusion_counts_by_source: dict[str, Counter[str]] = {
+        source_token: _exclusion_counter_template()
+        for source_token in list(source_tokens or [])
+    }
     candidate_count_before_filters = 0
+    observed_state_lic_fit_mismatch = 0
+    state_lic_rows_scanned: list[dict[str, Any]] = []
     for source_token in source_tokens:
+        source_stage_counts = stage_counts_by_source.setdefault(source_token, _stage_counter_template())
+        source_exclusion_counts = exclusion_counts_by_source.setdefault(source_token, _exclusion_counter_template())
         for state in states:
             cache_path = generation._source_cache_path_for_state(cache_root, source_token, state)
             for row in _load_cache_rows(cache_path):
+                source_stage_counts["raw"] += 1
                 candidate_count_before_filters += 1
-                candidate, exclusion_key = _candidate_row(
-                    expected_state=state,
-                    source_token=source_token,
-                    row=row,
+                seed = _normalize_seed_row(source_token=source_token, row=row)
+                if source_token == "STATE_LIC":
+                    state_lic_rows_scanned.append(row)
+                    if not bool(seed.get("state_lic_consultant_eligible")):
+                        observed_state_lic_fit_mismatch += 1
+
+                identity_exclusion_key = _identity_exclusion_key(seed=seed, expected_state=state)
+                if identity_exclusion_key:
+                    counters[identity_exclusion_key] += 1
+                    source_exclusion_counts[identity_exclusion_key] += 1
+                    continue
+                source_stage_counts["identity_ready"] += 1
+
+                review_exclusion_key = _review_eligibility_exclusion_key(seed=seed, source_token=source_token)
+                if review_exclusion_key:
+                    counters[review_exclusion_key] += 1
+                    source_exclusion_counts[review_exclusion_key] += 1
+                    continue
+                source_stage_counts["review_eligible"] += 1
+
+                safety_exclusion_key = _crm_safety_exclusion_key(
+                    seed=seed,
                     crm_domains=crm_domains,
                     crm_firm_keys=crm_firm_keys,
                 )
-                if candidate is not None:
-                    candidates.append(candidate)
-                elif exclusion_key:
-                    counters[exclusion_key] += 1
+                if safety_exclusion_key:
+                    counters[safety_exclusion_key] += 1
+                    source_exclusion_counts[safety_exclusion_key] += 1
+                    continue
+                source_stage_counts["safety_passed"] += 1
+                review_candidates.append(seed)
+
     ordered = sorted(
-        candidates,
+        review_candidates,
         key=lambda row: (
             source_priority.get(str(row.get("source_token") or ""), 9999),
+            int(row.get("fit_sort_bucket") or 0),
+            -int(row.get("fit_sort_score") or 0),
             str(row.get("firm_key") or ""),
             str(row.get("state") or ""),
             str(row.get("root_domain") or ""),
@@ -513,37 +684,65 @@ def _collect_candidates(
     deduped: list[dict[str, Any]] = []
     seen_pairs: set[tuple[str, str, str, str]] = set()
     for row in ordered:
-        root_domain = str(row.get("root_domain") or "")
-        if root_domain:
-            pair = (
-                str(row.get("firm_key") or ""),
-                str(row.get("state") or ""),
-                "website",
-                root_domain,
-            )
-        else:
-            pair = (
-                str(row.get("firm_key") or ""),
-                str(row.get("state") or ""),
-                str(row.get("locator_type") or ""),
-                str(row.get("locator_value") or ""),
-            )
+        pair = _dedupe_pair(row)
+        source_token = str(row.get("source_token") or "")
         if pair in seen_pairs:
             counters["excluded_duplicate_seed"] += 1
+            exclusion_counts_by_source.setdefault(source_token, _exclusion_counter_template())["excluded_duplicate_seed"] += 1
             continue
         seen_pairs.add(pair)
         deduped.append(row)
-    source_breakdown = Counter(str(row.get("source_token") or "") for row in deduped if str(row.get("source_token") or ""))
+        stage_counts_by_source.setdefault(source_token, _stage_counter_template())["candidates"] += 1
+
+    source_breakdown = Counter(
+        str(row.get("source_token") or "")
+        for row in deduped
+        if str(row.get("source_token") or "")
+    )
+    identity_ready_count = sum(
+        int((stage_counts_by_source.get(source_token) or _stage_counter_template()).get("identity_ready", 0))
+        for source_token in list(source_tokens or [])
+    )
+    review_eligible_count = sum(
+        int((stage_counts_by_source.get(source_token) or _stage_counter_template()).get("review_eligible", 0))
+        for source_token in list(source_tokens or [])
+    )
+    safety_passed_count = sum(
+        int((stage_counts_by_source.get(source_token) or _stage_counter_template()).get("safety_passed", 0))
+        for source_token in list(source_tokens or [])
+    )
     return {
         "candidates": deduped,
         "candidate_count_before_filters": int(candidate_count_before_filters),
         "candidate_count_after_filters": len(deduped),
+        "identity_ready_count": int(identity_ready_count),
+        "review_eligible_count": int(review_eligible_count),
+        "safety_passed_count": int(safety_passed_count),
         "excluded_missing_minimum_locator": int(counters["excluded_missing_minimum_locator"]),
         "excluded_already_in_crm": int(counters["excluded_already_in_crm"]),
         "excluded_bad_firm": int(counters["excluded_bad_firm"]),
         "excluded_state_mismatch": int(counters["excluded_state_mismatch"]),
+        "excluded_state_lic_fit_mismatch": int(counters["excluded_state_lic_fit_mismatch"]),
         "excluded_duplicate_seed": int(counters["excluded_duplicate_seed"]),
         "source_breakdown": {key: int(source_breakdown[key]) for key in sorted(source_breakdown.keys())},
+        "source_raw_breakdown": {
+            source_token: int((stage_counts_by_source.get(source_token) or _stage_counter_template()).get("raw", 0))
+            for source_token in list(source_tokens or [])
+        },
+        "source_review_eligible_breakdown": {
+            source_token: int((stage_counts_by_source.get(source_token) or _stage_counter_template()).get("review_eligible", 0))
+            for source_token in list(source_tokens or [])
+        },
+        "stage_counts_by_source": _ordered_stage_counts_by_source(stage_counts_by_source, source_tokens),
+        "exclusion_counts_by_reason": _ordered_nonzero_counter(counters),
+        "exclusion_counts_by_source": _ordered_exclusion_counts_by_source(exclusion_counts_by_source, source_tokens),
+        "exclusion_counts_by_source_and_reason": _ordered_exclusion_counts_by_source_and_reason(
+            exclusion_counts_by_source,
+            source_tokens,
+        ),
+        "top_exclusion_reasons": _top_exclusion_reasons(counters),
+        "observed_state_lic_fit_mismatch": int(observed_state_lic_fit_mismatch),
+        "state_lic_license_type_breakdown": prospect_sources_state_lic.summarize_state_lic_license_types(state_lic_rows_scanned),
     }
 
 
@@ -767,8 +966,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     candidate_rows = list(candidates.get("candidates") or [])
     selected_rows = candidate_rows[:raw_target]
+    stage_counts_by_source = {
+        str(source_token): {
+            key: int(value)
+            for key, value in dict((candidates.get("stage_counts_by_source") or {}).get(source_token) or {}).items()
+        }
+        for source_token in list(source_tokens or [])
+    }
+    for source_token in list(source_tokens or []):
+        stage_counts_by_source.setdefault(str(source_token), {})
+        for key in DIAGNOSTIC_STAGE_KEYS:
+            stage_counts_by_source[str(source_token)].setdefault(key, 0)
+    for row in selected_rows:
+        source_token = str(row.get("source_token") or "")
+        if source_token:
+            stage_counts_by_source.setdefault(source_token, {key: 0 for key in DIAGNOSTIC_STAGE_KEYS})
+            stage_counts_by_source[source_token]["selected"] += 1
+
     packets = _chunk_rows(selected_rows, packet_size) if selected_rows else []
     included_without_website = sum(1 for row in selected_rows if not str(row.get("website") or "").strip())
+    selected_source_breakdown = _source_selection_breakdown(selected_rows, source_tokens)
     prompt_text = _build_prompt_text(
         run_date=run_date,
         backlog_target=backlog_target,
@@ -807,9 +1024,14 @@ def main(argv: list[str] | None = None) -> int:
     _emit("AI_ASSIST_DUMP_CANDIDATES_REQUESTED_TOTAL", raw_target)
     _emit("AI_ASSIST_DUMP_SOURCES", ",".join(source_tokens) or "none")
     _emit("AI_ASSIST_DUMP_RAW_TARGET", raw_target)
+    _emit("AI_ASSIST_DUMP_RAW_INVENTORY_TOTAL", int(candidates.get("candidate_count_before_filters") or 0))
+    _emit("AI_ASSIST_DUMP_IDENTITY_READY_TOTAL", int(candidates.get("identity_ready_count") or 0))
+    _emit("AI_ASSIST_DUMP_REVIEW_ELIGIBLE_TOTAL", int(candidates.get("review_eligible_count") or 0))
+    _emit("AI_ASSIST_DUMP_SAFETY_PASSED_TOTAL", int(candidates.get("safety_passed_count") or 0))
     _emit("AI_ASSIST_DUMP_CANDIDATES_TOTAL", int(candidates.get("candidate_count_after_filters") or 0))
     _emit("AI_ASSIST_DUMP_ROWS_WRITTEN", len(selected_rows))
     _emit("AI_ASSIST_DUMP_SHORTFALL", shortfall)
+    _emit("AI_ASSIST_DUMP_OBSERVED_STATE_LIC_FIT_MISMATCH", int(candidates.get("observed_state_lic_fit_mismatch") or 0))
 
     for row in gap_rows:
         state = str(row["state"] or "")
@@ -817,10 +1039,46 @@ def main(argv: list[str] | None = None) -> int:
         _emit(f"AI_ASSIST_DUMP_STATE_{state}_CRM_TOTAL", int(row["crm_total"] or 0))
         _emit(f"AI_ASSIST_DUMP_STATE_{state}_GAP", int(row["gap"] or 0))
 
+    for source_token in list(source_tokens or []):
+        source_stage_counts = dict(stage_counts_by_source.get(str(source_token)) or {})
+        _emit(f"AI_ASSIST_DUMP_SOURCE_{source_token}_RAW", int(source_stage_counts.get("raw", 0)))
+        _emit(f"AI_ASSIST_DUMP_SOURCE_{source_token}_IDENTITY_READY", int(source_stage_counts.get("identity_ready", 0)))
+        _emit(f"AI_ASSIST_DUMP_SOURCE_{source_token}_REVIEW_ELIGIBLE", int(source_stage_counts.get("review_eligible", 0)))
+        _emit(f"AI_ASSIST_DUMP_SOURCE_{source_token}_SAFETY_PASSED", int(source_stage_counts.get("safety_passed", 0)))
+        _emit(f"AI_ASSIST_DUMP_SOURCE_{source_token}_CANDIDATES", int(source_stage_counts.get("candidates", 0)))
+        _emit(f"AI_ASSIST_DUMP_SOURCE_{source_token}_SELECTED", int(source_stage_counts.get("selected", 0)))
+        for reason in EXCLUSION_KEYS:
+            source_reason_counts = dict((candidates.get("exclusion_counts_by_source_and_reason") or {}).get(source_token) or {})
+            _emit(
+                f"AI_ASSIST_DUMP_SOURCE_{source_token}_{_reason_token_stdout_suffix(reason)}",
+                int(source_reason_counts.get(reason, 0)),
+            )
+
+    raw_inventory_total = int(candidates.get("candidate_count_before_filters") or 0)
+    identity_ready_total = int(candidates.get("identity_ready_count") or 0)
+    review_eligible_total = int(candidates.get("review_eligible_count") or 0)
+    candidate_total = int(candidates.get("candidate_count_after_filters") or 0)
     if shortfall > 0:
         print(
             f"WARN_AI_ASSIST_DUMP_SHORTFALL=1 requested={raw_target} "
             f"available={int(candidates.get('candidate_count_after_filters') or 0)} shortfall={shortfall}"
+        )
+    if source_tokens and raw_inventory_total == 0:
+        print(f"WARN_AI_ASSIST_DUMP_NO_RAW_INVENTORY=1 sources={','.join(source_tokens)}")
+    elif raw_inventory_total > 0 and identity_ready_total == 0:
+        print(
+            f"WARN_AI_ASSIST_DUMP_NORMALIZATION_STARVATION=1 raw={raw_inventory_total} "
+            f"identity_ready={identity_ready_total}"
+        )
+    elif identity_ready_total > 0 and review_eligible_total == 0:
+        print(
+            f"WARN_AI_ASSIST_DUMP_REVIEW_FIT_STARVATION=1 identity_ready={identity_ready_total} "
+            f"review_eligible={review_eligible_total}"
+        )
+    elif review_eligible_total > 0 and candidate_total == 0:
+        print(
+            f"WARN_AI_ASSIST_DUMP_SAFETY_FILTER_STARVATION=1 review_eligible={review_eligible_total} "
+            f"safety_passed={int(candidates.get('safety_passed_count') or 0)} candidates={candidate_total}"
         )
     if source_warning_configured:
         print(f"WARN_AI_ASSIST_DUMP_NO_ELIGIBLE_SOURCES=1 configured={source_warning_configured}")
@@ -902,17 +1160,32 @@ def main(argv: list[str] | None = None) -> int:
         "candidate_count": int(candidates.get("candidate_count_after_filters") or 0),
         "candidate_count_before_filters": int(candidates.get("candidate_count_before_filters") or 0),
         "candidate_count_after_filters": int(candidates.get("candidate_count_after_filters") or 0),
+        "identity_ready_count": int(candidates.get("identity_ready_count") or 0),
+        "review_eligible_count": int(candidates.get("review_eligible_count") or 0),
+        "safety_passed_count": int(candidates.get("safety_passed_count") or 0),
         "excluded_missing_minimum_locator": int(candidates.get("excluded_missing_minimum_locator") or 0),
         "excluded_already_in_crm": int(candidates.get("excluded_already_in_crm") or 0),
         "excluded_bad_firm": int(candidates.get("excluded_bad_firm") or 0),
         "excluded_state_mismatch": int(candidates.get("excluded_state_mismatch") or 0),
+        "excluded_state_lic_fit_mismatch": int(candidates.get("excluded_state_lic_fit_mismatch") or 0),
         "excluded_duplicate_seed": int(candidates.get("excluded_duplicate_seed") or 0),
+        "observed_state_lic_fit_mismatch": int(candidates.get("observed_state_lic_fit_mismatch") or 0),
         "included_without_website": included_without_website,
         "source_breakdown": candidates.get("source_breakdown") or {},
+        "source_raw_breakdown": candidates.get("source_raw_breakdown") or {},
+        "source_review_eligible_breakdown": candidates.get("source_review_eligible_breakdown") or {},
+        "selected_source_breakdown": selected_source_breakdown,
+        "stage_counts_by_source": stage_counts_by_source,
+        "exclusion_counts_by_reason": candidates.get("exclusion_counts_by_reason") or {},
+        "exclusion_counts_by_source": candidates.get("exclusion_counts_by_source") or {},
+        "exclusion_counts_by_source_and_reason": candidates.get("exclusion_counts_by_source_and_reason") or {},
+        "top_exclusion_reasons": candidates.get("top_exclusion_reasons") or [],
+        "state_lic_license_type_breakdown": candidates.get("state_lic_license_type_breakdown") or {},
         "gap_total": gap_total,
         "states_scope": states,
         "sources": source_tokens,
         "reviewed_drop_dir": str(reviewed_drop_dir),
+        "packet_row_counts": [len(packet_rows) for packet_rows in packets],
         "packets": manifest_packets,
     }
     _atomic_write_text(manifest_path, json.dumps(manifest_payload, indent=2) + "\n")

@@ -506,9 +506,10 @@ Operating rules:
 - The dump writes one daily summary text artifact under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus a sibling packet folder `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
 - The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`, and `packet_status.txt` so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
 - `seed_packet_###.csv` now uses `firm,website,state,city,phone,address,seed_source,seed_source_url,source_record_id,license_number` and may include rows with blank `website`.
-- Blank `website` values are expected for `STATE_LIC` rows; use the provided city/phone/address/license/source URL context during manual AI review and reject rows when no named principal/contact can be verified.
+- Blank `website` values are expected for some `STATE_LIC` review seeds; use the provided city/phone/address/license/source URL context during manual AI review and reject rows when no named principal/contact can be verified.
+- Review-packet eligibility is intentionally broader than live send/import eligibility for canonical default sources: `STATE_LIC` rows can enter the packet when `firm` + `state` are present and at least one strong anchor exists (`website`, `phone`, `address`, `city`, `license_number`, `seed_source_url`, or `source_record_id`), even when consultant-fit/send heuristics are not met.
 - `packet_status.txt` gives the fast operator read: if packets exist it reports packet count plus how many selected rows had blank websites; if no packets exist it reports `NO PACKETS TODAY` plus the top exclusion counts.
-- `manifest.json` records candidate counts before/after filters, exclusion counters, included-without-website count, and source breakdown so packet eligibility failures are diagnosable without changing the controlled import lane.
+- `manifest.json` records candidate counts before/after filters, source-by-source stage counts, exclusion counters by reason and source, included-without-website count, selected/source breakdowns, observed non-consultant `STATE_LIC` counts, top exclusion reasons, and `state_lic_license_type_breakdown` so packet starvation is diagnosable without changing the controlled import lane.
 - Reviewed CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv` for packet review, or `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_reviewed.csv` for single-file/manual review.
 - `tools\import_prospect_ai_assist_review.py --pending` scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first, then packet order; `run_outreach_auto.py` calls the same pending-import path before live sends.
 - Legacy reviewed CSVs under `${DATA_DIR}\audits\ai_assist\` are still accepted temporarily and emit a warning token when consumed.
@@ -541,6 +542,7 @@ Auto-growth (env-gated, optional):
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
 - Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (canonical persisted default `750` via `scripts\set_outreach_env.ps1`; ad hoc runs fall back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS` when unset).
 - Source scope: implemented tokens are `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`; canonical production list is `AIHA,OHS_BG,STATE_LIC`, while `BCSP` remains disabled there until it yields net-new accepted rows).
+- `STATE_LIC` remains implemented in the canonical list. AI-assist packet eligibility allows strong-identity review seeds even when no website exists, while consultant-fit logic still governs consultant backlog credit and `STATE_LIC_WORK_EMAIL` promotion.
 - Planned-but-unimplemented registry tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are rejected intentionally by `scripts\set_outreach_env.ps1` and `outreach\run_prospect_generation.py` until source modules land.
 - Cache paths:
   - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
@@ -599,7 +601,7 @@ Generator emits machine-readable lines:
 - `GENERATOR_AIHA_*`
 - `GENERATOR_OHS_BG_*`
 - `GENERATOR_APOLLO_*`
-- `GENERATOR_BCSP_*`, `GENERATOR_OSHA_NEWS_*`, `GENERATOR_STATE_LIC_*`
+- `GENERATOR_BCSP_*`, `GENERATOR_OSHA_NEWS_*`, `GENERATOR_STATE_LIC_*` (including effective TX license types, candidate license-type breakdown, and `GENERATOR_STATE_LIC_REJECTED_FIT_MISMATCH`)
 - `crawl4ai_installed`, `playwright_browsers_installed`, `<SOURCE>_available` (via `--print-config`)
 - `GENERATOR_DIAGNOSTICS_PATH` (when generated)
 - `GENERATOR_WEBSITE_ENRICH_*`, `GENERATOR_WEBSITE_ENRICH_NEEDS_REVIEW_PATH`

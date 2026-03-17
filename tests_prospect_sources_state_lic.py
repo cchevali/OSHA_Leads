@@ -53,6 +53,8 @@ class TestProspectSourcesStateLic(unittest.TestCase):
         self.assertEqual(result["rows"][0]["title"], "Electrical Contractor")
         self.assertEqual(result["rows"][0]["city"], "Houston")
         self.assertEqual(result["rows"][0]["state"], "TX")
+        self.assertIn("state_lic_fit_status", result["rows"][0])
+        self.assertIn("state_lic_consultant_eligible", result["rows"][0])
 
     def test_fetch_uses_cache(self):
         with tempfile.TemporaryDirectory() as d:
@@ -78,6 +80,8 @@ class TestProspectSourcesStateLic(unittest.TestCase):
             )
         self.assertTrue(result["cache_used"])
         self.assertEqual(result["rows"][0]["firm"], "Cached Co")
+        self.assertIn("effective_license_types", result)
+        self.assertIn("license_type_breakdown", result)
 
     def test_non_tx_returns_unsupported(self):
         with tempfile.TemporaryDirectory() as d:
@@ -91,6 +95,52 @@ class TestProspectSourcesStateLic(unittest.TestCase):
                 allow_cache_write=False,
             )
         self.assertEqual(result["parse_mode"], "UNSUPPORTED_STATE")
+
+    def test_consultant_fit_rejects_generic_hvac_contractor(self):
+        fit = state_lic.evaluate_state_lic_consultant_fit(
+            firm="Bravo Air Conditioning Services LLC",
+            owner_name="Jamie Bravo",
+            license_type="A/C Contractor",
+            license_subtype="Class A",
+            city="Houston",
+            source_detail="tdlr:AC-100",
+        )
+        self.assertFalse(fit["state_lic_consultant_eligible"])
+        self.assertEqual(fit["state_lic_fit_status"], "fit_mismatch")
+        self.assertIn("-hvac", fit["state_lic_fit_reasons"])
+        self.assertIn("-contractor", fit["state_lic_fit_reasons"])
+
+    def test_consultant_fit_accepts_safety_environmental_firm(self):
+        fit = state_lic.evaluate_state_lic_consultant_fit(
+            firm="Texas Environmental Safety Compliance Group",
+            owner_name="Pat Rivera",
+            license_type="Electrical Contractor",
+            license_subtype="Class B",
+            city="Dallas",
+            source_detail="tdlr:EC-200",
+        )
+        self.assertTrue(fit["state_lic_consultant_eligible"])
+        self.assertEqual(fit["state_lic_fit_status"], "consultant_candidate")
+        self.assertGreater(int(fit["state_lic_fit_score"]), 0)
+        self.assertIn("+environmental", fit["state_lic_fit_reasons"])
+        self.assertIn("+safety", fit["state_lic_fit_reasons"])
+
+    def test_consultant_fit_is_deterministic_for_mixed_ambiguous_name(self):
+        kwargs = {
+            "firm": "Delta Safety HVAC Consulting LLC",
+            "owner_name": "Taylor Delta",
+            "license_type": "A/C Contractor",
+            "license_subtype": "Class A",
+            "city": "Austin",
+            "source_detail": "tdlr:AC-300",
+        }
+        first = state_lic.evaluate_state_lic_consultant_fit(**kwargs)
+        second = state_lic.evaluate_state_lic_consultant_fit(**kwargs)
+        self.assertEqual(first, second)
+        self.assertFalse(first["state_lic_consultant_eligible"])
+        self.assertEqual(first["state_lic_fit_status"], "fit_mismatch")
+        self.assertIn("+safety", first["state_lic_fit_reasons"])
+        self.assertIn("-hvac", first["state_lic_fit_reasons"])
 
 
 if __name__ == "__main__":

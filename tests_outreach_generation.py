@@ -1638,13 +1638,13 @@ class TestProspectGeneration(unittest.TestCase):
             state_lic_result = {
                 "rows": [
                     {
-                        "firm": "BASSETT ELECTRIC LLC",
+                        "firm": "BASSETT SAFETY CONSULTING LLC",
                         "contact_name": "JOHN BASSETT",
                         "email": "",
                         "contact_email": "",
                         "state": "TX",
                         "city": "Houston",
-                        "title": "Electrical Contractor",
+                        "title": "Safety Consultant",
                         "source": "STATE_LIC",
                         "website": "",
                     }
@@ -1655,6 +1655,8 @@ class TestProspectGeneration(unittest.TestCase):
                 "pages_fetched": 1,
                 "parse_mode": "SOCRATA",
                 "diagnostics_path": None,
+                "effective_license_types": ["A/C Contractor", "Electrical Contractor"],
+                "license_type_breakdown": {"Safety Consultant": 1},
             }
             env = {
                 "DATA_DIR": str(data_dir),
@@ -1681,10 +1683,12 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_ENRICH_EMAIL_GUESSED=1", out)
             self.assertIn("GENERATOR_DEFAULT_SEND_ELIGIBLE_TOTAL=14", out)
             self.assertIn("GENERATOR_STATE_LIC_ROWS_ACCEPTED=1", out)
+            self.assertIn("GENERATOR_STATE_LIC_EFFECTIVE_LICENSE_TYPES=A/C Contractor,Electrical Contractor", out)
+            self.assertIn("GENERATOR_STATE_LIC_CANDIDATE_LICENSE_TYPE_BREAKDOWN=Safety Consultant:1", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=STATE_LIC state=TX", out)
             self.assertIn("backlog_credit=1", out)
 
-    def test_state_lic_enrichment_default_off_no_behavior_change(self):
+    def test_state_lic_fit_mismatch_blocks_enrichment_and_promotion(self):
         from outreach import run_prospect_generation as generator
 
         with tempfile.TemporaryDirectory() as d:
@@ -1712,12 +1716,15 @@ class TestProspectGeneration(unittest.TestCase):
                 "pages_fetched": 1,
                 "parse_mode": "SOCRATA",
                 "diagnostics_path": None,
+                "effective_license_types": ["Electrical Contractor"],
+                "license_type_breakdown": {"Electrical Contractor": 1},
             }
             env = {
                 "DATA_DIR": str(data_dir),
                 "OUTREACH_STATES": "TX",
                 "PROSPECT_AUTOGROW_ENABLED": "1",
                 "PROSPECT_AUTOGROW_SOURCES": "STATE_LIC",
+                "PROSPECT_ENRICH_DOMAIN_ENABLED": "1",
             }
             buf = io.StringIO()
             with mock.patch.dict(os.environ, self._test_env(env), clear=True):
@@ -1734,6 +1741,8 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_ENRICH_EMAIL_GUESSED=0", out)
             self.assertIn("GENERATOR_DEFAULT_SEND_ELIGIBLE_TOTAL=13", out)
             self.assertIn("GENERATOR_STATE_LIC_ROWS_ACCEPTED=0", out)
+            self.assertIn("GENERATOR_STATE_LIC_REJECTED_FIT_MISMATCH=1", out)
+            self.assertIn("backlog_credit=0", out)
 
     def test_state_lic_role_inbox_rows_do_not_get_same_run_backlog_credit(self):
         from outreach import run_prospect_generation as generator
@@ -1745,13 +1754,13 @@ class TestProspectGeneration(unittest.TestCase):
             state_lic_result = {
                 "rows": [
                     {
-                        "firm": "BRAVO INSTALLATIONS INC",
-                        "contact_name": "Bravo Installations Inc",
+                        "firm": "BRAVO SAFETY CONSULTING INC",
+                        "contact_name": "Bravo Safety Consulting Inc",
                         "email": "",
                         "contact_email": "",
                         "state": "TX",
                         "city": "Houston",
-                        "title": "Electrical Contractor",
+                        "title": "Safety Consultant",
                         "source": "STATE_LIC",
                         "website": "",
                     }
@@ -1762,6 +1771,8 @@ class TestProspectGeneration(unittest.TestCase):
                 "pages_fetched": 1,
                 "parse_mode": "SOCRATA",
                 "diagnostics_path": None,
+                "effective_license_types": ["Electrical Contractor"],
+                "license_type_breakdown": {"Safety Consultant": 1},
             }
             env = {
                 "DATA_DIR": str(data_dir),
@@ -1779,7 +1790,7 @@ class TestProspectGeneration(unittest.TestCase):
                 ):
                     with mock.patch(
                         "outreach.run_prospect_generation.prospect_enrich_email._default_head_fetcher",
-                        return_value={"status": 200, "url": "https://bravoinstallations.com", "headers": {}},
+                        return_value={"status": 200, "url": "https://bravosafety.com", "headers": {}},
                     ):
                         with redirect_stdout(buf):
                             rc = generator.main(["--dry-run", "--for-date", "2026-02-26"])
@@ -1801,13 +1812,13 @@ class TestProspectGeneration(unittest.TestCase):
             state_lic_result = {
                 "rows": [
                     {
-                        "firm": "BASSETT ELECTRIC LLC",
+                        "firm": "BASSETT SAFETY CONSULTING LLC",
                         "contact_name": "JOHN BASSETT",
                         "email": "",
                         "contact_email": "",
                         "state": "TX",
                         "city": "Houston",
-                        "title": "Electrical Contractor",
+                        "title": "Safety Consultant",
                         "source": "STATE_LIC",
                         "website": "",
                     }
@@ -1818,6 +1829,8 @@ class TestProspectGeneration(unittest.TestCase):
                 "pages_fetched": 1,
                 "parse_mode": "SOCRATA",
                 "diagnostics_path": None,
+                "effective_license_types": ["Electrical Contractor"],
+                "license_type_breakdown": {"Safety Consultant": 1},
             }
             env = {
                 "DATA_DIR": str(data_dir),
@@ -1925,7 +1938,13 @@ class TestProspectGeneration(unittest.TestCase):
             }
             state_lic_ok = {
                 "rows": [
-                    {"email": "txlicense@example.com", "state": "TX", "company_name": "TX License Co", "source": "STATE_LIC", "title": "Electrician"}
+                    {
+                        "email": "txlicense@example.com",
+                        "state": "TX",
+                        "company_name": "TX Safety Compliance Co",
+                        "source": "STATE_LIC",
+                        "title": "Safety Consultant",
+                    }
                 ],
                 "cache_path": data_dir / "prospect_generation" / "cache" / "state_lic" / "state_TX.json",
                 "cache_used": False,
@@ -1933,6 +1952,8 @@ class TestProspectGeneration(unittest.TestCase):
                 "pages_fetched": 1,
                 "parse_mode": "SOCRATA",
                 "diagnostics_path": None,
+                "effective_license_types": ["Electrical Contractor"],
+                "license_type_breakdown": {"Safety Consultant": 1},
             }
             buf = io.StringIO()
             with mock.patch.dict(os.environ, self._test_env(env), clear=True):
