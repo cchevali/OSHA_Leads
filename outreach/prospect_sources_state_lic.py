@@ -11,6 +11,8 @@ from urllib.parse import urlencode
 
 import requests
 
+from outreach import state_lic_precision
+
 
 SOCRATA_URL = "https://data.texas.gov/resource/7358-krk7.json"
 USER_AGENT = "OSHA_Leads/1.0 (+https://microflowops.com)"
@@ -22,47 +24,6 @@ DEFAULT_TDLR_LICENSE_TYPES = [
     "Appliance Installation Contractor",
 ]
 CITY_STATE_ZIP_RE = re.compile(r"^(.+?)\s+([A-Z]{2})\s+\d")
-STATE_LIC_STRONG_POSITIVE_LABELS = {
-    "safety",
-    "compliance",
-    "osha",
-    "ehs_hse",
-    "industrial_hygiene",
-    "environmental",
-    "risk",
-    "training",
-    "occupational_health",
-    "loss_control",
-    "hazmat",
-}
-STATE_LIC_POSITIVE_SIGNALS = (
-    ("safety", 4, ("safety",)),
-    ("compliance", 4, ("compliance",)),
-    ("osha", 4, ("osha",)),
-    ("ehs_hse", 4, ("ehs", "hse")),
-    ("industrial_hygiene", 4, ("industrial hygiene", "industrial hygienist", "industrial hygien")),
-    ("environmental", 4, ("environmental", "environment")),
-    ("risk", 3, ("risk", "risk management")),
-    ("training", 3, ("training", "trainer")),
-    ("occupational_health", 4, ("occupational health", "occupational safety")),
-    ("loss_control", 3, ("loss control",)),
-    ("hazmat", 3, ("hazmat", "hazardous materials")),
-    ("consultant", 1, ("consult", "consultant", "consulting", "consultancy", "advisory", "advisor", "adviser")),
-)
-STATE_LIC_NEGATIVE_SIGNALS = (
-    ("hvac", 4, ("hvac", "air conditioning", "refrigeration", "heating", "cooling", " a c ")),
-    ("plumbing", 4, ("plumbing", "plumber")),
-    ("mechanical", 4, ("mechanical",)),
-    ("electrical", 4, ("electrical", "electrician")),
-    ("elevator", 4, ("elevator",)),
-    ("appliance", 4, ("appliance",)),
-    ("contractor", 3, ("contractor", "contracting")),
-    ("installation", 2, ("installation", "installer")),
-    ("repair", 2, ("repair",)),
-    ("maintenance", 2, ("maintenance",)),
-)
-
-
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -193,37 +154,6 @@ def _parse_city_state_zip(value: Any, fallback_state: str) -> tuple[str, str]:
     return city, state
 
 
-def _fit_text(value: Any) -> str:
-    compact = _normalize_text(value).lower()
-    if not compact:
-        return " "
-    return f" {re.sub(r'[^a-z0-9]+', ' ', compact).strip()} "
-
-
-def _match_weighted_signals(text: str, groups: tuple[tuple[str, int, tuple[str, ...]], ...]) -> tuple[list[str], int]:
-    labels: list[str] = []
-    score = 0
-    for label, weight, needles in groups:
-        matched = False
-        for needle in needles:
-            needle_text = str(needle or "")
-            if not needle_text:
-                continue
-            if needle_text.strip() == "a c":
-                if " a c " in text:
-                    matched = True
-                    break
-                continue
-            normalized = _fit_text(needle_text)
-            if normalized.strip() and normalized in text:
-                matched = True
-                break
-        if matched:
-            labels.append(label)
-            score += int(weight)
-    return labels, score
-
-
 def evaluate_state_lic_consultant_fit(
     *,
     firm: Any = "",
@@ -233,51 +163,26 @@ def evaluate_state_lic_consultant_fit(
     city: Any = "",
     source_detail: Any = "",
 ) -> dict[str, Any]:
-    text = " ".join(
-        [
-            _normalize_text(firm),
-            _normalize_text(owner_name),
-            _normalize_text(license_type),
-            _normalize_text(license_subtype),
-            _normalize_text(city),
-            _normalize_text(source_detail),
-        ]
+    return state_lic_precision.classify_state_lic_row(
+        {
+            "firm": firm,
+            "owner_name": owner_name,
+            "license_type": license_type,
+            "license_subtype": license_subtype,
+            "city": city,
+            "source_detail": source_detail,
+        },
+        mode="consultant_fit",
     )
-    normalized = _fit_text(text)
-    positive_labels, positive_score = _match_weighted_signals(normalized, STATE_LIC_POSITIVE_SIGNALS)
-    negative_labels, negative_score = _match_weighted_signals(normalized, STATE_LIC_NEGATIVE_SIGNALS)
-    has_strong_positive = any(label in STATE_LIC_STRONG_POSITIVE_LABELS for label in positive_labels)
-    positive_signal_count = len(positive_labels)
-    fit_score = int(positive_score) - int(negative_score)
-    eligible = bool(fit_score > 0 and (has_strong_positive or positive_signal_count >= 2))
-    reasons: list[str] = []
-    if positive_labels:
-        reasons.extend([f"+{label}" for label in positive_labels])
-    else:
-        reasons.append("no_positive_signal")
-    reasons.extend([f"-{label}" for label in negative_labels])
-    return {
-        "state_lic_fit_status": ("consultant_candidate" if eligible else "fit_mismatch"),
-        "state_lic_fit_score": int(fit_score),
-        "state_lic_fit_reasons": ",".join(reasons),
-        "state_lic_consultant_eligible": bool(eligible),
-    }
 
 
 def annotate_state_lic_row(row: dict[str, Any]) -> dict[str, Any]:
     city = _normalize_text(row.get("city") or "")
     if not city:
         city, _ = _parse_city_state_zip(row.get("business_city_state_zip") or "", str(row.get("state") or ""))
-    fit = evaluate_state_lic_consultant_fit(
-        firm=row.get("firm") or row.get("company_name") or row.get("business_name") or "",
-        owner_name=row.get("owner_name") or row.get("contact_name") or "",
-        license_type=row.get("license_type") or row.get("title") or "",
-        license_subtype=row.get("license_subtype") or "",
-        city=city,
-        source_detail=row.get("source_detail") or row.get("prospect_id") or "",
-    )
     annotated = dict(row)
-    annotated.update(fit)
+    annotated["city"] = annotated.get("city") or city
+    annotated.update(state_lic_precision.classify_state_lic_row(annotated, mode="consultant_fit"))
     return annotated
 
 

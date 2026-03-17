@@ -13,6 +13,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -44,9 +45,12 @@ REQUIRED_COLUMNS = (
     "confidence",
     "evidence_snippet",
 )
+OPTIONAL_COLUMNS = ("seed_id",)
+SEED_INDEX_FILENAME = "seed_index.json"
 PENDING_REVIEW_FILENAME_RE = re.compile(
     r"^prospect_ai_assist_review_(\d{8})(?:_packet_(\d{3}))?_reviewed\.csv$"
 )
+BATCH_PACKET_ID_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_AIASSIST(?:_P(\d{3}))?$")
 STALE_STARTED_MINUTES = 30
 TRACKING_STATUS_STARTED = "started"
 TRACKING_STATUS_COMPLETED = "completed"
@@ -190,6 +194,14 @@ def _normalize_review_rows(rows: list[dict[str, str]]) -> tuple[list[dict[str, s
         for field in REQUIRED_COLUMNS:
             raw_value = "" if row.get(field) is None else str(row.get(field))
             normalized_value = _normalize_review_field(field=field, value=raw_value, row_number=row_number)
+            clean[field] = normalized_value
+            if normalized_value != raw_value.strip():
+                row_field_changes += 1
+        for field in OPTIONAL_COLUMNS:
+            if field not in row:
+                continue
+            raw_value = "" if row.get(field) is None else str(row.get(field))
+            normalized_value = raw_value.strip()
             clean[field] = normalized_value
             if normalized_value != raw_value.strip():
                 row_field_changes += 1
@@ -400,6 +412,98 @@ def _pending_review_candidates() -> tuple[list[ai_assist_paths.PathCandidate], l
     return review_dirs, files
 
 
+def _seed_index_path_for_review_input(input_path: Path, batch_id: str) -> Path | None:
+    match = PENDING_REVIEW_FILENAME_RE.match(input_path.name)
+    date_token = ""
+    if match:
+        date_token = str(match.group(1) or "").strip()
+    else:
+        batch_match = BATCH_PACKET_ID_RE.match(str(batch_id or "").strip())
+        if batch_match:
+            date_token = "".join(batch_match.groups()[:3])
+    if not date_token:
+        return None
+    packet_dir = ai_assist_paths.prospect_audit_dir(repo_root=REPO_ROOT) / f"prospect_ai_assist_review_{date_token}_packets"
+    seed_index_path = packet_dir / SEED_INDEX_FILENAME
+    return seed_index_path if seed_index_path.exists() else None
+
+
+def _load_seed_index(input_path: Path, batch_id: str) -> dict[str, dict[str, Any]]:
+    seed_index_path = _seed_index_path_for_review_input(input_path, batch_id)
+    if seed_index_path is None:
+        return {}
+    try:
+        payload = json.loads(seed_index_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    rows = payload.get("seeds") if isinstance(payload.get("seeds"), dict) else payload
+    if not isinstance(rows, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for seed_id, seed_meta in rows.items():
+        if not isinstance(seed_meta, dict):
+            continue
+        normalized_seed_id = str(seed_id or "").strip()
+        if not normalized_seed_id:
+            continue
+        out[normalized_seed_id] = dict(seed_meta)
+    return out
+
+
+def _json_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item or "").strip() for item in value if str(item or "").strip()]
+    if isinstance(value, str):
+        text = str(value or "").strip()
+        if not text:
+            return []
+        try:
+            decoded = json.loads(text)
+        except Exception:
+            return [text]
+        if isinstance(decoded, list):
+            return [str(item or "").strip() for item in decoded if str(item or "").strip()]
+    return []
+
+
+def _seed_provenance_for_row(
+    *,
+    row: dict[str, str],
+    seed_index: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    seed_id = str(row.get("seed_id") or "").strip()
+    if not seed_id:
+        return {
+            "seed_id": "",
+            "seed_source_token": "",
+            "seed_source": "",
+            "seed_source_url": "",
+            "source_record_id": "",
+            "license_number": "",
+            "state_lic_license_class_norm": "",
+            "state_lic_hard_negative_class": "",
+            "state_lic_positive_families_json": "[]",
+            "state_lic_negative_families_json": "[]",
+            "state_lic_packet_exclusion_reason": "",
+        }
+    seed_meta = dict(seed_index.get(seed_id) or {})
+    return {
+        "seed_id": seed_id,
+        "seed_source_token": str(seed_meta.get("seed_source_token") or ""),
+        "seed_source": str(seed_meta.get("seed_source") or ""),
+        "seed_source_url": str(seed_meta.get("seed_source_url") or ""),
+        "source_record_id": str(seed_meta.get("source_record_id") or ""),
+        "license_number": str(seed_meta.get("license_number") or ""),
+        "state_lic_license_class_norm": str(seed_meta.get("state_lic_license_class_norm") or ""),
+        "state_lic_hard_negative_class": str(seed_meta.get("state_lic_hard_negative_class") or ""),
+        "state_lic_positive_families_json": json.dumps(_json_list(seed_meta.get("state_lic_positive_families"))),
+        "state_lic_negative_families_json": json.dumps(_json_list(seed_meta.get("state_lic_negative_families"))),
+        "state_lic_packet_exclusion_reason": str(seed_meta.get("state_lic_packet_exclusion_reason") or ""),
+    }
+
+
 def _load_do_not_contact_sets(conn: sqlite3.Connection | None) -> tuple[set[str], set[str]]:
     if conn is None:
         return set(), set()
@@ -481,11 +585,15 @@ def _upsert_audit_rows(conn: sqlite3.Connection, audit_rows: list[dict[str, str 
         INSERT INTO {crm_store.AI_ASSIST_CANDIDATE_TABLE}(
             batch_id, candidate_key, state, decision, firm, website, domain, contact_name, title, email,
             source_urls_json, confidence, evidence_snippet, verification_status, rejection_reason, prospect_id,
-            created_at, updated_at
+            created_at, updated_at, seed_id, seed_source_token, seed_source, seed_source_url, source_record_id,
+            license_number, state_lic_license_class_norm, state_lic_hard_negative_class,
+            state_lic_positive_families_json, state_lic_negative_families_json, state_lic_packet_exclusion_reason
         ) VALUES (
             :batch_id, :candidate_key, :state, :decision, :firm, :website, :domain, :contact_name, :title, :email,
             :source_urls_json, :confidence, :evidence_snippet, :verification_status, :rejection_reason, :prospect_id,
-            :created_at, :updated_at
+            :created_at, :updated_at, :seed_id, :seed_source_token, :seed_source, :seed_source_url, :source_record_id,
+            :license_number, :state_lic_license_class_norm, :state_lic_hard_negative_class,
+            :state_lic_positive_families_json, :state_lic_negative_families_json, :state_lic_packet_exclusion_reason
         )
         ON CONFLICT(batch_id, candidate_key) DO UPDATE SET
             state = excluded.state,
@@ -502,7 +610,18 @@ def _upsert_audit_rows(conn: sqlite3.Connection, audit_rows: list[dict[str, str 
             verification_status = excluded.verification_status,
             rejection_reason = excluded.rejection_reason,
             prospect_id = excluded.prospect_id,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            seed_id = excluded.seed_id,
+            seed_source_token = excluded.seed_source_token,
+            seed_source = excluded.seed_source,
+            seed_source_url = excluded.seed_source_url,
+            source_record_id = excluded.source_record_id,
+            license_number = excluded.license_number,
+            state_lic_license_class_norm = excluded.state_lic_license_class_norm,
+            state_lic_hard_negative_class = excluded.state_lic_hard_negative_class,
+            state_lic_positive_families_json = excluded.state_lic_positive_families_json,
+            state_lic_negative_families_json = excluded.state_lic_negative_families_json,
+            state_lic_packet_exclusion_reason = excluded.state_lic_packet_exclusion_reason
         """,
         audit_rows,
     )
@@ -857,8 +976,9 @@ def _base_audit_payload(
     confidence: int,
     evidence_snippet: str,
     now_iso: str,
+    provenance: dict[str, str] | None = None,
 ) -> dict[str, str | int]:
-    return {
+    payload: dict[str, str | int] = {
         "batch_id": batch_id,
         "candidate_key": candidate_key,
         "state": state,
@@ -878,6 +998,9 @@ def _base_audit_payload(
         "created_at": now_iso,
         "updated_at": now_iso,
     }
+    if provenance:
+        payload.update(dict(provenance))
+    return payload
 
 
 def _print_totals(*, totals: Counter, per_state: dict[str, Counter], dry_run: bool, final_status: str) -> None:
@@ -965,10 +1088,12 @@ def _import_review_file(
         except Exception as exc:
             print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
             return 2, "INVALID_INPUT"
+        seed_index = _load_seed_index(input_path, batch_id)
 
         now_iso = crm_store.utc_now_iso()
         _emit("AI_ASSIST_IMPORT_NORMALIZED_ROWS", normalized_rows_total)
         _emit("AI_ASSIST_IMPORT_NORMALIZED_FIELDS", normalized_fields_total)
+        _emit("AI_ASSIST_IMPORT_SEED_INDEX_ROWS", len(seed_index))
 
         if not dry_run and conn is not None:
             legacy_totals = _legacy_completed_batch_totals(conn, batch_id, rows)
@@ -1036,6 +1161,7 @@ def _import_review_file(
             contact_name = str(row.get("contact_name") or "").strip()
             title = str(row.get("title") or "").strip()
             evidence_snippet = str(row.get("evidence_snippet") or "").strip()
+            provenance = _seed_provenance_for_row(row=row, seed_index=seed_index)
             prospect_id = _prospect_id_for_email(email) if email else ""
             prior_batch_row = batch_candidate_map.get(candidate_key) or {}
             candidate: dict[str, object] = {
@@ -1061,6 +1187,7 @@ def _import_review_file(
                     confidence=confidence,
                     evidence_snippet=evidence_snippet,
                     now_iso=now_iso,
+                    provenance=provenance,
                 ),
                 "final_verification_status": "",
                 "final_rejection_reason": "",

@@ -17,6 +17,19 @@ PROSPECTS_MIGRATION_COLUMNS = {
     "email_status": "TEXT NOT NULL DEFAULT ''",
     "enrichment_lane": "TEXT NOT NULL DEFAULT ''",
 }
+AI_ASSIST_CANDIDATE_MIGRATION_COLUMNS = {
+    "seed_id": "TEXT NOT NULL DEFAULT ''",
+    "seed_source_token": "TEXT NOT NULL DEFAULT ''",
+    "seed_source": "TEXT NOT NULL DEFAULT ''",
+    "seed_source_url": "TEXT NOT NULL DEFAULT ''",
+    "source_record_id": "TEXT NOT NULL DEFAULT ''",
+    "license_number": "TEXT NOT NULL DEFAULT ''",
+    "state_lic_license_class_norm": "TEXT NOT NULL DEFAULT ''",
+    "state_lic_hard_negative_class": "TEXT NOT NULL DEFAULT ''",
+    "state_lic_positive_families_json": "TEXT NOT NULL DEFAULT '[]'",
+    "state_lic_negative_families_json": "TEXT NOT NULL DEFAULT '[]'",
+    "state_lic_packet_exclusion_reason": "TEXT NOT NULL DEFAULT ''",
+}
 AI_ASSIST_CANDIDATE_TABLE = "ai_assist_candidates"
 AI_ASSIST_IMPORT_BATCH_TABLE = "ai_assist_import_batches"
 AI_ASSIST_CANDIDATE_BATCH_KEY_INDEX = "idx_ai_assist_candidates_batch_key_unique"
@@ -164,6 +177,16 @@ def ensure_prospect_indexes(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_prospects_send_eligible ON prospects(default_send_eligible);")
 
 
+def ensure_ai_assist_candidate_columns(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, AI_ASSIST_CANDIDATE_TABLE):
+        return
+    existing = _table_columns(conn, AI_ASSIST_CANDIDATE_TABLE)
+    for name, col_type in AI_ASSIST_CANDIDATE_MIGRATION_COLUMNS.items():
+        if name in existing:
+            continue
+        conn.execute(f"ALTER TABLE {AI_ASSIST_CANDIDATE_TABLE} ADD COLUMN {name} {col_type}")
+
+
 def ensure_ai_assist_candidate_table(conn: sqlite3.Connection) -> None:
     conn.executescript(
         f"""
@@ -212,6 +235,7 @@ def ensure_ai_assist_candidate_table(conn: sqlite3.Connection) -> None:
             ON {AI_ASSIST_CANDIDATE_TABLE}(batch_id, candidate_key)
             """
         )
+    ensure_ai_assist_candidate_columns(conn)
 
 
 def ensure_ai_assist_import_batch_table(conn: sqlite3.Connection) -> None:
