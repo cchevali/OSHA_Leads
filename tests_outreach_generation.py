@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import os
 import re
 import sqlite3
@@ -2235,6 +2236,102 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_AIHA_LOSS_FREE_DOMAIN=0", out)
             self.assertIn("GENERATOR_AIHA_LOSS_ALREADY_KNOWN_CRM=1", out)
             self.assertIn("GENERATOR_AIHA_LOSS_DEFAULT_SEND_INELIGIBLE=1", out)
+
+    def test_aiha_lane_yield_snapshot_tracks_site_contact_only_firms(self):
+        from outreach import crm_store
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+            crm_store.ensure_database(path=data_dir / "crm.sqlite")
+
+            aiha_result = {
+                "rows": [
+                    {
+                        "firm": "Indigo Compliance",
+                        "website": "https://indigocompliance.com/",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:10-11",
+                    },
+                    {
+                        "firm": "Known Safety Group",
+                        "website": "https://known-safety.example.com/",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:10-11",
+                        "email": "known@known-safety.example.com",
+                        "contact_email": "known@known-safety.example.com",
+                    },
+                ],
+                "cache_path": data_dir / "prospect_generation" / "cache" / "aiha" / "state_TX.json",
+                "cache_used": False,
+                "cache_age_days": 0,
+                "pages_fetched": 1,
+                "parse_mode": "TEXT_CONTAINER",
+                "diagnostics_path": None,
+            }
+            resolved_rows = [
+                {
+                    "firm": "Indigo Compliance",
+                    "website": "https://indigocompliance.com/",
+                    "state": "TX",
+                    "source": "aiha_consultants_listing:10-11",
+                    "email": "info@indigocompliance.com",
+                    "contact_email": "info@indigocompliance.com",
+                    "email_status": "scraped_from_site",
+                },
+                {
+                    "firm": "Known Safety Group",
+                    "website": "https://known-safety.example.com/",
+                    "state": "TX",
+                    "source": "aiha_consultants_listing:10-11",
+                    "email": "known@known-safety.example.com",
+                    "contact_email": "known@known-safety.example.com",
+                    "email_status": "scraped_from_source",
+                },
+            ]
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "AIHA",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "2",
+            }
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_aiha.fetch_aiha_state_rows",
+                    return_value=aiha_result,
+                ):
+                    with mock.patch(
+                        "outreach.run_prospect_generation.scraper_engine.apply_email_resolution_waterfall",
+                        return_value=resolved_rows,
+                    ):
+                        with redirect_stdout(buf):
+                            rc = generator.main(["--for-date", "2026-03-17"])
+
+            self.assertEqual(rc, 0, msg=buf.getvalue())
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AIHA_SITE_CONTACT_ONLY_USABLE=1", out)
+            self.assertIn("GENERATOR_AIHA_SITE_CONTACT_ONLY_ACCEPTED=1", out)
+            self.assertIn(
+                "GENERATOR_AUTOGROW_SOURCE_STATE source=AIHA state=TX rows_candidate=2 rows_accepted=2 site_contact_only_usable=1 site_contact_only_accepted=1",
+                out,
+            )
+
+            lane_yield_path = data_dir / "prospect_generation" / "diagnostics" / "aiha_lane_yield_20260317.json"
+            self.assertTrue(lane_yield_path.exists())
+            payload = json.loads(lane_yield_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["schema_version"], "aiha_lane_yield_v1")
+            self.assertEqual(payload["run_date"], "2026-03-17")
+            self.assertEqual(payload["usable_only_total"], 1)
+            self.assertEqual(payload["accepted_total"], 1)
+            self.assertEqual(payload["by_state"]["TX"], {"usable_only": 1, "accepted": 1})
+            self.assertEqual(len(payload["rows"]), 1)
+            self.assertEqual(payload["rows"][0]["firm"], "Indigo Compliance")
+            self.assertEqual(payload["rows"][0]["email"], "info@indigocompliance.com")
+            self.assertTrue(payload["rows"][0]["accepted"])
 
     def test_generator_doctor_aggregate_warning_level(self):
         from outreach import run_prospect_generation as generator

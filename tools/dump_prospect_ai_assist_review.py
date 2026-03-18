@@ -109,6 +109,13 @@ DIAGNOSTIC_STAGE_KEYS = (
     "candidates",
     "selected",
 )
+AIHA_SITE_CONTACT_STAGE_KEYS = (
+    "usable_only",
+    "generator_accepted",
+    "review_eligible",
+    "packet_eligible",
+    "selected",
+)
 STATE_LIC_REVIEW_ANCHOR_FIELDS = (
     "website",
     "phone",
@@ -165,6 +172,10 @@ def _ordered_stage_counts_by_source(
             for key in DIAGNOSTIC_STAGE_KEYS
         }
     return ordered
+
+
+def _aiha_site_contact_counter_template() -> dict[str, int]:
+    return {key: 0 for key in AIHA_SITE_CONTACT_STAGE_KEYS}
 
 
 def _ordered_exclusion_counts_by_source(
@@ -527,6 +538,188 @@ def _resolve_source_tokens() -> tuple[list[str], str]:
 
 def _batch_run_token(run_started_at: datetime) -> str:
     return f"R{run_started_at.strftime('%H%M%S%f')}"
+
+
+def _empty_aiha_site_contact_measurement(
+    *,
+    states: list[str],
+    status: str,
+    diagnostics_path: str,
+) -> dict[str, Any]:
+    counts_by_state = {
+        generation._normalize_us_state(str(state or "")): _aiha_site_contact_counter_template()
+        for state in list(states or [])
+        if generation._normalize_us_state(str(state or ""))
+    }
+    return {
+        "status": status,
+        "diagnostics_path": diagnostics_path,
+        "generator_run_date": "",
+        "generator_run_started_at": "",
+        "generator_run_token": "",
+        "counts": _aiha_site_contact_counter_template(),
+        "counts_by_state": counts_by_state,
+        "_seed_ids": set(),
+        "_review_eligible_seen": set(),
+        "_packet_eligible_seen": set(),
+        "_selected_seen": set(),
+        "_review_eligible_seen_by_state": {},
+        "_packet_eligible_seen_by_state": {},
+        "_selected_seen_by_state": {},
+    }
+
+
+def _load_aiha_site_contact_measurement(
+    *,
+    data_dir: Path,
+    run_date: date,
+    states: list[str],
+) -> dict[str, Any]:
+    state_scope = {
+        generation._normalize_us_state(str(state or ""))
+        for state in list(states or [])
+        if generation._normalize_us_state(str(state or ""))
+    }
+    diagnostics_path = generation._aiha_lane_yield_path(
+        generation._generation_diagnostics_dir(data_dir),
+        run_date,
+    ).resolve(strict=False)
+    measurement = _empty_aiha_site_contact_measurement(
+        states=states,
+        status="missing",
+        diagnostics_path=str(diagnostics_path),
+    )
+    if not diagnostics_path.exists():
+        return measurement
+    try:
+        payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    except Exception:
+        measurement["status"] = "invalid"
+        return measurement
+    if str(payload.get("schema_version") or "") != generation.AIHA_LANE_YIELD_SCHEMA:
+        measurement["status"] = "invalid"
+        return measurement
+    measurement["status"] = "loaded"
+    measurement["generator_run_date"] = str(payload.get("run_date") or "")
+    measurement["generator_run_started_at"] = str(payload.get("run_started_at") or "")
+    measurement["generator_run_token"] = str(payload.get("run_token") or "")
+    measurement["_seed_ids"] = set()
+    for state, raw_counts in dict(payload.get("by_state") or {}).items():
+        state_key = generation._normalize_us_state(str(state or ""))
+        if state_scope and state_key not in state_scope:
+            continue
+        state_counts = measurement.setdefault("counts_by_state", {}).setdefault(
+            state_key,
+            _aiha_site_contact_counter_template(),
+        )
+        state_counts["usable_only"] = int((raw_counts or {}).get("usable_only") or 0)
+        state_counts["generator_accepted"] = int((raw_counts or {}).get("accepted") or 0)
+    for row in list(payload.get("rows") or []):
+        if not isinstance(row, dict):
+            continue
+        state_key = generation._normalize_us_state(str(row.get("state") or ""))
+        if state_scope and state_key not in state_scope:
+            continue
+        seed_id = str(row.get("seed_id") or "").strip()
+        if seed_id:
+            measurement["_seed_ids"].add(seed_id)
+    counts = dict(measurement.get("counts") or {})
+    counts["usable_only"] = sum(
+        int((measurement.get("counts_by_state") or {}).get(state, {}).get("usable_only", 0))
+        for state in dict(measurement.get("counts_by_state") or {}).keys()
+    )
+    counts["generator_accepted"] = sum(
+        int((measurement.get("counts_by_state") or {}).get(state, {}).get("generator_accepted", 0))
+        for state in dict(measurement.get("counts_by_state") or {}).keys()
+    )
+    measurement["counts"] = counts
+    return measurement
+
+
+def _mark_aiha_site_contact_stage(
+    measurement: dict[str, Any],
+    *,
+    stage: str,
+    seed_id: str,
+    state: str,
+) -> None:
+    if stage not in {"review_eligible", "packet_eligible", "selected"}:
+        return
+    normalized_seed_id = str(seed_id or "").strip()
+    if not normalized_seed_id:
+        return
+    seed_ids = set(measurement.get("_seed_ids") or set())
+    if normalized_seed_id not in seed_ids:
+        return
+    state_key = generation._normalize_us_state(str(state or ""))
+    overall_seen = measurement.setdefault(f"_{stage}_seen", set())
+    if normalized_seed_id not in overall_seen:
+        overall_seen.add(normalized_seed_id)
+        counts = dict(measurement.get("counts") or {})
+        counts[stage] = int(counts.get(stage, 0)) + 1
+        measurement["counts"] = counts
+    by_state_seen = measurement.setdefault(f"_{stage}_seen_by_state", {})
+    state_seen = by_state_seen.setdefault(state_key, set())
+    if normalized_seed_id not in state_seen:
+        state_seen.add(normalized_seed_id)
+        state_counts = measurement.setdefault("counts_by_state", {}).setdefault(
+            state_key,
+            _aiha_site_contact_counter_template(),
+        )
+        state_counts[stage] = int(state_counts.get(stage, 0)) + 1
+
+
+def _serializable_aiha_site_contact_measurement(measurement: dict[str, Any]) -> dict[str, Any]:
+    ordered_counts_by_state = {}
+    for state in sorted(dict(measurement.get("counts_by_state") or {}).keys()):
+        counts = dict((measurement.get("counts_by_state") or {}).get(state) or {})
+        ordered_counts_by_state[state] = {
+            key: int(counts.get(key, 0))
+            for key in AIHA_SITE_CONTACT_STAGE_KEYS
+        }
+    counts = dict(measurement.get("counts") or {})
+    return {
+        "status": str(measurement.get("status") or "missing"),
+        "diagnostics_path": str(measurement.get("diagnostics_path") or ""),
+        "generator_run_date": str(measurement.get("generator_run_date") or ""),
+        "generator_run_started_at": str(measurement.get("generator_run_started_at") or ""),
+        "generator_run_token": str(measurement.get("generator_run_token") or ""),
+        "counts": {
+            key: int(counts.get(key, 0))
+            for key in AIHA_SITE_CONTACT_STAGE_KEYS
+        },
+        "counts_by_state": ordered_counts_by_state,
+    }
+
+
+def _aiha_site_contact_status_line(measurement: dict[str, Any]) -> str:
+    status = str(measurement.get("status") or "missing")
+    if status != "loaded":
+        return f"AIHA SITE-CONTACT SNAPSHOT: {status}"
+    counts = dict(measurement.get("counts") or {})
+    return (
+        "AIHA SITE-CONTACT ONLY: "
+        f"usable={int(counts.get('usable_only', 0))} "
+        f"generator_accepted={int(counts.get('generator_accepted', 0))} "
+        f"packet_eligible={int(counts.get('packet_eligible', 0))} "
+        f"selected={int(counts.get('selected', 0))}"
+    )
+
+
+def _aiha_site_contact_by_state_line(measurement: dict[str, Any]) -> str:
+    if str(measurement.get("status") or "missing") != "loaded":
+        return "AIHA SITE-CONTACT BY STATE: none"
+    parts: list[str] = []
+    for state, counts in sorted(dict(measurement.get("counts_by_state") or {}).items()):
+        values = dict(counts or {})
+        if int(values.get("usable_only", 0)) <= 0:
+            continue
+        parts.append(
+            f"{state} usable={int(values.get('usable_only', 0))} "
+            f"packet_eligible={int(values.get('packet_eligible', 0))} "
+            f"selected={int(values.get('selected', 0))}"
+        )
+    return "AIHA SITE-CONTACT BY STATE: " + (" | ".join(parts) if parts else "none")
 
 
 def _resolve_output_path(*, output: str, output_dir: str, for_date: date) -> tuple[Path, Path]:
@@ -976,9 +1169,11 @@ def _collect_candidates(
     crm_domains: set[str],
     crm_firm_keys: set[str],
     feedback_snapshot: dict[str, Any],
+    aiha_site_contact_measurement: dict[str, Any] | None = None,
     state_lic_shadow_profile: str = STATE_LIC_SHADOW_PROFILE_PRODUCTION,
 ) -> dict[str, Any]:
     normalized_shadow_profile = _normalize_state_lic_shadow_profile(state_lic_shadow_profile)
+    aiha_measurement = aiha_site_contact_measurement if isinstance(aiha_site_contact_measurement, dict) else {}
     cache_root = data_dir / "prospect_generation" / "cache"
     review_candidates: list[dict[str, Any]] = []
     source_priority = {token: idx for idx, token in enumerate(source_tokens)}
@@ -1050,6 +1245,13 @@ def _collect_candidates(
                             feedback_suppression_counts[f"keyword_family:{str(family or '')}"] += 1
                     continue
                 source_stage_counts["review_eligible"] += 1
+                if source_token == "AIHA":
+                    _mark_aiha_site_contact_stage(
+                        aiha_measurement,
+                        stage="review_eligible",
+                        seed_id=str(seed.get("seed_id") or ""),
+                        state=str(seed.get("state") or state),
+                    )
 
                 safety_exclusion_key = _crm_safety_exclusion_key(
                     seed=seed,
@@ -1093,6 +1295,13 @@ def _collect_candidates(
         seen_pairs.add(pair)
         deduped.append(row)
         stage_counts_by_source.setdefault(source_token, _stage_counter_template())["candidates"] += 1
+        if source_token == "AIHA":
+            _mark_aiha_site_contact_stage(
+                aiha_measurement,
+                stage="packet_eligible",
+                seed_id=str(row.get("seed_id") or ""),
+                state=str(row.get("state") or ""),
+            )
 
     source_breakdown = Counter(
         str(row.get("source_token") or "")
@@ -1262,6 +1471,7 @@ def _packet_status_text(
     selected_row_count: int,
     included_without_website: int,
     diagnostics: dict[str, Any],
+    aiha_site_contact_measurement: dict[str, Any] | None = None,
 ) -> str:
     top_exclusions = diagnostics.get("top_exclusion_reasons") or []
     top_exclusion_text = "none"
@@ -1271,12 +1481,16 @@ def _packet_status_text(
             for item in list(top_exclusions)
             if str(item.get("reason") or "")
         )
+    aiha_status_line = _aiha_site_contact_status_line(dict(aiha_site_contact_measurement or {}))
+    aiha_state_line = _aiha_site_contact_by_state_line(dict(aiha_site_contact_measurement or {}))
     if packet_count > 0:
         return (
             f"PACKETS READY: {packet_count}\n"
             f"SELECTED ROWS: {selected_row_count}\n"
             f"ROWS WITH BLANK WEBSITE: {included_without_website}\n"
             f"TOP EXCLUSIONS: {top_exclusion_text}\n"
+            f"{aiha_status_line}\n"
+            f"{aiha_state_line}\n"
         )
     exclusion_lines: list[str] = []
     for key, value in sorted(
@@ -1284,7 +1498,7 @@ def _packet_status_text(
         key=lambda item: (-item[1], item[0]),
     ):
         exclusion_lines.append(f"{key}={value}")
-    return "NO PACKETS TODAY\n" + "\n".join(exclusion_lines[:5]) + "\n"
+    return "NO PACKETS TODAY\n" + "\n".join([aiha_status_line, aiha_state_line] + exclusion_lines[:5]) + "\n"
 
 
 def _build_prompt_text(
@@ -1465,6 +1679,11 @@ def main(argv: list[str] | None = None) -> int:
         if conn is not None:
             conn.close()
 
+    aiha_site_contact_measurement = _load_aiha_site_contact_measurement(
+        data_dir=data_dir_resolution.effective_path,
+        run_date=run_date,
+        states=states,
+    )
     candidates = _collect_candidates(
         data_dir=data_dir_resolution.effective_path,
         states=states,
@@ -1472,6 +1691,7 @@ def main(argv: list[str] | None = None) -> int:
         crm_domains=crm_domains,
         crm_firm_keys=crm_firm_keys,
         feedback_snapshot=feedback_snapshot,
+        aiha_site_contact_measurement=aiha_site_contact_measurement,
     )
     candidate_rows = list(candidates.get("candidates") or [])
     selected_rows, cap_diagnostics = _select_rows_with_state_lic_cap(
@@ -1495,10 +1715,18 @@ def main(argv: list[str] | None = None) -> int:
         if source_token:
             stage_counts_by_source.setdefault(source_token, {key: 0 for key in DIAGNOSTIC_STAGE_KEYS})
             stage_counts_by_source[source_token]["selected"] += 1
+        if source_token == "AIHA":
+            _mark_aiha_site_contact_stage(
+                aiha_site_contact_measurement,
+                stage="selected",
+                seed_id=str(row.get("seed_id") or ""),
+                state=str(row.get("state") or ""),
+            )
 
     packets = _chunk_rows(selected_rows, packet_size) if selected_rows else []
     included_without_website = sum(1 for row in selected_rows if not str(row.get("website") or "").strip())
     selected_source_breakdown = _source_selection_breakdown(selected_rows, source_tokens)
+    aiha_site_contact_measurement_payload = _serializable_aiha_site_contact_measurement(aiha_site_contact_measurement)
     prompt_text = _build_prompt_text(
         run_date=run_date,
         backlog_target=backlog_target,
@@ -1544,6 +1772,37 @@ def main(argv: list[str] | None = None) -> int:
     _emit("AI_ASSIST_DUMP_CANDIDATES_TOTAL", int(candidates.get("candidate_count_after_filters") or 0))
     _emit("AI_ASSIST_DUMP_ROWS_WRITTEN", len(selected_rows))
     _emit("AI_ASSIST_DUMP_SHORTFALL", shortfall)
+    _emit("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATUS", str(aiha_site_contact_measurement_payload.get("status") or "missing"))
+    _emit(
+        "AI_ASSIST_DUMP_AIHA_SITE_CONTACT_DIAGNOSTICS_PATH",
+        str(aiha_site_contact_measurement_payload.get("diagnostics_path") or ""),
+    )
+    if str(aiha_site_contact_measurement_payload.get("generator_run_token") or ""):
+        _emit(
+            "AI_ASSIST_DUMP_AIHA_SITE_CONTACT_RUN_TOKEN",
+            str(aiha_site_contact_measurement_payload.get("generator_run_token") or ""),
+        )
+    aiha_site_contact_counts = dict(aiha_site_contact_measurement_payload.get("counts") or {})
+    _emit(
+        "AI_ASSIST_DUMP_AIHA_SITE_CONTACT_USABLE_ONLY_TOTAL",
+        int(aiha_site_contact_counts.get("usable_only", 0)),
+    )
+    _emit(
+        "AI_ASSIST_DUMP_AIHA_SITE_CONTACT_GENERATOR_ACCEPTED_TOTAL",
+        int(aiha_site_contact_counts.get("generator_accepted", 0)),
+    )
+    _emit(
+        "AI_ASSIST_DUMP_AIHA_SITE_CONTACT_REVIEW_ELIGIBLE_TOTAL",
+        int(aiha_site_contact_counts.get("review_eligible", 0)),
+    )
+    _emit(
+        "AI_ASSIST_DUMP_AIHA_SITE_CONTACT_PACKET_ELIGIBLE_TOTAL",
+        int(aiha_site_contact_counts.get("packet_eligible", 0)),
+    )
+    _emit(
+        "AI_ASSIST_DUMP_AIHA_SITE_CONTACT_SELECTED_TOTAL",
+        int(aiha_site_contact_counts.get("selected", 0)),
+    )
     _emit("AI_ASSIST_DUMP_OBSERVED_STATE_LIC_FIT_MISMATCH", int(candidates.get("observed_state_lic_fit_mismatch") or 0))
     _emit("AI_ASSIST_DUMP_STATE_LIC_CAP_PERCENT", int(cap_diagnostics.get("state_lic_cap_percent") or 0))
     _emit("AI_ASSIST_DUMP_STATE_LIC_CAP_LIMITED_COUNT", int(cap_diagnostics.get("state_lic_cap_limited_count") or 0))
@@ -1565,6 +1824,25 @@ def main(argv: list[str] | None = None) -> int:
         _emit(f"AI_ASSIST_DUMP_STATE_{state}_BACKLOG_CURRENT", int(row["backlog_current"] or 0))
         _emit(f"AI_ASSIST_DUMP_STATE_{state}_CRM_TOTAL", int(row["crm_total"] or 0))
         _emit(f"AI_ASSIST_DUMP_STATE_{state}_GAP", int(row["gap"] or 0))
+
+    for state, counts in dict(aiha_site_contact_measurement_payload.get("counts_by_state") or {}).items():
+        state_key = str(state or "")
+        _emit(
+            f"AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_{state_key}_USABLE_ONLY",
+            int((counts or {}).get("usable_only", 0)),
+        )
+        _emit(
+            f"AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_{state_key}_GENERATOR_ACCEPTED",
+            int((counts or {}).get("generator_accepted", 0)),
+        )
+        _emit(
+            f"AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_{state_key}_PACKET_ELIGIBLE",
+            int((counts or {}).get("packet_eligible", 0)),
+        )
+        _emit(
+            f"AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_{state_key}_SELECTED",
+            int((counts or {}).get("selected", 0)),
+        )
 
     for source_token in list(source_tokens or []):
         source_stage_counts = dict(stage_counts_by_source.get(str(source_token)) or {})
@@ -1684,6 +1962,7 @@ def main(argv: list[str] | None = None) -> int:
             selected_row_count=len(selected_rows),
             included_without_website=included_without_website,
             diagnostics=candidates,
+            aiha_site_contact_measurement=aiha_site_contact_measurement_payload,
         ),
     )
     _atomic_write_text(_packet_seed_index_path(packet_dir), json.dumps(seed_index_payload, indent=2) + "\n")
@@ -1730,6 +2009,7 @@ def main(argv: list[str] | None = None) -> int:
         "source_review_eligible_breakdown": candidates.get("source_review_eligible_breakdown") or {},
         "selected_source_breakdown": selected_source_breakdown,
         "stage_counts_by_source": stage_counts_by_source,
+        "aiha_site_contact_measurement": aiha_site_contact_measurement_payload,
         "exclusion_counts_by_reason": candidates.get("exclusion_counts_by_reason") or {},
         "exclusion_counts_by_source": candidates.get("exclusion_counts_by_source") or {},
         "exclusion_counts_by_source_and_reason": candidates.get("exclusion_counts_by_source_and_reason") or {},

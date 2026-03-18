@@ -1,6 +1,7 @@
 import argparse
 import csv
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -52,6 +53,7 @@ OUTPUT_FILENAME = "prospects_latest.csv"
 
 GENERATION_CACHE_ROOT_SUBDIR = ("prospect_generation", "cache")
 GENERATION_DIAGNOSTICS_SUBDIR = ("prospect_generation", "diagnostics")
+AIHA_LANE_YIELD_SCHEMA = "aiha_lane_yield_v1"
 
 AUTOGROW_SOURCE_PREFIX = source_policy.autogrow_source_prefix_map(include_unimplemented=False)
 AUTOGROW_SOURCE_LABEL = {k: str(v or "").lower() for k, v in AUTOGROW_SOURCE_PREFIX.items()}
@@ -96,6 +98,20 @@ OHS_PARSE_REASON_KEYS = (
     "state_filtered_out",
 )
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
+COMMON_MULTI_LABEL_TLDS = {
+    "co.uk",
+    "org.uk",
+    "gov.uk",
+    "ac.uk",
+    "com.au",
+    "net.au",
+    "org.au",
+    "com.br",
+    "com.mx",
+    "co.nz",
+    "com.sg",
+    "com.hk",
+}
 ROLE_INBOX_LOCALS = {
     "info",
     "contact",
@@ -239,6 +255,70 @@ def _domain_from_website(value: str) -> str:
     if host.startswith("www."):
         host = host[4:]
     return host
+
+
+def _root_domain(domain: str) -> str:
+    host = _normalize_text(domain).lower().strip(".")
+    if not host or re.fullmatch(r"\d+\.\d+\.\d+\.\d+", host):
+        return host
+    parts = [part for part in host.split(".") if part]
+    if len(parts) <= 2:
+        return ".".join(parts)
+    suffix = ".".join(parts[-2:])
+    if suffix in COMMON_MULTI_LABEL_TLDS and len(parts) >= 3:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _normalize_firm_key(value: str) -> str:
+    text = _normalize_text(value).upper()
+    if not text:
+        return ""
+    tokens = re.split(r"\s+", re.sub(r"[^A-Z0-9 ]", " ", text))
+    while tokens and tokens[-1] in prospect_enrich_email.CORP_SUFFIXES:
+        tokens.pop()
+    return "".join(re.sub(r"[^A-Z0-9]", "", token) for token in tokens if token)
+
+
+def _aiha_seed_source_url(row: dict[str, object]) -> str:
+    explicit = _normalize_text(str(row.get("source_url") or ""))
+    if explicit:
+        return explicit
+    source = _normalize_text(str(row.get("source") or ""))
+    if source.startswith("aiha_consultants_listing:"):
+        page_id = source.split(":", 1)[1].strip()
+        if page_id:
+            return prospect_sources_aiha.PAGE_URL_TEMPLATE.format(page_id=page_id)
+    return ""
+
+
+def _aiha_site_contact_seed_id(row: dict[str, object]) -> str:
+    source_token = "AIHA"
+    source = _normalize_text(str(row.get("source") or source_token)) or source_token
+    state = _normalize_us_state(str(row.get("state") or ""))
+    firm = _normalize_text(
+        str(row.get("firm") or row.get("company_name") or row.get("business_name") or "")
+    )
+    website = contact_normalization.normalize_website(str(row.get("website") or ""))
+    website = website if _domain_from_website(website) else ""
+    root_domain = _root_domain(_domain_from_website(website))
+    source_record_id = _normalize_text(str(row.get("source_detail") or row.get("prospect_id") or ""))
+    locator_type = "website" if root_domain else ""
+    locator_value = root_domain
+    payload = "|".join(
+        [
+            source_token,
+            source,
+            state,
+            _normalize_firm_key(firm),
+            root_domain,
+            locator_type,
+            locator_value,
+            source_record_id,
+            "",
+        ]
+    )
+    return f"seed_{hashlib.sha1(payload.encode('utf-8')).hexdigest()[:16]}"
 
 
 def _row_domain_value(row: dict[str, str], email: str) -> str:
@@ -428,6 +508,10 @@ def _autogrow_source_cache_dir(cache_root_dir: Path, source_token: str) -> Path:
 
 def _generation_diagnostics_dir(data_dir: Path) -> Path:
     return data_dir.joinpath(*GENERATION_DIAGNOSTICS_SUBDIR)
+
+
+def _aiha_lane_yield_path(diagnostics_dir: Path, run_date: date) -> Path:
+    return diagnostics_dir / f"aiha_lane_yield_{run_date.strftime('%Y%m%d')}.json"
 
 
 def _source_cache_path_for_state(cache_root_dir: Path, source_token: str, state: str) -> Path:
@@ -1256,6 +1340,191 @@ def _resolve_canonical_public_contacts(
     )
 
 
+def _current_run_started_at() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _generator_run_token(run_started_at: datetime) -> str:
+    return f"R{run_started_at.strftime('%H%M%S%f')}"
+
+
+def _empty_aiha_lane_yield_snapshot(
+    *,
+    run_date: date,
+    run_started_at: datetime,
+    run_token: str,
+    state_scope: list[str],
+    selected_state: str,
+    source_tokens: list[str],
+) -> dict[str, object]:
+    return {
+        "schema_version": AIHA_LANE_YIELD_SCHEMA,
+        "run_date": run_date.isoformat(),
+        "run_started_at": run_started_at.isoformat(),
+        "run_token": run_token,
+        "selected_state": _normalize_state(selected_state),
+        "states_scope": [_normalize_state(state) for state in list(state_scope or []) if _normalize_state(state)],
+        "source_configured": "AIHA" in list(source_tokens or []),
+        "usable_only_total": 0,
+        "accepted_total": 0,
+        "usable_only_seed_ids": [],
+        "accepted_seed_ids": [],
+        "by_state": {},
+        "rows": [],
+        "diagnostics_path": "",
+        "_usable_only_seen": set(),
+        "_accepted_seen": set(),
+        "_rows_by_seed_id": {},
+    }
+
+
+def _aiha_row_became_usable_only_via_site_contact(
+    raw_row: dict[str, object],
+    resolved_row: dict[str, object],
+) -> bool:
+    if _row_has_nonfree_work_email(raw_row):
+        return False
+    if not _row_has_nonfree_work_email(resolved_row):
+        return False
+    return _normalize_text(str(resolved_row.get("email_status") or "")).lower() == "scraped_from_site"
+
+
+def _record_aiha_lane_yield_rows(
+    snapshot: dict[str, object],
+    *,
+    source_state: str,
+    raw_rows: list[dict[str, str]],
+    resolved_rows: list[dict[str, str]],
+    accepted_rows: list[dict[str, str]],
+) -> None:
+    accepted_seed_ids = {
+        _aiha_site_contact_seed_id(row)
+        for row in list(accepted_rows or [])
+        if _row_has_nonfree_work_email(row)
+    }
+    usable_only_seen = snapshot.setdefault("_usable_only_seen", set())
+    accepted_seen = snapshot.setdefault("_accepted_seen", set())
+    rows_by_seed_id = snapshot.setdefault("_rows_by_seed_id", {})
+    by_state = snapshot.setdefault("by_state", {})
+    for raw_row, resolved_row in zip(list(raw_rows or []), list(resolved_rows or [])):
+        if not _aiha_row_became_usable_only_via_site_contact(raw_row, resolved_row):
+            continue
+        seed_id = _aiha_site_contact_seed_id(resolved_row)
+        state = _normalize_us_state(str(resolved_row.get("state") or source_state or ""))
+        state_counts = by_state.setdefault(state, {"usable_only": 0, "accepted": 0})
+        row_entry = rows_by_seed_id.get(seed_id)
+        if row_entry is None:
+            row_entry = {
+                "seed_id": seed_id,
+                "state": state,
+                "firm": _normalize_text(
+                    str(
+                        resolved_row.get("firm")
+                        or resolved_row.get("company_name")
+                        or resolved_row.get("business_name")
+                        or ""
+                    )
+                ),
+                "website": contact_normalization.normalize_website(str(resolved_row.get("website") or "")),
+                "source": _normalize_text(str(resolved_row.get("source") or "")),
+                "source_url": _aiha_seed_source_url(resolved_row),
+                "email": _normalize_email(str(resolved_row.get("email") or resolved_row.get("contact_email") or "")),
+                "email_status": _normalize_text(str(resolved_row.get("email_status") or "")),
+                "accepted": False,
+            }
+            rows_by_seed_id[seed_id] = row_entry
+            snapshot.setdefault("rows", []).append(row_entry)
+        if seed_id not in usable_only_seen:
+            usable_only_seen.add(seed_id)
+            snapshot["usable_only_total"] = int(snapshot.get("usable_only_total") or 0) + 1
+            snapshot.setdefault("usable_only_seed_ids", []).append(seed_id)
+            state_counts["usable_only"] = int(state_counts.get("usable_only") or 0) + 1
+        if seed_id in accepted_seed_ids and seed_id not in accepted_seen:
+            accepted_seen.add(seed_id)
+            snapshot["accepted_total"] = int(snapshot.get("accepted_total") or 0) + 1
+            snapshot.setdefault("accepted_seed_ids", []).append(seed_id)
+            state_counts["accepted"] = int(state_counts.get("accepted") or 0) + 1
+            row_entry["accepted"] = True
+
+
+def _serializable_aiha_lane_yield_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
+    ordered_states = {}
+    for state in sorted(dict(snapshot.get("by_state") or {}).keys()):
+        counts = dict((snapshot.get("by_state") or {}).get(state) or {})
+        ordered_states[state] = {
+            "usable_only": int(counts.get("usable_only") or 0),
+            "accepted": int(counts.get("accepted") or 0),
+        }
+    rows = [
+        {
+            "seed_id": str(row.get("seed_id") or ""),
+            "state": str(row.get("state") or ""),
+            "firm": str(row.get("firm") or ""),
+            "website": str(row.get("website") or ""),
+            "source": str(row.get("source") or ""),
+            "source_url": str(row.get("source_url") or ""),
+            "email": str(row.get("email") or ""),
+            "email_status": str(row.get("email_status") or ""),
+            "accepted": bool(row.get("accepted")),
+        }
+        for row in sorted(
+            list(snapshot.get("rows") or []),
+            key=lambda item: (
+                str(item.get("state") or ""),
+                str(item.get("firm") or ""),
+                str(item.get("seed_id") or ""),
+            ),
+        )
+    ]
+    return {
+        "schema_version": str(snapshot.get("schema_version") or AIHA_LANE_YIELD_SCHEMA),
+        "run_date": str(snapshot.get("run_date") or ""),
+        "run_started_at": str(snapshot.get("run_started_at") or ""),
+        "run_token": str(snapshot.get("run_token") or ""),
+        "selected_state": str(snapshot.get("selected_state") or ""),
+        "states_scope": [str(item or "") for item in list(snapshot.get("states_scope") or []) if str(item or "")],
+        "source_configured": bool(snapshot.get("source_configured")),
+        "usable_only_total": int(snapshot.get("usable_only_total") or 0),
+        "accepted_total": int(snapshot.get("accepted_total") or 0),
+        "usable_only_seed_ids": sorted(
+            set(str(item or "") for item in list(snapshot.get("usable_only_seed_ids") or []) if str(item or ""))
+        ),
+        "accepted_seed_ids": sorted(
+            set(str(item or "") for item in list(snapshot.get("accepted_seed_ids") or []) if str(item or ""))
+        ),
+        "by_state": ordered_states,
+        "rows": rows,
+        "diagnostics_path": str(snapshot.get("diagnostics_path") or ""),
+    }
+
+
+def _write_aiha_lane_yield_snapshot(
+    *,
+    diagnostics_dir: Path,
+    run_date: date,
+    snapshot: dict[str, object],
+) -> Path:
+    path = _aiha_lane_yield_path(diagnostics_dir, run_date)
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    payload = _serializable_aiha_lane_yield_snapshot(snapshot)
+    payload["diagnostics_path"] = str(path.resolve(strict=False))
+    with tempfile.NamedTemporaryFile(
+        "w",
+        newline="",
+        encoding="utf-8",
+        dir=str(path.parent),
+        prefix="aiha_lane_yield_",
+        suffix=".tmp",
+        delete=False,
+    ) as tmp:
+        json.dump(payload, tmp, indent=2)
+        tmp.write("\n")
+        tmp_path = Path(tmp.name)
+    os.replace(str(tmp_path), str(path))
+    snapshot["diagnostics_path"] = str(path.resolve(strict=False))
+    return path
+
+
 def _observable_source_families() -> list[str]:
     families: list[str] = ["SEED"]
     for token in source_policy.implemented_autogrow_sources():
@@ -1479,12 +1748,15 @@ def _print_tokens(
     rows_read: int,
     rows_written: int,
     status: str,
+    run_started_at: datetime | None,
+    run_token: str,
     autogrow: dict,
     enrich_cfg: dict,
     enrich_metrics: dict,
     aiha_result: dict,
     aiha_rejected: Counter,
     aiha_loss_counters: Counter,
+    aiha_lane_yield: dict | None,
     ohs_bg_result: dict,
     ohs_bg_rejected: Counter,
     apollo_cfg: dict,
@@ -1501,6 +1773,10 @@ def _print_tokens(
     print(f"GENERATOR_OUTPUT_PATH={path.resolve()}")
     print(f"GENERATOR_ROWS_READ={rows_read}")
     print(f"GENERATOR_ROWS_WRITTEN={rows_written}")
+    if run_started_at is not None:
+        print(f"GENERATOR_RUN_STARTED_AT={run_started_at.isoformat()}")
+    if run_token:
+        print(f"GENERATOR_RUN_TOKEN={run_token}")
     scope_drift_warning = _autogrow_scope_drift_warning_token()
     if scope_drift_warning:
         print(scope_drift_warning)
@@ -1585,6 +1861,11 @@ def _print_tokens(
     print(f"GENERATOR_EMAIL_STATUS_SCRAPED_FROM_SOURCE={int(email_status_counts.get('scraped_from_source', 0))}")
     print(f"GENERATOR_EMAIL_STATUS_BLANK={int(email_status_counts.get('blank', 0))}")
     print(f"GENERATOR_DEFAULT_SEND_ELIGIBLE_TOTAL={int(observability.get('default_send_eligible_total') or 0)}")
+    lane_yield = dict(aiha_lane_yield or {})
+    print(f"GENERATOR_AIHA_SITE_CONTACT_ONLY_USABLE={int(lane_yield.get('usable_only_total') or 0)}")
+    print(f"GENERATOR_AIHA_SITE_CONTACT_ONLY_ACCEPTED={int(lane_yield.get('accepted_total') or 0)}")
+    if lane_yield.get("diagnostics_path"):
+        print(f"GENERATOR_AIHA_LANE_YIELD_PATH={lane_yield.get('diagnostics_path')}")
     provider_lane_enabled = bool(enrich_cfg.get("hunter_enabled")) and bool(_normalize_text(enrich_cfg.get("hunter_api_key") or ""))
     print(
         "GENERATOR_ENRICH_MODE="
@@ -1633,6 +1914,8 @@ def _print_tokens(
             f"ohs_bg_accepted={int(detail.get('ohs_bg_accepted') or 0)} "
             f"apollo_candidate={int(detail.get('apollo_candidate') or 0)} "
             f"apollo_accepted={int(detail.get('apollo_accepted') or 0)} "
+            f"aiha_site_contact_only_usable={int(detail.get('aiha_site_contact_only_usable') or 0)} "
+            f"aiha_site_contact_only_accepted={int(detail.get('aiha_site_contact_only_accepted') or 0)} "
             f"ohs_bg_base_max_pages={int(detail.get('ohs_bg_base_max_pages') or 0)} "
             f"ohs_bg_effective_max_pages={int(detail.get('ohs_bg_effective_max_pages') or 0)} "
             f"ohs_bg_deeper_enabled={int(detail.get('ohs_bg_deeper_enabled') or 0)}"
@@ -1644,6 +1927,8 @@ def _print_tokens(
                 f"state={state} "
                 f"rows_candidate={int(detail.get(f'{prefix}_candidate') or 0)} "
                 f"rows_accepted={int(detail.get(f'{prefix}_accepted') or 0)} "
+                f"site_contact_only_usable={int(detail.get(f'{prefix}_site_contact_only_usable') or 0)} "
+                f"site_contact_only_accepted={int(detail.get(f'{prefix}_site_contact_only_accepted') or 0)} "
                 f"rejected_invalid_email={int(detail.get(f'{prefix}_rejected_invalid_email') or 0)} "
                 f"rejected_free_domain={int(detail.get(f'{prefix}_rejected_free_domain') or 0)} "
                 f"rejected_suppressed={int(detail.get(f'{prefix}_rejected_suppressed') or 0)} "
@@ -1910,6 +2195,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         print(f"{ERR_GENERATOR_FAILED} stage=for_date err=invalid_for_date", file=sys.stderr)
         return 2
+    run_started_at = _current_run_started_at()
+    run_token = _generator_run_token(run_started_at)
 
     data_dir = crm_store.data_dir()
     output_path = _output_path(data_dir)
@@ -2010,11 +2297,15 @@ def main(argv: list[str] | None = None) -> int:
             for prefix in AUTOGROW_SOURCE_PREFIX.values():
                 detail[f"{prefix}_candidate"] = 0
                 detail[f"{prefix}_accepted"] = 0
+                detail[f"{prefix}_site_contact_only_usable"] = 0
+                detail[f"{prefix}_site_contact_only_accepted"] = 0
                 detail[f"{prefix}_max_fetch_pages"] = int(autogrow_cfg["max_fetch_pages"])
                 detail[f"{prefix}_pages_fetched"] = 0
                 detail[f"{prefix}_backlog_credit"] = 0
                 for reject_key in AUTOGROW_REJECT_KEYS:
                     detail[f"{prefix}_rejected_{reject_key}"] = 0
+            detail["aiha_site_contact_only_usable"] = 0
+            detail["aiha_site_contact_only_accepted"] = 0
             autogrow_state_details.append(detail)
             if state_norm == _normalize_state(selected_state):
                 selected_backlog_current = int(backlog_current_item)
@@ -2101,9 +2392,18 @@ def main(argv: list[str] | None = None) -> int:
     }
     apollo_enrich_remaining = int(apollo_cfg.get("enrich_max_per_run") or 0)
     diagnostics_path: Path | None = None
+    aiha_lane_yield_path: Path | None = None
     autogrow_rows: list[dict[str, str]] = []
     autogrow_seen_domains: set[str] = set()
     enrich_metrics = _default_generator_enrich_metrics()
+    aiha_lane_yield_snapshot = _empty_aiha_lane_yield_snapshot(
+        run_date=run_date,
+        run_started_at=run_started_at,
+        run_token=run_token,
+        state_scope=selection_states,
+        selected_state=selected_state,
+        source_tokens=list(autogrow_cfg.get("sources") or []),
+    )
 
     if args.print_config:
         print(f"{PASS_GENERATOR_PRINT_CONFIG} data_dir={data_dir.resolve()}")
@@ -2118,12 +2418,15 @@ def main(argv: list[str] | None = None) -> int:
             rows_read=int(cohort_summary.get("eligible") or 0),
             rows_written=0,
             status="PRINT_CONFIG",
+            run_started_at=run_started_at,
+            run_token=run_token,
             autogrow=autogrow_state,
             enrich_cfg=enrich_cfg,
             enrich_metrics=enrich_metrics,
             aiha_result=aiha_result,
             aiha_rejected=aiha_rejected,
             aiha_loss_counters=aiha_loss_counters,
+            aiha_lane_yield=aiha_lane_yield_snapshot,
             ohs_bg_result=ohs_bg_result,
             ohs_bg_rejected=ohs_bg_rejected,
             apollo_cfg=apollo_cfg,
@@ -2167,6 +2470,8 @@ def main(argv: list[str] | None = None) -> int:
                 break
             if source_token not in AUTOGROW_ALLOWED_SOURCES:
                 continue
+            if source_token == "AIHA":
+                aiha_lane_yield_snapshot["source_configured"] = True
 
             effective_max_fetch_pages = int(autogrow_cfg["max_fetch_pages"])
             if source_token == "OHS_BG":
@@ -2197,6 +2502,7 @@ def main(argv: list[str] | None = None) -> int:
             rows_candidate = list(result.get("rows") or [])
             source_candidate_count = len(rows_candidate)
             fit_gate_rejected: Counter = Counter()
+            pre_contact_rows = list(rows_candidate)
             if source_token == TDLR_STATE_LIC_SOURCE_KEY:
                 result["effective_license_types"] = list(
                     result.get("effective_license_types") or prospect_sources_state_lic.resolve_state_lic_license_types()
@@ -2247,6 +2553,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             rejected.update(fit_gate_rejected)
             accepted_rows = filtered_rows[:remaining_slots]
+            if source_token == "AIHA":
+                _record_aiha_lane_yield_rows(
+                    aiha_lane_yield_snapshot,
+                    source_state=state_detail,
+                    raw_rows=pre_contact_rows,
+                    resolved_rows=rows_candidate,
+                    accepted_rows=accepted_rows,
+                )
             sendable_accepted = sum(
                 1
                 for row in accepted_rows
@@ -2260,6 +2574,12 @@ def main(argv: list[str] | None = None) -> int:
             if source_prefix:
                 detail[f"{source_prefix}_candidate"] = int(source_candidate_count)
                 detail[f"{source_prefix}_accepted"] = len(accepted_rows)
+                if source_token == "AIHA":
+                    lane_yield_by_state = dict((aiha_lane_yield_snapshot.get("by_state") or {}).get(state_detail) or {})
+                    detail[f"{source_prefix}_site_contact_only_usable"] = int(lane_yield_by_state.get("usable_only") or 0)
+                    detail[f"{source_prefix}_site_contact_only_accepted"] = int(lane_yield_by_state.get("accepted") or 0)
+                    detail["aiha_site_contact_only_usable"] = int(lane_yield_by_state.get("usable_only") or 0)
+                    detail["aiha_site_contact_only_accepted"] = int(lane_yield_by_state.get("accepted") or 0)
                 detail[f"{source_prefix}_max_fetch_pages"] = int(effective_max_fetch_pages)
                 detail[f"{source_prefix}_pages_fetched"] = int(result.get("pages_fetched") or 0)
                 detail[f"{source_prefix}_backlog_credit"] = int(backlog_credit)
@@ -2380,6 +2700,14 @@ def main(argv: list[str] | None = None) -> int:
             for d in autogrow_state_details
         )
     )
+    if bool(aiha_lane_yield_snapshot.get("source_configured")) and not bool(args.dry_run):
+        aiha_lane_yield_path = _write_aiha_lane_yield_snapshot(
+            diagnostics_dir=diagnostics_dir,
+            run_date=run_date,
+            snapshot=aiha_lane_yield_snapshot,
+        )
+    if aiha_lane_yield_path is not None:
+        aiha_lane_yield_snapshot["diagnostics_path"] = str(aiha_lane_yield_path.resolve(strict=False))
     rows_read_total = int(cohort_summary.get("eligible") or 0)
 
     if args.dry_run:
@@ -2390,12 +2718,15 @@ def main(argv: list[str] | None = None) -> int:
             rows_read=rows_read_total,
             rows_written=len(rows),
             status="DRY_RUN",
+            run_started_at=run_started_at,
+            run_token=run_token,
             autogrow=autogrow_state,
             enrich_cfg=enrich_cfg,
             enrich_metrics=enrich_metrics,
             aiha_result=aiha_result,
             aiha_rejected=aiha_rejected,
             aiha_loss_counters=aiha_loss_counters,
+            aiha_lane_yield=aiha_lane_yield_snapshot,
             ohs_bg_result=ohs_bg_result,
             ohs_bg_rejected=ohs_bg_rejected,
             apollo_cfg=apollo_cfg,
@@ -2424,12 +2755,15 @@ def main(argv: list[str] | None = None) -> int:
         rows_read=rows_read_total,
         rows_written=len(rows),
         status="OK",
+        run_started_at=run_started_at,
+        run_token=run_token,
         autogrow=autogrow_state,
         enrich_cfg=enrich_cfg,
         enrich_metrics=enrich_metrics,
         aiha_result=aiha_result,
         aiha_rejected=aiha_rejected,
         aiha_loss_counters=aiha_loss_counters,
+        aiha_lane_yield=aiha_lane_yield_snapshot,
         ohs_bg_result=ohs_bg_result,
         ohs_bg_rejected=ohs_bg_rejected,
         apollo_cfg=apollo_cfg,
