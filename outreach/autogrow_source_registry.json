@@ -13,7 +13,7 @@
       "token": "OHS_BG",
       "family": "OHS_BG",
       "implemented": true,
-      "consultant_bucket": "primary",
+      "consultant_bucket": "secondary",
       "prefix": "ohs_bg",
       "sort_order": 20
     },
@@ -60,10 +60,10 @@
     {
       "token": "BLUEBOOK",
       "family": "BLUEBOOK",
-      "implemented": false,
-      "consultant_bucket": "planned",
+      "implemented": true,
+      "consultant_bucket": "secondary",
       "prefix": "bluebook",
-      "sort_order": 80
+      "sort_order": 15
     },
     {
       "token": "THOMASNET",

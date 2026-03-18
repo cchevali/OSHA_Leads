@@ -19,7 +19,8 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Codex-owned engineering backlog
 
-- [ ] Add follow-on autogrow source modules on top of the registry-backed `outreach/scraper_engine.py` foundation: `BBB`, `BLUEBOOK`, `THOMASNET`, `AGC` (source modules + fixtures + generator tests). Planned tokens now fail fast until implemented.
+- [ ] Open the next source packet around an accessible second discovery lane that preserves the directory-to-website contact policy; `BLUEBOOK` stays nondefault until listing access is operationally approved.
+- [ ] Add follow-on autogrow source modules on top of the registry-backed `outreach/scraper_engine.py` foundation: `BBB`, `THOMASNET`, `AGC` (source modules + fixtures + generator tests). Planned tokens now fail fast until implemented.
 - [ ] Define trial -> paid email-only sequence using existing lifecycle states (`replied`, `trial_started`, `converted`) and conversion artifacts in `run_trial_daily.py`.
 - [ ] Add an operator-triggered schedule for `outreach\run_ops_snapshot.py` and `outreach\cleanup_outreach_dry_run_artifacts.py` on the canonical PC or runner.
 - [ ] Review complaint/FBL intake handling separately from the now-codified bounce + suppression path; provider complaint signals are still human/manual today.
