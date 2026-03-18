@@ -106,11 +106,6 @@ def _consultant_bucket_sources(bucket: str) -> tuple[str, ...]:
     return tuple(tokens)
 
 
-CONSULTANT_PRIMARY_SOURCES: tuple[str, ...] = _consultant_bucket_sources("primary")
-CONSULTANT_OVERFLOW_SOURCES: tuple[str, ...] = _consultant_bucket_sources("overflow")
-CONSULTANT_SECONDARY_SOURCES: tuple[str, ...] = _consultant_bucket_sources("secondary")
-
-
 def source_fit_defaults(source: str) -> tuple[str, int]:
     text = (source or "").strip().lower()
     if text.startswith("ai_assist_manual"):
@@ -122,6 +117,8 @@ def source_fit_defaults(source: str) -> tuple[str, int]:
     if text.startswith("apollo"):
         return "core_consultant", 1
     if text.startswith("aiha_consultants_listing:"):
+        return "recoverable_consultant", 1
+    if text.startswith("bluebook:"):
         return "recoverable_consultant", 1
     if text.startswith("ohs_buyers_guide:"):
         return "recoverable_consultant", 1
@@ -136,6 +133,8 @@ def source_family(source: str) -> str:
         return "AI_ASSIST"
     if text.startswith("aiha_consultants_listing"):
         return "AIHA"
+    if text.startswith("bluebook"):
+        return "BLUEBOOK"
     if text.startswith("ohs_buyers_guide"):
         return "OHS_BG"
     if text.startswith("apollo"):
@@ -160,6 +159,23 @@ def source_family_from_token(token: str) -> str:
     return family or "UNKNOWN"
 
 
+CONSULTANT_PRIMARY_SOURCES: tuple[str, ...] = _consultant_bucket_sources("primary")
+CONSULTANT_OVERFLOW_SOURCES: tuple[str, ...] = _consultant_bucket_sources("overflow")
+CONSULTANT_SECONDARY_SOURCES: tuple[str, ...] = _consultant_bucket_sources("secondary")
+FIXED_DEFAULT_SOURCE_FAMILIES: tuple[str, ...] = tuple(
+    source_family_from_token(token)
+    for token in ["STATE_LIC", "APOLLO", *CONSULTANT_PRIMARY_SOURCES, "OHS_BG"]
+    if source_family_from_token(token) != "UNKNOWN"
+)
+FIXED_DEFAULT_SOURCE_FAMILY_SET = set(FIXED_DEFAULT_SOURCE_FAMILIES)
+CANONICAL_PUBLIC_CONTACT_SOURCE_FAMILIES: tuple[str, ...] = tuple(
+    source_family_from_token(token)
+    for token in CONSULTANT_PRIMARY_SOURCES
+    if source_family_from_token(token) != "UNKNOWN"
+)
+CANONICAL_PUBLIC_CONTACT_SOURCE_FAMILY_SET = set(CANONICAL_PUBLIC_CONTACT_SOURCE_FAMILIES)
+
+
 def autogrow_source_order(configured_tokens: Iterable[str]) -> list[str]:
     unique: list[str] = []
     for raw in configured_tokens:
@@ -181,3 +197,16 @@ def counts_toward_consultant_backlog(source_token: str) -> bool:
 
 def is_secondary_source(source_token: str) -> bool:
     return normalize_source_token(source_token) in CONSULTANT_SECONDARY_SOURCES
+
+
+def source_uses_fixed_defaults(source: str) -> bool:
+    family = source_family(source)
+    return family in FIXED_DEFAULT_SOURCE_FAMILY_SET
+
+
+def uses_canonical_public_contact_resolution(source: str) -> bool:
+    family = source_family(source)
+    if family != "UNKNOWN":
+        return family in CANONICAL_PUBLIC_CONTACT_SOURCE_FAMILY_SET
+    token = normalize_source_token(source)
+    return token in CANONICAL_PUBLIC_CONTACT_SOURCE_FAMILY_SET

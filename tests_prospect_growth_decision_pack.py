@@ -127,7 +127,7 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
                 {
                     "seeds": {
                         "seed_aiha_tx": {"seed_source_token": "AIHA"},
-                        "seed_ohs_ca": {"seed_source_token": "OHS_BG"},
+                        "seed_bluebook_ca": {"seed_source_token": "BLUEBOOK"},
                     }
                 },
                 indent=2,
@@ -173,15 +173,15 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
                 {
                     "state": "CA",
                     "decision": "reject",
-                    "firm": "OHS Reviewed",
-                    "website": "https://reviewed-ohs.example.com",
+                    "firm": "Bluebook Reviewed",
+                    "website": "https://reviewed-bluebook.example.com",
                     "contact_name": "Chris Principal",
                     "title": "Principal",
-                    "email": "chris@reviewed-ohs.example.com",
-                    "source_urls": "https://reviewed-ohs.example.com",
+                    "email": "chris@reviewed-bluebook.example.com",
+                    "source_urls": "https://reviewed-bluebook.example.com",
                     "confidence": "40",
                     "evidence_snippet": "uncertain fit",
-                    "seed_id": "seed_ohs_ca",
+                    "seed_id": "seed_bluebook_ca",
                 }
             )
         fixed_ts = datetime(2026, 3, 15, 12, 0, 0).timestamp()
@@ -194,7 +194,7 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
             "MFO_DATA_DIR_SOURCE": "",
             "OUTREACH_STATES": "TX,CA",
             "PROSPECT_AUTOGROW_STATES": "",
-            "PROSPECT_AUTOGROW_SOURCES": "AIHA,OHS_BG,STATE_LIC",
+            "PROSPECT_AUTOGROW_SOURCES": "AIHA,BLUEBOOK",
             "PROSPECT_AUTOGROW_BACKLOG_TARGET": "10",
             "PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET": "5",
             "PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE": "2",
@@ -226,9 +226,9 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
         )
         self._seed_prospect(
             db_path,
-            prospect_id="ohs_import_ca",
+            prospect_id="bluebook_import_ca",
             state="CA",
-            source="ohs_buyers_guide:company-1",
+            source="bluebook:company-1",
             status="contacted",
             created_at="2026-03-13T10:00:00+00:00",
             default_send_eligible=1,
@@ -250,7 +250,7 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
         )
         self._write_cache(
             data_dir,
-            source_token="OHS_BG",
+            source_token="BLUEBOOK",
             state="CA",
             fetched_at_utc="2026-03-15T12:30:00+00:00",
             cache_max_age_days=7,
@@ -259,8 +259,8 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
                     "firm": "Bravo Safety",
                     "website": "https://bravo-safety.example.com",
                     "state": "CA",
-                    "source": "ohs_buyers_guide:company-2",
-                    "source_url": "https://buyersguide.example.com/company-2",
+                    "source": "bluebook:company-2",
+                    "source_url": "https://www.thebluebook.com/iProView/12345/locations-contacts.html",
                 }
             ],
         )
@@ -297,7 +297,7 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
                 rc = growth_tool.main(["--print-config"])
             self.assertEqual(rc, 0)
             self.assertIn("PROSPECT_GROWTH_STATES=TX,CA", out.getvalue())
-            self.assertIn("PROSPECT_GROWTH_SOURCES=AIHA,OHS_BG,STATE_LIC", out.getvalue())
+            self.assertIn("PROSPECT_GROWTH_SOURCES=AIHA,BLUEBOOK", out.getvalue())
 
             dry_run_out = io.StringIO()
             with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
@@ -310,12 +310,11 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
             self.assertIn("SOURCE-BY-SOURCE FUNNEL BY STATE", text)
             self.assertIn("AI-ASSIST REVIEW OUTCOMES BY SOURCE/STATE", text)
             self.assertIn("TX / AIHA: reviewed_accepts_14d=1", text)
-            self.assertIn("CA / OHS_BG: reviewed_accepts_14d=0 reviewed_rejects_14d=1", text)
+            self.assertIn("CA / BLUEBOOK: reviewed_accepts_14d=0 reviewed_rejects_14d=1", text)
             self.assertIn("STATE LIC SHADOW PACKET PROFILES", text)
             self.assertIn("STATE_LIC_SHADOW_COUNTS_ARE_DIAGNOSTIC_ONLY=1", text)
-            self.assertIn("EXHAUST_AIHA_OHS_BG_EXISTING_INVENTORY: RECOMMEND", text)
-            self.assertIn("REMOVE_STATE_LIC_AC_CONTRACTOR_FETCHES: RECOMMEND", text)
-            self.assertIn("REPORT_STATE_LIC_SHADOW_PACKET_COUNTS: RECOMMEND", text)
+            self.assertIn("DEPLOY_DIRECTORY_TO_WEBSITE_CONTACT_PIVOT: RECOMMEND", text)
+            self.assertIn("VALIDATE_BLUEBOOK_MULTISTATE_CONTRIBUTION: RECOMMEND", text)
             self.assertIn("NEW_SOURCE_REQUIRED: TRIGGER - cycle_selected=2 target=5", text)
             self.assertFalse((data_dir / "audits" / "prospect_growth").exists())
 
@@ -345,7 +344,7 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
             report_text = text_path.read_text(encoding="utf-8")
             self.assertIn("DETERMINISTIC RECOMMENDATIONS", report_text)
             self.assertIn("KEEP_CURRENT_ARCHITECTURE: RECOMMEND", report_text)
-            self.assertIn("EXHAUST_AIHA_OHS_BG_EXISTING_INVENTORY: RECOMMEND", report_text)
+            self.assertIn("DEPLOY_DIRECTORY_TO_WEBSITE_CONTACT_PIVOT: RECOMMEND", report_text)
             self.assertIn("NEW_SOURCE_REQUIRED: TRIGGER - cycle_selected=2 target=5", report_text)
             self.assertIn("STATE_LIC_SHADOW_COUNTS_ARE_DIAGNOSTIC_ONLY=1", report_text)
 
@@ -360,9 +359,8 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
                 list(recommendation_index.keys()),
                 [
                     "KEEP_CURRENT_ARCHITECTURE",
-                    "EXHAUST_AIHA_OHS_BG_EXISTING_INVENTORY",
-                    "REMOVE_STATE_LIC_AC_CONTRACTOR_FETCHES",
-                    "REPORT_STATE_LIC_SHADOW_PACKET_COUNTS",
+                    "DEPLOY_DIRECTORY_TO_WEBSITE_CONTACT_PIVOT",
+                    "VALIDATE_BLUEBOOK_MULTISTATE_CONTRIBUTION",
                     "NEW_SOURCE_REQUIRED",
                 ],
             )
@@ -371,7 +369,7 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
                 (row["state"], row["source"]): row for row in payload["review_outcomes"]
             }
             self.assertEqual(review_index[("TX", "AIHA")]["reviewed_accepts"], 1)
-            self.assertEqual(review_index[("CA", "OHS_BG")]["reviewed_rejects"], 1)
+            self.assertEqual(review_index[("CA", "BLUEBOOK")]["reviewed_rejects"], 1)
 
     def test_new_source_required_holds_when_cycle_meets_target(self):
         with tempfile.TemporaryDirectory() as d:

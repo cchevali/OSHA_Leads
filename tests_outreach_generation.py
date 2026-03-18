@@ -119,6 +119,82 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out)
             self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL", out)
 
+    def test_bluebook_canonical_contact_resolution_uses_public_site_email_without_enrichment(self):
+        from outreach import run_prospect_generation as generator
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "suppression.csv").write_text("email\n", encoding="utf-8")
+
+            bluebook_result = {
+                "rows": [
+                    {
+                        "firm": "Bluebook Safety",
+                        "website": "https://bluebook-safety.example.com",
+                        "state": "TX",
+                        "source": "bluebook:100",
+                        "source_url": "https://www.thebluebook.com/iProView/100/locations-contacts.html",
+                    }
+                ],
+                "cache_used": False,
+                "cache_age_days": 0,
+                "cache_path": data_dir / "prospect_generation" / "cache" / "bluebook" / "state_TX.json",
+                "pages_fetched": 1,
+                "parse_mode": "BLUEBOOK_PUBLIC",
+                "diagnostics_path": None,
+            }
+            resolved_rows = [
+                {
+                    "firm": "Bluebook Safety",
+                    "website": "https://bluebook-safety.example.com",
+                    "state": "TX",
+                    "source": "bluebook:100",
+                    "source_url": "https://www.thebluebook.com/iProView/100/locations-contacts.html",
+                    "email": "info@bluebook-safety.example.com",
+                    "contact_email": "info@bluebook-safety.example.com",
+                    "email_status": "scraped_from_site",
+                }
+            ]
+
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "PROSPECT_AUTOGROW_ENABLED": "1",
+                "PROSPECT_AUTOGROW_SOURCES": "BLUEBOOK",
+                "PROSPECT_AUTOGROW_BACKLOG_TARGET": "1",
+                "PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN": "2",
+                "PROSPECT_AUTOGROW_HTTP_SLEEP_MS": "0",
+                "PROSPECT_ENRICH_DOMAIN_ENABLED": "1",
+            }
+
+            buf = io.StringIO()
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch(
+                    "outreach.run_prospect_generation.prospect_sources_bluebook.fetch_bluebook_state_rows",
+                    return_value=bluebook_result,
+                ) as mocked_bluebook:
+                    with mock.patch(
+                        "outreach.run_prospect_generation.scraper_engine.apply_email_resolution_waterfall",
+                        return_value=resolved_rows,
+                    ) as mocked_waterfall:
+                        with mock.patch(
+                            "outreach.run_prospect_generation.prospect_enrich_email.enrich_autogrow_rows"
+                        ) as mocked_enrich:
+                            with redirect_stdout(buf):
+                                rc = generator.main(["--dry-run", "--for-date", "2026-02-24"])
+
+            self.assertEqual(rc, 0, msg=buf.getvalue())
+            mocked_bluebook.assert_called_once()
+            mocked_waterfall.assert_called_once()
+            mocked_enrich.assert_not_called()
+            out = buf.getvalue()
+            self.assertIn("GENERATOR_AUTOGROW_SOURCES=BLUEBOOK", out)
+            self.assertIn("GENERATOR_BLUEBOOK_ROWS_ACCEPTED=1", out)
+            self.assertIn("GENERATOR_SOURCE_COUNT_BLUEBOOK=1", out)
+            self.assertIn("GENERATOR_EMAIL_STATUS_SCRAPED_FROM_SITE=1", out)
+            self.assertIn("GENERATOR_EMAIL_STATUS_PATTERN_GENERATED=0", out)
+
     def test_apollo_default_titles_are_consultant_firm_buyer_focused(self):
         from outreach import run_prospect_generation as generator
 
@@ -1067,7 +1143,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=OHS_BG state=CA", out)
             self.assertIn("max_fetch_pages=12", out)
             self.assertIn("pages_fetched=2", out)
-            self.assertIn("backlog_credit=1", out)
+            self.assertIn("backlog_credit=0", out)
 
             out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
             self.assertTrue(out_path.exists(), msg=f"missing output: {out_path}")
@@ -1609,6 +1685,7 @@ class TestProspectGeneration(unittest.TestCase):
                     with mock.patch(
                         "outreach.run_prospect_generation.scraper_engine.probe_source_availability",
                         side_effect=[
+                            {"source": "BLUEBOOK", "available": True, "reason": "BLUEBOOK_SEARCH_RESULTS"},
                             {"source": "BCSP", "available": False, "reason": "unfiltered_global_results"},
                             {"source": "OSHA_NEWS", "available": False, "reason": "crawl4ai_not_installed"},
                             {"source": "STATE_LIC", "available": True, "reason": "http_api"},
@@ -1620,6 +1697,7 @@ class TestProspectGeneration(unittest.TestCase):
             out = buf.getvalue()
             self.assertIn("crawl4ai_installed=NO", out)
             self.assertIn("playwright_browsers_installed=NO", out)
+            self.assertIn("BLUEBOOK_available=YES reason=BLUEBOOK_SEARCH_RESULTS", out)
             self.assertIn("BCSP_available=NO reason=unfiltered_global_results", out)
             self.assertIn("OSHA_NEWS_available=NO reason=crawl4ai_not_installed", out)
             self.assertIn("STATE_LIC_available=YES reason=http_api", out)
@@ -2154,7 +2232,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_AIHA_LOSS_DUPLICATE_EMAIL=1", out)
             self.assertIn("GENERATOR_AIHA_LOSS_DUPLICATE_DOMAIN=3", out)
             self.assertIn("GENERATOR_AIHA_LOSS_STATE_OUT_OF_SCOPE=1", out)
-            self.assertIn("GENERATOR_AIHA_LOSS_FREE_DOMAIN=1", out)
+            self.assertIn("GENERATOR_AIHA_LOSS_FREE_DOMAIN=0", out)
             self.assertIn("GENERATOR_AIHA_LOSS_ALREADY_KNOWN_CRM=1", out)
             self.assertIn("GENERATOR_AIHA_LOSS_DEFAULT_SEND_INELIGIBLE=1", out)
 

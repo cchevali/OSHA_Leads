@@ -113,29 +113,29 @@ class TestProspectAiAssistTools(unittest.TestCase):
             )
             self._write_cache_rows(
                 data_dir,
-                "OHS_BG",
+                "BLUEBOOK",
                 "CA",
                 [
                     {
                         "firm": "Alpha Safety",
                         "website": "https://alpha-safety.co",
                         "state": "CA",
-                        "source": "ohs_buyers_guide:dup-alpha",
-                        "source_url": "https://buyersguide.example.com/alpha",
+                        "source": "bluebook:dup-alpha",
+                        "source_url": "https://www.thebluebook.com/iProView/10001/locations-contacts.html",
                     },
                     {
                         "firm": "Charlie Safety",
                         "website": "https://charlie-safety.co",
                         "state": "CA",
-                        "source": "ohs_buyers_guide:charlie",
-                        "source_url": "https://buyersguide.example.com/charlie",
+                        "source": "bluebook:charlie",
+                        "source_url": "https://www.thebluebook.com/iProView/10002/locations-contacts.html",
                     },
                     {
                         "firm": "Delta Safety",
                         "website": "https://delta-safety.co",
                         "state": "CA",
-                        "source": "ohs_buyers_guide:delta",
-                        "source_url": "https://buyersguide.example.com/delta",
+                        "source": "bluebook:delta",
+                        "source_url": "https://www.thebluebook.com/iProView/10003/locations-contacts.html",
                     },
                 ],
             )
@@ -203,7 +203,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
                 dump_tool.prospect_sources_aiha.PAGE_URL_TEMPLATE.format(page_id="10-11"),
                 prompt_text,
             )
-            self.assertIn("https://buyersguide.example.com/charlie", prompt_text)
+            self.assertIn("https://www.thebluebook.com/iProView/10002/locations-contacts.html", prompt_text)
             self.assertIn(",".join(dump_tool.REVIEW_COLUMNS), prompt_text)
 
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -216,7 +216,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertEqual(manifest["excluded_already_in_crm"], 2)
             self.assertEqual(manifest["excluded_duplicate_seed"], 0)
             self.assertEqual(manifest["included_without_website"], 0)
-            self.assertEqual(manifest["source_breakdown"], {"AIHA": 2, "OHS_BG": 3})
+            self.assertEqual(manifest["source_breakdown"], {"AIHA": 2, "BLUEBOOK": 3})
             self.assertEqual(len(manifest["packets"]), 2)
             self.assertEqual(manifest["packets"][0]["reviewed_import_filename"], "prospect_ai_assist_review_20260307_packet_001_reviewed.csv")
             self.assertEqual(manifest["packets"][0]["suggested_batch_id"], "2026-03-07_AIASSIST_P001")
@@ -380,6 +380,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
             env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_SOURCES"] = "STATE_LIC"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
             with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
                 rc = dump_tool.main(
@@ -420,9 +421,9 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertEqual(manifest["excluded_state_lic_fit_mismatch"], 0)
             self.assertEqual(manifest["observed_state_lic_fit_mismatch"], 0)
             self.assertEqual(manifest["source_breakdown"], {"STATE_LIC": 2})
-            self.assertEqual(manifest["source_raw_breakdown"], {"AIHA": 0, "OHS_BG": 0, "STATE_LIC": 2})
-            self.assertEqual(manifest["source_review_eligible_breakdown"], {"AIHA": 0, "OHS_BG": 0, "STATE_LIC": 2})
-            self.assertEqual(manifest["selected_source_breakdown"], {"AIHA": 0, "OHS_BG": 0, "STATE_LIC": 0})
+            self.assertEqual(manifest["source_raw_breakdown"], {"STATE_LIC": 2})
+            self.assertEqual(manifest["source_review_eligible_breakdown"], {"STATE_LIC": 2})
+            self.assertEqual(manifest["selected_source_breakdown"], {"STATE_LIC": 0})
             self.assertEqual(
                 manifest["stage_counts_by_source"]["STATE_LIC"],
                 {
@@ -533,20 +534,20 @@ class TestProspectAiAssistTools(unittest.TestCase):
             )
             self._write_cache_rows(
                 data_dir,
-                "OHS_BG",
+                "BLUEBOOK",
                 "TX",
                 [
                     {
                         "firm": "Wrong State Co",
                         "website": "https://wrong-state.example.com",
                         "state": "CA",
-                        "source": "ohs_buyers_guide:02",
+                        "source": "bluebook:02",
                     },
                     {
                         "firm": "No Locator Co",
                         "website": "",
                         "state": "TX",
-                        "source": "ohs_buyers_guide:03",
+                        "source": "bluebook:03",
                     },
                 ],
             )
@@ -555,6 +556,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
             env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_SOURCES"] = "AIHA,BLUEBOOK"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
             with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
                 rc = dump_tool.main(
@@ -587,9 +589,9 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertEqual(manifest["excluded_already_in_crm"], 1)
             self.assertEqual(manifest["excluded_duplicate_seed"], 0)
             self.assertEqual(manifest["included_without_website"], 0)
-            self.assertEqual(manifest["source_raw_breakdown"], {"AIHA": 2, "OHS_BG": 2, "STATE_LIC": 0})
-            self.assertEqual(manifest["source_review_eligible_breakdown"], {"AIHA": 1, "OHS_BG": 0, "STATE_LIC": 0})
-            self.assertEqual(manifest["selected_source_breakdown"], {"AIHA": 0, "OHS_BG": 0, "STATE_LIC": 0})
+            self.assertEqual(manifest["source_raw_breakdown"], {"AIHA": 2, "BLUEBOOK": 2})
+            self.assertEqual(manifest["source_review_eligible_breakdown"], {"AIHA": 1, "BLUEBOOK": 0})
+            self.assertEqual(manifest["selected_source_breakdown"], {"AIHA": 0, "BLUEBOOK": 0})
             self.assertEqual(
                 manifest["stage_counts_by_source"],
                 {
@@ -601,17 +603,9 @@ class TestProspectAiAssistTools(unittest.TestCase):
                         "candidates": 0,
                         "selected": 0,
                     },
-                    "OHS_BG": {
+                    "BLUEBOOK": {
                         "raw": 2,
                         "identity_ready": 1,
-                        "review_eligible": 0,
-                        "safety_passed": 0,
-                        "candidates": 0,
-                        "selected": 0,
-                    },
-                    "STATE_LIC": {
-                        "raw": 0,
-                        "identity_ready": 0,
                         "review_eligible": 0,
                         "safety_passed": 0,
                         "candidates": 0,
@@ -632,8 +626,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
                 manifest["exclusion_counts_by_source"],
                 {
                     "AIHA": 2,
-                    "OHS_BG": 2,
-                    "STATE_LIC": 0,
+                    "BLUEBOOK": 2,
                 },
             )
             self.assertEqual(
@@ -643,11 +636,10 @@ class TestProspectAiAssistTools(unittest.TestCase):
                         "excluded_already_in_crm": 1,
                         "excluded_bad_firm": 1,
                     },
-                    "OHS_BG": {
+                    "BLUEBOOK": {
                         "excluded_missing_minimum_locator": 1,
                         "excluded_state_mismatch": 1,
                     },
-                    "STATE_LIC": {},
                 },
             )
             self.assertEqual(
@@ -670,8 +662,8 @@ class TestProspectAiAssistTools(unittest.TestCase):
             )
             self.assertIn("AI_ASSIST_DUMP_SOURCE_AIHA_EXCLUDED_BAD_FIRM=1", text)
             self.assertIn("AI_ASSIST_DUMP_SOURCE_AIHA_EXCLUDED_ALREADY_IN_CRM=1", text)
-            self.assertIn("AI_ASSIST_DUMP_SOURCE_OHS_BG_EXCLUDED_STATE_MISMATCH=1", text)
-            self.assertIn("AI_ASSIST_DUMP_SOURCE_OHS_BG_EXCLUDED_MISSING_MINIMUM_LOCATOR=1", text)
+            self.assertIn("AI_ASSIST_DUMP_SOURCE_BLUEBOOK_EXCLUDED_STATE_MISMATCH=1", text)
+            self.assertIn("AI_ASSIST_DUMP_SOURCE_BLUEBOOK_EXCLUDED_MISSING_MINIMUM_LOCATOR=1", text)
 
     def test_dump_excludes_tx_environmental_air_conditioning_rows_from_packets(self):
         with tempfile.TemporaryDirectory() as d:
@@ -699,6 +691,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
             env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_SOURCES"] = "STATE_LIC"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
             with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
                 rc = dump_tool.main(
@@ -726,9 +719,9 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertEqual(manifest["observed_state_lic_fit_mismatch"], 1)
             self.assertEqual(manifest["excluded_state_lic_hard_negative_class"], 1)
             self.assertEqual(manifest["source_breakdown"], {})
-            self.assertEqual(manifest["source_raw_breakdown"], {"AIHA": 0, "OHS_BG": 0, "STATE_LIC": 1})
-            self.assertEqual(manifest["source_review_eligible_breakdown"], {"AIHA": 0, "OHS_BG": 0, "STATE_LIC": 0})
-            self.assertEqual(manifest["selected_source_breakdown"], {"AIHA": 0, "OHS_BG": 0, "STATE_LIC": 0})
+            self.assertEqual(manifest["source_raw_breakdown"], {"STATE_LIC": 1})
+            self.assertEqual(manifest["source_review_eligible_breakdown"], {"STATE_LIC": 0})
+            self.assertEqual(manifest["selected_source_breakdown"], {"STATE_LIC": 0})
             self.assertEqual(
                 manifest["stage_counts_by_source"]["STATE_LIC"],
                 {
@@ -848,6 +841,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
             env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_SOURCES"] = "STATE_LIC"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
             with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
                 rc = dump_tool.main(
@@ -995,6 +989,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
             env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_SOURCES"] = "AIHA,STATE_LIC"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "10"
             with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
                 rc = dump_tool.main(
@@ -1017,7 +1012,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             )
             self.assertEqual(manifest["state_lic_cap_percent"], 20)
             self.assertEqual(manifest["state_lic_feedback_snapshot"]["state_lic_overall"]["reviewed"], 10)
-            self.assertEqual(manifest["selected_source_breakdown"], {"AIHA": 5, "OHS_BG": 0, "STATE_LIC": 1})
+            self.assertEqual(manifest["selected_source_breakdown"], {"AIHA": 5, "STATE_LIC": 1})
             self.assertIn("AI_ASSIST_DUMP_STATE_LIC_CAP_PERCENT=20", text)
 
     def test_dump_deterministic_packet_slicing_with_caps(self):
@@ -1046,15 +1041,15 @@ class TestProspectAiAssistTools(unittest.TestCase):
             )
             self._write_cache_rows(
                 data_dir,
-                "OHS_BG",
+                "BLUEBOOK",
                 "TX",
                 [
                     {
                         "firm": "Bravo Safety",
                         "website": "https://bravo.example.com",
                         "state": "TX",
-                        "source": "ohs_buyers_guide:11",
-                        "source_url": "https://buyersguide.example.com/bravo",
+                        "source": "bluebook:11",
+                        "source_url": "https://www.thebluebook.com/iProView/20001/locations-contacts.html",
                     }
                 ],
             )
@@ -1077,6 +1072,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
             env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_SOURCES"] = "AIHA,BLUEBOOK,STATE_LIC"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
             out_one = io.StringIO()
             out_two = io.StringIO()
@@ -1148,15 +1144,15 @@ class TestProspectAiAssistTools(unittest.TestCase):
             )
             self._write_cache_rows(
                 data_dir,
-                "OHS_BG",
+                "BLUEBOOK",
                 "TX",
                 [
                     {
                         "firm": "Charlie Safety",
                         "website": "https://charlie.example.com",
                         "state": "TX",
-                        "source": "ohs_buyers_guide:33",
-                        "source_url": "https://buyersguide.example.com/charlie",
+                        "source": "bluebook:33",
+                        "source_url": "https://www.thebluebook.com/iProView/20002/locations-contacts.html",
                     }
                 ],
             )
@@ -1197,6 +1193,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
             env["OUTREACH_STATES"] = "TX"
+            env["PROSPECT_AUTOGROW_SOURCES"] = "AIHA,BLUEBOOK,STATE_LIC"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
             with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
                 rc = dump_tool.main(
@@ -1223,8 +1220,8 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertEqual(manifest["excluded_state_lic_fit_mismatch"], 0)
             self.assertEqual(manifest["observed_state_lic_fit_mismatch"], 1)
             self.assertEqual(manifest["excluded_state_lic_hard_negative_class"], 1)
-            self.assertEqual(manifest["source_breakdown"], {"AIHA": 2, "OHS_BG": 1, "STATE_LIC": 2})
-            self.assertEqual(manifest["selected_source_breakdown"], {"AIHA": 2, "OHS_BG": 1, "STATE_LIC": 1})
+            self.assertEqual(manifest["source_breakdown"], {"AIHA": 2, "BLUEBOOK": 1, "STATE_LIC": 2})
+            self.assertEqual(manifest["selected_source_breakdown"], {"AIHA": 2, "BLUEBOOK": 1, "STATE_LIC": 1})
             self.assertEqual(
                 manifest["stage_counts_by_source"]["STATE_LIC"],
                 {
@@ -1341,6 +1338,12 @@ class TestProspectAiAssistTools(unittest.TestCase):
                 f"AI_ASSIST_DUMP_OUTPUT_DIR={(data_dir / 'audits' / 'prospect_ai_assist').resolve()}",
                 text,
             )
+
+    def test_resolve_source_tokens_defaults_to_aiha_and_bluebook(self):
+        with mock.patch.dict(os.environ, {"PROSPECT_AUTOGROW_SOURCES": ""}, clear=False):
+            tokens, warning = dump_tool._resolve_source_tokens()
+        self.assertEqual(tokens, ["AIHA", "BLUEBOOK"])
+        self.assertEqual(warning, "")
 
     def test_import_dry_run_does_not_create_db(self):
         with tempfile.TemporaryDirectory() as d:

@@ -410,7 +410,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -ProspectAiAssistReviewEnabled 1 `
   -ProspectAiAssistReviewRawTarget 30 `
   -ProspectAiAssistReviewPacketSize 10 `
-  -ProspectAutoGrowSources AIHA,OHS_BG,STATE_LIC `
+  -ProspectAutoGrowSources AIHA,BLUEBOOK `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
@@ -544,11 +544,13 @@ Auto-growth (env-gated, optional):
 - OHS optional auth key (only if buyersguide pagination is work-email gated): `OHS_BG_STORAGE_STATE_PATH` (Playwright storage state JSON path).
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
 - Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (canonical persisted default `750` via `scripts\set_outreach_env.ps1`; ad hoc runs fall back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS` when unset).
-- Source scope: implemented tokens are `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`; canonical production list is `AIHA,OHS_BG,STATE_LIC`, while `BCSP` remains disabled there until it yields net-new accepted rows).
-- `STATE_LIC` remains implemented in the canonical list. AI-assist packet eligibility allows strong-identity review seeds even when no website exists, while consultant-fit logic still governs consultant backlog credit and `STATE_LIC_WORK_EMAIL` promotion.
-- Planned-but-unimplemented registry tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are rejected intentionally by `scripts\set_outreach_env.ps1` and `outreach\run_prospect_generation.py` until source modules land.
+- Source scope: implemented tokens are `AIHA`, `BLUEBOOK`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, and `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`; canonical production list is `AIHA,BLUEBOOK`, while `OHS_BG`, `BCSP`, `OSHA_NEWS`, and `STATE_LIC` remain implemented secondary lanes).
+- Canonical primary discovery automation uses a directory-to-website public-contact path: valid non-free source email first, otherwise crawl the source-provided company website for a public business email. Guessed domains, guessed emails, and Hunter/provider lookups are not part of the canonical `AIHA,BLUEBOOK` default lane.
+- `STATE_LIC` remains implemented as a secondary lane. AI-assist packet eligibility allows strong-identity review seeds even when no website exists, while consultant-fit logic still governs consultant backlog credit and `STATE_LIC_WORK_EMAIL` promotion.
+- Planned-but-unimplemented registry tokens such as `BBB`, `THOMASNET`, and `AGC` are rejected intentionally by `scripts\set_outreach_env.ps1` and `outreach\run_prospect_generation.py` until source modules land.
 - Cache paths:
   - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
+  - BLUEBOOK: `${DATA_DIR}\prospect_generation\cache\bluebook\state_<STATE>.json`
   - OHS_BG: `${DATA_DIR}\prospect_generation\cache\ohs_bg\state_<STATE>.json`
   - APOLLO: `${DATA_DIR}\prospect_generation\cache\apollo\state_<STATE>.json`
   - BCSP: `${DATA_DIR}\prospect_generation\cache\bcsp\state_<STATE>.json`
@@ -598,10 +600,11 @@ Generator emits machine-readable lines:
 - `GENERATOR_AUTOGROW_*`
 - `GENERATOR_AUTOGROW_SAFETY_NET_FORCED=1 reason=SENDABLE_BELOW_FLOOR states=<STATE:sendable,...>`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
 - `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
-- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> backlog_sendable_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
+- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> backlog_sendable_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> bluebook_candidate=<n> bluebook_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
 - `GENERATOR_AUTOGROW_STATES`
-- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG|APOLLO|BCSP|OSHA_NEWS|STATE_LIC> state=<STATE> ...`
+- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|BLUEBOOK|OHS_BG|APOLLO|BCSP|OSHA_NEWS|STATE_LIC> state=<STATE> ...`
 - `GENERATOR_AIHA_*`
+- `GENERATOR_BLUEBOOK_*`
 - `GENERATOR_OHS_BG_*`
 - `GENERATOR_APOLLO_*`
 - `GENERATOR_BCSP_*`, `GENERATOR_OSHA_NEWS_*`, `GENERATOR_STATE_LIC_*` (including effective TX license types, candidate license-type breakdown, and `GENERATOR_STATE_LIC_REJECTED_FIT_MISMATCH`)

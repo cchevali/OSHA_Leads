@@ -643,27 +643,11 @@ def _recommendations(
     source_totals = _aggregate_source_metrics(funnel_rows)
     gap_total = sum(int(row.get("gap") or 0) for row in list(backlog_rows or []))
     latest_manifest = dict(manifest_rows[0]) if manifest_rows else {}
-    state_lic = source_totals.get("STATE_LIC", Counter())
     aiha = source_totals.get("AIHA", Counter())
-    ohs_bg = source_totals.get("OHS_BG", Counter())
-    primary_consultant_fit = int(aiha.get("consultant_fit_rows", 0)) + int(ohs_bg.get("consultant_fit_rows", 0))
-    primary_imported = int(aiha.get("discovery_imported_rows", 0)) + int(ohs_bg.get("discovery_imported_rows", 0))
-    primary_sendable = int(aiha.get("send_eligible_rows", 0)) + int(ohs_bg.get("send_eligible_rows", 0))
-    production_shadow_total = int(
-        ((state_lic_shadow_packet_profiles.get(dump_tool.STATE_LIC_SHADOW_PROFILE_PRODUCTION) or {}).get("total") or 0)
-    )
-    default_shadow_total = int(
-        (
-            (state_lic_shadow_packet_profiles.get(dump_tool.STATE_LIC_SHADOW_PROFILE_DEFAULT_CLASSES_ONLY) or {}).get("total")
-            or 0
-        )
-    )
-    all_shadow_total = int(
-        (
-            (state_lic_shadow_packet_profiles.get(dump_tool.STATE_LIC_SHADOW_PROFILE_ALL_CONTRACTOR_ONLY) or {}).get("total")
-            or 0
-        )
-    )
+    bluebook = source_totals.get("BLUEBOOK", Counter())
+    primary_consultant_fit = int(aiha.get("consultant_fit_rows", 0)) + int(bluebook.get("consultant_fit_rows", 0))
+    primary_imported = int(aiha.get("discovery_imported_rows", 0)) + int(bluebook.get("discovery_imported_rows", 0))
+    primary_sendable = int(aiha.get("send_eligible_rows", 0)) + int(bluebook.get("send_eligible_rows", 0))
 
     cycle_target = _manifest_target(config, latest_manifest) if latest_manifest else int(config.get("ai_assist_raw_target") or 0)
     cycle_selected = int(latest_manifest.get("selected_row_count") or 0) if latest_manifest else 0
@@ -680,31 +664,22 @@ def _recommendations(
         "evidence": keep_current_evidence,
     }
 
-    exhaust_primary_inventory = {
-        "key": "EXHAUST_AIHA_OHS_BG_EXISTING_INVENTORY",
+    deploy_directory_to_website_contact_pivot = {
+        "key": "DEPLOY_DIRECTORY_TO_WEBSITE_CONTACT_PIVOT",
         "status": RECOMMEND,
         "evidence": (
-            f"gap_total={gap_total} aiha_consultant_fit={int(aiha.get('consultant_fit_rows', 0))} "
-            f"ohs_bg_consultant_fit={int(ohs_bg.get('consultant_fit_rows', 0))} "
+            f"configured_sources={','.join(list(config.get('configured_sources') or [])) or 'none'} "
+            f"gap_total={gap_total}"
+        ),
+    }
+
+    validate_bluebook_multistate_contribution = {
+        "key": "VALIDATE_BLUEBOOK_MULTISTATE_CONTRIBUTION",
+        "status": RECOMMEND,
+        "evidence": (
+            f"aiha_consultant_fit={int(aiha.get('consultant_fit_rows', 0))} "
+            f"bluebook_consultant_fit={int(bluebook.get('consultant_fit_rows', 0))} "
             f"primary_send_eligible_14d={primary_sendable} primary_imported_14d={primary_imported}"
-        ),
-    }
-
-    remove_state_lic_ac_fetches = {
-        "key": "REMOVE_STATE_LIC_AC_CONTRACTOR_FETCHES",
-        "status": RECOMMEND,
-        "evidence": (
-            f"state_lic_raw={int(state_lic.get('fetched_cache_rows', 0))} "
-            f"state_lic_hard_negatives={int((funnel_diagnostics.get('aggregated_exclusions') or {}).get('excluded_state_lic_hard_negative_class', 0))}"
-        ),
-    }
-
-    report_state_lic_shadow_packet_counts = {
-        "key": "REPORT_STATE_LIC_SHADOW_PACKET_COUNTS",
-        "status": RECOMMEND,
-        "evidence": (
-            f"production_total={production_shadow_total} default_classes_only_total={default_shadow_total} "
-            f"all_contractor_only_total={all_shadow_total}"
         ),
     }
 
@@ -723,9 +698,8 @@ def _recommendations(
 
     return [
         keep_current,
-        exhaust_primary_inventory,
-        remove_state_lic_ac_fetches,
-        report_state_lic_shadow_packet_counts,
+        deploy_directory_to_website_contact_pivot,
+        validate_bluebook_multistate_contribution,
         new_source_required,
     ]
 

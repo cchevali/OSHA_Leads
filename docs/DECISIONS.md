@@ -374,3 +374,32 @@ Runtime tick centralized scheduling and status artifacts, but operators still ha
 - Runtime status artifacts now include alert summary fields.
 - Operators can monitor alert state from `runtime_latest.json` plus alert dedupe records.
 - Missing SMTP or recipient configuration degrades to non-fatal skipped-alert tokens.
+
+## ADR-0013: Directory-To-Website Public Contact As Canonical Consultant Discovery Lane
+
+Date: 2026-03-17
+Status: Accepted
+
+### Context
+
+Legacy validation (`docs/legacy/TARGET_LIST_FACTORY_STATUS.md`, `docs/legacy/PROSPECTING_SOP.md`) showed the Wally/Indigo win came from public consultant discovery sources that reliably surfaced relevant firms and then led operators to a usable public business contact path on the company website. The winning pattern was narrower than "email-rich directory" and broader than "directory page must expose email directly."
+
+### Decision
+
+- Make `AIHA` plus `BLUEBOOK` the canonical default consultant discovery lane.
+- Treat canonical discovery contact resolution as: valid non-free source email first, otherwise crawl the source-provided company website for a public business email, otherwise leave email blank.
+- Keep guessed domains, guessed emails, Hunter/provider lookups, auth-gated discovery, and registry-heavy lanes outside the canonical default path.
+- Keep `OHS_BG` and `STATE_LIC` implemented but secondary/nondefault while source pivots are evaluated.
+- Keep `THOMASNET` proof-gated only; it is not promoted into defaults unless qualification passes.
+
+### Rationale
+
+- Matches the validated manual workflow more closely than requiring source-page emails.
+- Preserves a public, low-friction, multistate discovery posture without moving core operations onto guessed-email or auth-dependent workflows.
+- Keeps the default lane aligned with firms that are consultancy-relevant and likely to have reachable public business contact paths.
+
+### Consequences
+
+- Canonical defaults move to `AIHA,BLUEBOOK`.
+- Generator policy now treats directory-to-website public-contact extraction as first-class behavior for canonical primary sources.
+- Secondary lanes remain available for diagnostics and explicit operator runs, but they no longer define the default product thesis.

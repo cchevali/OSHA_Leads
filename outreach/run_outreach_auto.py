@@ -536,9 +536,8 @@ def _safe_csv_value(value: str) -> str:
 
 def _source_fit_tier(row: sqlite3.Row) -> str:
     source_text = _safe_text(str(row["source"] or "") if "source" in row.keys() else "")
-    source_family = source_policy.source_family(source_text)
     default_tier, _default_send = source_policy.source_fit_defaults(source_text)
-    if source_family in {"STATE_LIC", "APOLLO", "AIHA", "OHS_BG"}:
+    if source_policy.source_uses_fixed_defaults(source_text):
         return str(default_tier or "").strip().lower()
     if "source_fit_tier" not in row.keys():
         return str(default_tier or "").strip().lower()
@@ -551,9 +550,8 @@ def _source_fit_tier(row: sqlite3.Row) -> str:
 
 def _default_send_eligible(row: sqlite3.Row) -> int:
     source_text = _safe_text(str(row["source"] or "") if "source" in row.keys() else "")
-    source_family = source_policy.source_family(source_text)
     _default_tier, default_send = source_policy.source_fit_defaults(source_text)
-    if source_family in {"STATE_LIC", "APOLLO", "AIHA", "OHS_BG"}:
+    if source_policy.source_uses_fixed_defaults(source_text):
         return int(default_send)
     if "default_send_eligible" not in row.keys():
         return int(default_send)

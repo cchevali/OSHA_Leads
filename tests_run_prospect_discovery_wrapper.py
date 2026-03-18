@@ -22,6 +22,7 @@ class TestRunProspectDiscoveryWrapper(unittest.TestCase):
             p.resolve().relative_to(REPO_ROOT.resolve())
             for p in REPO_ROOT.rglob("run_prospect_discovery.py")
             if not p.resolve().relative_to(REPO_ROOT.resolve()).as_posix().startswith(".local/wip_autosave_worktree/")
+            and not p.resolve().relative_to(REPO_ROOT.resolve()).as_posix().startswith(".claude/")
         }
         expected = {EXPECTED_WRAPPER_REL, EXPECTED_CANONICAL_REL}
         self.assertEqual(
