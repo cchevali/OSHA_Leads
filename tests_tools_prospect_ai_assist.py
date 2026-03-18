@@ -145,6 +145,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
             env["PROSPECT_AUTOGROW_STATES"] = "TX,CA"
+            env["PROSPECT_AUTOGROW_SOURCES"] = "AIHA,BLUEBOOK"
             env["OUTREACH_STATES"] = "FL"
             env["PROSPECT_AUTOGROW_BACKLOG_TARGET"] = "5"
             with (
@@ -1339,10 +1340,10 @@ class TestProspectAiAssistTools(unittest.TestCase):
                 text,
             )
 
-    def test_resolve_source_tokens_defaults_to_aiha_and_bluebook(self):
+    def test_resolve_source_tokens_defaults_to_aiha_only(self):
         with mock.patch.dict(os.environ, {"PROSPECT_AUTOGROW_SOURCES": ""}, clear=False):
             tokens, warning = dump_tool._resolve_source_tokens()
-        self.assertEqual(tokens, ["AIHA", "BLUEBOOK"])
+        self.assertEqual(tokens, ["AIHA"])
         self.assertEqual(warning, "")
 
     def test_import_dry_run_does_not_create_db(self):

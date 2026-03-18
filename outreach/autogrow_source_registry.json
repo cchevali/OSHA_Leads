@@ -61,7 +61,7 @@
       "token": "BLUEBOOK",
       "family": "BLUEBOOK",
       "implemented": true,
-      "consultant_bucket": "primary",
+      "consultant_bucket": "secondary",
       "prefix": "bluebook",
       "sort_order": 15
     },

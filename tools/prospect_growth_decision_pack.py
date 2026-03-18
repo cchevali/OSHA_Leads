@@ -644,10 +644,20 @@ def _recommendations(
     gap_total = sum(int(row.get("gap") or 0) for row in list(backlog_rows or []))
     latest_manifest = dict(manifest_rows[0]) if manifest_rows else {}
     aiha = source_totals.get("AIHA", Counter())
-    bluebook = source_totals.get("BLUEBOOK", Counter())
-    primary_consultant_fit = int(aiha.get("consultant_fit_rows", 0)) + int(bluebook.get("consultant_fit_rows", 0))
-    primary_imported = int(aiha.get("discovery_imported_rows", 0)) + int(bluebook.get("discovery_imported_rows", 0))
-    primary_sendable = int(aiha.get("send_eligible_rows", 0)) + int(bluebook.get("send_eligible_rows", 0))
+    configured_sources = [str(token or "").strip().upper() for token in list(config.get("configured_sources") or []) if str(token or "").strip()]
+    non_aiha_sources = [token for token in configured_sources if token != "AIHA"]
+    non_aiha_consultant_fit = sum(
+        int((source_totals.get(token, Counter()) or {}).get("consultant_fit_rows", 0))
+        for token in non_aiha_sources
+    )
+    non_aiha_imported = sum(
+        int((source_totals.get(token, Counter()) or {}).get("discovery_imported_rows", 0))
+        for token in non_aiha_sources
+    )
+    non_aiha_sendable = sum(
+        int((source_totals.get(token, Counter()) or {}).get("send_eligible_rows", 0))
+        for token in non_aiha_sources
+    )
 
     cycle_target = _manifest_target(config, latest_manifest) if latest_manifest else int(config.get("ai_assist_raw_target") or 0)
     cycle_selected = int(latest_manifest.get("selected_row_count") or 0) if latest_manifest else 0
@@ -664,8 +674,8 @@ def _recommendations(
         "evidence": keep_current_evidence,
     }
 
-    deploy_directory_to_website_contact_pivot = {
-        "key": "DEPLOY_DIRECTORY_TO_WEBSITE_CONTACT_PIVOT",
+    preserve_directory_to_website_contact_policy = {
+        "key": "PRESERVE_DIRECTORY_TO_WEBSITE_CONTACT_POLICY",
         "status": RECOMMEND,
         "evidence": (
             f"configured_sources={','.join(list(config.get('configured_sources') or [])) or 'none'} "
@@ -673,13 +683,15 @@ def _recommendations(
         ),
     }
 
-    validate_bluebook_multistate_contribution = {
-        "key": "VALIDATE_BLUEBOOK_MULTISTATE_CONTRIBUTION",
+    establish_accessible_second_lane = {
+        "key": "ESTABLISH_ACCESSIBLE_SECOND_LANE",
         "status": RECOMMEND,
         "evidence": (
+            f"configured_non_aiha_sources={','.join(non_aiha_sources) or 'none'} "
             f"aiha_consultant_fit={int(aiha.get('consultant_fit_rows', 0))} "
-            f"bluebook_consultant_fit={int(bluebook.get('consultant_fit_rows', 0))} "
-            f"primary_send_eligible_14d={primary_sendable} primary_imported_14d={primary_imported}"
+            f"non_aiha_consultant_fit={non_aiha_consultant_fit} "
+            f"non_aiha_send_eligible_14d={non_aiha_sendable} "
+            f"non_aiha_imported_14d={non_aiha_imported}"
         ),
     }
 
@@ -698,8 +710,8 @@ def _recommendations(
 
     return [
         keep_current,
-        deploy_directory_to_website_contact_pivot,
-        validate_bluebook_multistate_contribution,
+        preserve_directory_to_website_contact_policy,
+        establish_accessible_second_lane,
         new_source_required,
     ]
 

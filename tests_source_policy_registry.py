@@ -28,10 +28,12 @@ class TestSourcePolicyRegistry(unittest.TestCase):
         self.assertEqual(source_policy.source_fit_defaults("STATE_LIC_WORK_EMAIL"), ("adjacent_contractor", 1))
         self.assertTrue(source_policy.counts_toward_consultant_backlog("STATE_LIC"))
 
-    def test_bluebook_is_primary_fixed_default_and_canonical_public_contact_source(self):
-        self.assertEqual(source_policy.CONSULTANT_PRIMARY_SOURCES, ("AIHA", "BLUEBOOK"))
+    def test_bluebook_is_secondary_but_keeps_fixed_defaults_and_canonical_public_contact_behavior(self):
+        self.assertEqual(source_policy.CONSULTANT_PRIMARY_SOURCES, ("AIHA",))
+        self.assertIn("BLUEBOOK", source_policy.CONSULTANT_SECONDARY_SOURCES)
         self.assertEqual(source_policy.source_fit_defaults("bluebook:123"), ("recoverable_consultant", 1))
         self.assertEqual(source_policy.source_family("bluebook:123"), "BLUEBOOK")
+        self.assertTrue(source_policy.counts_toward_consultant_backlog("BLUEBOOK"))
         self.assertTrue(source_policy.source_uses_fixed_defaults("bluebook:123"))
         self.assertTrue(source_policy.uses_canonical_public_contact_resolution("bluebook:123"))
 

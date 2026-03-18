@@ -410,7 +410,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -ProspectAiAssistReviewEnabled 1 `
   -ProspectAiAssistReviewRawTarget 30 `
   -ProspectAiAssistReviewPacketSize 10 `
-  -ProspectAutoGrowSources AIHA,BLUEBOOK `
+  -ProspectAutoGrowSources AIHA `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
@@ -544,8 +544,9 @@ Auto-growth (env-gated, optional):
 - OHS optional auth key (only if buyersguide pagination is work-email gated): `OHS_BG_STORAGE_STATE_PATH` (Playwright storage state JSON path).
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
 - Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (canonical persisted default `750` via `scripts\set_outreach_env.ps1`; ad hoc runs fall back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS` when unset).
-- Source scope: implemented tokens are `AIHA`, `BLUEBOOK`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, and `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`; canonical production list is `AIHA,BLUEBOOK`, while `OHS_BG`, `BCSP`, `OSHA_NEWS`, and `STATE_LIC` remain implemented secondary lanes).
-- Canonical primary discovery automation uses a directory-to-website public-contact path: valid non-free source email first, otherwise crawl the source-provided company website for a public business email. Guessed domains, guessed emails, and Hunter/provider lookups are not part of the canonical `AIHA,BLUEBOOK` default lane.
+- Source scope: implemented tokens are `AIHA`, `BLUEBOOK`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, and `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`; canonical production list is `AIHA`, while `BLUEBOOK`, `OHS_BG`, `BCSP`, `OSHA_NEWS`, and `STATE_LIC` remain implemented nondefault lanes).
+- Canonical discovery automation uses a directory-to-website public-contact path: valid non-free source email first, otherwise crawl the source-provided company website for a public business email. Guessed domains, guessed emails, and Hunter/provider lookups are not part of the canonical `AIHA` default lane.
+- `BLUEBOOK` remains implemented for explicit/diagnostic runs, but public-mode listing access is currently captcha-blocked, so it is not part of canonical defaults until an approved access path exists.
 - `STATE_LIC` remains implemented as a secondary lane. AI-assist packet eligibility allows strong-identity review seeds even when no website exists, while consultant-fit logic still governs consultant backlog credit and `STATE_LIC_WORK_EMAIL` promotion.
 - Planned-but-unimplemented registry tokens such as `BBB`, `THOMASNET`, and `AGC` are rejected intentionally by `scripts\set_outreach_env.ps1` and `outreach\run_prospect_generation.py` until source modules land.
 - Cache paths:

@@ -313,8 +313,8 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
             self.assertIn("CA / BLUEBOOK: reviewed_accepts_14d=0 reviewed_rejects_14d=1", text)
             self.assertIn("STATE LIC SHADOW PACKET PROFILES", text)
             self.assertIn("STATE_LIC_SHADOW_COUNTS_ARE_DIAGNOSTIC_ONLY=1", text)
-            self.assertIn("DEPLOY_DIRECTORY_TO_WEBSITE_CONTACT_PIVOT: RECOMMEND", text)
-            self.assertIn("VALIDATE_BLUEBOOK_MULTISTATE_CONTRIBUTION: RECOMMEND", text)
+            self.assertIn("PRESERVE_DIRECTORY_TO_WEBSITE_CONTACT_POLICY: RECOMMEND", text)
+            self.assertIn("ESTABLISH_ACCESSIBLE_SECOND_LANE: RECOMMEND", text)
             self.assertIn("NEW_SOURCE_REQUIRED: TRIGGER - cycle_selected=2 target=5", text)
             self.assertFalse((data_dir / "audits" / "prospect_growth").exists())
 
@@ -344,7 +344,7 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
             report_text = text_path.read_text(encoding="utf-8")
             self.assertIn("DETERMINISTIC RECOMMENDATIONS", report_text)
             self.assertIn("KEEP_CURRENT_ARCHITECTURE: RECOMMEND", report_text)
-            self.assertIn("DEPLOY_DIRECTORY_TO_WEBSITE_CONTACT_PIVOT: RECOMMEND", report_text)
+            self.assertIn("PRESERVE_DIRECTORY_TO_WEBSITE_CONTACT_POLICY: RECOMMEND", report_text)
             self.assertIn("NEW_SOURCE_REQUIRED: TRIGGER - cycle_selected=2 target=5", report_text)
             self.assertIn("STATE_LIC_SHADOW_COUNTS_ARE_DIAGNOSTIC_ONLY=1", report_text)
 
@@ -359,8 +359,8 @@ class TestProspectGrowthDecisionPack(unittest.TestCase):
                 list(recommendation_index.keys()),
                 [
                     "KEEP_CURRENT_ARCHITECTURE",
-                    "DEPLOY_DIRECTORY_TO_WEBSITE_CONTACT_PIVOT",
-                    "VALIDATE_BLUEBOOK_MULTISTATE_CONTRIBUTION",
+                    "PRESERVE_DIRECTORY_TO_WEBSITE_CONTACT_POLICY",
+                    "ESTABLISH_ACCESSIBLE_SECOND_LANE",
                     "NEW_SOURCE_REQUIRED",
                 ],
             )

@@ -106,6 +106,15 @@ def _consultant_bucket_sources(bucket: str) -> tuple[str, ...]:
     return tuple(tokens)
 
 
+def _unique_source_tokens(tokens: Iterable[str]) -> tuple[str, ...]:
+    ordered: list[str] = []
+    for raw in tokens:
+        token = normalize_source_token(raw)
+        if token and token not in ordered:
+            ordered.append(token)
+    return tuple(ordered)
+
+
 def source_fit_defaults(source: str) -> tuple[str, int]:
     text = (source or "").strip().lower()
     if text.startswith("ai_assist_manual"):
@@ -162,15 +171,24 @@ def source_family_from_token(token: str) -> str:
 CONSULTANT_PRIMARY_SOURCES: tuple[str, ...] = _consultant_bucket_sources("primary")
 CONSULTANT_OVERFLOW_SOURCES: tuple[str, ...] = _consultant_bucket_sources("overflow")
 CONSULTANT_SECONDARY_SOURCES: tuple[str, ...] = _consultant_bucket_sources("secondary")
+CONSULTANT_BACKLOG_SOURCE_TOKENS: tuple[str, ...] = _unique_source_tokens(
+    ["STATE_LIC", *CONSULTANT_PRIMARY_SOURCES, *CONSULTANT_OVERFLOW_SOURCES, "BLUEBOOK"]
+)
+FIXED_DEFAULT_SOURCE_TOKENS: tuple[str, ...] = _unique_source_tokens(
+    ["STATE_LIC", "APOLLO", *CONSULTANT_PRIMARY_SOURCES, "OHS_BG", "BLUEBOOK"]
+)
+CANONICAL_PUBLIC_CONTACT_SOURCE_TOKENS: tuple[str, ...] = _unique_source_tokens(
+    [*CONSULTANT_PRIMARY_SOURCES, "BLUEBOOK"]
+)
 FIXED_DEFAULT_SOURCE_FAMILIES: tuple[str, ...] = tuple(
     source_family_from_token(token)
-    for token in ["STATE_LIC", "APOLLO", *CONSULTANT_PRIMARY_SOURCES, "OHS_BG"]
+    for token in FIXED_DEFAULT_SOURCE_TOKENS
     if source_family_from_token(token) != "UNKNOWN"
 )
 FIXED_DEFAULT_SOURCE_FAMILY_SET = set(FIXED_DEFAULT_SOURCE_FAMILIES)
 CANONICAL_PUBLIC_CONTACT_SOURCE_FAMILIES: tuple[str, ...] = tuple(
     source_family_from_token(token)
-    for token in CONSULTANT_PRIMARY_SOURCES
+    for token in CANONICAL_PUBLIC_CONTACT_SOURCE_TOKENS
     if source_family_from_token(token) != "UNKNOWN"
 )
 CANONICAL_PUBLIC_CONTACT_SOURCE_FAMILY_SET = set(CANONICAL_PUBLIC_CONTACT_SOURCE_FAMILIES)
@@ -192,7 +210,7 @@ def autogrow_source_order(configured_tokens: Iterable[str]) -> list[str]:
 
 def counts_toward_consultant_backlog(source_token: str) -> bool:
     token = normalize_source_token(source_token)
-    return token == "STATE_LIC" or token in CONSULTANT_PRIMARY_SOURCES or token in CONSULTANT_OVERFLOW_SOURCES
+    return token in CONSULTANT_BACKLOG_SOURCE_TOKENS
 
 
 def is_secondary_source(source_token: str) -> bool:

@@ -934,7 +934,7 @@ try {
       }
       Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SOURCES' -Value ($srcTokens -join ',') -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'PROSPECT_AUTOGROW_SOURCES')) {
-      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SOURCES' -Value 'AIHA,BLUEBOOK' -TouchedList $touched
+      Set-MapValue -Map $map -Key 'PROSPECT_AUTOGROW_SOURCES' -Value 'AIHA' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowBacklogTarget')) {
