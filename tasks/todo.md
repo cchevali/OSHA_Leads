@@ -1,18 +1,18 @@
 # Task TODO
 
-Current task: add a repo-aligned `Codex.md` template and supporting task docs without changing product behavior.
+Current task: retire automated prospect growth so the repo and operator workflow are manual-intake-only.
 
-Plan verified against `AGENTS.md` and the current docs spine on 2026-03-14.
+Plan verified against `AGENTS.md` and the current repo state on 2026-03-18.
 
 ## Plan
 
-- [x] Inspect repo rules, worktree state, and current task-tracking conventions.
-- [x] Add `Codex.md` plus minimal supporting task docs that fit the repo contract.
-- [x] Run `py -3 -m unittest -q` and confirm only intended changes remain.
-- [x] Record the review outcome and evidence below.
+- [x] Remove automated prospect growth entrypoints, source adapters, scrapers, and prospect AI-assist tooling.
+- [x] Remove scheduler/runtime hooks that invoked prospect generation or replenishment.
+- [x] Update operator docs and env tooling so manual CSV intake is the only supported prospect-growth path.
+- [x] Re-run tests and prepare the cleaned repo state for commit/push.
 
 ## Review
 
 - Status: Passed
-- Evidence: `py -3 -m unittest -q` passed on 2026-03-14 with `Ran 704 tests in 214.330s` and `OK`; `git status --porcelain --untracked-files=all` shows only `Codex.md`, `tasks/lessons.md`, and `tasks/todo.md`.
-- Notes: `Codex.md` preserves `AGENTS.md` as canonical and adds task-local planning plus lessons scaffolding under `tasks/`.
+- Evidence: `py -3 -m unittest -q` passed on 2026-03-18 with `Ran 573 tests ... OK`; automated prospect-generation modules, prospect-source adapters, prospect AI-assist tooling, and scheduler hooks were removed; `PROJECT_CONTEXT_PACK.md` was rebuilt after the docs cleanup.
+- Notes: manual prospect intake now centers on `outreach\crm_admin.py seed`.

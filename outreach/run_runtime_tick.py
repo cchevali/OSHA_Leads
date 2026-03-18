@@ -36,7 +36,7 @@ LOCK_STALE_SECONDS = 4 * 60 * 60
 RUNTIME_JOB_STATE_SCHEMA = "runtime_tick_job_state_v1"
 ALERTS_SCHEMA = "runtime_tick_alert_v1"
 ALERTS_SUMMARY_SCHEMA = "runtime_tick_alert_summary_v1"
-CRITICAL_WINDOW_JOBS = frozenset({"ingest_daily", "prospect_replenish_daily", "outreach_auto", "trial_facs_daily"})
+CRITICAL_WINDOW_JOBS = frozenset({"ingest_daily", "outreach_auto", "trial_facs_daily"})
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,6 @@ class WrapperRunEvidence:
 JOBS: tuple[JobSpec, ...] = (
     JobSpec(name="inbound_triage", kind="interval", weekday_only=False, interval_minutes=15, max_attempts_per_slot=1),
     JobSpec(name="ingest_daily", kind="daily", weekday_only=True, target_hhmm="06:45", catchup_minutes=180),
-    JobSpec(name="prospect_replenish_daily", kind="daily", weekday_only=True, target_hhmm="07:15", catchup_minutes=180),
     JobSpec(name="outreach_auto", kind="daily", weekday_only=True, target_hhmm="08:00", catchup_minutes=180),
     JobSpec(name="trial_facs_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
 )
@@ -338,13 +337,6 @@ def _job_commands(repo_root: Path, job_name: str, mode: str) -> list[list[str]]:
             return [_run_with_secrets_cmd(repo_root, "run_osha_ingest_daily.py", ["--doctor"])]
         return [_run_with_secrets_cmd(repo_root, "run_osha_ingest_daily.py", ["--dry-run"])]
 
-    if job_name == "prospect_replenish_daily":
-        if mode == "live":
-            return [_run_with_secrets_cmd(repo_root, "run_prospect_replenish_daily.py")]
-        if mode == "doctor":
-            return [_run_with_secrets_cmd(repo_root, "run_prospect_replenish_daily.py", ["--doctor"])]
-        return [_run_with_secrets_cmd(repo_root, "run_prospect_replenish_daily.py", ["--dry-run"])]
-
     if job_name == "outreach_auto":
         if mode == "live":
             return [_run_with_secrets_cmd(repo_root, "run_outreach_auto.py")]
@@ -405,7 +397,6 @@ def _parse_iso_local(raw: str) -> datetime | None:
 def _wrapper_names_for_job(job_name: str) -> tuple[str, ...]:
     mapping = {
         "ingest_daily": ("OSHA_Osha_Ingest_Daily",),
-        "prospect_replenish_daily": ("OSHA_Prospect_Replenish_SafetyNet", "OSHA_Prospect_Replenish_Daily"),
         "outreach_auto": ("OSHA_Outreach_Auto_SafetyNet", "OSHA_Outreach_Auto"),
         "trial_facs_daily": ("OSHA_Trial_FACS_Daily",),
     }

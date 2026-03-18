@@ -153,36 +153,6 @@ Adopt `docs/V1_CUSTOMER_VALIDATED.md` as the canonical V1 requirements capsule a
 - `docs/V1_CUSTOMER_VALIDATED.md` becomes the canonical bridge between historical V1 behavior and current spine docs.
 - `PROJECT_CONTEXT_PACK.md` generation includes the V1 capsule to keep single-file upload workflows complete.
 
-## ADR-0006: Prospect Generation Feed Standardized Before Discovery
-
-Date: 2026-02-13
-Status: Accepted
-
-### Context
-
-Discovery runs were deterministic but frequently had no input file, which left CRM empty and outreach plan pools at zero.
-Legacy Wally-era prospecting existed as pool generators and hygiene scripts, but that output was not standardized into discovery's canonical no-arg input path.
-
-### Decision
-
-Adopt a single upstream feed path:
-
-- `run_prospect_generation.py` generates `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (or `./out/prospect_discovery/prospects_latest.csv` when `DATA_DIR` is unset).
-- `run_prospect_discovery.py` continues to import/upsert from this feed into `crm.sqlite`.
-- Outreach remains CRM-backed (`run_outreach_auto.py`) and unchanged in send/cadence/scoring/compliance behavior.
-
-### Rationale
-
-- Preserves deterministic discovery behavior while making no-arg scheduled runs operationally reliable.
-- Keeps CRM as the authoritative pool and prevents drift back to legacy direct-send CSV workflows.
-- Reuses existing Wally-era pool generation/hygiene logic without embedding scraping or generation into discovery.
-
-### Consequences
-
-- Daily scheduler flow becomes ingest -> prospect replenishment (doctor + generation + discovery) -> outreach.
-- Operators now monitor both `GENERATOR_*` and `DISCOVERY_*` machine-readable outputs.
-- Suppression and campaign tracking artifacts remain separate from the discovery feed.
-
 ## ADR-0007: Canonical Onboarding Recipients Schema And Recipient-Aware Fan-Out
 
 Date: 2026-02-24
@@ -247,35 +217,6 @@ OSHA establishment detail pages expose structured inspection metadata (for examp
 - Operators must populate OSHA detail cache (or allow programmatic fill) before expecting enriched triage decisions.
 - AI triage enablement requires secrets workflow updates and key presence validation, but rules-only overlay remains fully functional.
 
-## ADR-0009: Prospect Autogrow Crawl4AI Runtime Is Lazy And Warning-Level
-
-Date: 2026-02-26
-Status: Accepted
-
-### Context
-
-Prospect autogrow is expanding to browser-backed scraping sources (for example BCSP and OSHA_NEWS) using Crawl4AI + Playwright, but existing generator/discovery/outreach flows must not fail on machines that have not completed the one-time browser install step.
-
-### Decision
-
-- Add `outreach/scraper_engine.py` as a shared autogrow scraping wrapper with lazy Crawl4AI imports (no eager import in generator startup paths).
-- Treat missing Crawl4AI package or Playwright browsers as warning-level conditions for Crawl4AI-backed sources (`WARN_CRAWL4AI_*`), not hard generator failures.
-- Add `run_prospect_generation.py --doctor` as an aggregate readiness command; keep `--apollo-doctor` for backward compatibility.
-- Keep `STATE_LIC` Phase 1 on Texas TDLR Socrata API (no browser dependency) so at least one new source remains available without Crawl4AI runtime setup.
-- BCSP is implemented as plain HTTP parsing (no Crawl4AI dependency); OSHA_NEWS remains the Crawl4AI-gated autogrow source.
-- Centralize zero-cost domain/email enrichment in the generator (default off) instead of source-specific waterfalls; keep Hunter.io as an env-gated stub/cap path until live integration is enabled.
-
-### Rationale
-
-- Preserves non-breaking daily operations on systems that only use legacy sources or API-based sources.
-- Makes readiness issues explicit and machine-readable without blocking dry-run/print-config workflows.
-- Reduces rollout risk while enabling incremental source expansion.
-
-### Consequences
-
-- Operators must perform a one-time `crawl4ai-setup` when enabling OSHA_NEWS in production.
-- Generator output now includes additional readiness/availability tokens in `--print-config` and `--doctor` paths.
-
 ## ADR-0010: Centralized Runtime Writer + GitHub Actions Self-Hosted Control Plane
 
 Date: 2026-03-05
@@ -326,7 +267,6 @@ The runtime hardening work introduced a single orchestrator (`run_runtime_tick.p
   - inbound triage
   - AI review dump
   - OSHA ingest
-  - prospect replenishment
   - outreach auto-send
   - FACS daily trial send
 - Keep Windows Task Scheduler wrappers and installers as managed safety-net recovery rails on the canonical PC.
@@ -359,7 +299,7 @@ Runtime tick centralized scheduling and status artifacts, but operators still ha
 - Live-mode SMTP alerts are sent to `RUNTIME_ALERT_RECIPIENT` or fallback `OSHA_SMOKE_TO`.
 - Alert categories:
   - `job_failure`: any failed runtime job.
-  - `missed_window`: `window_closed_*` skips for `ingest_daily`, `prospect_replenish_daily`, `outreach_auto`, and `trial_facs_daily`.
+  - `missed_window`: `window_closed_*` skips for `ingest_daily`, `outreach_auto`, and `trial_facs_daily`.
 - Per-slot dedupe markers are written under `${DATA_DIR}\runtime\status\alerts\*.json`.
 - Doctor/dry-run modes never send alerts.
 
@@ -375,60 +315,30 @@ Runtime tick centralized scheduling and status artifacts, but operators still ha
 - Operators can monitor alert state from `runtime_latest.json` plus alert dedupe records.
 - Missing SMTP or recipient configuration degrades to non-fatal skipped-alert tokens.
 
-## ADR-0013: Directory-To-Website Public Contact As Canonical Consultant Discovery Lane
+## ADR-0015: Prospect Intake Is Manual-Only
 
-Date: 2026-03-17
-Status: Superseded by ADR-0014
-
-### Context
-
-Legacy validation (`docs/legacy/TARGET_LIST_FACTORY_STATUS.md`, `docs/legacy/PROSPECTING_SOP.md`) showed the Wally/Indigo win came from public consultant discovery sources that reliably surfaced relevant firms and then led operators to a usable public business contact path on the company website. The winning pattern was narrower than "email-rich directory" and broader than "directory page must expose email directly."
-
-### Decision
-
-- Make `AIHA` plus `BLUEBOOK` the canonical default consultant discovery lane.
-- Treat canonical discovery contact resolution as: valid non-free source email first, otherwise crawl the source-provided company website for a public business email, otherwise leave email blank.
-- Keep guessed domains, guessed emails, Hunter/provider lookups, auth-gated discovery, and registry-heavy lanes outside the canonical default path.
-- Keep `OHS_BG` and `STATE_LIC` implemented but secondary/nondefault while source pivots are evaluated.
-- Keep `THOMASNET` proof-gated only; it is not promoted into defaults unless qualification passes.
-
-### Rationale
-
-- Matches the validated manual workflow more closely than requiring source-page emails.
-- Preserves a public, low-friction, multistate discovery posture without moving core operations onto guessed-email or auth-dependent workflows.
-- Keeps the default lane aligned with firms that are consultancy-relevant and likely to have reachable public business contact paths.
-
-### Consequences
-
-- Canonical defaults move to `AIHA,BLUEBOOK`.
-- Generator policy now treats directory-to-website public-contact extraction as first-class behavior for canonical primary sources.
-- Secondary lanes remain available for diagnostics and explicit operator runs, but they no longer define the default product thesis.
-
-## ADR-0014: Remove BLUEBOOK From Canonical Defaults Until Access Is Operational
-
-Date: 2026-03-17
+Date: 2026-03-18
 Status: Accepted
 
 ### Context
 
-The refreshed live `AIHA,BLUEBOOK` cycle did not validate `BLUEBOOK` as a production discovery lane. Public-mode fetches were captcha-blocked across `TX`, `CA`, and `FL`, so the issue was operational access, not website-contact extraction yield. We still want to keep the directory-to-website contact thesis that matched the Wally workflow.
+The repo had accumulated multiple prospect-growth paths built around generated feeds, scraper-backed discovery, directory sourcing, and prospect AI-assist packet review. That no longer matches the operating model.
 
 ### Decision
 
-- Keep the directory-to-website public-contact architecture and contact policy.
-- Remove `BLUEBOOK` from canonical default sourcing until an approved access path is established.
-- Keep `BLUEBOOK` implemented and available for explicit/diagnostic use, but not in default replenishment or default AI-assist source lists.
-- Keep `THOMASNET` qualification-only and out of defaults.
-- Focus the next source packet on restoring or replacing the blocked second lane with a source that is both accessible in practice and compatible with directory-to-website contact extraction.
+- Retire automated prospect generation, replenishment, scraping, directory-based discovery, and prospect AI-assist review flows.
+- Keep supported prospect intake limited to reviewed manual CSV imports through `outreach\crm_admin.py seed`.
+- Allow AI chat only as an operator drafting aid before manual review; do not treat it as an automated intake or discovery subsystem.
+- Keep compatibility logic only where needed to read or repair legacy CRM rows safely.
 
 ### Rationale
 
-- Avoids letting a captcha-blocked directory shape the default product story.
-- Preserves the validated discovery thesis without spending more cycles interpreting zero-yield runs caused by blocked listing access.
-- Keeps future source work pointed at operationally usable public discovery lanes.
+- Aligns the codebase and operator workflow with a manual-first prospecting posture.
+- Removes operational ambiguity about whether scraping, directories, or AI-assist packets are still part of supported growth.
+- Preserves safe handling of older CRM/source metadata without keeping retired growth lanes active.
 
 ### Consequences
 
-- Canonical defaults revert to `AIHA`.
-- Decision-pack recommendations should focus on preserving the contact policy and establishing an accessible second lane, rather than validating `BLUEBOOK`.
-- `BLUEBOOK` remains implemented code, but default operations must not depend on its public fetch path.
+- Scheduler, env, docs, and tests should not reintroduce prospect-growth automation.
+- Repo context should describe manual intake as the only supported path for net-new prospects.
+- Historical discovery strategy remains available in git history rather than current operator docs.

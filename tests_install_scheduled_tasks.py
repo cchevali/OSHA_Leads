@@ -7,10 +7,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
 SCRIPT = REPO_ROOT / "scripts" / "install_scheduled_tasks.ps1"
-EXPECTED_REPLENISH_TR = (
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
-    r"C:\dev\OSHA_Leads\scripts\scheduled\run_prospect_replenish_daily.ps1"
-)
 EXPECTED_INGEST_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
     r"C:\dev\OSHA_Leads\scripts\scheduled\run_osha_ingest_daily.ps1"
@@ -30,6 +26,10 @@ EXPECTED_INBOUND_TR = (
 EXPECTED_FACS_TRIAL_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
     r"C:\dev\OSHA_Leads\scripts\scheduled\run_trial_facs_daily.ps1"
+)
+EXPECTED_JL_SAFETY_TRIAL_TR = (
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
+    r"C:\dev\OSHA_Leads\scripts\scheduled\run_trial_jl_safety_daily.ps1"
 )
 
 
@@ -99,7 +99,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(now_proc.returncode, 0, msg=now_proc.stderr + "\n" + now_proc.stdout)
         self.assertGreater(proc.stdout.strip(), now_proc.stdout.strip(), msg=out)
 
-    def test_print_config_includes_replenish_task_and_exact_tr(self):
+    def test_print_config_includes_managed_tasks_and_exact_tr(self):
         self.assertTrue(SCRIPT.exists(), msg=f"missing script: {SCRIPT}")
         proc = _run("--print-config")
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
@@ -142,20 +142,6 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(int(ingest_evening_task.get("TR_LENGTH", "0")), len(EXPECTED_INGEST_EVENING_TR), msg=out)
         self._assert_future_boundary(ingest_evening_task.get("START_BOUNDARY_LOCAL", ""), out)
 
-        replenish = [t for t in tasks.values() if t.get("NAME") == "OSHA_Prospect_Replenish_SafetyNet"]
-        self.assertEqual(len(replenish), 1, msg=out)
-        replenish_task = replenish[0]
-        self.assertEqual(replenish_task.get("SCHEDULE"), "weekly", msg=out)
-        self.assertEqual(replenish_task.get("RECOVERY_ONLY"), "YES", msg=out)
-        self.assertEqual(replenish_task.get("EXPECTED_STATE"), "Enabled", msg=out)
-        self.assertEqual(replenish_task.get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
-        self.assertEqual(replenish_task.get("TIME"), "07:15", msg=out)
-        self.assertEqual(replenish_task.get("RL"), "HIGHEST", msg=out)
-        self.assertEqual(replenish_task.get("TR"), EXPECTED_REPLENISH_TR, msg=out)
-        self.assertLess(len(EXPECTED_REPLENISH_TR), 261)
-        self.assertEqual(int(replenish_task.get("TR_LENGTH", "0")), len(EXPECTED_REPLENISH_TR), msg=out)
-        self._assert_future_boundary(replenish_task.get("START_BOUNDARY_LOCAL", ""), out)
-
         outreach = [t for t in tasks.values() if t.get("NAME") == "OSHA_Outreach_Auto_SafetyNet"]
         self.assertEqual(len(outreach), 1, msg=out)
         self.assertEqual(outreach[0].get("SCHEDULE"), "weekly", msg=out)
@@ -177,6 +163,19 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertLess(len(EXPECTED_FACS_TRIAL_TR), 261)
         self.assertEqual(int(facs_trial[0].get("TR_LENGTH", "0")), len(EXPECTED_FACS_TRIAL_TR), msg=out)
         self._assert_future_boundary(facs_trial[0].get("START_BOUNDARY_LOCAL", ""), out)
+
+        jl_safety_trial = [t for t in tasks.values() if t.get("NAME") == "OSHA_Trial_JL_Safety_Daily"]
+        self.assertEqual(len(jl_safety_trial), 1, msg=out)
+        self.assertEqual(jl_safety_trial[0].get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(jl_safety_trial[0].get("RECOVERY_ONLY"), "YES", msg=out)
+        self.assertEqual(jl_safety_trial[0].get("EXPECTED_STATE"), "Enabled", msg=out)
+        self.assertEqual(jl_safety_trial[0].get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
+        self.assertEqual(jl_safety_trial[0].get("TIME"), "09:00", msg=out)
+        self.assertEqual(jl_safety_trial[0].get("RL"), "HIGHEST", msg=out)
+        self.assertEqual(jl_safety_trial[0].get("TR"), EXPECTED_JL_SAFETY_TRIAL_TR, msg=out)
+        self.assertLess(len(EXPECTED_JL_SAFETY_TRIAL_TR), 261)
+        self.assertEqual(int(jl_safety_trial[0].get("TR_LENGTH", "0")), len(EXPECTED_JL_SAFETY_TRIAL_TR), msg=out)
+        self._assert_future_boundary(jl_safety_trial[0].get("START_BOUNDARY_LOCAL", ""), out)
 
         inbound = [t for t in tasks.values() if t.get("NAME") == "OSHA_Inbound_Triage"]
         self.assertEqual(len(inbound), 1, msg=out)
@@ -206,6 +205,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("DRY_RUN_COMMAND_4=", out)
         self.assertIn("DRY_RUN_COMMAND_5=", out)
         self.assertIn("DRY_RUN_COMMAND_6=", out)
+        self.assertIn("DRY_RUN_COMMAND_6=", out)
         self.assertIn("DRY_RUN_STATE_COMMAND_1=schtasks /Change /TN \"\\OSHA_Osha_Ingest_Daily\" /Enable", out)
         self.assertIn("/RU \"DESKTOP-Q8QM4N9\\lever\" /RP ***REDACTED***", out)
         self.assertNotIn("dont-print-me", out)
@@ -216,8 +216,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn(EXPECTED_INBOUND_TR, out)
         self.assertIn(EXPECTED_INGEST_TR, out)
         self.assertIn(EXPECTED_INGEST_EVENING_TR, out)
-        self.assertIn(EXPECTED_REPLENISH_TR, out)
         self.assertIn(EXPECTED_FACS_TRIAL_TR, out)
+        self.assertIn(EXPECTED_JL_SAFETY_TRIAL_TR, out)
         self.assertNotIn(r"C:\dev\OSHA_Leads\run_inbound_triage.ps1", out)
 
     def test_print_config_has_single_inbound_task(self):
@@ -276,10 +276,9 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertNotIn("function Invoke-SchtasksCommand([string[]]$Args)", text)
         self.assertIn("last_run_result_hex=0x41303", text)
         self.assertNotIn("last_result=0x41303", text)
-        self.assertIn("OSHA_Prospect_Replenish_SafetyNet", text)
-        self.assertIn("run_prospect_replenish_daily.ps1", text)
         self.assertIn("TASK_REMOVED_LEGACY", text)
         self.assertIn("OSHA_Prospect_Replenish_Daily", text)
+        self.assertIn("OSHA_Prospect_Replenish_SafetyNet", text)
         self.assertIn("OSHA_Outreach_Auto", text)
         self.assertIn("ERR_SCHEDTASK_LEGACY_PRESENT=1", text)
         self.assertIn("ERR_SCHEDTASK_UNMANAGED_OSHA_TASK=1", text)

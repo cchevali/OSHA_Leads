@@ -13,8 +13,6 @@ LIVE_DATA_ROOT = Path(r"C:\osha_data").resolve(strict=False)
 
 SIGNALS_AUDIT_DIRNAME = "signals_ai_review"
 SIGNALS_IMPORT_DIRNAME = "signals_ai_review"
-PROSPECT_AUDIT_DIRNAME = "prospect_ai_assist"
-PROSPECT_IMPORT_DIRNAME = "prospect_ai_assist"
 
 
 @dataclass(frozen=True)
@@ -75,21 +73,6 @@ def legacy_signals_import_dir(data_root: Path | None = None, *, repo_root: Path 
     return (root / "imports").resolve(strict=False)
 
 
-def prospect_audit_dir(data_root: Path | None = None, *, repo_root: Path | None = None) -> Path:
-    root = (data_root or resolve_data_dir(repo_root or REPO_ROOT).effective_path).resolve(strict=False)
-    return (root / "audits" / PROSPECT_AUDIT_DIRNAME).resolve(strict=False)
-
-
-def legacy_prospect_audit_dir(data_root: Path | None = None, *, repo_root: Path | None = None) -> Path:
-    root = (data_root or resolve_data_dir(repo_root or REPO_ROOT).effective_path).resolve(strict=False)
-    return (root / "audits" / "ai_assist").resolve(strict=False)
-
-
-def prospect_import_dir(data_root: Path | None = None, *, repo_root: Path | None = None) -> Path:
-    root = (data_root or resolve_data_dir(repo_root or REPO_ROOT).effective_path).resolve(strict=False)
-    return (root / "imports" / PROSPECT_IMPORT_DIRNAME).resolve(strict=False)
-
-
 def signals_import_candidates(repo_root: Path | None = None) -> list[PathCandidate]:
     override_dir = str(os.getenv("AI_REVIEW_IMPORT_DIR") or "").strip()
     candidates: list[PathCandidate] = []
@@ -108,15 +91,6 @@ def signals_import_candidates(repo_root: Path | None = None) -> list[PathCandida
     return _dedupe_candidates(candidates)
 
 
-def prospect_pending_import_candidates(repo_root: Path | None = None) -> list[PathCandidate]:
-    candidates: list[PathCandidate] = []
-    for root in _data_roots(repo_root):
-        candidates.append(PathCandidate(path=prospect_import_dir(root), is_legacy=False, source="canonical"))
-    for root in _data_roots(repo_root):
-        candidates.append(PathCandidate(path=legacy_prospect_audit_dir(root), is_legacy=True, source="legacy"))
-    return _dedupe_candidates(candidates)
-
-
 def _path_is_within(path: Path, parent: Path) -> bool:
     try:
         path.resolve(strict=False).relative_to(parent.resolve(strict=False))
@@ -130,16 +104,5 @@ def signals_path_uses_legacy_dir(path: Path, repo_root: Path | None = None) -> b
     for root in _data_roots(repo_root):
         if _path_is_within(candidate, legacy_signals_import_dir(root)):
             if not _path_is_within(candidate, signals_import_dir(root)):
-                return True
-    return False
-
-
-def prospect_path_uses_legacy_dir(path: Path, repo_root: Path | None = None) -> bool:
-    candidate = path.resolve(strict=False)
-    for root in _data_roots(repo_root):
-        if _path_is_within(candidate, legacy_prospect_audit_dir(root)):
-            if not _path_is_within(candidate, prospect_audit_dir(root)) and not _path_is_within(
-                candidate, prospect_import_dir(root)
-            ):
                 return True
     return False

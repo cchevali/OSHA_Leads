@@ -23,7 +23,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from outreach import crm_store
-from outreach import prospect_sources_ohs_bg
 from outreach import source_policy
 from outreach import us_state
 import seed_recipients_pools as pools
@@ -52,17 +51,31 @@ AIHA_NET_NEW_LOSS_KEYS = (
     "already_known_crm",
     "default_send_ineligible",
 )
-def _discovery_source_families() -> tuple[str, ...]:
-    families: list[str] = ["SEED"]
-    for token in source_policy.implemented_autogrow_sources():
-        family = source_policy.source_family_from_token(token)
-        if family and family not in {"SEED", "AI_ASSIST", "UNKNOWN"} and family not in families:
-            families.append(family)
-    families.extend(["AI_ASSIST", "UNKNOWN"])
-    return tuple(families)
-
-
-DISCOVERY_SOURCE_FAMILIES = _discovery_source_families()
+DISCOVERY_SOURCE_FAMILIES = (
+    "SEED",
+    "MANUAL",
+    "AI_ASSIST",
+    "AIHA",
+    "APOLLO",
+    "BCSP",
+    "BLUEBOOK",
+    "OHS_BG",
+    "OSHA_NEWS",
+    "STATE_LIC",
+    "UNKNOWN",
+)
+OHS_BG_TRACKER_OR_AD_DOMAINS = {
+    "topprovider.com",
+    "mediabrains.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "googleadservices.com",
+}
+OHS_BG_BLOCKED_EMAIL_DOMAINS = {
+    "sentry.io",
+    "ingest.sentry.io",
+    "mediabrains.com",
+}
 
 
 def _norm_email(value: str) -> str:
@@ -633,11 +646,11 @@ def _seed_from_csv(input_path: Path, archive_dir: Path | None, no_archive: bool)
 def _is_bad_ohs_bg_tracker_or_ad(email: str, website: str) -> bool:
     email_host = _email_domain(email)
     website_host = _domain_from_website(website)
-    if _domain_matches_any(website_host, set(prospect_sources_ohs_bg.TRACKER_OR_AD_DOMAINS)):
+    if _domain_matches_any(website_host, OHS_BG_TRACKER_OR_AD_DOMAINS):
         return True
-    if _domain_matches_any(email_host, set(prospect_sources_ohs_bg.TRACKER_OR_AD_DOMAINS)):
+    if _domain_matches_any(email_host, OHS_BG_TRACKER_OR_AD_DOMAINS):
         return True
-    if _domain_matches_any(email_host, set(prospect_sources_ohs_bg.BLOCKED_EMAIL_DOMAINS)):
+    if _domain_matches_any(email_host, OHS_BG_BLOCKED_EMAIL_DOMAINS):
         return True
     return False
 

@@ -119,7 +119,6 @@ def _seed_signal_db(path: Path, rows: list[dict]) -> None:
 class TestOutreachRunAuto(unittest.TestCase):
     _STRIP_ENV_PREFIXES = (
         "MFO_",
-        "PROSPECT_AUTOGROW_",
         "PROSPECT_ENRICH_",
         "OUTREACH_",
         "APOLLO_",
@@ -920,6 +919,8 @@ class TestOutreachRunAuto(unittest.TestCase):
             with mock.patch.dict(os.environ, self._test_env(env), clear=True):
                 with mock.patch.object(roa, "_outreach_local_now", return_value=weekday_now), mock.patch.object(
                     roa, "_select_candidates", side_effect=AssertionError("selection should not run on same-day guard")
+                ), mock.patch.object(
+                    roa.gm, "_load_local_suppression_set", return_value=set()
                 ):
                     with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--confirm-live-send"]):
                         out = io.StringIO()
@@ -1391,9 +1392,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                     roa, "_append_ledger_records", return_value=None
                 ), mock.patch.object(
                     roa, "_send_summary_email", side_effect=_fake_summary_send
-                ), mock.patch.object(
-                    roa, "_run_ai_assist_pending_imports", return_value=0
-                ) as m_pending_imports:
+                ):
                     with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--confirm-live-send"]):
                         out = io.StringIO()
                         err = io.StringIO()
@@ -1401,7 +1400,6 @@ class TestOutreachRunAuto(unittest.TestCase):
                             rc = roa.main()
 
             self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
-            m_pending_imports.assert_called_once_with(dry_run=False)
             stdout = out.getvalue()
             self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", stdout)
             self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=CA", stdout)
@@ -1414,7 +1412,6 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("PASS_AUTO_EXPORT crm_invalid_email_count=", stdout)
             self.assertIn("PASS_AUTO_EXPORT crm_suppressed_count=", stdout)
             self.assertIn("PASS_AUTO_EXPORT crm_already_contacted_count=selected_state=", stdout)
-            self.assertIn("PASS_AUTO_EXPORT GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=", stdout)
             self.assertIn("OUTREACH_STATE_POOL_TOTAL state=CA total=", stdout)
             self.assertIn("OUTREACH_STATE_SENDABLE_ESTIMATE state=CA sendable=", stdout)
             self.assertIn("OUTREACH_STATE_BELOW_SEND_FLOOR state=CA floor=10 sendable=", stdout)
@@ -1432,7 +1429,6 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("- crm_invalid_email_count:", text_body)
             self.assertIn("- crm_suppressed_count:", text_body)
             self.assertIn("- crm_already_contacted_count:", text_body)
-            self.assertIn("- GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP=", text_body)
             self.assertIn("- contacted_count:", text_body)
 
             self.assertIn("<strong>state_rotation_selected:</strong> CA", html_body)
@@ -1445,7 +1441,6 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("<strong>crm_invalid_email_count:</strong>", html_body)
             self.assertIn("<strong>crm_suppressed_count:</strong>", html_body)
             self.assertIn("<strong>crm_already_contacted_count:</strong>", html_body)
-            self.assertIn("<strong>GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP:</strong>", html_body)
             self.assertIn("<strong>contacted_count:</strong>", html_body)
 
     def test_plan_is_deterministic_and_no_db_mutation(self):

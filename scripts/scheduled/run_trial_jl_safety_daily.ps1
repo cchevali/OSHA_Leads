@@ -8,10 +8,11 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
 $startLocal = Get-Date
 $startUtc = [datetime]::UtcNow
-$replenishExitCode = 1
+$trialSubscriberKey = "jl_safety_trial"
+$trialExitCode = 1
 $preflight = $null
 $runtimeTickState = $null
-$commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py"
+$commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_trial_daily.py --subscriber-key $trialSubscriberKey --send-live"
 $bootstrapLines = New-Object System.Collections.Generic.List[string]
 
 function Add-BootstrapLine([string]$Line) {
@@ -24,20 +25,20 @@ function Add-BootstrapLine([string]$Line) {
 $preflight = Invoke-RuntimePreflight `
   -RepoRoot $repoRoot `
   -Mode 'scheduled' `
-  -Intent 'write' `
+  -Intent 'send' `
   -DryRun:$false `
   -EmitLine ${function:Add-BootstrapLine}
 
 $runtimeTickState = Test-RuntimeTickDailySlotAlreadyCompleted `
   -RepoRoot $repoRoot `
-  -JobName 'prospect_replenish_daily' `
+  -JobName 'trial_jl_safety_daily' `
   -NowLocal $startLocal `
   -EmitLine ${function:Add-BootstrapLine}
 
 $taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
 $runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
 $runId = New-RuntimeRunId -StartLocal $startLocal -StartUtc $startUtc
-$taskLogPath = New-RuntimeTaskLogPath -TaskLogRoot $taskLogDir -WrapperName 'OSHA_Prospect_Replenish_SafetyNet' -RunId $runId
+$taskLogPath = New-RuntimeTaskLogPath -TaskLogRoot $taskLogDir -WrapperName 'OSHA_Trial_JL_Safety_Daily' -RunId $runId
 
 New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runSummaryRoot | Out-Null
@@ -64,19 +65,19 @@ try {
       throw "runtime preflight failed"
     }
     if ([bool]$runtimeTickState.Skip) {
-      $replenishExitCode = 0
-      Write-TaskLine ('PROSPECT_REPLENISH_SKIPPED reason=runtime_tick_same_slot slot=' + [string]$runtimeTickState.SlotKey)
+      $trialExitCode = 0
+      Write-TaskLine ('TRIAL_SKIPPED reason=runtime_tick_same_slot slot=' + [string]$runtimeTickState.SlotKey)
     }
     else {
       Invoke-And-Log {
-        & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_prospect_replenish_daily.py"
+        & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_trial_daily.py" --subscriber-key $trialSubscriberKey --send-live
       }
-      $replenishExitCode = [int]$LASTEXITCODE
+      $trialExitCode = [int]$LASTEXITCODE
     }
   }
   catch {
-    $replenishExitCode = 1
-    Write-TaskLine ('PROSPECT_REPLENISH_EXCEPTION=' + ([string]$_.Exception.Message))
+    $trialExitCode = 1
+    Write-TaskLine ('TRIAL_EXCEPTION=' + ([string]$_.Exception.Message))
   }
 }
 finally {
@@ -84,15 +85,16 @@ finally {
 }
 
 Write-TaskLine ("TASK_LOG_PATH=" + $taskLogPath)
-Write-TaskLine ("PROSPECT_REPLENISH_EXIT_CODE=" + $replenishExitCode)
-Write-RuntimeRunSummary `
+Write-TaskLine ("TRIAL_SUBSCRIBER_KEY=" + $trialSubscriberKey)
+Write-TaskLine ("TRIAL_EXIT_CODE=" + $trialExitCode)
+$summaryResult = Write-RuntimeRunSummary `
   -RepoRoot $repoRoot `
-  -WrapperName 'OSHA_Prospect_Replenish_SafetyNet' `
+  -WrapperName 'OSHA_Trial_JL_Safety_Daily' `
   -CommandLine $commandInvoked `
   -Mode 'scheduled' `
-  -Intent 'write' `
+  -Intent 'send' `
   -DryRun:$false `
-  -ExitCode $replenishExitCode `
+  -ExitCode $trialExitCode `
   -StartLocal $startLocal `
   -StartUtc $startUtc `
   -RunId $runId `
@@ -100,10 +102,9 @@ Write-RuntimeRunSummary `
   -TaskLogRoot $taskLogDir `
   -RunSummaryRoot $runSummaryRoot `
   -Fingerprint $(if ($preflight) { [hashtable]$preflight.Values } else { @{} }) `
-  -EmitLine ${function:Write-TaskLine} | Out-Null
-# RUN_SUMMARY_JSON_PATH= / RUN_SUMMARY_TEXT_PATH= emitted above via Write-RuntimeRunSummary.
+  -EmitLine ${function:Write-TaskLine}
 
-if ($replenishExitCode -ne 0) {
+if ($trialExitCode -ne 0) {
   exit 1
 }
 exit 0

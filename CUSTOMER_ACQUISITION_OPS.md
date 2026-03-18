@@ -132,3 +132,4 @@ Where to write the working copies:
 Dedupe rule (ops-level):
 - Before sending any cold email, check `sent.csv` for the normalized email (lowercase). If present with `status=sent`, do not send again.
 
+Prospect growth is manual-only as of 2026-03-18. Automated prospect generation, replenishment, scraping, and directory-based discovery are retired; use manually researched or AI-chat-prepared CSVs with `outreach\crm_admin.py seed`.

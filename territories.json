@@ -42,5 +42,18 @@
     "aliases": [],
     "office_patterns": [],
     "fallback_city_patterns": []
+  },
+  "JL_SAFETY_TRIAL_STATES": {
+    "display_name": "JL_SAFETY_TRIAL_STATES Trial States",
+    "label": "Trial states FL",
+    "description": "Trial-only full-state territory for FL.",
+    "kind": "STATE_SET",
+    "states": [
+      "FL"
+    ],
+    "cbsas": [],
+    "aliases": [],
+    "office_patterns": [],
+    "fallback_city_patterns": []
   }
 }

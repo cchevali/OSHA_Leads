@@ -80,17 +80,17 @@ function Get-TaskDefinitions([string]$RepoRoot) {
   $dailySpec = 'SUN,MON,TUE,WED,THU,FRI,SAT'
   $ingestRunner = Join-Path $RepoRoot 'scripts\scheduled\run_osha_ingest_daily.ps1'
   $ingestEveningRunner = Join-Path $RepoRoot 'scripts\scheduled\run_osha_ingest_evening.ps1'
-  $replenishRunner = Join-Path $RepoRoot 'scripts\scheduled\run_prospect_replenish_daily.ps1'
   $inboundRunner = Join-Path $RepoRoot 'scripts\scheduled\run_inbound_triage.ps1'
   $facsTrialRunner = Join-Path $RepoRoot 'scripts\scheduled\run_trial_facs_daily.ps1'
+  $jlSafetyTrialRunner = Join-Path $RepoRoot 'scripts\scheduled\run_trial_jl_safety_daily.ps1'
   $outreachRunner = Join-Path $RepoRoot 'scripts\scheduled\run_outreach_auto.ps1'
 
   return @(
     (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '06:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Evening' -ScheduleType 'weekly' -Weekdays $dailySpec -StartTime '20:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestEveningRunner) -RecoveryOnly:$true),
-    (New-TaskDefinition -Name 'OSHA_Prospect_Replenish_SafetyNet' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $replenishRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Outreach_Auto_SafetyNet' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $outreachRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Trial_FACS_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '09:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $facsTrialRunner) -RecoveryOnly:$true),
+    (New-TaskDefinition -Name 'OSHA_Trial_JL_Safety_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '09:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $jlSafetyTrialRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Inbound_Triage' -ScheduleType 'minute' -StartTime '' -MinuteInterval 15 -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $inboundRunner))
   )
 }
@@ -561,6 +561,7 @@ function Get-KnownLegacyTaskNames() {
     'OSHA_Prospect_Generation',
     'OSHA_Prospect_Discovery',
     'OSHA_Prospect_Replenish_Daily',
+    'OSHA_Prospect_Replenish_SafetyNet',
     'OSHA_Outreach_Auto',
     'OSHA Wally Trial Daily',
     'OSHA_Daily_Pipeline'
@@ -809,12 +810,11 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $requiredPaths = @(
   (Join-Path $repoRoot 'scripts\scheduled\run_osha_ingest_daily.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_osha_ingest_evening.ps1'),
-  (Join-Path $repoRoot 'scripts\scheduled\run_prospect_replenish_daily.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_trial_facs_daily.ps1'),
+  (Join-Path $repoRoot 'scripts\scheduled\run_trial_jl_safety_daily.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_inbound_triage.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_outreach_auto.ps1'),
-  (Join-Path $repoRoot 'run_with_secrets.ps1'),
-  (Join-Path $repoRoot 'run_prospect_replenish_daily.py')
+  (Join-Path $repoRoot 'run_with_secrets.ps1')
 )
 foreach ($path in $requiredPaths) {
   if (-not (Test-Path -LiteralPath $path)) {

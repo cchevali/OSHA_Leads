@@ -40,7 +40,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from outreach import crm_store
 from outreach import generate_mailmerge as gm
-from outreach import run_prospect_generation as prospect_generation
 from outreach import source_policy
 from outreach import us_state
 from runtime_data_dir import resolve_osha_db_path
@@ -235,14 +234,6 @@ def _suppression_csv_path() -> Path:
 
 def _export_ledger_path() -> Path:
     return _data_dir() / "outreach_export_ledger.jsonl"
-
-
-def _run_ai_assist_pending_imports(*, dry_run: bool) -> int:
-    if bool(dry_run):
-        return 0
-    from tools import import_prospect_ai_assist_review as ai_assist_import
-
-    return int(ai_assist_import.run_pending_imports(dry_run=False))
 
 
 def _parse_for_date(raw: str) -> tuple[bool, date, str]:
@@ -1176,41 +1167,6 @@ def _crm_funnel_breakdown_for_summary(
         elif reason in {"invalid_email", "suppressed"}:
             uncontacted_raw_by_state[row_state] = int(uncontacted_raw_by_state.get(row_state, 0)) + 1
     return out
-
-
-def _generator_autogrow_disabled_backlog_gap_line(
-    conn: sqlite3.Connection,
-    states: list[str],
-    suppressed_emails: set[str],
-) -> str:
-    enabled = str(os.getenv("PROSPECT_AUTOGROW_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
-    raw_target = str(os.getenv("PROSPECT_AUTOGROW_BACKLOG_TARGET") or "").strip()
-    backlog_target = 60
-    if raw_target:
-        try:
-            backlog_target = max(1, int(raw_target))
-        except Exception:
-            backlog_target = 60
-
-    gap_states: list[str] = []
-    if not enabled:
-        for state in states:
-            state_norm = _normalize_us_state(state)
-            if not state_norm:
-                continue
-            backlog_current = prospect_generation.compute_uncontacted_backlog(
-                conn=conn,
-                state=state_norm,
-                suppressed_emails=suppressed_emails,
-            )
-            gap = max(0, int(backlog_target) - int(backlog_current))
-            if gap > 0:
-                gap_states.append(f"{state_norm}:{gap}")
-    return (
-        "GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP="
-        f"{1 if gap_states else 0} "
-        f"states={','.join(gap_states) if gap_states else 'none'}"
-    )
 
 
 def _format_state_counts(states: list[str], counts: dict[str, int]) -> str:
@@ -2715,10 +2671,6 @@ def main() -> int:
                 )
                 return 0
 
-        pending_import_rc = _run_ai_assist_pending_imports(dry_run=bool(args.dry_run or args.plan or args.doctor))
-        if pending_import_rc != 0:
-            return pending_import_rc
-
         if not crm_db.exists():
             print(f"{ERR_AUTO_CRM_REQUIRED} crm_missing path={crm_db}", file=sys.stderr)
             return 2
@@ -3011,11 +2963,6 @@ def main() -> int:
             sendable_by_state=crm_funnel["uncontacted_sendable_by_state"],
             daily_limit=limit,
         )
-        autogrow_disabled_backlog_gap_line = _generator_autogrow_disabled_backlog_gap_line(
-            conn=conn,
-            states=states,
-            suppressed_emails=suppressed_emails,
-        )
         rotation_hint = _state_rotation_hint(state=state, states=states, counts=uncontacted_by_state)
         new_replies = _event_count_for_day(conn, "replied", run_date)
         new_trials = _event_count_for_day(conn, "trial_started", run_date)
@@ -3052,7 +2999,6 @@ def main() -> int:
             f"selected_state={int(crm_funnel['already_contacted_count_selected_state'])} "
             f"overall={int(crm_funnel['already_contacted_count_overall'])}"
         )
-        print(f"{PASS_AUTO_EXPORT} {autogrow_disabled_backlog_gap_line}")
         for line in state_inventory_lines_live:
             print(line)
 
@@ -3073,7 +3019,6 @@ def main() -> int:
             f"- crm_suppressed_count: {int(crm_funnel['suppressed_count'])}\n"
             f"- crm_already_contacted_count: selected_state={int(crm_funnel['already_contacted_count_selected_state'])} "
             f"overall={int(crm_funnel['already_contacted_count_overall'])}\n"
-            f"- {autogrow_disabled_backlog_gap_line}\n"
             f"- contacted_count: {contacted_count}\n"
             f"- skipped_count: {skipped_count}\n"
             f"- skipped_top_reasons: {top_skip}\n"
@@ -3102,8 +3047,6 @@ def main() -> int:
             f"<strong>crm_already_contacted_count:</strong> "
             f"selected_state={int(crm_funnel['already_contacted_count_selected_state'])} "
             f"overall={int(crm_funnel['already_contacted_count_overall'])}<br>"
-            f"<strong>GENERATOR_AUTOGROW_DISABLED_BACKLOG_GAP:</strong> "
-            f"{autogrow_disabled_backlog_gap_line.split('=', 1)[1]}<br>"
             f"<strong>contacted_count:</strong> {contacted_count}<br>"
             f"<strong>skipped_count:</strong> {skipped_count}<br>"
             f"<strong>skipped_top_reasons:</strong> {top_skip}<br>"

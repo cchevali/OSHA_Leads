@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=4e8f853f9f5e0f23b43990300502274f9d0f6793
-PACK_BUILD_UTC=2026-03-16T19:11:57Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=cb867e6c35c2ec01e5408cf48fdbd997589d4b16f3608a177e4b547e1610da7f docs/DECISIONS.md=169cc2fa51cb18ba29cad103cbe457428d8de012571c81b2150a4ccd53003b3b docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=5f784eafaf92654582f11fb726de781df2a360f05c3578cf4ef44af8b6675cf7 docs/TODO.md=ec7d92561aa64b0e6c16aa0e071adf6c922191c23781c52813be04dd3f831d5c docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=85ef8534a47cd78cdb8552406024cc4f4820bd4aa6ca24726eb56b366b7eccd4
+PACK_GIT_SHA=d8e1734752bd60e22f6a4b2cf07888e37ca88c3a
+PACK_BUILD_UTC=2026-03-18T02:20:50Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=0853e991de3cc6ab028d567fbdfbd2ebd9f50b4d49d074e9a9b59ef559be18d2 docs/DECISIONS.md=e86d6d820e21ebb8c17bd1ac128de3dfca0efe07055fbbe82345a556835ac395 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=5e4ed7be7330fe819a3459ab782088a350bba23514e5d648a1f2c055c76a176b docs/TODO.md=f7d799cd0b1b9efe5d83965cb13d7d7ade83165bed65b62dcb668551d23ba0e7 docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=05a7cef06f7c1218053985e8fb80ebf29624850bf1a195fa80bdd14cc0948478
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -124,35 +124,11 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 
 ## Outreach CRM Auto-Run Data Flow
 
-1. Daily prospect replenishment: `run_prospect_replenish_daily.py` runs deterministic pipeline stages in order:
-   - `run_prospect_generation.py --doctor`
-   - `run_prospect_generation.py`
-   - `run_prospect_discovery.py`
-   - Replenishment owns generation plus discovery only; it does not generate AI-assist review artifacts.
-   - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG,STATE_LIC`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1`, and `PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET=30` when these keys are unset.
-   - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`, though canonical production keeps it unset so `OUTREACH_STATES` remains the single scope of truth).
-   - Planned tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are intentionally rejected by env/runtime validation until their source modules exist.
-   - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
-   - APOLLO remains opt-in/overflow and is not in default replenishment sources.
-   - BCSP uses plain HTTP parsing (`search_results.php`) and remains implemented but outside the canonical production source list until state-scoped searches produce net-new accepted rows; doctor/probe output now reports state-search readiness instead of shallow base-page reachability.
-   - OSHA_NEWS uses a lazy-loaded Crawl4AI wrapper (`outreach/scraper_engine.py`) with warning-level degradation when Crawl4AI/Playwright browsers are unavailable.
-   - STATE_LIC Phase 1 uses the Texas TDLR public Socrata dataset (`7358-krk7`) and provides licensed-business metadata including address/phone/county fields.
-   - STATE_LIC now uses one shared precision policy (`outreach/state_lic_precision.py`) with explicit `consultant_fit`, `packet_eligible`, and `send_eligible` modes so generator policy, cache annotation, and the AI-assist packet lane do not drift.
-   - Generator/backlog behavior still relies on `consultant_fit`; broad TX contractor inventory remains cached and observable, but only qualifying consultant-fit rows can flow through generator promotion/backlog credit.
-   - Generator-stage enrichment can promote qualifying consultant-fit `STATE_LIC` rows to persisted `STATE_LIC_WORK_EMAIL`, which stays in the `STATE_LIC` source family but is the only STATE_LIC variant that defaults to send-eligible.
-  - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering to populate existing `website`/`email` fields via domain resolution + pattern guesses, and is bounded by `PROSPECT_ENRICH_MAX_SITES_PER_RUN` plus `PROSPECT_ENRICH_HTTP_SLEEP_MS` so large source pulls do not stall the full replenish run.
-   - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
-   - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
-2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts `${DATA_DIR}/prospect_discovery/prospects_latest.csv` into `crm.sqlite`.
-3. Nightly AI review artifacts: `scripts/scheduled/run_osha_ingest_evening.ps1` runs OSHA ingest, `tools/dump_signals_for_review.py`, and `tools/dump_prospect_ai_assist_review.py` at the shared 8:45 PM Eastern slot. Signals dumps land under `${DATA_DIR}\audits\signals_ai_review\`. Prospect dumps land under `${DATA_DIR}\audits\prospect_ai_assist\` as a daily summary plus deterministic packet slices (`seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`, `packet_status.txt`) so review volume can be split across multiple AI chats without changing import/scheduler ownership.
-   - Prospect AI-assist packet selection is intentionally stricter than the post-starvation-fix locator-only posture. `STATE_LIC` packet eligibility now excludes hard-negative TX HVAC license cohorts (`A/C Contractor` / `Environmental Air Conditioning` equivalents), excludes matched trade-keyword families, and requires either positive consultant evidence or neutral-but-strong identity when `website` is blank.
-   - Packet composition is capped after final selection so `STATE_LIC` cannot flood the review queue. Default share is 30% of selected rows; the cap drops to 20% when the trailing 7-day reviewed accept rate for `STATE_LIC` is below threshold, and the lane underfills instead of backfilling noisy `STATE_LIC`.
-   - Packet artifacts now add deterministic `seed_id` provenance plus `seed_index.json` so reviewed imports can persist exact seed source, license class, and keyword-family telemetry without changing the reviewed CSV import contract for legacy files.
-   - Blank `website` values are still expected for some `STATE_LIC` seeds; reviewed imports remain the only path that can write accepted rows into CRM, and `send_eligible` stays narrower than packet eligibility.
-   - `manifest.json` and `packet_status.txt` record candidate/exclusion counts, source-by-source stage counts, cap/suppression decisions, top exclusion reasons, observed non-consultant `STATE_LIC` totals, hard-negative/keyword-family breakdowns, and accept-rate snapshots so "no packets" runs are diagnosable without changing discovery/import behavior.
-4. Controlled discovery augmentation: reviewed prospect CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\` and are imported oldest-first by `tools/import_prospect_ai_assist_review.py --pending` before live outreach sends; packet-reviewed filenames use `prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv`, while a single reviewed file remains valid for manual/backfill cases. The importer normalizes known markdown/mailto cell corruption, rejects ambiguous malformed rows, audits provenance in `crm.sqlite`, and then upserts verified accepts through the existing discovery/CRM contract with `source=ai_assist_manual` and `enrichment_lane=ai_assist`.
-5. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
-6. Daily run: `outreach/run_outreach_auto.py`
+1. Prospect intake is manual-only.
+   - Supported intake is a manually researched CSV or an AI-chat-prepared CSV reviewed by a human operator.
+   - Supported import command is `outreach/crm_admin.py seed --input <prospects.csv>`.
+   - Scraping, directory harvests, generated source feeds, and prospect AI-assist packet/import flows are retired.
+2. Daily run: `outreach/run_outreach_auto.py`
    - Resolves weekday rotation-selected state from `OUTREACH_STATES`, emits `OUTREACH_STATE_ROTATION_SELECTED` / `OUTREACH_STATE_EFFECTIVE_SEND`, and uses effective send-state batch id `<YYYY-MM-DD>_<STATE>` (optional fallback override via `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` when the rotation-selected state is depleted/below floor)
    - Emits `OUTREACH_RAMP_READY` readiness token (manual daily-limit ramping remains operator-controlled)
    - Selects/prioritizes prospects from `prospects` table
@@ -161,8 +137,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - Sends multipart outreach emails directly via `send_digest_email.send_email`
    - Records `outreach_events` and prospect status transitions atomically
    - Sends ops summary email to `OSHA_SMOKE_TO`
-6. Lifecycle ops: `outreach/crm_admin.py mark` records replied/trial/converted/DNC outcomes.
-7. Optional compatibility: append-only ledger at `out/outreach_export_ledger.jsonl`.
+3. Lifecycle ops: `outreach/crm_admin.py mark` records replied/trial/converted/DNC outcomes.
+4. Optional compatibility: append-only ledger at `out/outreach_export_ledger.jsonl`.
 
 ## Outreach Debug Export Data Flow
 
@@ -182,7 +158,6 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 ## Operational Artifacts
 
 - `out/crm.sqlite` (or `${DATA_DIR}/crm.sqlite`): prospects/outreach/trials/suppression source of truth
-- `out/prospect_discovery/prospects_latest.csv` (or `${DATA_DIR}/prospect_discovery/prospects_latest.csv`): canonical generated discovery feed input
 - `out/unsub_tokens.csv`: token store for one-click unsubscribe links (when enabled)
 - `out/suppression.csv`: suppression list enforced by exports and sending paths
 - `out/crm_light.sqlite` (or `${DATA_DIR}/crm_light.sqlite`): onboarding entitlements + CBSA allowlists + canonical onboarding recipients
@@ -198,6 +173,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Dry-run behavior remains no-send and side-effect-safe for live channels.
 - Lead identity/dedupe semantics preserve first-observed behavior to avoid repeat "new" leads.
 - Documentation consolidation (including legacy archival) does not change outreach behavior.
+- Prospect intake is manual-only as of 2026-03-18; manual CSV import via `outreach\crm_admin.py seed` remains the supported path.
 ```
 
 ## docs/DECISIONS.md
@@ -357,36 +333,6 @@ Adopt `docs/V1_CUSTOMER_VALIDATED.md` as the canonical V1 requirements capsule a
 - `docs/V1_CUSTOMER_VALIDATED.md` becomes the canonical bridge between historical V1 behavior and current spine docs.
 - `PROJECT_CONTEXT_PACK.md` generation includes the V1 capsule to keep single-file upload workflows complete.
 
-## ADR-0006: Prospect Generation Feed Standardized Before Discovery
-
-Date: 2026-02-13
-Status: Accepted
-
-### Context
-
-Discovery runs were deterministic but frequently had no input file, which left CRM empty and outreach plan pools at zero.
-Legacy Wally-era prospecting existed as pool generators and hygiene scripts, but that output was not standardized into discovery's canonical no-arg input path.
-
-### Decision
-
-Adopt a single upstream feed path:
-
-- `run_prospect_generation.py` generates `${DATA_DIR}/prospect_discovery/prospects_latest.csv` (or `./out/prospect_discovery/prospects_latest.csv` when `DATA_DIR` is unset).
-- `run_prospect_discovery.py` continues to import/upsert from this feed into `crm.sqlite`.
-- Outreach remains CRM-backed (`run_outreach_auto.py`) and unchanged in send/cadence/scoring/compliance behavior.
-
-### Rationale
-
-- Preserves deterministic discovery behavior while making no-arg scheduled runs operationally reliable.
-- Keeps CRM as the authoritative pool and prevents drift back to legacy direct-send CSV workflows.
-- Reuses existing Wally-era pool generation/hygiene logic without embedding scraping or generation into discovery.
-
-### Consequences
-
-- Daily scheduler flow becomes ingest -> prospect replenishment (doctor + generation + discovery) -> outreach.
-- Operators now monitor both `GENERATOR_*` and `DISCOVERY_*` machine-readable outputs.
-- Suppression and campaign tracking artifacts remain separate from the discovery feed.
-
 ## ADR-0007: Canonical Onboarding Recipients Schema And Recipient-Aware Fan-Out
 
 Date: 2026-02-24
@@ -451,35 +397,6 @@ OSHA establishment detail pages expose structured inspection metadata (for examp
 - Operators must populate OSHA detail cache (or allow programmatic fill) before expecting enriched triage decisions.
 - AI triage enablement requires secrets workflow updates and key presence validation, but rules-only overlay remains fully functional.
 
-## ADR-0009: Prospect Autogrow Crawl4AI Runtime Is Lazy And Warning-Level
-
-Date: 2026-02-26
-Status: Accepted
-
-### Context
-
-Prospect autogrow is expanding to browser-backed scraping sources (for example BCSP and OSHA_NEWS) using Crawl4AI + Playwright, but existing generator/discovery/outreach flows must not fail on machines that have not completed the one-time browser install step.
-
-### Decision
-
-- Add `outreach/scraper_engine.py` as a shared autogrow scraping wrapper with lazy Crawl4AI imports (no eager import in generator startup paths).
-- Treat missing Crawl4AI package or Playwright browsers as warning-level conditions for Crawl4AI-backed sources (`WARN_CRAWL4AI_*`), not hard generator failures.
-- Add `run_prospect_generation.py --doctor` as an aggregate readiness command; keep `--apollo-doctor` for backward compatibility.
-- Keep `STATE_LIC` Phase 1 on Texas TDLR Socrata API (no browser dependency) so at least one new source remains available without Crawl4AI runtime setup.
-- BCSP is implemented as plain HTTP parsing (no Crawl4AI dependency); OSHA_NEWS remains the Crawl4AI-gated autogrow source.
-- Centralize zero-cost domain/email enrichment in the generator (default off) instead of source-specific waterfalls; keep Hunter.io as an env-gated stub/cap path until live integration is enabled.
-
-### Rationale
-
-- Preserves non-breaking daily operations on systems that only use legacy sources or API-based sources.
-- Makes readiness issues explicit and machine-readable without blocking dry-run/print-config workflows.
-- Reduces rollout risk while enabling incremental source expansion.
-
-### Consequences
-
-- Operators must perform a one-time `crawl4ai-setup` when enabling OSHA_NEWS in production.
-- Generator output now includes additional readiness/availability tokens in `--print-config` and `--doctor` paths.
-
 ## ADR-0010: Centralized Runtime Writer + GitHub Actions Self-Hosted Control Plane
 
 Date: 2026-03-05
@@ -530,7 +447,6 @@ The runtime hardening work introduced a single orchestrator (`run_runtime_tick.p
   - inbound triage
   - AI review dump
   - OSHA ingest
-  - prospect replenishment
   - outreach auto-send
   - FACS daily trial send
 - Keep Windows Task Scheduler wrappers and installers as managed safety-net recovery rails on the canonical PC.
@@ -563,7 +479,7 @@ Runtime tick centralized scheduling and status artifacts, but operators still ha
 - Live-mode SMTP alerts are sent to `RUNTIME_ALERT_RECIPIENT` or fallback `OSHA_SMOKE_TO`.
 - Alert categories:
   - `job_failure`: any failed runtime job.
-  - `missed_window`: `window_closed_*` skips for `ingest_daily`, `prospect_replenish_daily`, `outreach_auto`, and `trial_facs_daily`.
+  - `missed_window`: `window_closed_*` skips for `ingest_daily`, `outreach_auto`, and `trial_facs_daily`.
 - Per-slot dedupe markers are written under `${DATA_DIR}\runtime\status\alerts\*.json`.
 - Doctor/dry-run modes never send alerts.
 
@@ -578,6 +494,34 @@ Runtime tick centralized scheduling and status artifacts, but operators still ha
 - Runtime status artifacts now include alert summary fields.
 - Operators can monitor alert state from `runtime_latest.json` plus alert dedupe records.
 - Missing SMTP or recipient configuration degrades to non-fatal skipped-alert tokens.
+
+## ADR-0015: Prospect Intake Is Manual-Only
+
+Date: 2026-03-18
+Status: Accepted
+
+### Context
+
+The repo had accumulated multiple prospect-growth paths built around generated feeds, scraper-backed discovery, directory sourcing, and prospect AI-assist packet review. That no longer matches the operating model.
+
+### Decision
+
+- Retire automated prospect generation, replenishment, scraping, directory-based discovery, and prospect AI-assist review flows.
+- Keep supported prospect intake limited to reviewed manual CSV imports through `outreach\crm_admin.py seed`.
+- Allow AI chat only as an operator drafting aid before manual review; do not treat it as an automated intake or discovery subsystem.
+- Keep compatibility logic only where needed to read or repair legacy CRM rows safely.
+
+### Rationale
+
+- Aligns the codebase and operator workflow with a manual-first prospecting posture.
+- Removes operational ambiguity about whether scraping, directories, or AI-assist packets are still part of supported growth.
+- Preserves safe handling of older CRM/source metadata without keeping retired growth lanes active.
+
+### Consequences
+
+- Scheduler, env, docs, and tests should not reintroduce prospect-growth automation.
+- Repo context should describe manual intake as the only supported path for net-new prospects.
+- Historical discovery strategy remains available in git history rather than current operator docs.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -652,7 +596,6 @@ Primary entrypoints:
 - `scripts\scheduled\run_outreach_auto.ps1`
 - `scripts\scheduled\run_osha_ingest_daily.ps1`
 - `scripts\scheduled\run_osha_ingest_evening.ps1`
-- `scripts\scheduled\run_prospect_replenish_daily.ps1`
 - `scripts\scheduled\backup_runtime_state.ps1`
 
 Artifact locations:
@@ -716,7 +659,7 @@ Runtime tick operator alerts:
 - Enablement: `RUNTIME_ALERTS_ENABLED` (`1|0`), default on when a recipient is resolvable.
 - Alert categories:
   - `job_failure` for any failed runtime tick job.
-  - `missed_window` for skipped `window_closed_*` on `ingest_daily`, `prospect_replenish_daily`, `outreach_auto`, and `trial_facs_daily`.
+  - `missed_window` for skipped `window_closed_*` on `ingest_daily`, `outreach_auto`, and `trial_facs_daily`.
 - Alerts are live-mode only; `--doctor` and `--dry-run` emit candidate/skipped tokens but do not send email.
 - Runtime tick reconciles same-slot wrapper summaries before sending `missed_window`; successful break-glass wrapper evidence within the catchup window suppresses the alert and records a reconciled job state instead of leaving an empty missed-window marker.
 - External wrapper evidence emits `WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER` and records `last_external_scheduler_detected=1` plus `last_reconciliation_status` in `${DATA_DIR}\runtime\status\jobs\<job>.json`.
@@ -1035,22 +978,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -AiTriageOpenAiModel gpt-4.1-mini `
   -OutreachFallbackOnEmptyState 0 `
   -OutreachSkipRoleInboxes 1 `
-  -ProspectAutoGrowEnabled 1 `
-  -ProspectAutoGrowSafetyNetEnabled 1 `
-  -ProspectAiAssistReviewEnabled 1 `
-  -ProspectAiAssistReviewRawTarget 30 `
-  -ProspectAiAssistReviewPacketSize 10 `
-  -ProspectAutoGrowSources AIHA,OHS_BG,STATE_LIC `
-  -ProspectAutoGrowBacklogTarget 60 `
-  -ProspectAutoGrowMaxFetchPagesPerRun 6 `
-  -ProspectAutoGrowHttpSleepMs 800 `
-  -ProspectEnrichDomainEnabled 1 `
-  -ProspectEnrichMaxSitesPerRun 25 `
-  -ProspectEnrichHttpSleepMs 750 `
-  -ApolloApiKey <your_apollo_api_key> `
-  -ApolloEnrichEnabled 1 `
-  -ApolloEnrichMaxPerRun 50 `
-  -ApolloPersonLocationsMode state `
   -TrialSendsLimitDefault 14 `
   -TrialExpiredBehaviorDefault notify_once
 ```
@@ -1062,7 +989,7 @@ This script:
 - Ensures `SIGNAL_FRESHNESS_MAX_DAYS` is set to `30` when missing (or to your explicit parameter value)
 - Ensures triage model defaults `AI_TRIAGE_ENABLED=0` and `AI_TRIAGE_OPENAI_MODEL=gpt-4.1-mini`
 - Ensures `OUTREACH_FALLBACK_ON_EMPTY_STATE` default `0` and `OUTREACH_SKIP_ROLE_INBOXES` default `1`
-- Ensures prospect enrichment defaults include `PROSPECT_ENRICH_DOMAIN_ENABLED=0`, `PROSPECT_ENRICH_HUNTER_ENABLED=0`, `PROSPECT_ENRICH_MAX_SITES_PER_RUN=25`, and `PROSPECT_ENRICH_HTTP_SLEEP_MS=750`
+- Removes retired prospect-growth and prospect-enrichment keys if they are still present in `.env.sops`
 - Ensures trial defaults `TRIAL_SENDS_LIMIT_DEFAULT`, `TRIAL_EXPIRED_BEHAVIOR_DEFAULT`, and optional `TRIAL_CONVERSION_URL` are managed in the same no-editor flow
 - Re-encrypts `.env.sops` on save
 - Refuses to run when `.env.sops` is staged (`ERR_ENV_SOPS_STAGED`)
@@ -1080,7 +1007,8 @@ cd C:\dev\OSHA_Leads
   --input C:\path\to\prospects.csv
 ```
 
-CSV seed is optional bootstrap/debug only. Ongoing intake should run discovery, not CSV imports. Manual AI-assist review uses the controlled discovery augmentation flow below, not a generic side CSV workflow.
+Manual CSV import is the supported prospect intake path.
+Use it for human-researched lists or AI-chat-prepared lists that have already been reviewed by a human operator.
 
 ### CRM Diagnostics (read-only)
 
@@ -1089,166 +1017,28 @@ Use these commands instead of inline `py -3 -c "..."` one-liners. PowerShell quo
 ```powershell
 .\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py stats
 
-.\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py verify-import --csv .\apollo_export.csv
+.\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py verify-import --csv .\prospects.csv
 ```
 
-### Prospect Replenishment (Scheduled First)
+### Manual Prospect Intake
 
-`run_runtime_tick.py` runs replenishment automatically at the daily due window. Use the canonical replenishment wrapper directly only for manual break-glass execution. It runs generation doctor -> generation -> discovery in order. Nightly AI-review dumps are owned by the evening ingest wrapper, not by replenishment:
-
-```powershell
-cd C:\dev\OSHA_Leads
-.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py
-```
-
-Replenishment dry-run and print-config:
-
-```powershell
-.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py --dry-run
-.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py --print-config
-```
-
-Direct generation/discovery commands remain available for troubleshooting:
-
-```powershell
-.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --doctor
-.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py
-.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
-```
-
-### Manual AI-Assist Discovery Augmentation
-
-Use this lane when the nightly evening wrapper emits the prospect AI-assist dump and you want to review/import verified accepts. Dump generation is automatic on the shared nightly AI-review schedule; reviewed CSV import supports both pending-drop automation and manual backfills.
+Prospect growth is manual-only.
+Do not use scraping, directory harvests, generated source feeds, or prospect AI-assist packet flows.
 
 Recommended operator commands:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1 --dry-run
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1 -PacketSize 10
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --pending --dry-run
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --pending
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\prospect_ai_assist_review_20260315_packet_001_reviewed.csv --batch 2026-03-15_AIASSIST_P001
+.\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py seed --input C:\path\to\prospects.csv
+.\run_with_secrets.ps1 -- py -3 outreach\crm_admin.py stats
 ```
 
 Operating rules:
 
-- The dump writes one daily summary text artifact under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus a sibling packet folder `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
-- The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`, `packet_status.txt`, and additive `seed_index.json` provenance so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
-- `seed_packet_###.csv` now uses `firm,website,state,city,phone,address,seed_source,seed_source_url,source_record_id,license_number,seed_id`; reviewed CSV output keeps the existing review fields and adds trailing `seed_id`. Legacy reviewed CSVs without `seed_id` still import.
-- Blank `website` values are expected for some `STATE_LIC` review seeds; use the provided city/phone/address/license/source URL context during manual AI review and reject rows when no named principal/contact can be verified.
-- Review-packet eligibility remains broader than live send/import eligibility, but it is now source-aware instead of locator-only. `STATE_LIC` packet rows must clear the shared precision policy: hard-negative TX HVAC license classes are packet-excluded, trade-keyword families are packet-excluded, and blank-website rows must show positive consultant evidence or neutral-but-strong identity with no trade negatives.
-- Packet composition caps are enforced after final selection. Default max `STATE_LIC` share is 30% of selected rows; it drops to 20% when the trailing 7-day reviewed accept rate for `STATE_LIC` is below threshold. If the cap blocks more `STATE_LIC` rows, the packet underfills instead of backfilling noisy rows.
-- `packet_status.txt` gives the fast operator read: if packets exist it reports packet count, blank-website selected rows, and top exclusions; if no packets exist it reports `NO PACKETS TODAY` plus the top exclusion counts.
-- `manifest.json` records candidate counts before/after filters, source-by-source stage counts, exclusion counters by reason and source, selected/source breakdowns after caps, observed non-consultant `STATE_LIC` counts, hard-negative/negative-keyword breakdowns, cap-limited counts, and the trailing accept-rate snapshot used for cap decisions.
-- Reviewed CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv` for packet review, or `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_reviewed.csv` for single-file/manual review.
-- `tools\import_prospect_ai_assist_review.py --pending` scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first, then packet order; `run_outreach_auto.py` calls the same pending-import path before live sends.
-- Legacy reviewed CSVs under `${DATA_DIR}\audits\ai_assist\` are still accepted temporarily and emit a warning token when consumed.
-- External `reviewed_cleaned.csv` sidecars are not part of the intended workflow; the importer now normalizes known AI-output markdown/mailto artifacts in memory and fails fast on ambiguous malformed rows.
-- Import verifies domain/email shape, blocks free personal domains, enforces suppression and `do_not_contact`, dedupes against CRM and within the batch, audits every row, and only upserts verified accepts through the existing discovery/CRM contract.
-- Manual `--input` imports remain the backfill/correction path when you do not want to use the pending inbox.
-- This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
-- No packets means there were no seed rows surviving precision policy, feedback suppressions, caps, and CRM/duplicate filters; reviewed CSV imports remain the only route that can upsert accepted CRM rows.
-
-Canonical nightly schedule:
-
-```powershell
-cd C:\dev\OSHA_Leads
-gh workflow view ingest-evening-ai-review-selfhosted.yml
-gh run list --workflow "Ingest Evening + AI Review Dump (Self-Hosted)" --limit 5
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\run_osha_ingest_evening.ps1
-```
-
-No-arg generation output path:
-
-- `${DATA_DIR}\prospect_discovery\prospects_latest.csv`
-- If `DATA_DIR` is unset: `.\out\prospect_discovery\prospects_latest.csv`
-- Generator-side BYO CSV inbox paths are removed. Discovery input is now seed pools + autogrow sources only.
-
-Auto-growth (env-gated, optional):
-
-- Canonical keys (no aliases): `PROSPECT_AUTOGROW_ENABLED`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED`, `PROSPECT_AUTOGROW_STATES`, `PROSPECT_AUTOGROW_SOURCES`, `PROSPECT_AUTOGROW_BACKLOG_TARGET`, `PROSPECT_AUTOGROW_MAX_FETCH_PAGES_PER_RUN`, `PROSPECT_AUTOGROW_HTTP_SLEEP_MS`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED`, `PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET`, `PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE`.
-- Crawl4AI runtime keys (optional, default zero-cost): `PROSPECT_AUTOGROW_LLM_ENABLED` (default `0`), `PROSPECT_AUTOGROW_BCSP_CREDENTIALS`, `PROSPECT_AUTOGROW_BCSP_INDUSTRY`, `PROSPECT_AUTOGROW_STATE_LIC_TX_LICENSE_TYPES`.
-- OHS optional auth key (only if buyersguide pagination is work-email gated): `OHS_BG_STORAGE_STATE_PATH` (Playwright storage state JSON path).
-- Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
-- Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (canonical persisted default `750` via `scripts\set_outreach_env.ps1`; ad hoc runs fall back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS` when unset).
-- Source scope: implemented tokens are `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`; canonical production list is `AIHA,OHS_BG,STATE_LIC`, while `BCSP` remains disabled there until it yields net-new accepted rows).
-- `STATE_LIC` remains implemented in the canonical list. AI-assist packet eligibility allows strong-identity review seeds even when no website exists, while consultant-fit logic still governs consultant backlog credit and `STATE_LIC_WORK_EMAIL` promotion.
-- Planned-but-unimplemented registry tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are rejected intentionally by `scripts\set_outreach_env.ps1` and `outreach\run_prospect_generation.py` until source modules land.
-- Cache paths:
-  - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
-  - OHS_BG: `${DATA_DIR}\prospect_generation\cache\ohs_bg\state_<STATE>.json`
-  - APOLLO: `${DATA_DIR}\prospect_generation\cache\apollo\state_<STATE>.json`
-  - BCSP: `${DATA_DIR}\prospect_generation\cache\bcsp\state_<STATE>.json`
-  - OSHA_NEWS: `${DATA_DIR}\prospect_generation\cache\osha_news\state_<STATE>.json`
-  - STATE_LIC: `${DATA_DIR}\prospect_generation\cache\state_lic\state_<STATE>.json`
-  - Website enrichment: `${DATA_DIR}\prospect_generation\cache\website_email\<domain>.json` (TTL 14 days)
-- Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
-- Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
-- Canonical production posture is to leave `PROSPECT_AUTOGROW_STATES` unset so `OUTREACH_STATES` stays the single scope of truth; print-config/doctor paths emit a drift warning when both are set and differ.
-- Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
-- APOLLO v1 flow: People Search (`has_email=true` gating) + Bulk People Enrichment in batches of 10; no waterfall/webhook mode.
-- APOLLO consumes enrichment credits. Search can be low/no-credit; enrichment is credit-capped by `APOLLO_ENRICH_MAX_PER_RUN`.
-- Apollo free-tier credits are limited; validate refill volume against actual credit usage before increasing send limits.
-- `--for-date YYYY-MM-DD` controls `selected_state` plus per-state backlog/new-needed previews in `--print-config` and `--dry-run`.
-
-Dry-run generation (no writes):
-
-```powershell
-.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --dry-run
-```
-
-Print resolved generation config:
-
-```powershell
-.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config
-.\\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --print-config --for-date 2026-02-18
-```
-
-Generation doctor (readiness checks only, warning-level for Crawl4AI/APOLLO free-tier blocks):
-
-```powershell
-.\run_with_secrets.ps1 -- py -3 run_prospect_generation.py --doctor
-```
-
-One-time Crawl4AI setup (human step, not auto-run by app code):
-
-```powershell
-pip install crawl4ai
-crawl4ai-setup
-```
-
-Generator emits machine-readable lines:
-
-- `GENERATOR_OUTPUT_PATH`
-- `GENERATOR_ROWS_READ`
-- `GENERATOR_ROWS_WRITTEN`
-- `GENERATOR_AUTOGROW_*`
-- `GENERATOR_AUTOGROW_SAFETY_NET_FORCED=1 reason=SENDABLE_BELOW_FLOOR states=<STATE:sendable,...>`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
-- `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
-- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> backlog_sendable_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
-- `GENERATOR_AUTOGROW_STATES`
-- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG|APOLLO|BCSP|OSHA_NEWS|STATE_LIC> state=<STATE> ...`
-- `GENERATOR_AIHA_*`
-- `GENERATOR_OHS_BG_*`
-- `GENERATOR_APOLLO_*`
-- `GENERATOR_BCSP_*`, `GENERATOR_OSHA_NEWS_*`, `GENERATOR_STATE_LIC_*` (including effective TX license types, candidate license-type breakdown, and `GENERATOR_STATE_LIC_REJECTED_FIT_MISMATCH`)
-- `crawl4ai_installed`, `playwright_browsers_installed`, `<SOURCE>_available` (via `--print-config`)
-- `GENERATOR_DIAGNOSTICS_PATH` (when generated)
-- `GENERATOR_WEBSITE_ENRICH_*`, `GENERATOR_WEBSITE_ENRICH_NEEDS_REVIEW_PATH`
-- `GENERATOR_COMPLETE status=<OK|DRY_RUN>`
-
-APOLLO telemetry highlights:
-
-- `GENERATOR_APOLLO_SEARCH_PAGES_FETCHED`
-- `GENERATOR_APOLLO_SEARCH_ROWS_RETURNED`
-- `GENERATOR_APOLLO_SEARCH_ROWS_HAS_EMAIL_TRUE`
-- `GENERATOR_APOLLO_SEARCH_ROWS_DEDUPED_ID`
-- `GENERATOR_APOLLO_ENRICH_ATTEMPTED`
-- `GENERATOR_APOLLO_ENRICHED`
-- `GENERATOR_APOLLO_ENRICH_NO_MATCH`
-- `GENERATOR_APOLLO_ENRICH_SKIPPED_CREDIT_CAP`
-- `GENERATOR_APOLLO_CREDIT_CAP_HIT`
+- Use manually researched CSVs or AI-chat-prepared CSVs that a human has reviewed before import.
+- Record explicit public-source provenance in the CSV when available, for example `manual_site_review` or `firm_site_explicit_email`.
+- `run_outreach_auto.py` sends from the existing CRM pool only; it does not import or generate new prospects.
+- Evening ingest remains for OSHA data and signals-review artifacts only.
 
 Optional empty-state planner fallback:
 - `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default) preserves weekday rotation-selected state.
@@ -1269,86 +1059,10 @@ Artifact separation (do not mix these):
 - Send-time suppression list: `${DATA_DIR}\suppression.csv` (or `.\out\suppression.csv`)
 - Optional campaign tracking logs: `out\campaign_tracking\...`
 
-### Prospect Discovery (Scheduled First)
-
-Run discovery before outreach each day:
-
-```powershell
-cd C:\dev\OSHA_Leads
-.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
-```
-
-No-arg discovery input resolution order:
-
-1. `PROSPECT_DISCOVERY_INPUT` (preferred)
-2. `DISCOVERY_INPUT_CSV` (legacy compatibility)
-3. `${DATA_DIR}\prospect_discovery\prospects_latest.csv`
-4. `${DATA_DIR}\prospect_discovery\prospects.csv`
-5. `${DATA_DIR}\prospects_latest.csv`
-6. `${DATA_DIR}\prospects.csv`
-
-When `DATA_DIR` is unset, discovery resolves these fallback paths under repo `.\out\...`.
-
-### Apollo export workflow
-
-- Export Apollo contacts CSV from Apollo.
-- Save the export locally (for example `apollo_export.csv`; filename is operator convenience only).
-- From repo root, run:
-  `.\run_with_secrets.ps1 -- py -3 tools\apollo_to_prospects_csv.py --input C:\path\to\apollo_export.csv`
-- Converter default target (overwrite enabled, atomic replace): `${DATA_DIR}\imports\prospects_apollo.csv` (or `.\out\imports\prospects_apollo.csv` when `DATA_DIR` is unset).
-- If you explicitly set `--output` to `prospects_latest.csv`, you are overwriting the canonical generator artifact.
-- Optional overrides: `--output <path>` and `--diagnostics-out <path>`.
-- Run discovery using the converter’s printed `output_path` value (recommended): `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input <output_path_from_converter>`.
-- If you are following `DATA_DIR` convention, use: `.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input "$env:DATA_DIR\imports\prospects_apollo.csv"`.
-- Mismatch note: running discovery from repo root with a bare filename can target the wrong location (`C:\dev\OSHA_Leads\...`) instead of the converter output path.
-- If `DATA_DIR` is set or defaults to `C:\osha_data`, discovery must be pointed at that location.
-- Discovery no-arg still honors input overrides first: `PROSPECT_DISCOVERY_INPUT`, then `DISCOVERY_INPUT_CSV`.
-
-Set preferred discovery input via the canonical no-editor env helper:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 `
-  -OutreachDailyLimit 10 `
-  -OutreachStates TX,CA,FL `
-  -OshaSmokeTo cchevali+oshasmoke@gmail.com `
-  -OutreachSuppressionMaxAgeHours 240 `
-  -SignalFreshnessMaxDays 30 `
-  -AiTriageEnabled 0 `
-  -AiTriageOpenAiModel gpt-4.1-mini `
-  -TrialSendsLimitDefault 14 `
-  -TrialExpiredBehaviorDefault notify_once `
-  -ProspectDiscoveryInput C:\path\to\prospects.csv
-```
-
-Dry-run discovery:
-
-```powershell
-.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --input C:\path\to\prospects.csv --dry-run
-```
-
-Print resolved discovery config:
-
-```powershell
-.\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py --print-config --input C:\path\to\prospects.csv
-```
-
-Discovery emits a fixed-order `DISCOVERY_*` diagnostics block for operator parsing:
-
-- `DISCOVERY_INPUT_PATH`
-- `DISCOVERY_CRM_DB`
-- `DISCOVERY_ROWS_READ`
-- `DISCOVERY_PROSPECTS_UPSERTED`
-- `DISCOVERY_SKIPPED_INVALID_EMAIL`
-- `DISCOVERY_SKIPPED_DUPLICATE_EMAIL`
-- `DISCOVERY_COMPLETE status=<OK|NO_INPUT|DRY_RUN>`
-
-Legacy `PASS_DISCOVERY_*` / `ERR_DISCOVERY_*` tokens remain supported for compatibility.
-
 Canonical daily sequence:
 
 1. `.\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py`
-2. `.\run_with_secrets.ps1 -- py -3 run_prospect_replenish_daily.py`
-3. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
+2. `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --plan --for-date YYYY-MM-DD` (or dry-run/live send flow)
 
 ### OSHA Ingest Scope Modes (Operator Truth)
 
@@ -1603,7 +1317,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_a
 Evening scheduler note:
 
 - `.github\workflows\ingest-evening-ai-review-selfhosted.yml` and `scripts\scheduled\run_osha_ingest_evening.ps1` are the single canonical nightly AI-review generator at `20:45` America/New_York, all 7 days.
-- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with `--scope-mode outreach_plus_trial_live`, then writes signals dumps to `${DATA_DIR}\audits\signals_ai_review\signals_for_ai_review_YYYYMMDD.txt`, then writes prospect dumps to `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus packet slices under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
+- `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with `--scope-mode outreach_plus_trial_live`, then writes signals dumps to `${DATA_DIR}\audits\signals_ai_review\signals_for_ai_review_YYYYMMDD.txt`.
 - Reviewed signals CSV drops belong under `${DATA_DIR}\imports\signals_ai_review\ai_review_YYYYMMDD.csv`; auto-import prefers that folder and falls back to legacy root `imports` only during migration.
 - WA/OR can still be zero on a given day when upstream data has no in-window records.
 
@@ -1983,11 +1697,10 @@ schtasks.exe /Query /TN \OSHA_Osha_Ingest_Daily /V /FO LIST
 ### Minimal Daily Ops Checklist
 
 1. Update `suppression.csv` with yesterday's unsubscribes/bounces.
-2. Confirm generation run produced `${DATA_DIR}\prospect_discovery\prospects_latest.csv` (or `.\out\prospect_discovery\prospects_latest.csv`).
-3. Confirm discovery run populated/updated prospects in `crm.sqlite`.
-4. If the evening wrapper emitted a prospect AI-assist dump under `${DATA_DIR}\audits\prospect_ai_assist\`, place the reviewed CSV under `${DATA_DIR}\imports\prospect_ai_assist\` so the pending importer can apply it before the next business-day send pool.
-5. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with contacted/skipped/new-replies-trials-conversions.
-6. Use `outreach\crm_admin.py mark` to record `replied`, `trial_started`, `converted`, or `do_not_contact`.
+2. Import any newly prepared manual prospect CSV with `outreach\crm_admin.py seed --input ...`.
+3. Confirm `crm.sqlite` contains the expected new prospects.
+4. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with contacted/skipped/new-replies-trials-conversions.
+5. Use `outreach\crm_admin.py mark` to record `replied`, `trial_started`, `converted`, or `do_not_contact`.
 
 ## Wally Trial Missed 9:00 AM Catch-Up (SAFE_MODE)
 
@@ -2326,6 +2039,7 @@ Operator checks:
 - Confirm each run prints a `RUN_DIAGNOSTICS` line.
 - Confirm dry-run output indicates no live send.
 - On the second run, previously observed leads should not be counted as newly observed.
+Prospect growth is manual-only as of 2026-03-18. Automated prospect generation, replenishment, scraping, directory adapters, and prospect AI-assist packet review are retired; supported prospect intake is manual CSV import through `outreach\crm_admin.py seed`.
 ```
 
 ## docs/TODO.md
@@ -2343,7 +2057,6 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 - [ ] Provision Gmail OAuth client JSON for inbound triage: create `secrets/gmail_credentials.json` (Google Cloud Console -> APIs -> Gmail API -> OAuth 2.0 Client ID (Desktop app) -> Download JSON).
 - [ ] Set outreach conversion URL for trial emails: set `TRIAL_CONVERSION_URL` via `scripts\set_outreach_env.ps1` and verify `trial_conversion_url_present=YES` via `run_wally_trial.py --print-config`.
 - [ ] If enabling AI triage, set `AI_TRIAGE_ENABLED` / `AI_TRIAGE_OPENAI_MODEL` via `scripts\set_outreach_env.ps1` and load `OPENAI_API_KEY` in the shell first (no manual `.env` / `.env.sops` edits).
-- [ ] If OHS buyersguide multi-page replenishment is needed, refresh a valid Playwright storage-state file and set `OHS_BG_STORAGE_STATE_PATH` via `scripts\set_outreach_env.ps1`.
 
 - [ ] Before travel, verify the Windows-native RDP path from the laptop to the canonical PC over the existing secure access layer; disconnect, reconnect, and confirm usable resolution/performance.
 - [ ] Before travel, confirm the canonical PC stays awake, network-connected, and reachable after disconnect/reconnect.
@@ -2351,23 +2064,22 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Codex-owned engineering backlog
 
-- [ ] Add follow-on autogrow source modules on top of the registry-backed `outreach/scraper_engine.py` foundation: `BBB`, `BLUEBOOK`, `THOMASNET`, `AGC` (source modules + fixtures + generator tests). Planned tokens now fail fast until implemented.
+- [ ] Keep prospect intake manual-only and remove any newly introduced scraping, directory, or generated-intake paths from code/docs/tests before they drift into operations again.
 - [ ] Define trial -> paid email-only sequence using existing lifecycle states (`replied`, `trial_started`, `converted`) and conversion artifacts in `run_trial_daily.py`.
 - [ ] Add an operator-triggered schedule for `outreach\run_ops_snapshot.py` and `outreach\cleanup_outreach_dry_run_artifacts.py` on the canonical PC or runner.
 - [ ] Review complaint/FBL intake handling separately from the now-codified bounce + suppression path; provider complaint signals are still human/manual today.
 
 ## Done
 
-- 2026-03-16: Added a shared `STATE_LIC` precision policy with aligned `consultant_fit` / `packet_eligible` / `send_eligible` modes, hard-negative TX HVAC class suppression, adaptive packet caps, and additive `seed_id` / `seed_index.json` provenance so AI-assist review outcomes can feed exact 7-day packet feedback without widening live send behavior. Evidence: `outreach/state_lic_precision.py`, `outreach/prospect_sources_state_lic.py`, `outreach/run_prospect_generation.py`, `outreach/crm_store.py`, `tools/dump_prospect_ai_assist_review.py`, `tools/import_prospect_ai_assist_review.py`, `tests_state_lic_precision.py`, `tests_prospect_sources_state_lic.py`, `tests_tools_prospect_ai_assist.py`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK.md`.
-- 2026-03-10: Cut over morning scheduling so the self-hosted `runtime-tick-selfhosted.yml` path remains the canonical live executor while managed Task Scheduler morning wrappers run as enabled safety nets with same-slot skip behavior and scheduler status emits runner/Python/topology health tokens. Evidence: `scripts/install_scheduled_tasks.ps1`, `scripts/scheduled/runtime_guard.ps1`, `scripts/scheduled/run_outreach_auto.ps1`, `scripts/scheduled/run_prospect_replenish_daily.ps1`, `scripts/scheduled/run_trial_facs_daily.ps1`, `outreach/run_runtime_tick.py`, `tests_install_scheduled_tasks.py`, `tests_runtime_guard_ps1.py`, `tests_run_runtime_tick.py`.
-- 2026-03-10: Standardized scheduled wrapper Python resolution and canonical artifact roots under `${DATA_DIR}\out\...` so scheduled preflight, task logs, run summaries, and runtime-tick reconciliation agree in unattended runs. Evidence: `scripts/scheduled/runtime_guard.ps1`, `scripts/scheduled/runtime_run_summary.ps1`, `scripts/scheduled/run_osha_ingest_daily.ps1`, `scripts/scheduled/run_prospect_replenish_daily.ps1`, `scripts/scheduled/run_outreach_auto.ps1`, `scripts/scheduled/run_trial_facs_daily.ps1`, `tests_runtime_guard_ps1.py`, `tests_runtime_run_summary.py`, `tests_run_runtime_tick_wrapper.py`.
+- 2026-03-18: Retired automated prospect growth, directory/scraper discovery, and prospect AI-assist packet review; supported prospect intake is now manual CSV import through `outreach\crm_admin.py seed`. Evidence: `outreach/source_policy.py`, `outreach/run_outreach_auto.py`, `outreach/run_runtime_tick.py`, `scripts/install_scheduled_tasks.ps1`, `scripts/set_outreach_env.ps1`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK.md`.
+- 2026-03-10: Cut over morning scheduling so the self-hosted `runtime-tick-selfhosted.yml` path remains the canonical live executor while managed Task Scheduler morning wrappers run as enabled safety nets with same-slot skip behavior and scheduler status emits runner/Python/topology health tokens. Evidence: `scripts/install_scheduled_tasks.ps1`, `scripts/scheduled/runtime_guard.ps1`, `scripts/scheduled/run_outreach_auto.ps1`, `scripts/scheduled/run_trial_facs_daily.ps1`, `outreach/run_runtime_tick.py`, `tests_install_scheduled_tasks.py`, `tests_runtime_guard_ps1.py`, `tests_run_runtime_tick.py`.
+- 2026-03-10: Standardized scheduled wrapper Python resolution and canonical artifact roots under `${DATA_DIR}\out\...` so scheduled preflight, task logs, run summaries, and runtime-tick reconciliation agree in unattended runs. Evidence: `scripts/scheduled/runtime_guard.ps1`, `scripts/scheduled/runtime_run_summary.ps1`, `scripts/scheduled/run_osha_ingest_daily.ps1`, `scripts/scheduled/run_outreach_auto.ps1`, `scripts/scheduled/run_trial_facs_daily.ps1`, `tests_runtime_guard_ps1.py`, `tests_runtime_run_summary.py`, `tests_run_runtime_tick_wrapper.py`.
 - 2026-03-10: Completed canonical DB cutover so live runtime state now uses only `C:\osha_data\osha.sqlite`, `C:\osha_data\crm.sqlite`, and `C:\osha_data\crm_light.sqlite`; repo-local live-like DB copies are quarantined under `out\backups\legacy_db_quarantine\...`, runtime preflight blocks new legacy drift, and trial ledger reconcile runs into canonical before quarantine. Evidence: `outreach/run_runtime_state_migrate.py`, `runtime_guard.py`, `run_trial_daily.py`, `tests_run_runtime_state_migrate.py`, `tests_runtime_guard.py`, `test_trial_status.py`.
 - 2026-03-10: Verified the registered GitHub self-hosted runner is installed as a Windows service on the canonical PC and currently running as `actions.runner.cchevali-OSHA_Leads.desktop-q8qm4n9-runtime`. Evidence: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_scheduled_tasks.ps1 --status`.
 - 2026-03-10: Verified canonical runtime-role keys on the canonical PC (`RUNTIME_ROLE=canonical_scheduler`, `CANONICAL_HOSTNAME=desktop-q8qm4n9`) via wrapper-backed config/doctor output. Evidence: `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --print-config`, `.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --doctor`.
 - 2026-03-10: Verified production outreach sender/provider configuration via doctor checks, including provider config, scheduler alignment, and no-send artifact coverage. Evidence: `.\run_with_secrets.ps1 -- py -3 run_outreach_auto.py --doctor`.
 - 2026-03-09: Hardened `outreach/run_runtime_tick.py` so `${DATA_DIR}\runtime\status\jobs\*.json` persists latest slot evaluation for ran/skipped/reconciled jobs, reconciles same-slot wrapper summaries before `missed_window`, and emits `WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER` plus reconciliation metadata when break-glass wrappers are detected. Covered by `tests_run_runtime_tick.py`.
 - 2026-03-09: Added workflow contract coverage that keeps runtime tick as the only scheduled live workflow and validates artifact upload roots for canonical/runtime and manual wrapper paths. Evidence: `tests_run_runtime_tick_wrapper.py`.
-- 2026-03-09: Added canonical autogrow source registry `outreach/autogrow_source_registry.json` and wired env/runtime validation so unknown tokens fail as `invalid_*` and planned-but-unimplemented tokens fail as `unimplemented_*`. Evidence: `outreach/source_policy.py`, `outreach/run_prospect_generation.py`, `scripts/set_outreach_env.ps1`, `tests_source_policy_registry.py`.
 - 2026-03-09: Added persisted weekly-style ops/readiness snapshot generation via `outreach/run_ops_snapshot.py` and stale dry-run artifact retention cleanup via `outreach/cleanup_outreach_dry_run_artifacts.py`. Evidence: `tests_run_ops_snapshot.py`, `tests_cleanup_outreach_dry_run_artifacts.py`.
 - 2026-03-09: Closed the old KPI-log backlog framing; reply -> `trial_started` -> `converted` by batch/state/source-family already exists in `outreach/ops_report.py`, and the durable exported artifact path is now `outreach/run_ops_snapshot.py`. Evidence: `tests_outreach_ops_report.py`.
 - 2026-03-09: Codified bounce/suppression alignment in code and docs for hard-bounce suppression writes, soft-bounce event-only behavior, suppression freshness doctor checks, and operator snapshot visibility. Evidence: `outreach/import_bounces_imap.py`, `outreach/run_outreach_auto.py`, `outreach/run_ops_snapshot.py`, `tests_import_bounces_imap.py`.
@@ -2390,6 +2102,7 @@ nslookup -type=TXT _dmarc.microflowops.com 8.8.8.8
 nslookup -type=TXT zoho._domainkey.microflowops.com 8.8.8.8
 # Expect: v=DKIM1; k=rsa; p=<public_key>
 ```
+Prospect intake is manual-only as of 2026-03-18. Do not reintroduce scraping, directory discovery, or prospect AI-assist packet workflows.
 ```
 
 ## docs/V1_CUSTOMER_VALIDATED.md
