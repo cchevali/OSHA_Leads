@@ -254,6 +254,17 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=4", text)
             self.assertIn("AI_ASSIST_DUMP_PACKET_SIZE=2", text)
             self.assertIn("AI_ASSIST_DUMP_PACKET_COUNT=2", text)
+            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATUS=loaded", text)
+            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_RUN_TOKEN=R065544123456", text)
+            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_USABLE_ONLY_TOTAL=2", text)
+            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_GENERATOR_ACCEPTED_TOTAL=2", text)
+            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_REVIEW_ELIGIBLE_TOTAL=2", text)
+            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_PACKET_ELIGIBLE_TOTAL=2", text)
+            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_SELECTED_TOTAL=2", text)
+            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_TX_USABLE_ONLY=2", text)
+            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_TX_GENERATOR_ACCEPTED=2", text)
+            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_TX_PACKET_ELIGIBLE=2", text)
+            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_TX_SELECTED=2", text)
 
             output_path = output_dir / "prospect_ai_assist_review_20260307.txt"
             self.assertTrue(output_path.exists())
@@ -297,6 +308,28 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertEqual(len(manifest["packets"]), 2)
             self.assertEqual(manifest["packets"][0]["reviewed_import_filename"], "prospect_ai_assist_review_20260307_packet_001_reviewed.csv")
             self.assertEqual(manifest["packets"][0]["suggested_batch_id"], "2026-03-07_AIASSIST_P001")
+            self.assertEqual(
+                manifest["aiha_site_contact_measurement"]["counts"],
+                {
+                    "usable_only": 2,
+                    "generator_accepted": 2,
+                    "review_eligible": 2,
+                    "packet_eligible": 2,
+                    "selected": 2,
+                },
+            )
+            self.assertEqual(manifest["aiha_site_contact_measurement"]["status"], "loaded")
+            self.assertEqual(manifest["aiha_site_contact_measurement"]["generator_run_token"], "R065544123456")
+            self.assertEqual(
+                manifest["aiha_site_contact_measurement"]["counts_by_state"]["TX"],
+                {
+                    "usable_only": 2,
+                    "generator_accepted": 2,
+                    "review_eligible": 2,
+                    "packet_eligible": 2,
+                    "selected": 2,
+                },
+            )
 
             seed_packet_one = (packet_dir / "seed_packet_001.csv").read_text(encoding="utf-8")
             review_packet_one = (packet_dir / "review_packet_001.txt").read_text(encoding="utf-8")
@@ -314,6 +347,14 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertIn("Do not invent websites or emails", review_packet_one)
             self.assertIn("PACKETS READY: 2", packet_status)
             self.assertIn("ROWS WITH BLANK WEBSITE: 0", packet_status)
+            self.assertIn(
+                "AIHA SITE-CONTACT ONLY: usable=2 generator_accepted=2 packet_eligible=2 selected=2",
+                packet_status,
+            )
+            self.assertIn(
+                "AIHA SITE-CONTACT BY STATE: TX usable=2 packet_eligible=2 selected=2",
+                packet_status,
+            )
 
     def test_dump_dry_run_emits_shortfall_without_writing_artifacts(self):
         with tempfile.TemporaryDirectory() as d:

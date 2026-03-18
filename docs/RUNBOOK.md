@@ -511,8 +511,8 @@ Operating rules:
 - Blank `website` values are expected for some `STATE_LIC` review seeds; use the provided city/phone/address/license/source URL context during manual AI review and reject rows when no named principal/contact can be verified.
 - Review-packet eligibility remains broader than live send/import eligibility, but it is now source-aware instead of locator-only. `STATE_LIC` packet rows must clear the shared precision policy: hard-negative TX HVAC license classes are packet-excluded, trade-keyword families are packet-excluded, and blank-website rows must show positive consultant evidence or neutral-but-strong identity with no trade negatives.
 - Packet composition caps are enforced after final selection. Default max `STATE_LIC` share is 30% of selected rows; it drops to 20% when the trailing 7-day reviewed accept rate for `STATE_LIC` is below threshold. If the cap blocks more `STATE_LIC` rows, the packet underfills instead of backfilling noisy rows.
-- `packet_status.txt` gives the fast operator read: if packets exist it reports packet count, blank-website selected rows, and top exclusions; if no packets exist it reports `NO PACKETS TODAY` plus the top exclusion counts.
-- `manifest.json` records candidate counts before/after filters, source-by-source stage counts, exclusion counters by reason and source, selected/source breakdowns after caps, observed non-consultant `STATE_LIC` counts, hard-negative/negative-keyword breakdowns, cap-limited counts, and the trailing accept-rate snapshot used for cap decisions.
+- `packet_status.txt` gives the fast operator read: if packets exist it reports packet count, blank-website selected rows, top exclusions, and the AIHA site-contact-only stage rollup when the generator snapshot exists; if no packets exist it reports `NO PACKETS TODAY` plus the top exclusion counts.
+- `manifest.json` records candidate counts before/after filters, source-by-source stage counts, exclusion counters by reason and source, selected/source breakdowns after caps, observed non-consultant `STATE_LIC` counts, hard-negative/negative-keyword breakdowns, cap-limited counts, the trailing accept-rate snapshot used for cap decisions, and `aiha_site_contact_measurement` loaded from the generator diagnostics snapshot.
 - Reviewed CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv` for packet review, or `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_reviewed.csv` for single-file/manual review.
 - `tools\import_prospect_ai_assist_review.py --pending` scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first, then packet order; `run_outreach_auto.py` calls the same pending-import path before live sends.
 - Legacy reviewed CSVs under `${DATA_DIR}\audits\ai_assist\` are still accepted temporarily and emit a warning token when consumed.
@@ -559,6 +559,7 @@ Auto-growth (env-gated, optional):
   - STATE_LIC: `${DATA_DIR}\prospect_generation\cache\state_lic\state_<STATE>.json`
   - Website enrichment: `${DATA_DIR}\prospect_generation\cache\website_email\<domain>.json` (TTL 14 days)
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
+- AIHA lane-yield snapshot: `${DATA_DIR}\prospect_generation\diagnostics\aiha_lane_yield_YYYYMMDD.json` with by-state/run counts for firms that became usable only after canonical website-contact resolution.
 - Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
 - Canonical production posture is to leave `PROSPECT_AUTOGROW_STATES` unset so `OUTREACH_STATES` stays the single scope of truth; print-config/doctor paths emit a drift warning when both are set and differ.
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
@@ -603,7 +604,8 @@ Generator emits machine-readable lines:
 - `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
 - `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> backlog_sendable_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> bluebook_candidate=<n> bluebook_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
 - `GENERATOR_AUTOGROW_STATES`
-- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|BLUEBOOK|OHS_BG|APOLLO|BCSP|OSHA_NEWS|STATE_LIC> state=<STATE> ...`
+- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|BLUEBOOK|OHS_BG|APOLLO|BCSP|OSHA_NEWS|STATE_LIC> state=<STATE> ... site_contact_only_usable=<n> site_contact_only_accepted=<n> ...`
+- `GENERATOR_AIHA_SITE_CONTACT_ONLY_USABLE`, `GENERATOR_AIHA_SITE_CONTACT_ONLY_ACCEPTED`, `GENERATOR_AIHA_LANE_YIELD_PATH`
 - `GENERATOR_AIHA_*`
 - `GENERATOR_BLUEBOOK_*`
 - `GENERATOR_OHS_BG_*`
