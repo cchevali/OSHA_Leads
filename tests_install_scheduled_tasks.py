@@ -236,6 +236,8 @@ class TestInstallScheduledTasks(unittest.TestCase):
                 continue
             if rel.startswith(".local/wip_autosave_worktree/"):
                 continue
+            if rel.startswith(".claude/"):
+                continue
             matches.append(rel)
         self.assertEqual(matches, ["scripts/scheduled/run_inbound_triage.ps1"], msg=str(matches))
 

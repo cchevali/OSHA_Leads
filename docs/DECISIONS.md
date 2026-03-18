@@ -374,3 +374,61 @@ Runtime tick centralized scheduling and status artifacts, but operators still ha
 - Runtime status artifacts now include alert summary fields.
 - Operators can monitor alert state from `runtime_latest.json` plus alert dedupe records.
 - Missing SMTP or recipient configuration degrades to non-fatal skipped-alert tokens.
+
+## ADR-0013: Directory-To-Website Public Contact As Canonical Consultant Discovery Lane
+
+Date: 2026-03-17
+Status: Superseded by ADR-0014
+
+### Context
+
+Legacy validation (`docs/legacy/TARGET_LIST_FACTORY_STATUS.md`, `docs/legacy/PROSPECTING_SOP.md`) showed the Wally/Indigo win came from public consultant discovery sources that reliably surfaced relevant firms and then led operators to a usable public business contact path on the company website. The winning pattern was narrower than "email-rich directory" and broader than "directory page must expose email directly."
+
+### Decision
+
+- Make `AIHA` plus `BLUEBOOK` the canonical default consultant discovery lane.
+- Treat canonical discovery contact resolution as: valid non-free source email first, otherwise crawl the source-provided company website for a public business email, otherwise leave email blank.
+- Keep guessed domains, guessed emails, Hunter/provider lookups, auth-gated discovery, and registry-heavy lanes outside the canonical default path.
+- Keep `OHS_BG` and `STATE_LIC` implemented but secondary/nondefault while source pivots are evaluated.
+- Keep `THOMASNET` proof-gated only; it is not promoted into defaults unless qualification passes.
+
+### Rationale
+
+- Matches the validated manual workflow more closely than requiring source-page emails.
+- Preserves a public, low-friction, multistate discovery posture without moving core operations onto guessed-email or auth-dependent workflows.
+- Keeps the default lane aligned with firms that are consultancy-relevant and likely to have reachable public business contact paths.
+
+### Consequences
+
+- Canonical defaults move to `AIHA,BLUEBOOK`.
+- Generator policy now treats directory-to-website public-contact extraction as first-class behavior for canonical primary sources.
+- Secondary lanes remain available for diagnostics and explicit operator runs, but they no longer define the default product thesis.
+
+## ADR-0014: Remove BLUEBOOK From Canonical Defaults Until Access Is Operational
+
+Date: 2026-03-17
+Status: Accepted
+
+### Context
+
+The refreshed live `AIHA,BLUEBOOK` cycle did not validate `BLUEBOOK` as a production discovery lane. Public-mode fetches were captcha-blocked across `TX`, `CA`, and `FL`, so the issue was operational access, not website-contact extraction yield. We still want to keep the directory-to-website contact thesis that matched the Wally workflow.
+
+### Decision
+
+- Keep the directory-to-website public-contact architecture and contact policy.
+- Remove `BLUEBOOK` from canonical default sourcing until an approved access path is established.
+- Keep `BLUEBOOK` implemented and available for explicit/diagnostic use, but not in default replenishment or default AI-assist source lists.
+- Keep `THOMASNET` qualification-only and out of defaults.
+- Focus the next source packet on restoring or replacing the blocked second lane with a source that is both accessible in practice and compatible with directory-to-website contact extraction.
+
+### Rationale
+
+- Avoids letting a captcha-blocked directory shape the default product story.
+- Preserves the validated discovery thesis without spending more cycles interpreting zero-yield runs caused by blocked listing access.
+- Keeps future source work pointed at operationally usable public discovery lanes.
+
+### Consequences
+
+- Canonical defaults revert to `AIHA`.
+- Decision-pack recommendations should focus on preserving the contact policy and establishing an accessible second lane, rather than validating `BLUEBOOK`.
+- `BLUEBOOK` remains implemented code, but default operations must not depend on its public fetch path.

@@ -52,7 +52,17 @@ AIHA_NET_NEW_LOSS_KEYS = (
     "already_known_crm",
     "default_send_ineligible",
 )
-DISCOVERY_SOURCE_FAMILIES = ("SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC", "AI_ASSIST", "UNKNOWN")
+def _discovery_source_families() -> tuple[str, ...]:
+    families: list[str] = ["SEED"]
+    for token in source_policy.implemented_autogrow_sources():
+        family = source_policy.source_family_from_token(token)
+        if family and family not in {"SEED", "AI_ASSIST", "UNKNOWN"} and family not in families:
+            families.append(family)
+    families.extend(["AI_ASSIST", "UNKNOWN"])
+    return tuple(families)
+
+
+DISCOVERY_SOURCE_FAMILIES = _discovery_source_families()
 
 
 def _norm_email(value: str) -> str:
@@ -667,7 +677,6 @@ def _repair_prospects(apply: bool) -> int:
             FROM prospects
             """
         ).fetchall()
-        target_families = {"STATE_LIC", "APOLLO", "AIHA", "OHS_BG"}
         for row in rows:
             prospect_id = str(row["prospect_id"] or "").strip()
             if not prospect_id:
@@ -689,7 +698,7 @@ def _repair_prospects(apply: bool) -> int:
 
             repaired_tier = current_tier
             repaired_send = int(current_send)
-            if source_family in target_families:
+            if source_policy.source_uses_fixed_defaults(source_raw):
                 default_tier, default_send = _source_fit_defaults(source_raw)
                 repaired_tier = str(default_tier or "").strip().lower()
                 repaired_send = int(default_send)

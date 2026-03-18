@@ -27,6 +27,7 @@ from outreach import contact_normalization
 from outreach import crm_store
 from outreach import prospect_sources_apollo
 from outreach import prospect_sources_aiha
+from outreach import prospect_sources_bluebook
 from outreach import prospect_sources_bcsp
 from outreach import prospect_enrich_email
 from outreach import prospect_sources_ohs_bg
@@ -308,7 +309,7 @@ def _effective_default_send_eligible(source: str, sendable_raw: object) -> int:
     source_text = _normalize_text(source)
     family = _source_family(source_text)
     _default_tier, default_send = _source_fit_defaults(source_text)
-    if family in {"STATE_LIC", "APOLLO", "AIHA", "OHS_BG"}:
+    if source_policy.source_uses_fixed_defaults(source_text):
         return int(default_send)
     raw_text = "" if sendable_raw is None else str(sendable_raw)
     return _coerce_boolish_int(raw_text, default_send)
@@ -418,6 +419,8 @@ def _autogrow_source_cache_dir(cache_root_dir: Path, source_token: str) -> Path:
     token = _normalize_state(source_token)
     if token == "AIHA":
         return cache_root_dir / "aiha"
+    if token == "BLUEBOOK":
+        return cache_root_dir / "bluebook"
     if token == "OHS_BG":
         return cache_root_dir / "ohs_bg"
     return cache_root_dir / token.lower()
@@ -432,6 +435,8 @@ def _source_cache_path_for_state(cache_root_dir: Path, source_token: str, state:
     cache_dir = _autogrow_source_cache_dir(cache_root_dir, token)
     if token == "AIHA":
         return prospect_sources_aiha._cache_path(cache_dir, state)
+    if token == "BLUEBOOK":
+        return prospect_sources_bluebook._cache_path(cache_dir, state)
     if token == "OHS_BG":
         return prospect_sources_ohs_bg._cache_path(cache_dir, state)
     if token == "APOLLO":
@@ -742,7 +747,7 @@ def _to_discovery_rows(input_rows: list[dict[str, str]]) -> list[dict[str, str]]
                 "source": source,
                 "source_fit_tier": _coerce_source_fit_tier(row.get("source_fit_tier") or "", source),
                 "default_send_eligible": str(
-                    _coerce_boolish_int(row.get("default_send_eligible") or "", sendable_default)
+                    _effective_default_send_eligible(source, row.get("default_send_eligible"))
                 ),
                 "email_status": email_status,
                 "enrichment_lane": enrichment_lane,
@@ -1099,6 +1104,8 @@ def _filter_autogrow_candidates(
                 source = "aiha_consultants_listing"
             elif source_norm == "OHS_BG":
                 source = "ohs_buyers_guide"
+            elif source_norm == "BLUEBOOK":
+                source = "bluebook"
             elif source_norm == "STATE_LIC":
                 source = "STATE_LIC"
             elif source_norm == "APOLLO":
@@ -1122,8 +1129,10 @@ def _filter_autogrow_candidates(
                 "source": source,
                 "source_fit_tier": _coerce_source_fit_tier(row.get("source_fit_tier") or "", source),
                 "default_send_eligible": str(
-                    _coerce_boolish_int(row.get("default_send_eligible") or "", sendable_default)
+                    _effective_default_send_eligible(source, row.get("default_send_eligible"))
                 ),
+                "email_status": _normalize_text(row.get("email_status") or ""),
+                "enrichment_lane": _normalize_text(row.get("enrichment_lane") or ""),
             }
         )
 
@@ -1227,10 +1236,40 @@ def _merge_generator_enrich_metrics(dest: dict[str, int], src: dict | None) -> N
         dest[key] = int(dest.get(key, 0)) + int(source.get(key, 0) or 0)
 
 
+def _resolve_canonical_public_contacts(
+    rows: list[dict[str, str]],
+    *,
+    enrich_cfg: dict[str, object],
+    autogrow_cfg: dict[str, object],
+) -> list[dict[str, str]]:
+    max_sites_per_run = int(enrich_cfg.get("max_sites_per_run") or 0)
+    return list(
+        scraper_engine.apply_email_resolution_waterfall(
+            rows=list(rows or []),
+            sleep_ms=int(enrich_cfg.get("sleep_ms") or autogrow_cfg.get("sleep_ms") or 0),
+            allow_pattern_email=False,
+            require_nonfree_source_email=True,
+            require_nonfree_site_email=True,
+            max_sites_per_run=(max_sites_per_run if max_sites_per_run > 0 else None),
+            unresolved_status="",
+        )
+    )
+
+
+def _observable_source_families() -> list[str]:
+    families: list[str] = ["SEED"]
+    for token in source_policy.implemented_autogrow_sources():
+        family = source_policy.source_family_from_token(token)
+        if family and family not in {"SEED", "AI_ASSIST", "UNKNOWN"} and family not in families:
+            families.append(family)
+    families.extend(["AI_ASSIST", "UNKNOWN"])
+    return families
+
+
 def _probe_autogrow_runtime() -> tuple[dict[str, object], dict[str, dict[str, object]]]:
     crawl_probe = scraper_engine.probe_crawl4ai_runtime()
     availability: dict[str, dict[str, object]] = {}
-    for key in ("BCSP", "OSHA_NEWS", "STATE_LIC"):
+    for key in ("BLUEBOOK", "BCSP", "OSHA_NEWS", "STATE_LIC"):
         availability[key] = dict(scraper_engine.probe_source_availability(key))
     return dict(crawl_probe), availability
 
@@ -1340,6 +1379,19 @@ def _run_generator_doctor(diagnostics_dir: Path, autogrow_sources: list[str]) ->
             else:
                 print(
                     f"WARN_DOCTOR_OSHA_NEWS status={int(probe.get('status') or 0)} "
+                    f"url={probe.get('url') or ''} "
+                    f"err={_ascii_safe_text(str(probe.get('error') or 'unreachable'))}"
+                )
+                warn_count += 1
+        elif token == "BLUEBOOK":
+            sources_checked += 1
+            probe = prospect_sources_bluebook.doctor_probe_bluebook()
+            if probe.get("ok"):
+                print(f"PASS_DOCTOR_BLUEBOOK status={int(probe.get('status') or 0)} url={probe.get('url') or ''}")
+                pass_count += 1
+            else:
+                print(
+                    f"WARN_DOCTOR_BLUEBOOK status={int(probe.get('status') or 0)} "
                     f"url={probe.get('url') or ''} "
                     f"err={_ascii_safe_text(str(probe.get('error') or 'unreachable'))}"
                 )
@@ -1523,7 +1575,7 @@ def _print_tokens(
     source_counts = dict(observability.get("source_counts") or {})
     tier_counts = dict(observability.get("tier_counts") or {})
     email_status_counts = dict(observability.get("email_status_counts") or {})
-    for family in ("SEED", "AIHA", "OHS_BG", "APOLLO", "BCSP", "OSHA_NEWS", "STATE_LIC", "UNKNOWN"):
+    for family in _observable_source_families():
         print(f"GENERATOR_SOURCE_COUNT_{family}={int(source_counts.get(family, 0))}")
     for tier in ("core_consultant", "recoverable_consultant", "adjacent_contractor"):
         print(f"GENERATOR_TIER_COUNT_{tier.upper()}={int(tier_counts.get(tier, 0))}")
@@ -1555,7 +1607,7 @@ def _print_tokens(
         print(f"crawl4ai_installed={'YES' if cp.get('crawl4ai_installed') else 'NO'}")
         print(f"playwright_browsers_installed={'YES' if cp.get('playwright_browsers_installed') else 'NO'}")
         av_map = dict(source_availability or {})
-        for source_key in ("BCSP", "OSHA_NEWS", "STATE_LIC"):
+        for source_key in [key for key in ("BLUEBOOK", "BCSP", "OSHA_NEWS", "STATE_LIC") if key in av_map]:
             av = dict(av_map.get(source_key) or {})
             available = bool(av.get("available"))
             reason = _normalize_text(av.get("reason") or ("ok" if available else "unknown"))
@@ -1575,6 +1627,8 @@ def _print_tokens(
             f"new_needed={int(detail.get('new_needed') or 0)} "
             f"aiha_candidate={int(detail.get('aiha_candidate') or 0)} "
             f"aiha_accepted={int(detail.get('aiha_accepted') or 0)} "
+            f"bluebook_candidate={int(detail.get('bluebook_candidate') or 0)} "
+            f"bluebook_accepted={int(detail.get('bluebook_accepted') or 0)} "
             f"ohs_bg_candidate={int(detail.get('ohs_bg_candidate') or 0)} "
             f"ohs_bg_accepted={int(detail.get('ohs_bg_accepted') or 0)} "
             f"apollo_candidate={int(detail.get('apollo_candidate') or 0)} "
@@ -1718,9 +1772,9 @@ def _print_tokens(
         f"role_fit={int(apollo_result.get('search_rows_role_fit_true') or 0)} "
         f"imported_sendable={int(apollo_result.get('imported_sendable') or 0)}"
     )
-    for source_key in ("BCSP", "OSHA_NEWS", "STATE_LIC"):
-        src_results = dict(extra_source_results or {})
-        src_rejected = dict(extra_source_rejected or {})
+    src_results = dict(extra_source_results or {})
+    src_rejected = dict(extra_source_rejected or {})
+    for source_key in source_policy.autogrow_source_order(list(src_results.keys())):
         _print_source_result_tokens(
             source_key,
             dict(src_results.get(source_key) or {}),
@@ -1764,6 +1818,16 @@ def _fetch_autogrow_source_rows(
     cache_dir = _autogrow_source_cache_dir(cache_root_dir, token)
     if token == "AIHA":
         return prospect_sources_aiha.fetch_aiha_state_rows(
+            state=state,
+            run_date=run_date,
+            max_pages=max_fetch_pages,
+            sleep_ms=sleep_ms,
+            cache_dir=cache_dir,
+            diagnostics_dir=diagnostics_dir,
+            allow_cache_write=allow_cache_write,
+        )
+    if token == "BLUEBOOK":
+        return prospect_sources_bluebook.fetch_bluebook_state_rows(
             state=state,
             run_date=run_date,
             max_pages=max_fetch_pages,
@@ -1999,6 +2063,12 @@ def main(argv: list[str] | None = None) -> int:
     ohs_bg_rejected: Counter = Counter()
     apollo_result: dict[str, object] = _default_apollo_result(cache_root_dir, selected_state, sources_empty=sources_empty)
     apollo_rejected: Counter = Counter()
+    bluebook_result = _default_autogrow_source_result(
+        cache_path=_source_cache_path_for_state(cache_root_dir, "BLUEBOOK", selected_state),
+        enabled=bool(autogrow_cfg["enabled"]),
+        sources_empty=sources_empty,
+    )
+    bluebook_rejected: Counter = Counter()
     bcsp_result = _default_autogrow_source_result(
         cache_path=_source_cache_path_for_state(cache_root_dir, "BCSP", selected_state),
         enabled=bool(autogrow_cfg["enabled"]),
@@ -2018,11 +2088,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     state_lic_rejected: Counter = Counter()
     extra_source_results: dict[str, dict] = {
+        "BLUEBOOK": bluebook_result,
         "BCSP": bcsp_result,
         "OSHA_NEWS": osha_news_result,
         "STATE_LIC": state_lic_result,
     }
     extra_source_rejected: dict[str, Counter] = {
+        "BLUEBOOK": bluebook_rejected,
         "BCSP": bcsp_rejected,
         "OSHA_NEWS": osha_news_rejected,
         "STATE_LIC": state_lic_rejected,
@@ -2133,17 +2205,24 @@ def main(argv: list[str] | None = None) -> int:
                 rows_candidate, fit_gate_rejected = _split_state_lic_consultant_rows(rows_candidate)
                 result["rows_fit_eligible"] = len(rows_candidate)
             if rows_candidate:
-                enrich_out = prospect_enrich_email.enrich_autogrow_rows(
-                    rows=rows_candidate,
-                    domain_enabled=bool(enrich_cfg.get("domain_enabled")),
-                    hunter_enabled=(bool(enrich_cfg.get("hunter_enabled")) and not bool(args.dry_run)),
-                    hunter_api_key=str(enrich_cfg.get("hunter_api_key") or ""),
-                    max_sites_per_run=int(enrich_cfg.get("max_sites_per_run") or 0),
-                    sleep_ms=int(enrich_cfg.get("sleep_ms") or autogrow_cfg.get("sleep_ms") or 0),
-                    hunter_usage_path=Path(enrich_cfg.get("hunter_usage_path") or _generation_hunter_usage_path(data_dir)),
-                )
-                rows_candidate = list(enrich_out.get("rows") or rows_candidate)
-                _merge_generator_enrich_metrics(enrich_metrics, enrich_out.get("metrics"))
+                if source_policy.uses_canonical_public_contact_resolution(source_token):
+                    rows_candidate = _resolve_canonical_public_contacts(
+                        rows=rows_candidate,
+                        enrich_cfg=enrich_cfg,
+                        autogrow_cfg=autogrow_cfg,
+                    )
+                else:
+                    enrich_out = prospect_enrich_email.enrich_autogrow_rows(
+                        rows=rows_candidate,
+                        domain_enabled=bool(enrich_cfg.get("domain_enabled")),
+                        hunter_enabled=(bool(enrich_cfg.get("hunter_enabled")) and not bool(args.dry_run)),
+                        hunter_api_key=str(enrich_cfg.get("hunter_api_key") or ""),
+                        max_sites_per_run=int(enrich_cfg.get("max_sites_per_run") or 0),
+                        sleep_ms=int(enrich_cfg.get("sleep_ms") or autogrow_cfg.get("sleep_ms") or 0),
+                        hunter_usage_path=Path(enrich_cfg.get("hunter_usage_path") or _generation_hunter_usage_path(data_dir)),
+                    )
+                    rows_candidate = list(enrich_out.get("rows") or rows_candidate)
+                    _merge_generator_enrich_metrics(enrich_metrics, enrich_out.get("metrics"))
             if source_token == TDLR_STATE_LIC_SOURCE_KEY:
                 rows_candidate = _promote_state_lic_work_email_rows(rows_candidate)
             if source_token == "AIHA":
@@ -2263,6 +2342,12 @@ def main(argv: list[str] | None = None) -> int:
                             "parse_mode": result.get("parse_mode") or apollo_result.get("parse_mode"),
                         }
                     )
+                elif source_token == "BLUEBOOK":
+                    bluebook_result.update(result)
+                    bluebook_result["rows_candidate"] = len(rows_candidate)
+                    bluebook_result["rows_accepted"] = len(accepted_rows)
+                    bluebook_rejected = rejected
+                    extra_source_rejected["BLUEBOOK"] = bluebook_rejected
                 elif source_token == "BCSP":
                     bcsp_result.update(result)
                     bcsp_result["rows_candidate"] = len(rows_candidate)

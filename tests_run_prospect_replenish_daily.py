@@ -20,7 +20,7 @@ class TestRunProspectReplenishDaily(unittest.TestCase):
         out = buf.getvalue()
         self.assertEqual(rc, 0, msg=out)
         self.assertIn("PROSPECT_REPLENISH_EFFECTIVE_AUTOGROW_ENABLED=1", out)
-        self.assertIn("PROSPECT_REPLENISH_EFFECTIVE_AUTOGROW_SOURCES=AIHA,OHS_BG,STATE_LIC", out)
+        self.assertIn("PROSPECT_REPLENISH_EFFECTIVE_AUTOGROW_SOURCES=AIHA", out)
         self.assertIn("PROSPECT_REPLENISH_EFFECTIVE_SAFETY_NET_ENABLED=1", out)
         self.assertIn("run_prospect_generation.py --doctor", out)
         self.assertIn("run_prospect_generation.py", out)

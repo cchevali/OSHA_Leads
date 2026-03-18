@@ -12,6 +12,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from outreach import contact_normalization
+import seed_recipients_pools as pools
 
 
 WARN_CRAWL4AI_NOT_INSTALLED = "WARN_CRAWL4AI_NOT_INSTALLED"
@@ -31,6 +32,17 @@ def _normalize_email(value: str) -> str:
 
 def _valid_email(value: str) -> bool:
     return contact_normalization.valid_email(value)
+
+
+def _email_domain(value: str) -> str:
+    return contact_normalization.email_domain(value)
+
+
+def _is_nonfree_email(value: str) -> bool:
+    email = _normalize_email(value)
+    if not _valid_email(email):
+        return False
+    return _email_domain(email) not in pools.FREE_EMAIL_DOMAINS
 
 
 def _domain_from_website(url: str) -> str:
@@ -98,6 +110,21 @@ def probe_crawl4ai_runtime() -> dict[str, Any]:
 
 def probe_source_availability(source_key: str) -> dict[str, Any]:
     token = _normalize_text(source_key).upper()
+    if token == "BLUEBOOK":
+        from outreach import prospect_sources_bluebook
+
+        probe = prospect_sources_bluebook.doctor_probe_bluebook()
+        return {
+            "source": token,
+            "available": bool(probe.get("ok")),
+            "reason": str(probe.get("parse_mode") or ("public_listing_ok" if probe.get("ok") else "unknown")),
+            "warn_token": "",
+            "status": int(probe.get("status") or 0),
+            "url": str(probe.get("url") or ""),
+            "parse_mode": str(probe.get("parse_mode") or ""),
+            "rows_found": int(probe.get("rows_found") or 0),
+            "error": str(probe.get("error") or ""),
+        }
     if token == "BCSP":
         from outreach import prospect_sources_bcsp
 
@@ -359,7 +386,7 @@ def fetch_contact_pages_for_domain(domain: str, *, sleep_ms: int = 0, fetcher=No
     if not host:
         return []
     base = f"https://{host}"
-    paths = ["", "/contact", "/contact-us", "/about", "/about-us"]
+    paths = ["", "/contact", "/contact-us", "/about", "/about-us", "/team", "/our-team"]
     out: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     for idx, path in enumerate(paths):
@@ -392,35 +419,70 @@ def _email_patterns_for_name(first_name: str, last_name: str, domain: str) -> li
     return out
 
 
-def apply_email_resolution_waterfall(rows: list[dict[str, Any]], *, sleep_ms: int = 0, fetcher=None) -> list[dict[str, Any]]:
+def apply_email_resolution_waterfall(
+    rows: list[dict[str, Any]],
+    *,
+    sleep_ms: int = 0,
+    fetcher=None,
+    allow_pattern_email: bool = True,
+    require_nonfree_source_email: bool = False,
+    require_nonfree_site_email: bool = False,
+    max_sites_per_run: int | None = None,
+    unresolved_status: str = "pending",
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
+    remaining_site_attempts = None
+    if max_sites_per_run is not None:
+        try:
+            parsed = int(max_sites_per_run)
+        except Exception:
+            parsed = 0
+        if parsed > 0:
+            remaining_site_attempts = parsed
     for row_in in list(rows or []):
         row = dict(row_in or {})
         email = _normalize_email(row.get("email") or row.get("contact_email") or "")
-        if _valid_email(email):
+        source_email_ok = _valid_email(email) and (
+            not require_nonfree_source_email or _is_nonfree_email(email)
+        )
+        if source_email_ok:
             row["email"] = email
             row["contact_email"] = email
             row["email_status"] = _normalize_text(row.get("email_status") or "scraped_from_source")
             out.append(row)
             continue
+        if email:
+            row["email"] = ""
+            row["contact_email"] = ""
+            if _normalize_text(row.get("email_status") or "").lower() == "scraped_from_source":
+                row["email_status"] = ""
 
         website = _normalize_text(row.get("website") or "")
         domain = _normalize_text(row.get("domain") or "").lower() or _domain_from_website(website)
         if domain:
             row["domain"] = domain
 
-        if website and domain:
+        if website and domain and (remaining_site_attempts is None or remaining_site_attempts > 0):
+            if remaining_site_attempts is not None:
+                remaining_site_attempts -= 1
             for item in fetch_contact_pages_for_domain(domain, sleep_ms=sleep_ms, fetcher=fetcher):
                 emails = list((item.get("contacts") or {}).get("emails") or [])
                 if emails:
                     site_email = _normalize_email(emails[0])
-                    if _valid_email(site_email):
+                    site_email_ok = _valid_email(site_email) and (
+                        not require_nonfree_site_email or _is_nonfree_email(site_email)
+                    )
+                    if site_email_ok:
                         row["email"] = site_email
                         row["contact_email"] = site_email
                         row["email_status"] = "scraped_from_site"
                         break
 
-        if not _valid_email(str(row.get("email") or row.get("contact_email") or "")) and domain:
+        if (
+            allow_pattern_email
+            and not _valid_email(str(row.get("email") or row.get("contact_email") or ""))
+            and domain
+        ):
             first_name = _normalize_text(row.get("first_name") or "")
             last_name = _normalize_text(row.get("last_name") or "")
             if not first_name and not last_name:
@@ -437,6 +499,10 @@ def apply_email_resolution_waterfall(rows: list[dict[str, Any]], *, sleep_ms: in
                 row["email_status"] = "pattern_generated"
 
         if not _valid_email(str(row.get("email") or row.get("contact_email") or "")):
-            row["email_status"] = _normalize_text(row.get("email_status") or "pending")
+            status = _normalize_text(row.get("email_status") or unresolved_status)
+            if status:
+                row["email_status"] = status
+            elif "email_status" in row:
+                row.pop("email_status", None)
         out.append(row)
     return out

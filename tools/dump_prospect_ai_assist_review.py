@@ -36,8 +36,8 @@ AI_ASSIST_DUMP_DEFAULT_BACKLOG_TARGET = 60
 AI_ASSIST_DUMP_DEFAULT_ENABLED = "1"
 AI_ASSIST_DUMP_DEFAULT_RAW_TARGET = 30
 AI_ASSIST_DUMP_DEFAULT_PACKET_SIZE = 10
-AI_ASSIST_DEFAULT_AUTOGROW_SOURCES = ("AIHA", "OHS_BG", "STATE_LIC")
-AI_ASSIST_PUBLIC_SOURCES = ("AIHA", "OHS_BG", "BCSP", "OSHA_NEWS", "STATE_LIC")
+AI_ASSIST_DEFAULT_AUTOGROW_SOURCES = tuple(source_policy.CONSULTANT_PRIMARY_SOURCES) or ("AIHA",)
+AI_ASSIST_PUBLIC_SOURCES = ("AIHA", "BLUEBOOK", "OHS_BG", "BCSP", "OSHA_NEWS", "STATE_LIC")
 SEED_COLUMNS = (
     "firm",
     "website",
@@ -124,6 +124,21 @@ STATE_LIC_LOW_ACCEPT_RATE_PACKET_CAP_PERCENT = 20
 STATE_LIC_LOW_ACCEPT_RATE_THRESHOLD = 0.15
 STATE_LIC_LOW_ACCEPT_RATE_MIN_SAMPLE = 10
 STATE_LIC_FEEDBACK_SUPPRESSION_MIN_SAMPLE = 5
+STATE_LIC_SHADOW_PROFILE_PRODUCTION = "production"
+STATE_LIC_SHADOW_PROFILE_DEFAULT_CLASSES_ONLY = "default_classes_only"
+STATE_LIC_SHADOW_PROFILE_ALL_CONTRACTOR_ONLY = "all_contractor_only"
+STATE_LIC_SHADOW_PACKET_PROFILES = (
+    STATE_LIC_SHADOW_PROFILE_PRODUCTION,
+    STATE_LIC_SHADOW_PROFILE_DEFAULT_CLASSES_ONLY,
+    STATE_LIC_SHADOW_PROFILE_ALL_CONTRACTOR_ONLY,
+)
+STATE_LIC_SHADOW_DEFAULT_LICENSE_CLASSES = frozenset(
+    {
+        "electrical contractor",
+        "elevator contractor",
+        "appliance installation contractor",
+    }
+)
 
 
 def _emit(key: str, value: str | int) -> None:
@@ -813,9 +828,61 @@ def _identity_exclusion_key(*, seed: dict[str, Any], expected_state: str) -> str
     return ""
 
 
-def _review_eligibility_exclusion_key(*, seed: dict[str, Any], source_token: str) -> str:
+def _normalize_state_lic_shadow_profile(value: str) -> str:
+    normalized = _normalize_text(value).lower() or STATE_LIC_SHADOW_PROFILE_PRODUCTION
+    if normalized not in STATE_LIC_SHADOW_PACKET_PROFILES:
+        raise ValueError(f"invalid_state_lic_shadow_profile={value}")
+    return normalized
+
+
+def _state_lic_shadow_allows_contractor_family(*, seed: dict[str, Any], profile: str) -> bool:
+    normalized_profile = _normalize_state_lic_shadow_profile(profile)
+    if normalized_profile == STATE_LIC_SHADOW_PROFILE_PRODUCTION:
+        return False
+    if str(seed.get("source_token") or "") != "STATE_LIC":
+        return False
+    if str(seed.get("state_lic_packet_exclusion_reason") or "") != "negative_keyword_family":
+        return False
+    if _normalize_text(seed.get("state_lic_hard_negative_class") or ""):
+        return False
+    negative_families = {
+        _normalize_text(family).lower()
+        for family in list(seed.get("state_lic_negative_families") or [])
+        if _normalize_text(family)
+    }
+    if negative_families != {"contractor"}:
+        return False
+    if normalized_profile == STATE_LIC_SHADOW_PROFILE_DEFAULT_CLASSES_ONLY:
+        return (
+            _normalize_text(seed.get("state_lic_license_class_norm") or "").lower()
+            in STATE_LIC_SHADOW_DEFAULT_LICENSE_CLASSES
+        )
+    return normalized_profile == STATE_LIC_SHADOW_PROFILE_ALL_CONTRACTOR_ONLY
+
+
+def _state_lic_packet_exclusion_reason_for_profile(*, seed: dict[str, Any], profile: str) -> str:
+    packet_reason = str(seed.get("state_lic_packet_exclusion_reason") or "")
+    if str(seed.get("source_token") or "") != "STATE_LIC":
+        return packet_reason
+    if not _state_lic_shadow_allows_contractor_family(seed=seed, profile=profile):
+        return packet_reason
+    has_positive = bool(list(seed.get("state_lic_positive_families") or []))
+    if not _normalize_text(seed.get("website") or "") and not has_positive and not bool(seed.get("state_lic_strong_identity")):
+        return "blank_website_no_positive_evidence"
+    return ""
+
+
+def _review_eligibility_exclusion_key(
+    *,
+    seed: dict[str, Any],
+    source_token: str,
+    state_lic_shadow_profile: str = STATE_LIC_SHADOW_PROFILE_PRODUCTION,
+) -> str:
     if source_token == "STATE_LIC":
-        packet_reason = str(seed.get("state_lic_packet_exclusion_reason") or "")
+        packet_reason = _state_lic_packet_exclusion_reason_for_profile(
+            seed=seed,
+            profile=state_lic_shadow_profile,
+        )
         if packet_reason == "hard_negative_class":
             return "excluded_state_lic_hard_negative_class"
         if packet_reason == "negative_keyword_family":
@@ -826,7 +893,7 @@ def _review_eligibility_exclusion_key(*, seed: dict[str, Any], source_token: str
             return "excluded_bad_firm"
         if packet_reason == "missing_state":
             return "excluded_state_mismatch"
-        if bool(seed.get("state_lic_packet_eligible")):
+        if not packet_reason:
             return ""
         for field in STATE_LIC_REVIEW_ANCHOR_FIELDS:
             if _normalize_text(seed.get(field) or ""):
@@ -909,7 +976,9 @@ def _collect_candidates(
     crm_domains: set[str],
     crm_firm_keys: set[str],
     feedback_snapshot: dict[str, Any],
+    state_lic_shadow_profile: str = STATE_LIC_SHADOW_PROFILE_PRODUCTION,
 ) -> dict[str, Any]:
+    normalized_shadow_profile = _normalize_state_lic_shadow_profile(state_lic_shadow_profile)
     cache_root = data_dir / "prospect_generation" / "cache"
     review_candidates: list[dict[str, Any]] = []
     source_priority = {token: idx for idx, token in enumerate(source_tokens)}
@@ -949,7 +1018,11 @@ def _collect_candidates(
                     continue
                 source_stage_counts["identity_ready"] += 1
 
-                review_exclusion_key = _review_eligibility_exclusion_key(seed=seed, source_token=source_token)
+                review_exclusion_key = _review_eligibility_exclusion_key(
+                    seed=seed,
+                    source_token=source_token,
+                    state_lic_shadow_profile=normalized_shadow_profile,
+                )
                 if review_exclusion_key:
                     counters[review_exclusion_key] += 1
                     source_exclusion_counts[review_exclusion_key] += 1
@@ -1085,6 +1158,40 @@ def _collect_candidates(
         ),
         "state_lic_feedback_snapshot": feedback_snapshot,
     }
+
+
+def _state_lic_shadow_packet_profiles(
+    *,
+    data_dir: Path,
+    states: list[str],
+    source_tokens: list[str],
+    crm_domains: set[str],
+    crm_firm_keys: set[str],
+    feedback_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    profiles: dict[str, Any] = {"measured_stage": "candidates"}
+    for profile in STATE_LIC_SHADOW_PACKET_PROFILES:
+        by_state: dict[str, int] = {}
+        total = 0
+        for state in list(states or []):
+            diagnostics = _collect_candidates(
+                data_dir=data_dir,
+                states=[state],
+                source_tokens=source_tokens,
+                crm_domains=crm_domains,
+                crm_firm_keys=crm_firm_keys,
+                feedback_snapshot=feedback_snapshot,
+                state_lic_shadow_profile=profile,
+            )
+            stage_counts = dict(diagnostics.get("stage_counts_by_source") or {})
+            count = int((stage_counts.get("STATE_LIC") or {}).get("candidates", 0) or 0)
+            by_state[state] = count
+            total += count
+        profiles[profile] = {
+            "total": int(total),
+            "by_state": {state: int(by_state.get(state, 0)) for state in list(states or [])},
+        }
+    return profiles
 
 
 def _csv_block(*, fieldnames: tuple[str, ...], rows: list[dict[str, Any]]) -> str:
