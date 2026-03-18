@@ -73,16 +73,40 @@ class TestProspectSourcesAiha(unittest.TestCase):
         row_diagnostics = list(parsed.get("row_diagnostics") or [])
 
         self.assertEqual(parsed.get("mode"), "TEXT_CONTAINER")
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["email"], "sam@valid.example")
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["email"], "")
+        self.assertEqual(rows[0]["website"], "https://valid.example")
+        self.assertEqual(rows[1]["email"], "sam@valid.example")
         self.assertEqual(reject_counts.get("placeholder_firm"), 1)
         self.assertEqual(reject_counts.get("multi_person_contact"), 1)
         self.assertEqual(reject_counts.get("invalid_city_state"), 1)
-        self.assertEqual(reject_counts.get("missing_email"), 1)
+        self.assertEqual(reject_counts.get("missing_email"), 0)
         self.assertGreaterEqual(len(row_diagnostics), 5)
         statuses = {str(item.get("status") or "") for item in row_diagnostics}
         self.assertIn("accepted", statuses)
         self.assertIn("rejected", statuses)
+
+    def test_parse_aiha_page_with_diagnostics_keeps_website_only_rows_for_site_contact_resolution(self):
+        page_html = """
+        <html><body>
+        <div id="text-container">
+        <p>Indigo Compliance Commercial 100 Main St Houston, TX 77001 USA Website: indigocompliance.com Specialty: 5 Consulting</p>
+        </div>
+        </body></html>
+        """
+        parsed = aiha.parse_aiha_page_with_diagnostics(page_html, "62-63")
+        rows = list(parsed.get("rows") or [])
+        reject_counts = dict(parsed.get("reject_counts") or {})
+
+        self.assertEqual(parsed.get("mode"), "TEXT_CONTAINER")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["firm"], "Indigo Compliance")
+        self.assertEqual(rows[0]["website"], "https://indigocompliance.com")
+        self.assertEqual(rows[0]["email"], "")
+        self.assertEqual(rows[0]["contact_email"], "")
+        self.assertEqual(rows[0]["contact_name"], "")
+        self.assertEqual(reject_counts.get("multi_person_contact"), 0)
+        self.assertEqual(reject_counts.get("missing_email"), 0)
 
     def test_fetch_collects_reject_counts_and_row_diagnostics(self):
         toc_html = self._read("toc.html")
