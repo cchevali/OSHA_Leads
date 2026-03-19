@@ -1,4 +1,6 @@
 import csv
+import importlib
+import inspect
 import io
 import os
 import re
@@ -7,14 +9,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parent
-SCRIPT = REPO_ROOT / "run_prospect_generation.py"
 
 
 class TestProspectGeneration(unittest.TestCase):
@@ -47,25 +48,37 @@ class TestProspectGeneration(unittest.TestCase):
                 env[k] = v
         return env
 
-    def _run(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:
+    def _run_module(
+        self, module_name: str, args: list[str], env_overrides: dict[str, str | None]
+    ) -> subprocess.CompletedProcess:
         env = self._test_env(env_overrides)
-        return subprocess.run(
-            [sys.executable, str(SCRIPT)] + args,
-            cwd=str(REPO_ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True):
+            with chdir(REPO_ROOT):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    try:
+                        module = importlib.import_module(module_name)
+                        main = getattr(module, "main")
+                        if inspect.signature(main).parameters:
+                            rc = main(args)
+                        else:
+                            with mock.patch.object(sys, "argv", [module_name] + list(args)):
+                                rc = main()
+                    except SystemExit as exc:
+                        rc = exc.code
+        return subprocess.CompletedProcess(
+            args=[module_name] + list(args),
+            returncode=(rc if isinstance(rc, int) else 0),
+            stdout=stdout.getvalue(),
+            stderr=stderr.getvalue(),
         )
 
+    def _run(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:
+        return self._run_module("outreach.run_prospect_generation", args, env_overrides)
+
     def _run_discovery(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:
-        env = self._test_env(env_overrides)
-        return subprocess.run(
-            [sys.executable, str(REPO_ROOT / "run_prospect_discovery.py")] + args,
-            cwd=str(REPO_ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
-        )
+        return self._run_module("outreach.run_prospect_discovery", args, env_overrides)
 
     def _extract_token_int(self, output: str, token: str) -> int:
         match = re.search(rf"{re.escape(token)}=(\d+)", output or "")
@@ -1637,16 +1650,13 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(p_disc.returncode, 0, msg=p_disc.stderr + "\n" + p_disc.stdout)
             self.assertIn("DISCOVERY_COMPLETE status=OK", p_disc.stdout or "")
 
-            env = os.environ.copy()
-            env["PYTHONPATH"] = str(REPO_ROOT)
-            env["DATA_DIR"] = str(data_dir)
-            env["OUTREACH_STATES"] = "TX"
-            p_plan = subprocess.run(
-                [sys.executable, str(REPO_ROOT / "run_outreach_auto.py"), "--plan", "--for-date", "2026-02-13"],
-                cwd=str(REPO_ROOT),
-                env=env,
-                capture_output=True,
-                text=True,
+            p_plan = self._run_module(
+                "outreach.run_outreach_auto",
+                ["--plan", "--for-date", "2026-02-13"],
+                {
+                    "DATA_DIR": str(data_dir),
+                    "OUTREACH_STATES": "TX",
+                },
             )
             self.assertEqual(p_plan.returncode, 0, msg=p_plan.stderr + "\n" + p_plan.stdout)
 
