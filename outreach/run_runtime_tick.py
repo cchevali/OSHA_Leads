@@ -36,7 +36,9 @@ LOCK_STALE_SECONDS = 4 * 60 * 60
 RUNTIME_JOB_STATE_SCHEMA = "runtime_tick_job_state_v1"
 ALERTS_SCHEMA = "runtime_tick_alert_v1"
 ALERTS_SUMMARY_SCHEMA = "runtime_tick_alert_summary_v1"
-CRITICAL_WINDOW_JOBS = frozenset({"ingest_daily", "prospect_replenish_daily", "outreach_auto", "trial_facs_daily"})
+CRITICAL_WINDOW_JOBS = frozenset(
+    {"ingest_daily", "prospect_replenish_daily", "outreach_auto", "trial_facs_daily", "trial_jl_safety_daily"}
+)
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,7 @@ JOBS: tuple[JobSpec, ...] = (
     JobSpec(name="prospect_replenish_daily", kind="daily", weekday_only=True, target_hhmm="07:15", catchup_minutes=180),
     JobSpec(name="outreach_auto", kind="daily", weekday_only=True, target_hhmm="08:00", catchup_minutes=180),
     JobSpec(name="trial_facs_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
+    JobSpec(name="trial_jl_safety_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
 )
 JOB_NAMES = tuple(job.name for job in JOBS)
 
@@ -360,6 +363,14 @@ def _job_commands(repo_root: Path, job_name: str, mode: str) -> list[list[str]]:
             return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--doctor"])]
         return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--dry-run"])]
 
+    if job_name == "trial_jl_safety_daily":
+        base = ["--subscriber-key", "jl_safety_trial"]
+        if mode == "live":
+            return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--send-live"])]
+        if mode == "doctor":
+            return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--doctor"])]
+        return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--dry-run"])]
+
     raise ValueError(f"unsupported_job={job_name}")
 
 
@@ -408,6 +419,7 @@ def _wrapper_names_for_job(job_name: str) -> tuple[str, ...]:
         "prospect_replenish_daily": ("OSHA_Prospect_Replenish_SafetyNet", "OSHA_Prospect_Replenish_Daily"),
         "outreach_auto": ("OSHA_Outreach_Auto_SafetyNet", "OSHA_Outreach_Auto"),
         "trial_facs_daily": ("OSHA_Trial_FACS_Daily",),
+        "trial_jl_safety_daily": ("OSHA_Trial_JL_Safety_Daily",),
     }
     return tuple(mapping.get(str(job_name or "").strip(), ()) or ())
 
@@ -733,7 +745,9 @@ def _collect_alert_candidates(job_results: list[dict[str, Any]]) -> list[AlertCa
         reconciliation_status = str(job.get("reconciliation_status") or "").strip()
         exit_code = int(job.get("exit_code") or 0)
 
-        if result == "failed":
+        if result == "failed" or reconciliation_status == "external_wrapper_failed":
+            alert_reason = reason if result == "failed" else reconciliation_status
+            alert_exit_code = exit_code if int(exit_code) != 0 else 1
             candidates.append(
                 AlertCandidate(
                     name=name,
@@ -741,8 +755,8 @@ def _collect_alert_candidates(job_results: list[dict[str, Any]]) -> list[AlertCa
                     slot_key=slot_key,
                     scheduled_local=scheduled_local,
                     result=result,
-                    reason=reason,
-                    exit_code=exit_code,
+                    reason=alert_reason,
+                    exit_code=alert_exit_code,
                     task_log_path=task_log_path,
                     run_summary_json_path=run_summary_json_path,
                     run_summary_text_path=run_summary_text_path,

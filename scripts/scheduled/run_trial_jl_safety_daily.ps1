@@ -8,7 +8,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
 $startLocal = Get-Date
 $startUtc = [datetime]::UtcNow
-$trialSubscriberKey = "facs_trial"
+$trialSubscriberKey = "jl_safety_trial"
 $trialExitCode = 1
 $preflight = $null
 $runtimeTickState = $null
@@ -31,14 +31,14 @@ $preflight = Invoke-RuntimePreflight `
 
 $runtimeTickState = Test-RuntimeTickDailySlotAlreadyCompleted `
   -RepoRoot $repoRoot `
-  -JobName 'trial_facs_daily' `
+  -JobName 'trial_jl_safety_daily' `
   -NowLocal $startLocal `
   -EmitLine ${function:Add-BootstrapLine}
 
 $taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
 $runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
 $runId = New-RuntimeRunId -StartLocal $startLocal -StartUtc $startUtc
-$taskLogPath = New-RuntimeTaskLogPath -TaskLogRoot $taskLogDir -WrapperName 'OSHA_Trial_FACS_Daily' -RunId $runId
+$taskLogPath = New-RuntimeTaskLogPath -TaskLogRoot $taskLogDir -WrapperName 'OSHA_Trial_JL_Safety_Daily' -RunId $runId
 
 New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runSummaryRoot | Out-Null
@@ -93,7 +93,7 @@ Write-TaskLine ("TRIAL_SUBSCRIBER_KEY=" + $trialSubscriberKey)
 Write-TaskLine ("TRIAL_EXIT_CODE=" + $trialExitCode)
 $summaryResult = Write-RuntimeRunSummary `
   -RepoRoot $repoRoot `
-  -WrapperName 'OSHA_Trial_FACS_Daily' `
+  -WrapperName 'OSHA_Trial_JL_Safety_Daily' `
   -CommandLine $commandInvoked `
   -Mode 'scheduled' `
   -Intent 'send' `

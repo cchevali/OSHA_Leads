@@ -42,7 +42,11 @@ New-Item -ItemType Directory -Force -Path $taskLogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $runSummaryRoot | Out-Null
 
 function Write-TaskLine([string]$Line) {
-  Write-RuntimeTaskLogLine -TaskLogPath $taskLogPath -Line $Line
+  $text = [string]$Line
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    return
+  }
+  Write-RuntimeTaskLogLine -TaskLogPath $taskLogPath -Line $text
 }
 
 foreach ($line in @($bootstrapLines)) {

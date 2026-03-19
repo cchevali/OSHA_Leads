@@ -395,6 +395,7 @@ def _run_deliver_daily(
     customer_runtime_path: Path,
     send_live: bool,
     dry_run: bool,
+    confirm_live_send: bool = False,
 ) -> tuple[int, str]:
     cmd = [
         sys.executable,
@@ -414,6 +415,8 @@ def _run_deliver_daily(
         cmd.append("--dry-run")
     elif send_live:
         cmd.append("--send-live")
+        if confirm_live_send:
+            cmd.append("--confirm-live-send")
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -920,7 +923,13 @@ def run_trial_daily(
                     print(out.rstrip())
                 return _finalize(0 if code == 0 else code, mirror_after=False)
 
-            code, out = _run_deliver_daily(leads_db, customer_runtime, send_live=send_live, dry_run=dry_run)
+            code, out = _run_deliver_daily(
+                leads_db,
+                customer_runtime,
+                send_live=send_live,
+                dry_run=dry_run,
+                confirm_live_send=confirm_live_send,
+            )
             status = "ERROR"
             customer_id = ""
             try:

@@ -83,6 +83,7 @@ function Get-TaskDefinitions([string]$RepoRoot) {
   $replenishRunner = Join-Path $RepoRoot 'scripts\scheduled\run_prospect_replenish_daily.ps1'
   $inboundRunner = Join-Path $RepoRoot 'scripts\scheduled\run_inbound_triage.ps1'
   $facsTrialRunner = Join-Path $RepoRoot 'scripts\scheduled\run_trial_facs_daily.ps1'
+  $jlSafetyTrialRunner = Join-Path $RepoRoot 'scripts\scheduled\run_trial_jl_safety_daily.ps1'
   $outreachRunner = Join-Path $RepoRoot 'scripts\scheduled\run_outreach_auto.ps1'
 
   return @(
@@ -91,6 +92,7 @@ function Get-TaskDefinitions([string]$RepoRoot) {
     (New-TaskDefinition -Name 'OSHA_Prospect_Replenish_SafetyNet' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $replenishRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Outreach_Auto_SafetyNet' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $outreachRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Trial_FACS_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '09:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $facsTrialRunner) -RecoveryOnly:$true),
+    (New-TaskDefinition -Name 'OSHA_Trial_JL_Safety_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '09:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $jlSafetyTrialRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Inbound_Triage' -ScheduleType 'minute' -StartTime '' -MinuteInterval 15 -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $inboundRunner))
   )
 }
@@ -811,6 +813,7 @@ $requiredPaths = @(
   (Join-Path $repoRoot 'scripts\scheduled\run_osha_ingest_evening.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_prospect_replenish_daily.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_trial_facs_daily.ps1'),
+  (Join-Path $repoRoot 'scripts\scheduled\run_trial_jl_safety_daily.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_inbound_triage.ps1'),
   (Join-Path $repoRoot 'scripts\scheduled\run_outreach_auto.ps1'),
   (Join-Path $repoRoot 'run_with_secrets.ps1'),
