@@ -85,16 +85,7 @@ TERRITORY_ALIASES: dict[str, str] = {
 DEFAULT_SENDS_LIMIT = 14
 TRIAL_SENDS_TARGET = 14
 CONVERSION_SUBJECT_PREFIX = "Keep your OSHA signal digest running"
-CONVERSION_REPLY_CTA = (
-    "Reply \"go\" and confirm your coverage area. "
-    "You can also request changes like different metros or extra recipients."
-)
-CONVERSION_QUESTIONS_LINE = (
-    "Questions are fine. Reply with the metros you care about and I'll confirm coverage before you activate."
-)
-CONVERSION_PS_LINE = (
-    'P.S. "0 new" just means no new inspections were first seen since the last weekday send. Nothing is broken.'
-)
+CONVERSION_CHECKOUT_TEXT = "Activate secure checkout"
 _GENERIC_CONVERSION_LABELS = {
     "",
     "{territory_label}",
@@ -103,6 +94,32 @@ _GENERIC_CONVERSION_LABELS = {
     "territory",
     "your territory",
 }
+_ALIAS_NAME_MARKERS = {
+    "admin",
+    "alerts",
+    "billing",
+    "bot",
+    "demo",
+    "dev",
+    "digest",
+    "hello",
+    "info",
+    "internal",
+    "mail",
+    "noreply",
+    "notify",
+    "ops",
+    "qa",
+    "sample",
+    "smoke",
+    "stage",
+    "staging",
+    "support",
+    "team",
+    "test",
+    "trial",
+}
+_HUMAN_NAME_PART_RE = re.compile(r"^[A-Za-z][A-Za-z'-]{0,29}$")
 
 
 @dataclass(frozen=True)
@@ -270,7 +287,7 @@ def _build_conversion_opener(display_label: str) -> str:
     opener = "You've been receiving the weekday OSHA activity digest"
     if label:
         opener += f" for {label}"
-    return f"{opener} over the past couple of weeks. Wanted to check in before it stops."
+    return f"{opener} over the past couple of weeks. Wanted to check in before the trial ends."
 
 
 def _has_checkout_url(stripe_link: str) -> bool:
@@ -278,21 +295,154 @@ def _has_checkout_url(stripe_link: str) -> bool:
     return value.startswith("http://") or value.startswith("https://")
 
 
+def _contains_alias_marker(value: str) -> bool:
+    tokens = [token for token in re.split(r"[^A-Za-z]+", str(value or "").lower()) if token]
+    return any(token in _ALIAS_NAME_MARKERS for token in tokens)
+
+
+def _normalize_human_name(value: Any) -> str:
+    normalized = " ".join(str(value or "").strip().split())
+    if not normalized:
+        return ""
+    if any(ch.isdigit() for ch in normalized):
+        return ""
+    if any(ch in normalized for ch in "@+_/\\|"):
+        return ""
+    if _contains_alias_marker(normalized):
+        return ""
+    parts = normalized.split()
+    if not parts or len(parts) > 3:
+        return ""
+    rendered: list[str] = []
+    for part in parts:
+        clean = part.strip(".,")
+        if not clean or not _HUMAN_NAME_PART_RE.fullmatch(clean):
+            return ""
+        rendered.append(clean.lower().title())
+    return " ".join(rendered)
+
+
+def _parse_name_from_email(email: str) -> str:
+    local = str(email or "").strip().split("@", 1)[0].strip()
+    if not local or "+" in local:
+        return ""
+    if any(ch.isdigit() for ch in local):
+        return ""
+    if _contains_alias_marker(local):
+        return ""
+    if re.search(r"[a-z][A-Z]|[A-Z].*[a-z].*[A-Z]", local):
+        return ""
+    parts = [part for part in re.split(r"[._-]+", local) if part]
+    if not parts or len(parts) > 3:
+        return ""
+    if len(parts) == 1 and len(parts[0]) > 12:
+        return ""
+    rendered: list[str] = []
+    for part in parts:
+        if not _HUMAN_NAME_PART_RE.fullmatch(part):
+            return ""
+        rendered.append(part.lower().title())
+    candidate = " ".join(rendered)
+    return _normalize_human_name(candidate)
+
+
+def _resolve_explicit_recipient_name(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str,
+    recipient_email: str,
+    subscriber: dict[str, Any] | None,
+) -> str:
+    for candidate in [
+        (subscriber or {}).get("first_name"),
+        (subscriber or {}).get("display_name"),
+        (subscriber or {}).get("name"),
+    ]:
+        name = _normalize_human_name(candidate)
+        if name:
+            return name
+    entitlement = crm_light.get_subscriber_entitlement(
+        conn,
+        subscriber_key=subscriber_key,
+        email=recipient_email,
+        active_only=True,
+    )
+    if not entitlement:
+        return ""
+    try:
+        recipients = json.loads(str(entitlement.get("recipients_json") or "[]"))
+    except Exception:
+        return ""
+    if not isinstance(recipients, list):
+        return ""
+    normalized_email = _normalize_email(recipient_email)
+    fallback_names: list[str] = []
+    for item in recipients:
+        if not isinstance(item, dict):
+            continue
+        name = _normalize_human_name(item.get("name"))
+        if not name:
+            continue
+        item_email = _normalize_email(item.get("email"))
+        if normalized_email and item_email == normalized_email:
+            return name
+        fallback_names.append(name)
+    if len(fallback_names) == 1:
+        return fallback_names[0]
+    return ""
+
+
+def _resolve_conversion_recipient_name(
+    conn: sqlite3.Connection,
+    *,
+    subscriber_key: str,
+    recipient_email: str,
+    subscriber: dict[str, Any] | None,
+) -> str:
+    explicit = _resolve_explicit_recipient_name(
+        conn,
+        subscriber_key=subscriber_key,
+        recipient_email=recipient_email,
+        subscriber=subscriber,
+    )
+    if explicit:
+        return explicit
+    return _parse_name_from_email(recipient_email)
+
+
+def _build_conversion_reply_cta(stripe_link: str) -> str:
+    if _has_checkout_url(stripe_link):
+        return (
+            'Reply "go" if you\'d like me to confirm coverage first. '
+            "To activate immediately, use the secure checkout link below."
+        )
+    return 'Reply "go" if you\'d like me to confirm coverage and send the activation details.'
+
+
+def _build_conversion_questions_line() -> str:
+    return "If you'd like me to double-check coverage first, reply with the metros you care about and I'll confirm them before you activate."
+
+
+def _build_conversion_salutation(recipient_name: str) -> str:
+    name = _normalize_human_name(recipient_name)
+    if name:
+        return f"Hi {name},"
+    return "Hi,"
+
+
 def _render_conversion_email_body_text(*, recipient_name: str, display_label: str, stripe_link: str) -> str:
     link = (stripe_link or "").strip() or "{stripe_link}"
     lines = [
-        f"Hi {recipient_name},",
+        _build_conversion_salutation(recipient_name),
         "",
         _build_conversion_opener(display_label),
         "",
         "If you'd like to keep it running:",
-        f"1. {CONVERSION_REPLY_CTA}",
+        f"1. {_build_conversion_reply_cta(link)}",
         "2. Or activate here:",
-        f"Activate checkout: {link}",
+        f"{CONVERSION_CHECKOUT_TEXT}: {link}",
         "",
-        CONVERSION_QUESTIONS_LINE,
-        "",
-        CONVERSION_PS_LINE,
+        _build_conversion_questions_line(),
         "",
         "— Chase",
         "MicroFlowOps",
@@ -312,39 +462,27 @@ def render_conversion_email_html(
     parts = [
         "<!doctype html>",
         "<html><body>",
-        f"<p>Hi {escape(name)},</p>",
+        f"<p>{escape(_build_conversion_salutation(name))}</p>",
         f"<p>{escape(_build_conversion_opener(display_label))}</p>",
         "<p>If you'd like to keep it running:</p>",
         "<ol>",
-        f"<li>{escape(CONVERSION_REPLY_CTA)}</li>",
+        f"<li>{escape(_build_conversion_reply_cta(link))}</li>",
         "<li>Or activate here:<br>",
     ]
     if _has_checkout_url(link):
-        parts.append(f'<a href="{escape(link)}">Activate checkout</a>')
+        parts.append(f'<a href="{escape(link)}">{CONVERSION_CHECKOUT_TEXT}</a>')
     else:
-        parts.append(f"Activate checkout: {escape(link)}")
+        parts.append(f"{CONVERSION_CHECKOUT_TEXT}: {escape(link)}")
     parts.extend(
         [
             "</li>",
             "</ol>",
-            f"<p>{escape(CONVERSION_QUESTIONS_LINE)}</p>",
-            f"<p>{escape(CONVERSION_PS_LINE)}</p>",
+            f"<p>{escape(_build_conversion_questions_line())}</p>",
             "<p>— Chase<br>MicroFlowOps</p>",
             "</body></html>",
         ]
     )
     return "".join(parts)
-
-
-def _derive_recipient_name(email: str, subscriber_key: str) -> str:
-    local = str(email or "").strip().split("@", 1)[0].strip()
-    if local:
-        text = local.replace(".", " ").replace("_", " ").replace("-", " ")
-        cleaned = " ".join(part for part in text.split() if part)
-        if cleaned:
-            return cleaned.title()
-    sk = (subscriber_key or "").strip()
-    return sk or "{recipient_name}"
 
 
 def render_conversion_email_text(
@@ -382,10 +520,15 @@ def _load_conversion_context(
         trial = crm_light.get_trial_state(conn, sk)
         if not trial:
             raise RuntimeError(f"CONFIG_ERROR trial_state not found subscriber_key={sk}")
+        recipient_email = str(sub.get("email") or "").strip().lower()
+        recipient_name = _resolve_conversion_recipient_name(
+            conn,
+            subscriber_key=sk,
+            recipient_email=recipient_email,
+            subscriber=sub,
+        )
     finally:
         conn.close()
-    recipient_email = str(sub.get("email") or "").strip().lower()
-    recipient_name = _derive_recipient_name(recipient_email, sk)
     display_label = _resolve_conversion_display_label(str(sub.get("territory_code") or ""))
     return path, sub, trial, recipient_name, recipient_email, display_label
 
