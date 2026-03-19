@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -47,24 +47,93 @@ class TestProspectGeneration(unittest.TestCase):
                 env[k] = v
         return env
 
-    def _run(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:
-        env = self._test_env(env_overrides)
-        return subprocess.run(
-            [sys.executable, str(SCRIPT)] + args,
-            cwd=str(REPO_ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
+    def _run(
+        self,
+        args: list[str],
+        env_overrides: dict[str, str | None],
+        *,
+        fast_runtime_probe: bool = True,
+        fast_seed_rows: bool = True,
+    ) -> subprocess.CompletedProcess:
+        from outreach import run_prospect_generation as generator
+
+        return self._run_main(
+            script_path=SCRIPT,
+            target=generator.main,
+            args=args,
+            env_overrides=env_overrides,
+            fast_runtime_probe=fast_runtime_probe,
+            fast_seed_rows=fast_seed_rows,
         )
 
     def _run_discovery(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:
-        env = self._test_env(env_overrides)
-        return subprocess.run(
-            [sys.executable, str(REPO_ROOT / "run_prospect_discovery.py")] + args,
-            cwd=str(REPO_ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
+        from outreach import run_prospect_discovery as discovery
+
+        return self._run_main(
+            script_path=REPO_ROOT / "run_prospect_discovery.py",
+            target=discovery.main,
+            args=args,
+            env_overrides=env_overrides,
+        )
+
+    def _run_main(
+        self,
+        *,
+        script_path: Path,
+        target,
+        args: list[str],
+        env_overrides: dict[str, str | None],
+        fast_runtime_probe: bool = False,
+        fast_seed_rows: bool = False,
+    ) -> subprocess.CompletedProcess:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, self._test_env(env_overrides), clear=True):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                with ExitStack() as stack:
+                    target_module = sys.modules.get(getattr(target, "__module__", ""))
+                    if fast_runtime_probe and target_module is not None and hasattr(target_module, "_probe_autogrow_runtime"):
+                        stack.enter_context(
+                            mock.patch.object(
+                                target_module,
+                                "_probe_autogrow_runtime",
+                                return_value=(
+                                    {
+                                        "crawl4ai_installed": False,
+                                        "playwright_browsers_installed": False,
+                                        "error_reason": "stubbed_for_unit_tests",
+                                    },
+                                    {
+                                        key: {"source": key, "available": False, "reason": "stubbed_for_unit_tests"}
+                                        for key in ("BLUEBOOK", "BCSP", "OSHA_NEWS", "STATE_LIC")
+                                    },
+                                ),
+                            )
+                        )
+                    if fast_seed_rows and target_module is not None and hasattr(target_module, "_build_clean_state_rows"):
+                        stack.enter_context(
+                            mock.patch.object(
+                                target_module,
+                                "_build_clean_state_rows",
+                                return_value=({"TX": [], "CA": [], "FL": []}, 0),
+                            )
+                        )
+                    try:
+                        rc = target(list(args))
+                    except SystemExit as exc:
+                        rc = exc.code
+
+        if rc is None:
+            rc = 0
+        elif isinstance(rc, str):
+            print(rc, file=stderr)
+            rc = 1
+
+        return subprocess.CompletedProcess(
+            args=[sys.executable, str(script_path), *args],
+            returncode=int(rc),
+            stdout=stdout.getvalue(),
+            stderr=stderr.getvalue(),
         )
 
     def _extract_token_int(self, output: str, token: str) -> int:
@@ -220,7 +289,13 @@ class TestProspectGeneration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "data"
             out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
-            p = self._run(["--dry-run"], {"DATA_DIR": str(data_dir)})
+            p = self._run(
+                ["--dry-run"],
+                {
+                    "DATA_DIR": str(data_dir),
+                    "PROSPECT_AUTOGROW_SAFETY_NET_ENABLED": "0",
+                },
+            )
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             out = p.stdout or ""
             self.assertIn("GENERATOR_OUTPUT_PATH=", out)
@@ -1621,7 +1696,11 @@ class TestProspectGeneration(unittest.TestCase):
             suppression.parent.mkdir(parents=True, exist_ok=True)
             suppression.write_text("email\n", encoding="utf-8")
 
-            p_gen = self._run([], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"})
+            p_gen = self._run(
+                [],
+                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"},
+                fast_seed_rows=False,
+            )
             self.assertEqual(p_gen.returncode, 0, msg=p_gen.stderr + "\n" + p_gen.stdout)
             self.assertIn("GENERATOR_COMPLETE status=OK", p_gen.stdout or "")
 

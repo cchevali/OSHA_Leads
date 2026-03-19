@@ -5,7 +5,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import io
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -66,6 +69,8 @@ def _rows(row_count: int = 2) -> list[dict[str, str]]:
 
 class TestOutreachDiscovery(unittest.TestCase):
     def _run(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:
+        from outreach import run_prospect_discovery as discovery
+
         env = os.environ.copy()
         env["PYTHONPATH"] = str(REPO_ROOT)
         for k, v in env_overrides.items():
@@ -73,12 +78,26 @@ class TestOutreachDiscovery(unittest.TestCase):
                 env.pop(k, None)
             else:
                 env[k] = v
-        return subprocess.run(
-            [sys.executable, str(SCRIPT)] + args,
-            cwd=str(REPO_ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr), mock.patch.dict(os.environ, env, clear=True):
+            try:
+                rc = discovery.main(list(args))
+            except SystemExit as exc:
+                rc = exc.code
+
+        if rc is None:
+            rc = 0
+        elif isinstance(rc, str):
+            print(rc, file=stderr)
+            rc = 1
+
+        return subprocess.CompletedProcess(
+            args=[sys.executable, str(SCRIPT), *args],
+            returncode=int(rc),
+            stdout=stdout.getvalue(),
+            stderr=stderr.getvalue(),
         )
 
     def _assert_discovery_block(self, stdout: str, status: str) -> list[str]:
