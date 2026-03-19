@@ -522,6 +522,22 @@ Operating rules:
 - This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
 - No packets means there were no seed rows surviving precision policy, feedback suppressions, caps, and CRM/duplicate filters; reviewed CSV imports remain the only route that can upsert accepted CRM rows.
 
+### CRM Skip List Export For External AI
+
+Use this only when you are running a custom external AI research prompt outside the repo-native AI-assist packet flow. The repo-native packet flow already excludes firms and root domains that are already present in CRM.
+
+```powershell
+py -3 tools\export_crm_ai_skip_list.py --print-config
+py -3 tools\export_crm_ai_skip_list.py --dry-run
+py -3 tools\export_crm_ai_skip_list.py
+```
+
+Operating notes:
+
+- Default output path is `${DATA_ROOT}\audits\prospect_ai_assist\crm_skip_list_for_ai.csv`.
+- With canonical live runtime, that resolves to `C:\osha_data\audits\prospect_ai_assist\crm_skip_list_for_ai.csv`.
+- Each row is a firm/domain-level skip record aggregated from `crm.sqlite`; attach the CSV to your external prompt and instruct the AI to skip any firm or root domain already listed there.
+
 Canonical nightly schedule:
 
 ```powershell
