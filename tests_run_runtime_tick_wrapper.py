@@ -79,6 +79,7 @@ class TestRunRuntimeTickWrapper(unittest.TestCase):
         workflow_paths = list((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
         live_wrapper_markers = (
             r".\scripts\scheduled\run_trial_facs_daily.ps1",
+            r".\scripts\scheduled\run_trial_jl_safety_daily.ps1",
             r".\scripts\scheduled\run_osha_ingest_evening.ps1",
             r".\scripts\scheduled\run_outreach_auto.ps1",
         )

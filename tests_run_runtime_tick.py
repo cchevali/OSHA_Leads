@@ -90,6 +90,34 @@ class TestRunRuntimeTick(unittest.TestCase):
         self.assertIn("--doctor", joined)
         self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
 
+    def test_doctor_jl_safety_trial_job_targets_jl_safety_subscriber(self):
+        calls: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            parts = [str(c) for c in cmd]
+            calls.append(parts)
+            return self._proc(0, stdout="PASS_TRIAL_DAILY_DOCTOR status=OK\n")
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick.subprocess, "run", side_effect=_run),
+        ):
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                rc = tick.main(["--doctor", "--job", "trial_jl_safety_daily"])
+        out = out_buf.getvalue() + "\n" + err_buf.getvalue()
+        self.assertEqual(rc, 0, msg=out)
+        self.assertTrue(calls, msg=out)
+        joined = " ".join(calls[0])
+        self.assertIn("run_trial_daily.py", joined)
+        self.assertIn("--subscriber-key jl_safety_trial", joined)
+        self.assertIn("--doctor", joined)
+        self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
+
     def test_live_mode_propagates_scheduled_env_to_child_commands(self):
         seen_envs: list[dict[str, str]] = []
 

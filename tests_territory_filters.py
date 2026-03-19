@@ -150,6 +150,14 @@ class TestLeadFilters(unittest.TestCase):
         self.assertEqual([row["activity_nr"] for row in filtered], ["1", "2", "3"])
         self.assertEqual(stats["excluded_state"], 1)
 
+    def test_jl_safety_trial_state_set_definition_loads_from_repo(self):
+        defs = load_territory_definitions()
+        jl_safety = defs["JL_SAFETY_TRIAL_STATES"]
+        self.assertEqual(str(jl_safety.get("kind") or ""), "STATE_SET")
+        self.assertEqual(list(jl_safety.get("states") or []), ["FL"])
+        self.assertFalse(jl_safety.get("office_patterns"))
+        self.assertFalse(jl_safety.get("fallback_city_patterns"))
+
     def test_dedupe_by_activity_nr_keeps_best_score(self):
         leads = [
             {"activity_nr": "100", "lead_score": 6, "first_seen_at": "2026-02-01T08:00:00"},

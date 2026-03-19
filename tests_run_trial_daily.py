@@ -114,6 +114,29 @@ class TestRunTrialDaily(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(run_mock.call_args.kwargs["leads_db"], str((data_dir / "osha.sqlite").resolve(strict=False)))
 
+    def test_run_deliver_daily_passes_confirm_live_send_flag(self):
+        seen_cmds: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            seen_cmds.append([str(part) for part in cmd])
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(trial_daily.subprocess, "run", side_effect=_run):
+            code, out = trial_daily._run_deliver_daily(
+                r"C:\osha_data\osha.sqlite",
+                Path(r"C:\osha_data\trials\jl_safety_trial\customer.runtime.json"),
+                send_live=True,
+                dry_run=False,
+                confirm_live_send=True,
+            )
+
+        self.assertEqual(code, 0, msg=out)
+        self.assertTrue(seen_cmds)
+        joined = " ".join(seen_cmds[0])
+        self.assertIn("deliver_daily.py", joined)
+        self.assertIn("--send-live", joined)
+        self.assertIn("--confirm-live-send", joined)
+
 
 if __name__ == "__main__":
     unittest.main()
