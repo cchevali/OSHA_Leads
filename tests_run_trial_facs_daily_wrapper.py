@@ -16,6 +16,7 @@ class TestRunTrialFacsDailyWrapper(unittest.TestCase):
         self.assertIn("--send-live", text)
         self.assertIn("runtime_guard.ps1", text)
         self.assertIn("runtime_run_summary.ps1", text)
+        self.assertIn("[string]::IsNullOrWhiteSpace", text)
         self.assertIn("TASK_LOG_PATH=", text)
         self.assertIn("TRIAL_SUBSCRIBER_KEY=", text)
         self.assertIn("TRIAL_EXIT_CODE=", text)

@@ -745,7 +745,9 @@ def _collect_alert_candidates(job_results: list[dict[str, Any]]) -> list[AlertCa
         reconciliation_status = str(job.get("reconciliation_status") or "").strip()
         exit_code = int(job.get("exit_code") or 0)
 
-        if result == "failed":
+        if result == "failed" or reconciliation_status == "external_wrapper_failed":
+            alert_reason = reason if result == "failed" else reconciliation_status
+            alert_exit_code = exit_code if int(exit_code) != 0 else 1
             candidates.append(
                 AlertCandidate(
                     name=name,
@@ -753,8 +755,8 @@ def _collect_alert_candidates(job_results: list[dict[str, Any]]) -> list[AlertCa
                     slot_key=slot_key,
                     scheduled_local=scheduled_local,
                     result=result,
-                    reason=reason,
-                    exit_code=exit_code,
+                    reason=alert_reason,
+                    exit_code=alert_exit_code,
                     task_log_path=task_log_path,
                     run_summary_json_path=run_summary_json_path,
                     run_summary_text_path=run_summary_text_path,

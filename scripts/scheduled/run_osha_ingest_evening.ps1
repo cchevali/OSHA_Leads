@@ -32,7 +32,11 @@ $preflight = $null
 $commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --scope-mode outreach_plus_trial_live; .\scripts\dump_signals_for_ai_review.ps1 -SinceDays 14; .\scripts\dump_prospect_ai_assist_review.ps1"
 
 function Write-TaskLine([string]$Line) {
-  Write-RuntimeTaskLogLine -TaskLogPath $taskLogPath -Line $Line
+  $text = [string]$Line
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    return
+  }
+  Write-RuntimeTaskLogLine -TaskLogPath $taskLogPath -Line $text
 }
 
 function Invoke-And-Log([scriptblock]$Invocation) {

@@ -344,7 +344,7 @@ class TestRunRuntimeTick(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as d,
             mock.patch.dict(os.environ, {"DATA_DIR": d, **env}, clear=False),
-            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
             mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
             mock.patch.object(tick, "send_plain_text_alert", side_effect=_send_alert),
         ):
@@ -501,7 +501,10 @@ class TestRunRuntimeTick(unittest.TestCase):
                 rc = tick.main(["--job", "outreach_auto", "--now-local", "2026-03-09T12:30", "--mode", "scheduled"])
             out = out_buf.getvalue()
             self.assertEqual(rc, 0, msg=out)
+            self.assertIn("RUNTIME_TICK_ALERT_CANDIDATE=name=outreach_auto category=job_failure send=1 reason=ready_to_send", out)
             self.assertEqual(len(sent), 1, msg=out)
+            self.assertIn("[OSHA Runtime Failure]", sent[0]["subject"])
+            self.assertIn("reason: external_wrapper_failed", sent[0]["body"])
             self.assertIn("reconciliation_status: external_wrapper_failed", sent[0]["body"])
             payload = json.loads((Path(d) / "runtime" / "status" / "jobs" / "outreach_auto.json").read_text(encoding="utf-8"))
             self.assertEqual(payload.get("last_result"), "skipped")
