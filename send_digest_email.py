@@ -86,6 +86,60 @@ TIER_THRESHOLDS = {"high_min": 10, "medium_min": 6}
 
 
 _PREFS_CACHE: dict[tuple[str, str], tuple[float, bool, str]] = {}
+_INTERNAL_DISPLAY_CODE_RE = re.compile(r"\b[A-Z0-9]+(?:_[A-Z0-9]+)+\b")
+US_STATE_NAMES = {
+    "AL": "Alabama",
+    "AK": "Alaska",
+    "AZ": "Arizona",
+    "AR": "Arkansas",
+    "CA": "California",
+    "CO": "Colorado",
+    "CT": "Connecticut",
+    "DE": "Delaware",
+    "FL": "Florida",
+    "GA": "Georgia",
+    "HI": "Hawaii",
+    "ID": "Idaho",
+    "IL": "Illinois",
+    "IN": "Indiana",
+    "IA": "Iowa",
+    "KS": "Kansas",
+    "KY": "Kentucky",
+    "LA": "Louisiana",
+    "ME": "Maine",
+    "MD": "Maryland",
+    "MA": "Massachusetts",
+    "MI": "Michigan",
+    "MN": "Minnesota",
+    "MS": "Mississippi",
+    "MO": "Missouri",
+    "MT": "Montana",
+    "NE": "Nebraska",
+    "NV": "Nevada",
+    "NH": "New Hampshire",
+    "NJ": "New Jersey",
+    "NM": "New Mexico",
+    "NY": "New York",
+    "NC": "North Carolina",
+    "ND": "North Dakota",
+    "OH": "Ohio",
+    "OK": "Oklahoma",
+    "OR": "Oregon",
+    "PA": "Pennsylvania",
+    "RI": "Rhode Island",
+    "SC": "South Carolina",
+    "SD": "South Dakota",
+    "TN": "Tennessee",
+    "TX": "Texas",
+    "UT": "Utah",
+    "VT": "Vermont",
+    "VA": "Virginia",
+    "WA": "Washington",
+    "WV": "West Virginia",
+    "WI": "Wisconsin",
+    "WY": "Wyoming",
+    "DC": "District of Columbia",
+}
 
 
 def _derive_internal_prefs_key() -> str:
@@ -253,6 +307,117 @@ def territory_display_name(territory_code: str | None) -> str:
                 return description.split(token, 1)[0].strip()
         return description
     return territory_code
+
+
+def _normalized_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _join_human_list(items: list[str]) -> str:
+    labels = [str(item).strip() for item in list(items or []) if str(item).strip()]
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return f"{', '.join(labels[:-1])}, and {labels[-1]}"
+
+
+def _state_name(value: str) -> str:
+    token = str(value or "").strip().upper()
+    return US_STATE_NAMES.get(token, token)
+
+
+def _display_label_from_states(states: list[Any]) -> str:
+    normalized = _normalize_state_codes(list(states or []))
+    if not normalized:
+        return ""
+    if len(normalized) == 1:
+        return _state_name(normalized[0])
+    return _join_human_list(normalized)
+
+
+def _looks_internal_digest_label(value: Any, *codes: str | None) -> bool:
+    label = _normalized_text(value)
+    if not label:
+        return True
+    label_upper = label.upper()
+    normalized_codes = {_normalized_text(code).upper() for code in codes if _normalized_text(code)}
+    if any(code == label_upper or code in label_upper for code in normalized_codes):
+        return True
+    label_lower = label.lower()
+    if label_lower.startswith("trial states") or label_lower.startswith("trial state"):
+        return True
+    if "trial-only" in label_lower or "full-state territory" in label_lower:
+        return True
+    return bool(_INTERNAL_DISPLAY_CODE_RE.search(label))
+
+
+def resolve_digest_display_label(
+    *,
+    config: dict[str, Any] | None,
+    territory_code: str | None,
+    states: list[Any] | None = None,
+) -> str:
+    cfg = dict(config or {})
+    defs = load_territory_definitions()
+    raw_code = str(territory_code or "").strip().upper()
+    canonical_code = resolve_territory_code(raw_code, defs)
+    territory = defs.get(canonical_code) or defs.get(raw_code) or {}
+    configured_states = _normalize_state_codes(
+        list(states if states is not None else (cfg.get("states") or territory.get("states") or []))
+    )
+    candidates = [
+        cfg.get("digest_display_name"),
+        cfg.get("coverage_display_name"),
+        cfg.get("display_name"),
+        territory.get("display_name"),
+        territory.get("label"),
+        territory.get("name"),
+    ]
+    for candidate in candidates:
+        label = _normalized_text(candidate)
+        if label and not _looks_internal_digest_label(label, raw_code, canonical_code):
+            return label
+    geography_label = _display_label_from_states(configured_states)
+    if geography_label:
+        return geography_label
+    return "Your coverage area"
+
+
+def _coverage_phrase(states: list[Any] | None, display_label: str | None) -> str:
+    normalized_states = _normalize_state_codes(list(states or []))
+    if normalized_states:
+        if len(normalized_states) == 1:
+            return f"in {_state_name(normalized_states[0])}"
+        return f"across {_join_human_list(normalized_states)}"
+    label = _normalized_text(display_label) or "your coverage area"
+    if label == "Your coverage area":
+        label = "your coverage area"
+    return f"in {label}"
+
+
+def build_digest_subject(
+    *,
+    config: dict[str, Any] | None,
+    territory_code: str | None,
+    gen_date: str,
+    states: list[Any] | None = None,
+) -> str:
+    display_label = resolve_digest_display_label(
+        config=config,
+        territory_code=territory_code,
+        states=states,
+    )
+    return f"{display_label} OSHA Signals — {gen_date}"
+
+
+def _should_render_state_breakdown(configured_states: list[str], state_counts: dict[str, int]) -> bool:
+    ordered = [str(state).strip().upper() for state in list(configured_states or []) if str(state).strip()]
+    if not ordered:
+        ordered = sorted([str(state).strip().upper() for state in state_counts.keys() if str(state).strip()])
+    return len(ordered) > 1
 
 
 def _parse_timestamp(value: str | None) -> datetime | None:
@@ -484,6 +649,150 @@ def _build_state_coverage_lines(configured_states: list[str], state_counts: dict
     zero_line = ", ".join(zero_states)
     coverage_line = f"configured states ({configured_line}) \u2022 newly observed since last send"
     return configured_line, by_state_line, zero_line, coverage_line
+
+
+def _hidden_low_counts_summary(
+    summary_states: list[str],
+    hidden_low_state_counts: dict[str, int] | None,
+) -> tuple[int, str]:
+    if not hidden_low_state_counts:
+        return 0, ""
+    hidden_total = sum(int(v or 0) for v in hidden_low_state_counts.values())
+    if hidden_total <= 0:
+        return 0, ""
+    hidden_line = " | ".join([f"{state} {int(hidden_low_state_counts.get(state, 0))}" for state in summary_states])
+    return hidden_total, hidden_line
+
+
+def _build_daily_low_signals_html(
+    *,
+    include_lows: bool,
+    tier_counts: dict[str, int] | None,
+    low_available_today: int | None,
+    snapshot_label: str | None,
+    snapshot_tier_counts: dict[str, int] | None,
+    snapshot_days: int | None,
+    low_priority: list[dict[str, Any]] | None,
+    enable_lows_url: str | None,
+    disable_lows_url: str | None,
+    summary_states: list[str],
+    hidden_low_state_counts: dict[str, int] | None,
+) -> str:
+    if tier_counts is None:
+        return ""
+    low_today = int(low_available_today) if low_available_today is not None else int(tier_counts.get("low", 0))
+    try:
+        low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_label and snapshot_tier_counts is not None else 0
+    except Exception:
+        low_snapshot = 0
+    hidden_total, hidden_line = _hidden_low_counts_summary(summary_states, hidden_low_state_counts)
+
+    status_parts: list[str] = []
+    cta_label = ""
+    cta_url = ""
+    cta_note = ""
+
+    if include_lows:
+        shown = len(low_priority or [])
+        if low_today > 0:
+            status_parts.append(f"Showing {shown} of {low_today} available today.")
+        else:
+            status_parts.append("No low signals today.")
+        cta_label = "Disable lows"
+        cta_url = disable_lows_url or ""
+    elif (low_today > 0) or (low_snapshot > 0):
+        if low_today > 0:
+            status_parts.append(f"{low_today} available today.")
+        else:
+            days = int(snapshot_days or 14)
+            status_parts.append(f"No low signals today; {low_snapshot} in the last {days} days.")
+        if hidden_total > 0:
+            status_parts.append(f"{hidden_total} hidden in this digest.")
+        cta_label = "Enable lows"
+        cta_url = enable_lows_url or ""
+        cta_note = "Applies next digest."
+    else:
+        return ""
+
+    parts = [
+        '<div style="background-color:#f8fafc; padding:12px; border-radius:6px; margin:18px 0 0 0;">',
+        (
+            "<p style=\"margin:0; color:#374151;\">"
+            f"<strong>Low signals:</strong> {'ON' if include_lows else 'OFF'}. {' '.join(status_parts)}"
+            "</p>"
+        ),
+    ]
+    if hidden_total > 0 and hidden_line:
+        parts.append(
+            f"<p style=\"margin:6px 0 0 0; color:#6b7280; font-size:12px;\">Hidden by state: {hidden_line}</p>"
+        )
+    if cta_label:
+        if cta_url:
+            button_color = "#6b7280" if include_lows else "#0b5fff"
+            parts.append(
+                "<p style=\"margin:10px 0 0 0;\">"
+                f"<a href=\"{cta_url}\" "
+                f"style=\"display:inline-block; background:{button_color}; color:#ffffff; text-decoration:none; "
+                "padding:8px 12px; border-radius:8px; font-weight:700;\">"
+                f"{cta_label}</a>"
+                "</p>"
+            )
+        else:
+            parts.append(f"<p style=\"margin:10px 0 0 0; color:#374151;\"><strong>{cta_label}</strong></p>")
+    if cta_note:
+        parts.append(f"<p style=\"margin:6px 0 0 0; color:#6b7280; font-size:12px;\">{cta_note}</p>")
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
+def _build_daily_low_signals_text(
+    *,
+    include_lows: bool,
+    tier_counts: dict[str, int] | None,
+    low_available_today: int | None,
+    snapshot_label: str | None,
+    snapshot_tier_counts: dict[str, int] | None,
+    snapshot_days: int | None,
+    low_priority: list[dict[str, Any]] | None,
+    enable_lows_url: str | None,
+    disable_lows_url: str | None,
+    summary_states: list[str],
+    hidden_low_state_counts: dict[str, int] | None,
+) -> list[str]:
+    if tier_counts is None:
+        return []
+    low_today = int(low_available_today) if low_available_today is not None else int(tier_counts.get("low", 0))
+    try:
+        low_snapshot = int(snapshot_tier_counts.get("low", 0)) if snapshot_label and snapshot_tier_counts is not None else 0
+    except Exception:
+        low_snapshot = 0
+    hidden_total, hidden_line = _hidden_low_counts_summary(summary_states, hidden_low_state_counts)
+
+    lines: list[str] = []
+    if include_lows:
+        shown = len(low_priority or [])
+        if low_today > 0:
+            lines.append(f"Low signals: ON. Showing {shown} of {low_today} available today.")
+        else:
+            lines.append("Low signals: ON. No low signals today.")
+        if disable_lows_url:
+            lines.append(f"Disable lows: {disable_lows_url}")
+        else:
+            lines.append("Disable lows.")
+    elif (low_today > 0) or (low_snapshot > 0):
+        if low_today > 0:
+            lines.append(f"Low signals: OFF. {low_today} available today.")
+        else:
+            days = int(snapshot_days or 14)
+            lines.append(f"Low signals: OFF. No low signals today; {low_snapshot} in the last {days} days.")
+        if hidden_total > 0:
+            lines.append(f"Hidden by state: {hidden_line}")
+        if enable_lows_url:
+            lines.append(f"Enable lows: {enable_lows_url}")
+        else:
+            lines.append("Enable lows.")
+        lines.append("Applies next digest.")
+    return lines
 
 
 def _sanitize_reason_label(reason: str, max_words: int = 8) -> str:
@@ -731,15 +1040,26 @@ def build_coverage_line(total_counts: dict, shown_counts: dict) -> str:
     # Keep enable/disable lows CTA mentioned once (in the main "Low signals" line).
     return ""
 
-def _build_preheader(leads: list[dict]) -> str:
-    if not leads:
-        return "No new OSHA activity signals today."
-    parts = []
-    for lead in leads[:3]:
-        company = (lead.get("establishment_name") or "Unknown").strip()
-        signal = (lead.get("inspection_type") or "Signal").strip()
-        parts.append(f"{company} ({signal})")
-    return "Top signals: " + " | ".join(parts)
+def _build_preheader(
+    *,
+    lead_count: int,
+    summary_states: list[str],
+    display_label: str | None,
+    snapshot_report_mode: bool,
+    mode: str,
+) -> str:
+    coverage = _coverage_phrase(summary_states, display_label)
+    if snapshot_report_mode:
+        if lead_count <= 0:
+            return f"Starter snapshot: no recent OSHA signals {coverage}."
+        return f"Starter snapshot: {lead_count} recent OSHA signals {coverage}."
+    if mode == "daily":
+        if lead_count <= 0:
+            return f"Daily digest: no OSHA signals today {coverage}."
+        return f"Daily digest: {lead_count} OSHA signals today {coverage}."
+    if lead_count <= 0:
+        return f"OSHA digest: no signals {coverage}."
+    return f"OSHA digest: {lead_count} OSHA signals {coverage}."
 
 
 def compute_digest_hash(
@@ -2853,8 +3173,7 @@ def generate_digest_html(
     states = config["states"]
     top_k_overall = config.get("top_k_overall", 25)
     top_k_per_state = config.get("top_k_per_state", 10)
-    territory_label = territory_display_name(territory_code)
-
+    snapshot_report_mode = bool(report_label and "starter snapshot" in str(report_label).strip().lower())
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
     summary_states = [str(s).strip().upper() for s in list(state_summary_states or states) if str(s).strip()]
     state_counts = state_summary_counts or _state_counts_for_rows(leads, summary_states)
@@ -2862,13 +3181,25 @@ def generate_digest_html(
         summary_states,
         state_counts,
     )
+    display_label = resolve_digest_display_label(
+        config=config,
+        territory_code=territory_code,
+        states=summary_states or states,
+    )
+    show_state_breakdown = _should_render_state_breakdown(summary_states, state_counts)
     display_rows = list(render_rows if render_rows is not None else leads)
     include_area_office_all = any((lead.get("area_office") or "").strip() for lead in display_rows)
     summary_line = summary_label or f"{len(leads)} signals"
     show_limit = len(display_rows) if signals_limit is None else max(0, int(signals_limit))
     shown_rows = display_rows[:show_limit]
     include_area_office_main = any((lead.get("area_office") or "").strip() for lead in shown_rows)
-    preheader = _build_preheader(list(top_pick_rows or []) or shown_rows or display_rows or leads)
+    preheader = _build_preheader(
+        lead_count=len(leads),
+        summary_states=summary_states or _normalize_state_codes(list(states or [])),
+        display_label=display_label,
+        snapshot_report_mode=snapshot_report_mode,
+        mode=mode,
+    )
     tz = tz or ZoneInfo("America/Chicago")
     low_priority = low_priority or []
     top_pick_rows = list(top_pick_rows or [])
@@ -2908,16 +3239,16 @@ def generate_digest_html(
     html.append("</head>")
     html.append('<body style="font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f7f9fc;">')
     html.append(
-        f'<span style="display:none;visibility:hidden;opacity:0;color:transparent;height:0;width:0;max-height:0;max-width:0;overflow:hidden;">{preheader}</span>'
+        f'<span style="display:none;visibility:hidden;opacity:0;color:transparent;height:0;width:0;max-height:0;max-width:0;overflow:hidden;">{html_lib.escape(preheader)}</span>'
     )
     html.append('<div class="digest-card" style="background-color: #ffffff; padding: 24px; border-radius: 8px;">')
 
     html.append(f"<h1 style=\"margin-top: 0; color: #1a1a2e;\">OSHA Lead Digest ({mode_label})</h1>")
     if report_label:
         html.append(f"<p style=\"color: #1a1a2e;\"><strong>{report_label}</strong></p>")
-    html.append(f"<p style=\"color: #555;\">{gen_date} | {'/'.join(states)} | {tz_label}</p>")
-    if territory_label:
-        html.append(f"<p style=\"color: #555;\"><strong>Territory:</strong> {territory_label}</p>")
+    html.append(f"<p style=\"color: #555;\">{gen_date} | {tz_label}</p>")
+    if display_label:
+        html.append(f"<p style=\"color: #555;\"><strong>Coverage:</strong> {html_lib.escape(display_label)}</p>")
 
     html.append('<div style="background-color: #eef5ff; padding: 14px; border-radius: 6px; margin: 16px 0;">')
     html.append(f"<p style=\"margin: 0;\"><strong>{summary_line}</strong></p>")
@@ -2929,79 +3260,13 @@ def generate_digest_html(
             f"<p style=\"margin: 6px 0 0 0; color: #555; font-size: 12px;\">Tier summary: High {high}, Medium {medium}, Low {low}</p>"
         )
     html.append("</div>")
-    if mode == "daily" and tier_counts is not None:
-        low_today = int(low_available_today) if low_available_today is not None else int(tier_counts.get("low", 0))
-        try:
-            low_snapshot = (
-                int(snapshot_tier_counts.get("low", 0))
-                if snapshot_label and snapshot_tier_counts is not None
-                else 0
-            )
-        except Exception:
-            low_snapshot = 0
-
-        low = low_today
-        low_note = f"({low_today} available today)" if low_today > 0 else "(none observed today)"
-        if include_lows:
-            shown = len(low_priority or [])
-            if low > 0 and shown > 0 and shown < low:
-                low_note = f"(showing {shown} of {low} available today)"
-            # Make enabled state explicit even when low==0.
-            if disable_lows_url:
-                html.append(
-                    "<p style=\"color: #555; margin: 6px 0 0 0;\">"
-                    f"Low signals: <strong>ON</strong> {low_note}. "
-                    f"<a href=\"{disable_lows_url}\" "
-                    "style=\"display: inline-block; margin-left: 8px; background: #6b7280; color: #ffffff; "
-                    "text-decoration: none; padding: 8px 12px; border-radius: 8px; font-weight: 700;\">"
-                    "Disable lows.</a>"
-                    "</p>"
-                )
-            else:
-                html.append(
-                    "<p style=\"color: #555; margin: 6px 0 0 0;\">"
-                    f"Low signals: <strong>ON</strong> {low_note}. Disable lows."
-                    "</p>"
-                )
-        elif (low_today > 0) or (low_snapshot > 0):
-            if (low_today == 0) and (low_snapshot > 0):
-                days = int(snapshot_days or 14)
-                low_note = f"(none observed today; {low_snapshot} in last {days} days)"
-            if enable_lows_url:
-                html.append(
-                    "<p style=\"color: #555; margin: 6px 0 0 0;\">"
-                    f"Low signals: <strong>OFF</strong> {low_note} (not shown). "
-                    f"<a href=\"{enable_lows_url}\" "
-                    "style=\"display: inline-block; margin-left: 8px; background: #0b5fff; color: #ffffff; "
-                    "text-decoration: none; padding: 8px 12px; border-radius: 8px; font-weight: 700;\">"
-                      "Enable lows.</a>"
-                      "<span style=\"color:#6b7280; font-size:12px; margin-left: 10px;\">"
-                      "Starts next digest; preview on prefs page (if available)."
-                      "</span>"
-                      "</p>"
-                  )
-            else:
-                html.append(
-                     "<p style=\"color: #555; margin: 6px 0 0 0;\">"
-                    f"Low signals: <strong>OFF</strong> {low_note} (not shown). Enable lows. "
-                    "<span style=\"color:#6b7280; font-size:12px;\">Starts next digest; preview on prefs page (if available).</span>"
-                    "</p>"
-                  )
-    if mode == "daily":
+    if mode == "daily" and show_state_breakdown:
+        state_summary_label = "Signals in this snapshot" if snapshot_report_mode else "New signals today by state"
         html.append('<div style="background-color: #f8fafc; padding: 12px; border-radius: 6px; margin: 12px 0;">')
-        html.append(f"<p style=\"margin:0;\"><strong>New signals today by state:</strong> {by_state_line}</p>")
+        html.append(f"<p style=\"margin:0;\"><strong>{state_summary_label}:</strong> {by_state_line}</p>")
         if zero_states_line:
-            html.append(f"<p style=\"margin:6px 0 0 0; color:#374151;\">No new signals in {zero_states_line} today</p>")
-        if hidden_low_state_counts:
-            hidden_total = sum(int(v or 0) for v in hidden_low_state_counts.values())
-            if hidden_total > 0:
-                ordered_hidden = []
-                for state in summary_states:
-                    ordered_hidden.append(f"{state} {int(hidden_low_state_counts.get(state, 0))}")
-                hidden_line = " | ".join(ordered_hidden)
-                html.append(
-                    f"<p style=\"margin:6px 0 0 0; color:#555; font-size:12px;\">Low signals hidden ({hidden_total}): {hidden_line}</p>"
-                )
+            zero_label = "No signals in" if snapshot_report_mode else "No new signals in"
+            html.append(f"<p style=\"margin:6px 0 0 0; color:#374151;\">{zero_label} {zero_states_line} today</p>")
         html.append("</div>")
     if coverage_line:
         cov = (coverage_line or "").strip()
@@ -3026,7 +3291,7 @@ def generate_digest_html(
         html.append(_top_picks_html(top_pick_rows, top_pick_heading))
 
     if len(leads) == 0 and mode == "daily":
-        territory_text = territory_label or "/".join(states)
+        territory_text = display_label or "your coverage area"
         if not intro_summary_html:
             if report_label:
                 html.append(
@@ -3107,6 +3372,22 @@ def generate_digest_html(
             )
             html.append(f"<p style=\"margin: 10px 0 0 0; color: #555;\"><em>{empty_msg}</em></p>")
 
+    daily_low_html = _build_daily_low_signals_html(
+        include_lows=include_lows,
+        tier_counts=tier_counts,
+        low_available_today=low_available_today,
+        snapshot_label=snapshot_label,
+        snapshot_tier_counts=snapshot_tier_counts,
+        snapshot_days=snapshot_days,
+        low_priority=low_priority,
+        enable_lows_url=enable_lows_url,
+        disable_lows_url=disable_lows_url,
+        summary_states=summary_states,
+        hidden_low_state_counts=hidden_low_state_counts,
+    )
+    if daily_low_html:
+        html.append(daily_low_html)
+
     if footer_html:
         html.append(footer_html)
 
@@ -3154,13 +3435,19 @@ def generate_digest_text(
 ) -> str:
     states = config["states"]
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
-    territory_label = territory_display_name(territory_code)
+    snapshot_report_mode = bool(report_label and "starter snapshot" in str(report_label).strip().lower())
     summary_states = [str(s).strip().upper() for s in list(state_summary_states or states) if str(s).strip()]
     state_counts = state_summary_counts or _state_counts_for_rows(leads, summary_states)
     _configured_line, by_state_line, zero_states_line, _coverage_basis_line = _build_state_coverage_lines(
         summary_states,
         state_counts,
     )
+    display_label = resolve_digest_display_label(
+        config=config,
+        territory_code=territory_code,
+        states=summary_states or states,
+    )
+    show_state_breakdown = _should_render_state_breakdown(summary_states, state_counts)
     display_rows = list(render_rows if render_rows is not None else leads)
     show_limit = len(display_rows) if signals_limit is None else max(0, int(signals_limit))
     main_rows = display_rows[:show_limit]
@@ -3181,12 +3468,11 @@ def generate_digest_text(
 
     lines = [
         f"OSHA Lead Digest ({mode_label}) - {gen_date}",
-        f"Coverage: {'/'.join(states)}",
     ]
     if report_label:
         lines.append(report_label)
-    if territory_label:
-        lines.append(f"Territory: {territory_label}")
+    if display_label:
+        lines.append(f"Coverage: {display_label}")
     lines.append(f"Times: {_tz_label(tz)}")
     lines.append("=" * 70)
     lines.append(summary_line)
@@ -3194,49 +3480,13 @@ def generate_digest_text(
         high = int(tier_counts.get("high", 0))
         medium = int(tier_counts.get("medium", 0))
         low_summary = int(tier_counts.get("low", 0))
-        low_today = int(low_available_today) if low_available_today is not None else int(tier_counts.get("low", 0))
-        try:
-            low_snapshot = (
-                int(snapshot_tier_counts.get("low", 0))
-                if snapshot_label and snapshot_tier_counts is not None
-                else 0
-            )
-        except Exception:
-            low_snapshot = 0
-
         lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low_summary}")
-        low_note = f"({low_today} available today)" if low_today > 0 else "(none observed today)"
-        if include_lows:
-            shown = len(low_priority or [])
-            if low_today > 0 and shown > 0 and shown < low_today:
-                low_note = f"(showing {shown} of {low_today} available today)"
-            if disable_lows_url:
-                lines.append(f"Low signals: ON {low_note}. Disable lows: {disable_lows_url}")
-            else:
-                lines.append(f"Low signals: ON {low_note}. Disable lows.")
-        elif (low_today > 0) or (low_snapshot > 0):
-            if (low_today == 0) and (low_snapshot > 0):
-                days = int(snapshot_days or 14)
-                low_note = f"(none observed today; {low_snapshot} in last {days} days)"
-            if enable_lows_url:
-                lines.append(
-                    f"Low signals: OFF {low_note} (not shown). Enable lows: {enable_lows_url} "
-                    "(starts next digest; prefs page preview may be unavailable)"
-                )
-            else:
-                lines.append(
-                    f"Low signals: OFF {low_note} (not shown). Enable lows. "
-                    "(starts next digest; prefs page preview may be unavailable)"
-                )
-    if mode == "daily":
-        lines.append(f"New signals today by state: {by_state_line}")
+    if mode == "daily" and show_state_breakdown:
+        state_summary_label = "Signals in this snapshot" if snapshot_report_mode else "New signals today by state"
+        lines.append(f"{state_summary_label}: {by_state_line}")
         if zero_states_line:
-            lines.append(f"No new signals in {zero_states_line} today")
-        if hidden_low_state_counts:
-            hidden_total = sum(int(v or 0) for v in hidden_low_state_counts.values())
-            if hidden_total > 0:
-                hidden_line = " | ".join([f"{state} {int(hidden_low_state_counts.get(state, 0))}" for state in summary_states])
-                lines.append(f"Low signals hidden ({hidden_total}): {hidden_line}")
+            zero_label = "No signals in" if snapshot_report_mode else "No new signals in"
+            lines.append(f"{zero_label} {zero_states_line} today")
     if coverage_line:
         cov = (coverage_line or "").strip()
         if cov.lower() == "sample format (dummy data)":
@@ -3251,7 +3501,7 @@ def generate_digest_text(
         lines.extend(_top_picks_text(top_pick_rows, top_pick_heading))
 
     if len(leads) == 0 and mode == "daily":
-        territory_text = territory_label or "/".join(states)
+        territory_text = display_label or "your coverage area"
         lines.append("")
         if not intro_summary_text:
             if report_label:
@@ -3364,6 +3614,23 @@ def generate_digest_text(
     if health_summary_text:
         lines.append("")
         lines.append(health_summary_text)
+
+    daily_low_text = _build_daily_low_signals_text(
+        include_lows=include_lows,
+        tier_counts=tier_counts,
+        low_available_today=low_available_today,
+        snapshot_label=snapshot_label,
+        snapshot_tier_counts=snapshot_tier_counts,
+        snapshot_days=snapshot_days,
+        low_priority=low_priority,
+        enable_lows_url=enable_lows_url,
+        disable_lows_url=disable_lows_url,
+        summary_states=summary_states,
+        hidden_low_state_counts=hidden_low_state_counts,
+    )
+    if daily_low_text:
+        lines.append("")
+        lines.extend(daily_low_text)
 
     if footer_text:
         lines.append("")
@@ -3863,7 +4130,7 @@ def main() -> None:
     snapshot_mode = args.mode == "daily" and (args.force_starter_snapshot or (baseline_on_first_send and not last_sent_at))
     report_label = None
     summary_label = None
-    snapshot_days = int(config["opened_window_days"])
+    opened_window_days = int(config["opened_window_days"])
     window_start = None
     new_only_cutoff = None
     strict_first_seen_after = None
@@ -3872,7 +4139,7 @@ def main() -> None:
     skip_first_seen_filter = args.mode == "baseline"
 
     if snapshot_mode:
-        report_label = f"Starter Snapshot (last {snapshot_days} days)"
+        report_label = "Starter snapshot"
         use_opened_window = True
         skip_first_seen_filter = True
         window_start = None
@@ -3895,7 +4162,7 @@ def main() -> None:
         leads, low_fallback, filter_stats, territory_debug_rows, _exclude_rows = get_leads_for_period(
             conn=conn,
             states=states,
-            since_days=int(config["opened_window_days"]),
+            since_days=opened_window_days,
             new_only_days=int(config["new_only_days"]),
             skip_first_seen_filter=skip_first_seen_filter,
             territory_code=territory_code,
@@ -3913,7 +4180,7 @@ def main() -> None:
         leads, low_fallback, filter_stats = get_leads_for_period(
             conn=conn,
             states=states,
-            since_days=int(config["opened_window_days"]),
+            since_days=opened_window_days,
             new_only_days=int(config["new_only_days"]),
             skip_first_seen_filter=skip_first_seen_filter,
             territory_code=territory_code,
@@ -4108,7 +4375,7 @@ def main() -> None:
         health_summary_html = None
 
     if snapshot_mode:
-        summary_label = f"Starter snapshot: {len(leads)} signals (last {snapshot_days} days)"
+        summary_label = f"{len(leads)} signals in last {opened_window_days} days"
     elif args.mode == "daily":
         summary_label = f"Newly observed today: {len(leads)} signals"
     else:
@@ -4178,17 +4445,12 @@ def main() -> None:
         except Exception as exc:
             logger.warning("Tier audit artifact write failed: %s", exc)
 
-    hi_count = sum(1 for lead in leads if int(lead.get("lead_score") or 0) >= 10)
-    states_label = "/".join(states)
-    territory_label = territory_display_name(territory_code)
-    location_label = territory_label or states_label
-
-    if snapshot_mode:
-        subject = f"{location_label} OSHA Signals - {gen_date} (Starter snapshot, {len(leads)} signals)"
-    elif args.mode == "daily":
-        subject = f"{location_label} OSHA Signals - {gen_date} ({len(leads)} new)"
-    else:
-        subject = f"{location_label} OSHA Signals - {gen_date} ({len(leads)} signals)"
+    subject = build_digest_subject(
+        config=config,
+        territory_code=territory_code,
+        gen_date=gen_date,
+        states=states,
+    )
 
     configured_state_order = _normalize_state_codes(list(territory_states or states))
     if not configured_state_order:

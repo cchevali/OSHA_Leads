@@ -1,13 +1,8 @@
 import os
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from outreach import scraper_engine
-
-
-REPO_ROOT = Path(__file__).resolve().parent
-FIXTURES = REPO_ROOT / "tests" / "fixtures" / "scraper_engine"
 
 
 class TestScraperEngine(unittest.TestCase):
@@ -90,48 +85,6 @@ class TestScraperEngine(unittest.TestCase):
             )
         self.assertEqual(out[0]["email"], "info@example.com")
         self.assertEqual(out[0]["email_status"], "scraped_from_site")
-
-    def test_email_waterfall_canonical_mode_uses_indigo_public_site_fixture_without_pattern_guess(self):
-        fixture_html = (FIXTURES / "indigocompliance_homepage_public.html").read_text(encoding="utf-8")
-        rows = [
-            {
-                "firm": "Indigo Compliance",
-                "website": "https://indigocompliance.com/",
-                "email": "",
-                "source": "aiha:fixture",
-                "state": "TX",
-            }
-        ]
-        calls = []
-
-        def fixture_fetcher(url: str):  # type: ignore[no-untyped-def]
-            calls.append(url)
-            if url == "https://indigocompliance.com":
-                return {"ok": True, "url": url, "status": 200, "html": fixture_html}
-            return {
-                "ok": False,
-                "url": url,
-                "status": 404,
-                "html": "<html><head><title>Page not found | Indigo Compliance</title></head><body></body></html>",
-            }
-
-        with mock.patch("outreach.scraper_engine._email_patterns_for_name") as pattern_builder:
-            out = scraper_engine.apply_email_resolution_waterfall(
-                rows,
-                fetcher=fixture_fetcher,
-                allow_pattern_email=False,
-                require_nonfree_source_email=True,
-                require_nonfree_site_email=True,
-                unresolved_status="",
-            )
-
-        self.assertEqual(out[0]["domain"], "indigocompliance.com")
-        self.assertEqual(out[0]["email"], "info@indigocompliance.com")
-        self.assertEqual(out[0]["contact_email"], "info@indigocompliance.com")
-        self.assertEqual(out[0]["email_status"], "scraped_from_site")
-        self.assertIn("https://indigocompliance.com", calls)
-        self.assertTrue(all(url.startswith("https://indigocompliance.com") for url in calls))
-        pattern_builder.assert_not_called()
 
     def test_email_waterfall_canonical_mode_leaves_unresolved_blank(self):
         rows = [{"website": "https://example.com", "domain": "example.com", "source": "bluebook:3"}]

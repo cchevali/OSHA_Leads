@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT_PACK
 
-PACK_GIT_SHA=d8e1734752bd60e22f6a4b2cf07888e37ca88c3a
-PACK_BUILD_UTC=2026-03-18T02:20:50Z
-SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=4cafdf77823efa169c06b542fd2b97ff99a6c431f215bc7a09f7e47627bedfb3 docs/DECISIONS.md=1eb7c898b8cc9b4c40c6dab98f78129739352d15b782a84faf6d478626402179 docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=7bc70b9c4d5b80f2e20650bf11203e9b3a8b7c1b96072578aef56243b37db486 docs/TODO.md=429eddde0eb211857bc40194c8bea744472705a89120cc35d247986ba32acfaf docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
-PACK_HASH=7d10596af70ae9e6b924720b50e6ebed6b2d1e51767339063efe77bbe55724c3
+PACK_GIT_SHA=4e8f853f9f5e0f23b43990300502274f9d0f6793
+PACK_BUILD_UTC=2026-03-16T19:11:57Z
+SOURCE_HASHES: AGENTS.md=44b9b5d2c9be79cae11ade5d73e294ded02880e9bd2846cbcbc86e77641b542d docs/ARCHITECTURE.md=cb867e6c35c2ec01e5408cf48fdbd997589d4b16f3608a177e4b547e1610da7f docs/DECISIONS.md=169cc2fa51cb18ba29cad103cbe457428d8de012571c81b2150a4ccd53003b3b docs/PROJECT_BRIEF.md=9568b8e30b88b2b8fcf0e0474a6121059f5cb677d65c78c959cf900e8fdd4bf7 docs/RUNBOOK.md=5f784eafaf92654582f11fb726de781df2a360f05c3578cf4ef44af8b6675cf7 docs/TODO.md=ec7d92561aa64b0e6c16aa0e071adf6c922191c23781c52813be04dd3f831d5c docs/V1_CUSTOMER_VALIDATED.md=edc2cc03c980eb81ca9b72b827193904427468bdb13e7d945fa8a42c2be9ba03
+PACK_HASH=85ef8534a47cd78cdb8552406024cc4f4820bd4aa6ca24726eb56b366b7eccd4
 
 Generated from canonical repo docs. Upload this single file to ChatGPT Project Settings -> Files.
 
@@ -129,9 +129,9 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - `run_prospect_generation.py`
    - `run_prospect_discovery.py`
    - Replenishment owns generation plus discovery only; it does not generate AI-assist review artifacts.
-   - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1`, and `PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET=30` when these keys are unset.
-   - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, BLUEBOOK, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`, though canonical production keeps it unset so `OUTREACH_STATES` remains the single scope of truth).
-   - Planned tokens such as `BBB`, `THOMASNET`, and `AGC` are intentionally rejected by env/runtime validation until their source modules exist.
+   - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA,OHS_BG,STATE_LIC`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1`, and `PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET=30` when these keys are unset.
+   - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`, though canonical production keeps it unset so `OUTREACH_STATES` remains the single scope of truth).
+   - Planned tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are intentionally rejected by env/runtime validation until their source modules exist.
    - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
    - APOLLO remains opt-in/overflow and is not in default replenishment sources.
    - BCSP uses plain HTTP parsing (`search_results.php`) and remains implemented but outside the canonical production source list until state-scoped searches produce net-new accepted rows; doctor/probe output now reports state-search readiness instead of shallow base-page reachability.
@@ -140,10 +140,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - STATE_LIC now uses one shared precision policy (`outreach/state_lic_precision.py`) with explicit `consultant_fit`, `packet_eligible`, and `send_eligible` modes so generator policy, cache annotation, and the AI-assist packet lane do not drift.
    - Generator/backlog behavior still relies on `consultant_fit`; broad TX contractor inventory remains cached and observable, but only qualifying consultant-fit rows can flow through generator promotion/backlog credit.
    - Generator-stage enrichment can promote qualifying consultant-fit `STATE_LIC` rows to persisted `STATE_LIC_WORK_EMAIL`, which stays in the `STATE_LIC` source family but is the only STATE_LIC variant that defaults to send-eligible.
-   - Canonical default consultant discovery currently runs on `AIHA` only. The directory-to-website public-contact path remains the discovery policy for `AIHA` and explicitly configured directory sources such as `BLUEBOOK`: keep a valid non-free source email when present, otherwise crawl the source-provided website (`/`, `/contact`, `/contact-us`, `/about`, `/about-us`, `/team`, `/our-team`) for a public business email, otherwise leave email blank.
-   - `BLUEBOOK` remains implemented but is not part of canonical defaults while public-mode listing access is captcha-blocked; it should only return to defaults after an approved access path exists.
-   - Guessed domains, guessed emails, and Hunter/provider lookups remain noncanonical/manual or secondary-lane tooling; they are not part of the canonical `AIHA` default lane.
-   - Optional generator-stage email enrichment (default off) still exists for noncanonical/secondary sources and is bounded by `PROSPECT_ENRICH_MAX_SITES_PER_RUN` plus `PROSPECT_ENRICH_HTTP_SLEEP_MS` so large source pulls do not stall the full replenish run.
+  - Optional generator-stage email enrichment (default off) runs after source fetch and before autogrow filtering to populate existing `website`/`email` fields via domain resolution + pattern guesses, and is bounded by `PROSPECT_ENRICH_MAX_SITES_PER_RUN` plus `PROSPECT_ENRICH_HTTP_SLEEP_MS` so large source pulls do not stall the full replenish run.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts `${DATA_DIR}/prospect_discovery/prospects_latest.csv` into `crm.sqlite`.
@@ -581,64 +578,6 @@ Runtime tick centralized scheduling and status artifacts, but operators still ha
 - Runtime status artifacts now include alert summary fields.
 - Operators can monitor alert state from `runtime_latest.json` plus alert dedupe records.
 - Missing SMTP or recipient configuration degrades to non-fatal skipped-alert tokens.
-
-## ADR-0013: Directory-To-Website Public Contact As Canonical Consultant Discovery Lane
-
-Date: 2026-03-17
-Status: Superseded by ADR-0014
-
-### Context
-
-Legacy validation (`docs/legacy/TARGET_LIST_FACTORY_STATUS.md`, `docs/legacy/PROSPECTING_SOP.md`) showed the Wally/Indigo win came from public consultant discovery sources that reliably surfaced relevant firms and then led operators to a usable public business contact path on the company website. The winning pattern was narrower than "email-rich directory" and broader than "directory page must expose email directly."
-
-### Decision
-
-- Make `AIHA` plus `BLUEBOOK` the canonical default consultant discovery lane.
-- Treat canonical discovery contact resolution as: valid non-free source email first, otherwise crawl the source-provided company website for a public business email, otherwise leave email blank.
-- Keep guessed domains, guessed emails, Hunter/provider lookups, auth-gated discovery, and registry-heavy lanes outside the canonical default path.
-- Keep `OHS_BG` and `STATE_LIC` implemented but secondary/nondefault while source pivots are evaluated.
-- Keep `THOMASNET` proof-gated only; it is not promoted into defaults unless qualification passes.
-
-### Rationale
-
-- Matches the validated manual workflow more closely than requiring source-page emails.
-- Preserves a public, low-friction, multistate discovery posture without moving core operations onto guessed-email or auth-dependent workflows.
-- Keeps the default lane aligned with firms that are consultancy-relevant and likely to have reachable public business contact paths.
-
-### Consequences
-
-- Canonical defaults move to `AIHA,BLUEBOOK`.
-- Generator policy now treats directory-to-website public-contact extraction as first-class behavior for canonical primary sources.
-- Secondary lanes remain available for diagnostics and explicit operator runs, but they no longer define the default product thesis.
-
-## ADR-0014: Remove BLUEBOOK From Canonical Defaults Until Access Is Operational
-
-Date: 2026-03-17
-Status: Accepted
-
-### Context
-
-The refreshed live `AIHA,BLUEBOOK` cycle did not validate `BLUEBOOK` as a production discovery lane. Public-mode fetches were captcha-blocked across `TX`, `CA`, and `FL`, so the issue was operational access, not website-contact extraction yield. We still want to keep the directory-to-website contact thesis that matched the Wally workflow.
-
-### Decision
-
-- Keep the directory-to-website public-contact architecture and contact policy.
-- Remove `BLUEBOOK` from canonical default sourcing until an approved access path is established.
-- Keep `BLUEBOOK` implemented and available for explicit/diagnostic use, but not in default replenishment or default AI-assist source lists.
-- Keep `THOMASNET` qualification-only and out of defaults.
-- Focus the next source packet on restoring or replacing the blocked second lane with a source that is both accessible in practice and compatible with directory-to-website contact extraction.
-
-### Rationale
-
-- Avoids letting a captcha-blocked directory shape the default product story.
-- Preserves the validated discovery thesis without spending more cycles interpreting zero-yield runs caused by blocked listing access.
-- Keeps future source work pointed at operationally usable public discovery lanes.
-
-### Consequences
-
-- Canonical defaults revert to `AIHA`.
-- Decision-pack recommendations should focus on preserving the contact policy and establishing an accessible second lane, rather than validating `BLUEBOOK`.
-- `BLUEBOOK` remains implemented code, but default operations must not depend on its public fetch path.
 ```
 
 ## docs/PROJECT_BRIEF.md
@@ -1101,7 +1040,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -ProspectAiAssistReviewEnabled 1 `
   -ProspectAiAssistReviewRawTarget 30 `
   -ProspectAiAssistReviewPacketSize 10 `
-  -ProspectAutoGrowSources AIHA `
+  -ProspectAutoGrowSources AIHA,OHS_BG,STATE_LIC `
   -ProspectAutoGrowBacklogTarget 60 `
   -ProspectAutoGrowMaxFetchPagesPerRun 6 `
   -ProspectAutoGrowHttpSleepMs 800 `
@@ -1190,20 +1129,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_a
 .\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --pending --dry-run
 .\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --pending
 .\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\prospect_ai_assist_review_20260315_packet_001_reviewed.csv --batch 2026-03-15_AIASSIST_P001
-.\run_with_secrets.ps1 -- py -3 tools\prospect_growth_decision_pack.py --days 14
 ```
 
 Operating rules:
 
 - The dump writes one daily summary text artifact under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus a sibling packet folder `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
-- The read-only prospect growth decision pack writes `${DATA_DIR}\audits\prospect_growth\prospect_growth_decision_pack_YYYYMMDD_HHMMSS.txt` plus a sibling `.json` file for the same run; use it to review source yield, freshness, backlog posture, and the bounded-next-step recommendation without changing outreach behavior.
 - The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`, `packet_status.txt`, and additive `seed_index.json` provenance so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
 - `seed_packet_###.csv` now uses `firm,website,state,city,phone,address,seed_source,seed_source_url,source_record_id,license_number,seed_id`; reviewed CSV output keeps the existing review fields and adds trailing `seed_id`. Legacy reviewed CSVs without `seed_id` still import.
 - Blank `website` values are expected for some `STATE_LIC` review seeds; use the provided city/phone/address/license/source URL context during manual AI review and reject rows when no named principal/contact can be verified.
 - Review-packet eligibility remains broader than live send/import eligibility, but it is now source-aware instead of locator-only. `STATE_LIC` packet rows must clear the shared precision policy: hard-negative TX HVAC license classes are packet-excluded, trade-keyword families are packet-excluded, and blank-website rows must show positive consultant evidence or neutral-but-strong identity with no trade negatives.
 - Packet composition caps are enforced after final selection. Default max `STATE_LIC` share is 30% of selected rows; it drops to 20% when the trailing 7-day reviewed accept rate for `STATE_LIC` is below threshold. If the cap blocks more `STATE_LIC` rows, the packet underfills instead of backfilling noisy rows.
-- `packet_status.txt` gives the fast operator read: if packets exist it reports packet count, blank-website selected rows, top exclusions, and the AIHA site-contact-only stage rollup when the generator snapshot exists; if no packets exist it reports `NO PACKETS TODAY` plus the top exclusion counts.
-- `manifest.json` records candidate counts before/after filters, source-by-source stage counts, exclusion counters by reason and source, selected/source breakdowns after caps, observed non-consultant `STATE_LIC` counts, hard-negative/negative-keyword breakdowns, cap-limited counts, the trailing accept-rate snapshot used for cap decisions, and `aiha_site_contact_measurement` loaded from the generator diagnostics snapshot.
+- `packet_status.txt` gives the fast operator read: if packets exist it reports packet count, blank-website selected rows, and top exclusions; if no packets exist it reports `NO PACKETS TODAY` plus the top exclusion counts.
+- `manifest.json` records candidate counts before/after filters, source-by-source stage counts, exclusion counters by reason and source, selected/source breakdowns after caps, observed non-consultant `STATE_LIC` counts, hard-negative/negative-keyword breakdowns, cap-limited counts, and the trailing accept-rate snapshot used for cap decisions.
 - Reviewed CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv` for packet review, or `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_reviewed.csv` for single-file/manual review.
 - `tools\import_prospect_ai_assist_review.py --pending` scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first, then packet order; `run_outreach_auto.py` calls the same pending-import path before live sends.
 - Legacy reviewed CSVs under `${DATA_DIR}\audits\ai_assist\` are still accepted temporarily and emit a warning token when consumed.
@@ -1235,14 +1172,11 @@ Auto-growth (env-gated, optional):
 - OHS optional auth key (only if buyersguide pagination is work-email gated): `OHS_BG_STORAGE_STATE_PATH` (Playwright storage state JSON path).
 - Apollo keys: `APOLLO_API_KEY`, `APOLLO_ENRICH_ENABLED`, `APOLLO_ENRICH_MAX_PER_RUN`, `APOLLO_PERSON_TITLES`, `APOLLO_PERSON_LOCATIONS_MODE`.
 - Generator enrichment keys: `PROSPECT_ENRICH_DOMAIN_ENABLED`, `PROSPECT_ENRICH_HUNTER_ENABLED`, `PROSPECT_ENRICH_MAX_SITES_PER_RUN` (default `25`), `PROSPECT_ENRICH_HTTP_SLEEP_MS` (canonical persisted default `750` via `scripts\set_outreach_env.ps1`; ad hoc runs fall back to `PROSPECT_AUTOGROW_HTTP_SLEEP_MS` when unset).
-- Source scope: implemented tokens are `AIHA`, `BLUEBOOK`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, and `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`; canonical production list is `AIHA`, while `BLUEBOOK`, `OHS_BG`, `BCSP`, `OSHA_NEWS`, and `STATE_LIC` remain implemented nondefault lanes).
-- Canonical discovery automation uses a directory-to-website public-contact path: valid non-free source email first, otherwise crawl the source-provided company website for a public business email. Guessed domains, guessed emails, and Hunter/provider lookups are not part of the canonical `AIHA` default lane.
-- `BLUEBOOK` remains implemented for explicit/diagnostic runs, but public-mode listing access is currently captcha-blocked, so it is not part of canonical defaults until an approved access path exists.
-- `STATE_LIC` remains implemented as a secondary lane. AI-assist packet eligibility allows strong-identity review seeds even when no website exists, while consultant-fit logic still governs consultant backlog credit and `STATE_LIC_WORK_EMAIL` promotion.
-- Planned-but-unimplemented registry tokens such as `BBB`, `THOMASNET`, and `AGC` are rejected intentionally by `scripts\set_outreach_env.ps1` and `outreach\run_prospect_generation.py` until source modules land.
+- Source scope: implemented tokens are `AIHA`, `OHS_BG`, `APOLLO`, `BCSP`, `OSHA_NEWS`, `STATE_LIC` (comma-separated via `PROSPECT_AUTOGROW_SOURCES`; canonical production list is `AIHA,OHS_BG,STATE_LIC`, while `BCSP` remains disabled there until it yields net-new accepted rows).
+- `STATE_LIC` remains implemented in the canonical list. AI-assist packet eligibility allows strong-identity review seeds even when no website exists, while consultant-fit logic still governs consultant backlog credit and `STATE_LIC_WORK_EMAIL` promotion.
+- Planned-but-unimplemented registry tokens such as `BBB`, `BLUEBOOK`, `THOMASNET`, and `AGC` are rejected intentionally by `scripts\set_outreach_env.ps1` and `outreach\run_prospect_generation.py` until source modules land.
 - Cache paths:
   - AIHA: `${DATA_DIR}\prospect_generation\cache\aiha\state_<STATE>.json`
-  - BLUEBOOK: `${DATA_DIR}\prospect_generation\cache\bluebook\state_<STATE>.json`
   - OHS_BG: `${DATA_DIR}\prospect_generation\cache\ohs_bg\state_<STATE>.json`
   - APOLLO: `${DATA_DIR}\prospect_generation\cache\apollo\state_<STATE>.json`
   - BCSP: `${DATA_DIR}\prospect_generation\cache\bcsp\state_<STATE>.json`
@@ -1250,7 +1184,6 @@ Auto-growth (env-gated, optional):
   - STATE_LIC: `${DATA_DIR}\prospect_generation\cache\state_lic\state_<STATE>.json`
   - Website enrichment: `${DATA_DIR}\prospect_generation\cache\website_email\<domain>.json` (TTL 14 days)
 - Diagnostics path: `${DATA_DIR}\prospect_generation\diagnostics\...`.
-- AIHA lane-yield snapshot: `${DATA_DIR}\prospect_generation\diagnostics\aiha_lane_yield_YYYYMMDD.json` with by-state/run counts for firms that became usable only after canonical website-contact resolution.
 - Backlog targeting is evaluated per configured state in `PROSPECT_AUTOGROW_STATES` (runtime default: `OUTREACH_STATES`).
 - Canonical production posture is to leave `PROSPECT_AUTOGROW_STATES` unset so `OUTREACH_STATES` stays the single scope of truth; print-config/doctor paths emit a drift warning when both are set and differ.
 - Safety net default (`PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`): when `PROSPECT_AUTOGROW_ENABLED=0` and a configured state has a depleted CRM pool (`backlog_current=0` with existing pool rows), generator auto-forces AIHA autogrow for that depleted state.
@@ -1293,12 +1226,10 @@ Generator emits machine-readable lines:
 - `GENERATOR_AUTOGROW_*`
 - `GENERATOR_AUTOGROW_SAFETY_NET_FORCED=1 reason=SENDABLE_BELOW_FLOOR states=<STATE:sendable,...>`, `GENERATOR_AUTOGROW_SAFETY_NET_STATES`
 - `GENERATOR_AUTOGROW_TOTAL_STATES`, `GENERATOR_AUTOGROW_TOTAL_ACCEPTED`
-- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> backlog_sendable_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> bluebook_candidate=<n> bluebook_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
+- `GENERATOR_AUTOGROW_STATE=<STATE> backlog_current=<n> backlog_sendable_current=<n> new_needed=<n> aiha_candidate=<n> aiha_accepted=<n> ohs_bg_candidate=<n> ohs_bg_accepted=<n> apollo_candidate=<n> apollo_accepted=<n>`
 - `GENERATOR_AUTOGROW_STATES`
-- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|BLUEBOOK|OHS_BG|APOLLO|BCSP|OSHA_NEWS|STATE_LIC> state=<STATE> ... site_contact_only_usable=<n> site_contact_only_accepted=<n> ...`
-- `GENERATOR_AIHA_SITE_CONTACT_ONLY_USABLE`, `GENERATOR_AIHA_SITE_CONTACT_ONLY_ACCEPTED`, `GENERATOR_AIHA_LANE_YIELD_PATH`
+- `GENERATOR_AUTOGROW_SOURCE_STATE source=<AIHA|OHS_BG|APOLLO|BCSP|OSHA_NEWS|STATE_LIC> state=<STATE> ...`
 - `GENERATOR_AIHA_*`
-- `GENERATOR_BLUEBOOK_*`
 - `GENERATOR_OHS_BG_*`
 - `GENERATOR_APOLLO_*`
 - `GENERATOR_BCSP_*`, `GENERATOR_OSHA_NEWS_*`, `GENERATOR_STATE_LIC_*` (including effective TX license types, candidate license-type breakdown, and `GENERATOR_STATE_LIC_REJECTED_FIT_MISMATCH`)
@@ -2420,15 +2351,13 @@ Durability rule: when Chase adds a new human-only setup step in chat, Codex must
 
 ## Codex-owned engineering backlog
 
-- [ ] Required next packet: add an accessible second public discovery lane that preserves the directory-to-website contact policy; the 2026-03-17 AIHA lane-yield pass measured `usable_only=0`, `packet_eligible=0`, and `selected=0` for site-contact-only firms across `TX,CA,FL`, and only `selected_row_count=1` from `candidate_count_before_filters=21` against `raw_target=30` / `gap_total=107`, so AIHA is valid but not sufficient. `BLUEBOOK` stays nondefault until listing access is operationally approved.
-- [ ] Add follow-on autogrow source modules on top of the registry-backed `outreach/scraper_engine.py` foundation: `BBB`, `THOMASNET`, `AGC` (source modules + fixtures + generator tests). Planned tokens now fail fast until implemented.
+- [ ] Add follow-on autogrow source modules on top of the registry-backed `outreach/scraper_engine.py` foundation: `BBB`, `BLUEBOOK`, `THOMASNET`, `AGC` (source modules + fixtures + generator tests). Planned tokens now fail fast until implemented.
 - [ ] Define trial -> paid email-only sequence using existing lifecycle states (`replied`, `trial_started`, `converted`) and conversion artifacts in `run_trial_daily.py`.
 - [ ] Add an operator-triggered schedule for `outreach\run_ops_snapshot.py` and `outreach\cleanup_outreach_dry_run_artifacts.py` on the canonical PC or runner.
 - [ ] Review complaint/FBL intake handling separately from the now-codified bounce + suppression path; provider complaint signals are still human/manual today.
 
 ## Done
 
-- 2026-03-17: Instrumented AIHA lane-yield tracking from generator snapshot through AI-assist packet selection so replays can measure site-contact-only usable, generator-accepted, review-eligible, packet-eligible, and selected counts by state and run. Evidence: `outreach/run_prospect_generation.py`, `tools/dump_prospect_ai_assist_review.py`, `tests_outreach_generation.py`, `tests_tools_prospect_ai_assist.py`.
 - 2026-03-16: Added a shared `STATE_LIC` precision policy with aligned `consultant_fit` / `packet_eligible` / `send_eligible` modes, hard-negative TX HVAC class suppression, adaptive packet caps, and additive `seed_id` / `seed_index.json` provenance so AI-assist review outcomes can feed exact 7-day packet feedback without widening live send behavior. Evidence: `outreach/state_lic_precision.py`, `outreach/prospect_sources_state_lic.py`, `outreach/run_prospect_generation.py`, `outreach/crm_store.py`, `tools/dump_prospect_ai_assist_review.py`, `tools/import_prospect_ai_assist_review.py`, `tests_state_lic_precision.py`, `tests_prospect_sources_state_lic.py`, `tests_tools_prospect_ai_assist.py`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK.md`.
 - 2026-03-10: Cut over morning scheduling so the self-hosted `runtime-tick-selfhosted.yml` path remains the canonical live executor while managed Task Scheduler morning wrappers run as enabled safety nets with same-slot skip behavior and scheduler status emits runner/Python/topology health tokens. Evidence: `scripts/install_scheduled_tasks.ps1`, `scripts/scheduled/runtime_guard.ps1`, `scripts/scheduled/run_outreach_auto.ps1`, `scripts/scheduled/run_prospect_replenish_daily.ps1`, `scripts/scheduled/run_trial_facs_daily.ps1`, `outreach/run_runtime_tick.py`, `tests_install_scheduled_tasks.py`, `tests_runtime_guard_ps1.py`, `tests_run_runtime_tick.py`.
 - 2026-03-10: Standardized scheduled wrapper Python resolution and canonical artifact roots under `${DATA_DIR}\out\...` so scheduled preflight, task logs, run summaries, and runtime-tick reconciliation agree in unattended runs. Evidence: `scripts/scheduled/runtime_guard.ps1`, `scripts/scheduled/runtime_run_summary.ps1`, `scripts/scheduled/run_osha_ingest_daily.ps1`, `scripts/scheduled/run_prospect_replenish_daily.ps1`, `scripts/scheduled/run_outreach_auto.ps1`, `scripts/scheduled/run_trial_facs_daily.ps1`, `tests_runtime_guard_ps1.py`, `tests_runtime_run_summary.py`, `tests_run_runtime_tick_wrapper.py`.

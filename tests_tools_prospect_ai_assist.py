@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -58,56 +58,6 @@ class TestProspectAiAssistTools(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _write_aiha_lane_yield_snapshot(
-        self,
-        data_dir: Path,
-        *,
-        run_date: str,
-        run_started_at: str,
-        run_token: str,
-        rows: list[dict[str, object]],
-    ) -> None:
-        diagnostics_dir = dump_tool.generation._generation_diagnostics_dir(data_dir)
-        diagnostics_path = dump_tool.generation._aiha_lane_yield_path(
-            diagnostics_dir,
-            date.fromisoformat(run_date),
-        )
-        diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
-        by_state: dict[str, dict[str, int]] = {}
-        accepted_total = 0
-        for row in rows:
-            state = str(row.get("state") or "")
-            state_counts = by_state.setdefault(state, {"usable_only": 0, "accepted": 0})
-            state_counts["usable_only"] += 1
-            if bool(row.get("accepted")):
-                state_counts["accepted"] += 1
-                accepted_total += 1
-        diagnostics_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": dump_tool.generation.AIHA_LANE_YIELD_SCHEMA,
-                    "run_date": run_date,
-                    "run_started_at": run_started_at,
-                    "run_token": run_token,
-                    "selected_state": "TX",
-                    "states_scope": sorted(by_state.keys()),
-                    "source_configured": True,
-                    "usable_only_total": len(rows),
-                    "accepted_total": accepted_total,
-                    "usable_only_seed_ids": [str(row.get("seed_id") or "") for row in rows],
-                    "accepted_seed_ids": [
-                        str(row.get("seed_id") or "")
-                        for row in rows
-                        if bool(row.get("accepted"))
-                    ],
-                    "by_state": by_state,
-                    "rows": rows,
-                    "diagnostics_path": str(diagnostics_path.resolve()),
-                }
-            ),
-            encoding="utf-8",
-        )
-
     def _write_review_csv(self, path: Path, rows: list[dict[str, str]]) -> None:
         with open(path, "w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=list(import_tool.REQUIRED_COLUMNS))
@@ -130,60 +80,34 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self._seed_crm_prospect(db_path, firm="Known Safety Group", website="https://knowncrm.test", state="TX")
             self._seed_crm_prospect(db_path, firm="Existing Firm LLC", website="https://other-existingcrm.test", state="CA")
 
-            aiha_rows = [
-                {
-                    "firm": "Alpha Safety LLC",
-                    "website": "https://www.alpha-safety.co",
-                    "state": "TX",
-                    "source": "aiha_consultants_listing:10-11",
-                },
-                {
-                    "firm": "Bravo Safety",
-                    "website": "https://bravo-safety.co",
-                    "state": "TX",
-                    "source": "aiha_consultants_listing:12-13",
-                },
-                {
-                    "firm": "Known Safety Group",
-                    "website": "https://knowncrm.test",
-                    "state": "TX",
-                    "source": "aiha_consultants_listing:14-15",
-                },
-                {
-                    "firm": "Existing Firm LLC",
-                    "website": "https://brand-new-safety.co",
-                    "state": "TX",
-                    "source": "aiha_consultants_listing:16-17",
-                },
-            ]
-            self._write_cache_rows(data_dir, "AIHA", "TX", aiha_rows)
-            self._write_aiha_lane_yield_snapshot(
+            self._write_cache_rows(
                 data_dir,
-                run_date="2026-03-07",
-                run_started_at="2026-03-07T06:55:44.123456-05:00",
-                run_token="R065544123456",
-                rows=[
+                "AIHA",
+                "TX",
+                [
                     {
-                        "seed_id": dump_tool._normalize_seed_row(source_token="AIHA", row=aiha_rows[0])["seed_id"],
-                        "state": "TX",
                         "firm": "Alpha Safety LLC",
                         "website": "https://www.alpha-safety.co",
+                        "state": "TX",
                         "source": "aiha_consultants_listing:10-11",
-                        "source_url": dump_tool.prospect_sources_aiha.PAGE_URL_TEMPLATE.format(page_id="10-11"),
-                        "email": "info@alpha-safety.co",
-                        "email_status": "scraped_from_site",
-                        "accepted": True,
                     },
                     {
-                        "seed_id": dump_tool._normalize_seed_row(source_token="AIHA", row=aiha_rows[1])["seed_id"],
-                        "state": "TX",
                         "firm": "Bravo Safety",
                         "website": "https://bravo-safety.co",
+                        "state": "TX",
                         "source": "aiha_consultants_listing:12-13",
-                        "source_url": dump_tool.prospect_sources_aiha.PAGE_URL_TEMPLATE.format(page_id="12-13"),
-                        "email": "info@bravo-safety.co",
-                        "email_status": "scraped_from_site",
-                        "accepted": True,
+                    },
+                    {
+                        "firm": "Known Safety Group",
+                        "website": "https://knowncrm.test",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:14-15",
+                    },
+                    {
+                        "firm": "Existing Firm LLC",
+                        "website": "https://brand-new-safety.co",
+                        "state": "TX",
+                        "source": "aiha_consultants_listing:16-17",
                     },
                 ],
             )
@@ -254,17 +178,6 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertIn("AI_ASSIST_DUMP_ROWS_WRITTEN=4", text)
             self.assertIn("AI_ASSIST_DUMP_PACKET_SIZE=2", text)
             self.assertIn("AI_ASSIST_DUMP_PACKET_COUNT=2", text)
-            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATUS=loaded", text)
-            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_RUN_TOKEN=R065544123456", text)
-            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_USABLE_ONLY_TOTAL=2", text)
-            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_GENERATOR_ACCEPTED_TOTAL=2", text)
-            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_REVIEW_ELIGIBLE_TOTAL=2", text)
-            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_PACKET_ELIGIBLE_TOTAL=2", text)
-            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_SELECTED_TOTAL=2", text)
-            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_TX_USABLE_ONLY=2", text)
-            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_TX_GENERATOR_ACCEPTED=2", text)
-            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_TX_PACKET_ELIGIBLE=2", text)
-            self.assertIn("AI_ASSIST_DUMP_AIHA_SITE_CONTACT_STATE_TX_SELECTED=2", text)
 
             output_path = output_dir / "prospect_ai_assist_review_20260307.txt"
             self.assertTrue(output_path.exists())
@@ -308,28 +221,6 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertEqual(len(manifest["packets"]), 2)
             self.assertEqual(manifest["packets"][0]["reviewed_import_filename"], "prospect_ai_assist_review_20260307_packet_001_reviewed.csv")
             self.assertEqual(manifest["packets"][0]["suggested_batch_id"], "2026-03-07_AIASSIST_P001")
-            self.assertEqual(
-                manifest["aiha_site_contact_measurement"]["counts"],
-                {
-                    "usable_only": 2,
-                    "generator_accepted": 2,
-                    "review_eligible": 2,
-                    "packet_eligible": 2,
-                    "selected": 2,
-                },
-            )
-            self.assertEqual(manifest["aiha_site_contact_measurement"]["status"], "loaded")
-            self.assertEqual(manifest["aiha_site_contact_measurement"]["generator_run_token"], "R065544123456")
-            self.assertEqual(
-                manifest["aiha_site_contact_measurement"]["counts_by_state"]["TX"],
-                {
-                    "usable_only": 2,
-                    "generator_accepted": 2,
-                    "review_eligible": 2,
-                    "packet_eligible": 2,
-                    "selected": 2,
-                },
-            )
 
             seed_packet_one = (packet_dir / "seed_packet_001.csv").read_text(encoding="utf-8")
             review_packet_one = (packet_dir / "review_packet_001.txt").read_text(encoding="utf-8")
@@ -347,14 +238,6 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertIn("Do not invent websites or emails", review_packet_one)
             self.assertIn("PACKETS READY: 2", packet_status)
             self.assertIn("ROWS WITH BLANK WEBSITE: 0", packet_status)
-            self.assertIn(
-                "AIHA SITE-CONTACT ONLY: usable=2 generator_accepted=2 packet_eligible=2 selected=2",
-                packet_status,
-            )
-            self.assertIn(
-                "AIHA SITE-CONTACT BY STATE: TX usable=2 packet_eligible=2 selected=2",
-                packet_status,
-            )
 
     def test_dump_dry_run_emits_shortfall_without_writing_artifacts(self):
         with tempfile.TemporaryDirectory() as d:

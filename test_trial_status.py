@@ -54,6 +54,7 @@ class TestTrialStatus(unittest.TestCase):
         subscriber_key: str,
         start_date: str,
         sends_limit: int,
+        territory_code: str = "TX_TRIANGLE_V1",
     ) -> None:
         crm_light.ensure_database(db_path)
         with crm_light.open_conn(db_path) as conn:
@@ -62,7 +63,7 @@ class TestTrialStatus(unittest.TestCase):
                 conn,
                 subscriber_key=subscriber_key,
                 email=f"{subscriber_key}@example.com",
-                territory_code="TX_TRIANGLE_V1",
+                territory_code=territory_code,
                 tz="America/Chicago",
                 status="trial",
             )
@@ -1059,16 +1060,26 @@ class TestTrialStatus(unittest.TestCase):
                 artifact = data_dir / "trials" / "wally_trial" / "conversion_email.txt"
                 text = artifact.read_text(encoding="utf-8")
                 self.assertIn("To: wally_trial@example.com", text)
-                self.assertIn("Subject: Keep your OSHA signal digest running -", text)
-                self.assertIn("You've been getting the weekday OSHA activity digest", text)
+                self.assertIn("Subject: Keep your OSHA signal digest running — Texas Triangle", text)
+                self.assertIn(
+                    "You've been receiving the weekday OSHA activity digest for Texas Triangle over the past couple of weeks. Wanted to check in before it stops.",
+                    text,
+                )
                 self.assertIn('1. Reply "go" and confirm your coverage area', text)
-                self.assertIn("2. Or activate directly here:", text)
-                self.assertIn("Payment link:", text)
+                self.assertIn("2. Or activate here:", text)
                 self.assertIn("Activate checkout:", text)
-                self.assertIn("Not sure yet? Reply with questions or the metros you care about", text)
-                self.assertIn('A few people ask about "0 new" days - that just means no new inspections were first-seen', text)
-                self.assertIn("https://example.com/activate", text)
+                self.assertIn(
+                    "Questions are fine. Reply with the metros you care about and I'll confirm coverage before you activate.",
+                    text,
+                )
+                self.assertIn(
+                    'P.S. "0 new" just means no new inspections were first seen since the last weekday send. Nothing is broken.',
+                    text,
+                )
+                self.assertEqual(text.count("https://example.com/activate"), 1)
                 self.assertIn("Texas Triangle", text)
+                self.assertNotIn("Payment link:", text)
+                self.assertNotIn("Not sure yet?", text)
                 self.assertNotIn("fallback..", text)
                 self.assertNotRegex(text, re.compile(r"<(html|body|p|a|br)\\b", re.IGNORECASE))
             finally:
@@ -1102,6 +1113,7 @@ class TestTrialStatus(unittest.TestCase):
                 artifact = data_dir / "trials" / "wally_trial" / "conversion_email.txt"
                 text = artifact.read_text(encoding="utf-8")
                 self.assertIn("{stripe_link}", text)
+                self.assertEqual(text.count("{stripe_link}"), 1)
             finally:
                 if old_data_dir is None:
                     os.environ.pop("DATA_DIR", None)
@@ -1111,6 +1123,97 @@ class TestTrialStatus(unittest.TestCase):
                     os.environ.pop("TRIAL_CONVERSION_URL", None)
                 else:
                     os.environ["TRIAL_CONVERSION_URL"] = old_conv
+
+    def test_conversion_draft_strips_internal_segment_codes_from_subject_and_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_conv = os.environ.get("TRIAL_CONVERSION_URL")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ["TRIAL_CONVERSION_URL"] = "https://example.com/activate"
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="facs_trial",
+                    start_date="2026-02-04",
+                    sends_limit=14,
+                    territory_code="FACS_TRIAL_STATES",
+                )
+                code = run_trial_admin.main(["conversion-draft", "--subscriber-key", "facs_trial"])
+                self.assertEqual(code, 0)
+                artifact = data_dir / "trials" / "facs_trial" / "conversion_email.txt"
+                text = artifact.read_text(encoding="utf-8")
+                self.assertIn(
+                    "Subject: Keep your OSHA signal digest running — CA, OR, and WA",
+                    text,
+                )
+                self.assertIn(
+                    "You've been receiving the weekday OSHA activity digest for CA, OR, and WA over the past couple of weeks. Wanted to check in before it stops.",
+                    text,
+                )
+                self.assertNotIn("FACS_TRIAL_STATES", text)
+                self.assertNotIn("Trial States", text)
+                self.assertNotIn("Trial states", text)
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_conv is None:
+                    os.environ.pop("TRIAL_CONVERSION_URL", None)
+                else:
+                    os.environ["TRIAL_CONVERSION_URL"] = old_conv
+
+    def test_conversion_draft_html_checkout_link_uses_clean_anchor_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            data_dir = base / "data_dir"
+            old_data_dir = os.environ.get("DATA_DIR")
+            old_conv = os.environ.get("TRIAL_CONVERSION_URL")
+            os.environ["DATA_DIR"] = str(data_dir)
+            os.environ["TRIAL_CONVERSION_URL"] = "https://example.com/activate"
+            try:
+                db = crm_light.resolve_crm_db_path()
+                self._seed_trial(
+                    db,
+                    subscriber_key="wally_trial",
+                    start_date="2026-02-04",
+                    sends_limit=14,
+                )
+                code = run_trial_admin.main(["conversion-draft", "--subscriber-key", "wally_trial"])
+                self.assertEqual(code, 0)
+                artifact = data_dir / "trials" / "wally_trial" / "conversion_email.html"
+                html = artifact.read_text(encoding="utf-8")
+                self.assertIn('href="https://example.com/activate"', html)
+                self.assertIn(">Activate checkout<", html)
+                self.assertEqual(html.count("https://example.com/activate"), 1)
+                self.assertNotIn("Activate checkout: https://example.com/activate", html)
+            finally:
+                if old_data_dir is None:
+                    os.environ.pop("DATA_DIR", None)
+                else:
+                    os.environ["DATA_DIR"] = old_data_dir
+                if old_conv is None:
+                    os.environ.pop("TRIAL_CONVERSION_URL", None)
+                else:
+                    os.environ["TRIAL_CONVERSION_URL"] = old_conv
+
+    def test_render_conversion_email_text_falls_back_when_display_label_missing(self) -> None:
+        text = run_trial_admin.render_conversion_email_text(
+            recipient_name="Taylor Thomas",
+            primary_recipient="taylor@example.com",
+            display_label="",
+            stripe_link="https://example.com/activate",
+        )
+        self.assertIn("Subject: Keep your OSHA signal digest running", text)
+        self.assertNotIn("Subject: Keep your OSHA signal digest running —", text)
+        self.assertIn(
+            "You've been receiving the weekday OSHA activity digest over the past couple of weeks. Wanted to check in before it stops.",
+            text,
+        )
+        self.assertNotIn("for  over the past couple of weeks", text)
 
     def test_expiry_path_uses_same_conversion_template_as_conversion_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

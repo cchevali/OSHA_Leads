@@ -128,9 +128,26 @@ class TestDigestIntelligence(unittest.TestCase):
         ]
         starter = di.build_digest_presentation(rows, section_kind="starter_snapshot")
         fallback = di.build_digest_presentation(rows, section_kind="snapshot_not_new")
-        self.assertIn("not newly observed today", starter["intro_text"])
-        self.assertIn("not newly observed today", fallback["intro_text"])
-        self.assertEqual("Most important in recent activity", starter["top_pick_heading"])
+        self.assertIn("Recent activity is concentrated in Texas, mostly accident signals.", starter["intro_text"])
+        self.assertIn("Recent activity is concentrated in Texas, mostly accident signals.", fallback["intro_text"])
+        self.assertEqual("Top signals", starter["top_pick_heading"])
+
+    def test_reason_sentences_use_shorter_customer_facing_copy(self):
+        rows = [
+            {
+                "activity_nr": "n1",
+                "lead_key": "n1",
+                "establishment_name": "Priority Roofing LLC",
+                "site_city": "Austin",
+                "site_state": "TX",
+                "inspection_type": "Accident",
+                "date_opened": "2026-03-01",
+                "effective_priority": "HIGH",
+                "triage_overlay_reasons": ["naics_emphasis"],
+            }
+        ]
+        presentation = di.build_digest_presentation(rows, section_kind="starter_snapshot")
+        self.assertEqual("Higher-attention industry.", presentation["top_picks"][0]["presentation_reason_sentence"])
 
 
 if __name__ == "__main__":

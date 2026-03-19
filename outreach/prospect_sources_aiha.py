@@ -420,10 +420,6 @@ def _is_valid_city_state(city: str, state: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z .'-]{2,}", city_norm))
 
 
-def _is_site_contact_candidate(website: str, email: str) -> bool:
-    return bool(_normalize_text(website)) and not _normalize_text(email)
-
-
 def parse_aiha_page_with_diagnostics(page_html: str, page_id: str) -> dict:
     paragraphs, mode = _extract_page_paragraphs(page_html)
     if not paragraphs:
@@ -452,16 +448,15 @@ def parse_aiha_page_with_diagnostics(page_html: str, page_id: str) -> dict:
         contact_name = _extract_contact_name(segment_text)
         emails = _extract_emails(segment_text)
         email = emails[0] if emails else ""
-        site_contact_candidate = _is_site_contact_candidate(website=website, email=email)
 
         reject_token = ""
-        if _is_placeholder_firm(firm):
+        if _is_multi_person_contact(contact_name):
+            reject_token = "multi_person_contact"
+        elif _is_placeholder_firm(firm):
             reject_token = "placeholder_firm"
         elif not _is_valid_city_state(city, state):
             reject_token = "invalid_city_state"
-        elif (not site_contact_candidate) and _is_multi_person_contact(contact_name):
-            reject_token = "multi_person_contact"
-        elif not email and not website:
+        elif not email:
             reject_token = "missing_email"
 
         diag = {

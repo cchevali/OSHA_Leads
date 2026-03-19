@@ -10,7 +10,6 @@ on:
         type: choice
         options:
           - trial_facs_daily
-          - trial_jl_safety_daily
           - ingest_evening
           - outreach_auto
           - backup_runtime_state_dry_run
@@ -28,10 +27,6 @@ jobs:
           $wrapper = "${{ github.event.inputs.wrapper }}"
           if ($wrapper -eq "trial_facs_daily") {
             powershell -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}\scripts\scheduled\run_trial_facs_daily.ps1"
-            exit $LASTEXITCODE
-          }
-          if ($wrapper -eq "trial_jl_safety_daily") {
-            powershell -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}\scripts\scheduled\run_trial_jl_safety_daily.ps1"
             exit $LASTEXITCODE
           }
           if ($wrapper -eq "ingest_evening") {
