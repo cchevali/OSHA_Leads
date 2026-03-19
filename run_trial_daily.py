@@ -223,6 +223,13 @@ def _send_conversion_email_from_artifact(
         recipient, subject, body = _parse_conversion_artifact(text)
     except Exception as exc:
         return False, "", str(exc)
+    html_body = ""
+    html_artifact_path = artifact_path.with_suffix(".html")
+    if html_artifact_path.exists():
+        try:
+            html_body = html_artifact_path.read_text(encoding="utf-8")
+        except Exception:
+            html_body = ""
 
     smtp_host = (os.getenv("SMTP_HOST") or "").strip()
     smtp_port_text = (os.getenv("SMTP_PORT") or "").strip()
@@ -252,6 +259,8 @@ def _send_conversion_email_from_artifact(
     msg["X-Territory-Code"] = territory_code
     msg["List-Unsubscribe"] = f"<mailto:{support_email}?subject=unsubscribe>"
     msg.set_content(body)
+    if html_body.strip():
+        msg.add_alternative(html_body, subtype="html")
 
     try:
         if smtp_port == 465:
