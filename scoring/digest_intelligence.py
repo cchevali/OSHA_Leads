@@ -30,14 +30,67 @@ COMPANY_SUFFIXES = {
     "llp",
     "plc",
 }
+US_STATE_NAMES = {
+    "AL": "Alabama",
+    "AK": "Alaska",
+    "AZ": "Arizona",
+    "AR": "Arkansas",
+    "CA": "California",
+    "CO": "Colorado",
+    "CT": "Connecticut",
+    "DE": "Delaware",
+    "FL": "Florida",
+    "GA": "Georgia",
+    "HI": "Hawaii",
+    "ID": "Idaho",
+    "IL": "Illinois",
+    "IN": "Indiana",
+    "IA": "Iowa",
+    "KS": "Kansas",
+    "KY": "Kentucky",
+    "LA": "Louisiana",
+    "ME": "Maine",
+    "MD": "Maryland",
+    "MA": "Massachusetts",
+    "MI": "Michigan",
+    "MN": "Minnesota",
+    "MS": "Mississippi",
+    "MO": "Missouri",
+    "MT": "Montana",
+    "NE": "Nebraska",
+    "NV": "Nevada",
+    "NH": "New Hampshire",
+    "NJ": "New Jersey",
+    "NM": "New Mexico",
+    "NY": "New York",
+    "NC": "North Carolina",
+    "ND": "North Dakota",
+    "OH": "Ohio",
+    "OK": "Oklahoma",
+    "OR": "Oregon",
+    "PA": "Pennsylvania",
+    "RI": "Rhode Island",
+    "SC": "South Carolina",
+    "SD": "South Dakota",
+    "TN": "Tennessee",
+    "TX": "Texas",
+    "UT": "Utah",
+    "VT": "Vermont",
+    "VA": "Virginia",
+    "WA": "Washington",
+    "WV": "West Virginia",
+    "WI": "Wisconsin",
+    "WY": "Wyoming",
+    "DC": "District of Columbia",
+}
 REASON_SENTENCES = {
-    "referral_or_complaint": "Active worker or agency attention is likely.",
-    "multi_employer_site": "Multiple same-site signals suggest a concentrated operational issue.",
-    "serious_willful_repeat": "Serious or repeat context raises urgency.",
-    "naics_emphasis": "This industry is in a higher OSHA attention lane.",
-    "planned_low_hazard": "This appears lower urgency and more routine.",
-    "open_no_insp_low_info": "Limited detail keeps urgency lower for now.",
-    "rules_default": "This is one of the stronger recent operational signals in the territory.",
+    "referral_or_complaint": "Worker or agency attention likely.",
+    "multi_employer_site": "Multiple same-site signals.",
+    "serious_willful_repeat": "Serious or repeat context.",
+    "naics_emphasis": "Higher-attention industry.",
+    "planned_low_hazard": "Routine, lower-urgency signal.",
+    "open_no_insp_low_info": "Limited detail so far.",
+    "rules_default": "Stronger recent signal.",
 }
 
 
@@ -188,33 +241,26 @@ def _state_summary(rows: list[dict[str, Any]]) -> str:
         if state:
             counts[state] += 1
     if not counts:
-        return "the configured territory"
+        return ""
     ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     labels = [state for state, _count in ordered[:2]]
     if len(labels) == 1:
-        return labels[0]
-    return " and ".join(labels)
+        return US_STATE_NAMES.get(labels[0], labels[0])
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return ", ".join(labels[:-1]) + f", and {labels[-1]}"
 
 
 def _event_summary(rows: list[dict[str, Any]]) -> str:
     counts = Counter(event_class_token(row.get("inspection_type")) for row in rows)
     counts.pop("other", None)
     if not counts:
-        return "mixed signals"
+        return ""
     ordered = sorted(counts.items(), key=lambda item: (-item[1], -EVENT_CLASS_ORDER.get(item[0], 0), item[0]))
     labels = [token.replace("_", " ") for token, _count in ordered[:2]]
     if len(labels) == 1:
         return labels[0]
     return " and ".join(labels)
-
-
-def _operational_implication(rows: list[dict[str, Any]]) -> str:
-    tokens = {event_class_token(row.get("inspection_type")) for row in rows}
-    if {"accident", "complaint", "referral"} & tokens:
-        return "Operationally, this points to near-term worker or agency attention and merits fast site follow-up."
-    if tokens == {"planned"} or tokens == {"planned", "inspection"}:
-        return "Operationally, this looks more like routine oversight than an acute escalation."
-    return "Operationally, this helps focus follow-up on the strongest site signals first."
 
 
 def _intro_text(
@@ -229,24 +275,16 @@ def _intro_text(
         if section_kind == "daily_new":
             return "No new OSHA activity signals were rendered today."
         return ""
-
-    visible_count = len(visible_rows)
-    if section_kind == "starter_snapshot":
-        opening = "These recent signals are context from the starter snapshot and were not newly observed today."
-    elif section_kind == "snapshot_not_new":
-        opening = "These recent signals are context from the snapshot window and were not newly observed today."
-    else:
-        if raw_row_count != visible_count:
-            opening = (
-                f"{raw_row_count} newly observed signals condense into {visible_count} distinct matters "
-                "after collapsing similar same-day entries."
-            )
-        else:
-            opening = f"{visible_count} newly observed signals stand out today."
     states = _state_summary(visible_rows)
     events = _event_summary(visible_rows)
-    implication = _operational_implication(visible_rows)
-    return f"{opening} Most activity is in {states}, led by {events} signals. {implication}"
+    if not states:
+        if events:
+            return f"Recent activity mostly involves {events} signals."
+        return ""
+    preposition = "in" if len({str(row.get('site_state') or '').strip().upper() for row in visible_rows if str(row.get('site_state') or '').strip()}) == 1 else "across"
+    if events:
+        return f"Recent activity is concentrated {preposition} {states}, mostly {events} signals."
+    return ""
 
 
 def build_digest_presentation(
@@ -288,7 +326,7 @@ def build_digest_presentation(
     top_pick_heading = None
     if section_kind in {"daily_new", "starter_snapshot", "snapshot_not_new"} and visible_rows:
         count = max(0, min(int(top_pick_limit), len(visible_rows)))
-        heading = "Most important today" if section_kind == "daily_new" else "Most important in recent activity"
+        heading = "Top signals today" if section_kind == "daily_new" else "Top signals"
         for rank, row in enumerate(visible_rows[:count], start=1):
             row["presentation_top_pick_rank"] = rank
             top_picks.append(row)

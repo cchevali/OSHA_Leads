@@ -143,8 +143,8 @@ class TestDigestPrefsApi(unittest.TestCase):
         self.assertNotIn("LowCo", html)
         self.assertIn("Low signals:", html)
         self.assertIn("OFF", html)
-        self.assertIn("(1 available today)", html)
-        self.assertIn("(not shown)", html)
+        self.assertIn("1 available today.", html)
+        self.assertNotIn("(not shown)", html)
         self.assertIn("Enable lows", html)
 
 

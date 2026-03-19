@@ -83,19 +83,19 @@ class TestLowPriorityPrefs(unittest.TestCase):
         self.assertIn("Tier summary: High 0, Medium 0, Low 3", html)
         self.assertIn("Low signals:", html)
         self.assertIn("OFF", html)
-        self.assertIn("(3 available today)", html)
-        self.assertIn("Enable lows.", html)
-        self.assertEqual(1, html.count("Enable lows.</a>"))
+        self.assertIn("3 available today.", html)
+        self.assertEqual(1, html.count(">Enable lows</a>"))
         self.assertIn(enable_url, html)
         self.assertNotIn("Also observed (not shown)", html)
+        self.assertGreater(html.index("Low signals:"), html.index("Newly observed today: 0 signals"))
 
         self.assertIn("Tier summary: High 0, Medium 0, Low 3", text)
-        self.assertIn("Low signals: OFF", text)
-        self.assertIn("(3 available today)", text)
+        self.assertIn("Low signals: OFF. 3 available today.", text)
         self.assertIn("Enable lows:", text)
         self.assertEqual(1, text.count("Enable lows:"))
         self.assertIn(enable_url, text)
         self.assertNotIn("Also observed (not shown)", text)
+        self.assertGreater(text.index("Low signals:"), text.index("Newly observed today: 0 signals"))
 
     def test_prefs_links_disabled_drops_hyperlink(self):
         tier_counts = {"high": 0, "medium": 0, "low": 2}
@@ -147,13 +147,11 @@ class TestLowPriorityPrefs(unittest.TestCase):
 
         self.assertIn("Low signals:", html)
         self.assertIn("OFF", html)
-        self.assertIn("(2 available today)", html)
-        self.assertIn("Enable lows.", html)
-        self.assertEqual(0, html.count("Enable lows.</a>"))
+        self.assertIn("2 available today.", html)
+        self.assertEqual(0, html.count(">Enable lows</a>"))
         self.assertNotIn("prefs/enable_lows", html)
 
-        self.assertIn("Low signals: OFF", text)
-        self.assertIn("(2 available today)", text)
+        self.assertIn("Low signals: OFF. 2 available today.", text)
         self.assertIn("Enable lows.", text)
         self.assertNotIn("prefs/enable_lows", text)
 
@@ -267,12 +265,11 @@ class TestLowPriorityPrefs(unittest.TestCase):
         self.assertIn("Tier summary: High 1, Medium 1, Low 0", html)
         self.assertIn("Low signals:", html)
         self.assertIn("OFF", html)
-        self.assertIn("(8 available today)", html)
+        self.assertIn("8 available today.", html)
 
         self.assertIn("Newly observed today: 2 signals", text)
         self.assertIn("Tier summary: High 1, Medium 1, Low 0", text)
-        self.assertIn("Low signals: OFF", text)
-        self.assertIn("(8 available today)", text)
+        self.assertIn("Low signals: OFF. 8 available today.", text)
 
     def test_include_lows_preference_changes_rendering(self):
         with tempfile.TemporaryDirectory() as td:
@@ -325,7 +322,7 @@ class TestLowPriorityPrefs(unittest.TestCase):
 
             self.assertIn("Low signals:", html)
             self.assertIn("ON", html)
-            self.assertIn("(1 available today)", html)
+            self.assertIn("Showing 1 of 1 available today.", html)
             self.assertIn("Low priority (1)", html)
             self.assertIn("LowCo", html)
             self.assertNotIn("(not shown)", html)
@@ -358,7 +355,7 @@ class TestLowPriorityPrefs(unittest.TestCase):
         )
         self.assertIn("Low signals:", html)
         self.assertIn("ON", html)
-        self.assertIn("(none observed today)", html)
+        self.assertIn("No low signals today.", html)
         self.assertIn("Disable lows", html)
         self.assertNotIn("Enable lows", html)
 
@@ -380,8 +377,7 @@ class TestLowPriorityPrefs(unittest.TestCase):
             footer_text=self.footer_text,
             summary_label="Newly observed today: 0 signals",
         )
-        self.assertIn("Low signals: ON", text)
-        self.assertIn("(none observed today)", text)
+        self.assertIn("Low signals: ON. No low signals today.", text)
         self.assertIn("Disable lows", text)
         self.assertNotIn("Enable lows", text)
 
@@ -406,4 +402,3 @@ class TestLowPriorityPrefs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
