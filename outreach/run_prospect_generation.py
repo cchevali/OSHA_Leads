@@ -315,11 +315,24 @@ def _effective_default_send_eligible(source: str, sendable_raw: object) -> int:
     return _coerce_boolish_int(raw_text, default_send)
 
 
+def _allow_free_domains() -> bool:
+    return _bool_env(os.getenv("OUTREACH_ALLOW_FREE_DOMAINS", "0"))
+
+
+def _email_domain_allowed(email: str, *, allow_free_domains: bool | None = None) -> bool:
+    if allow_free_domains is None:
+        allow_free_domains = _allow_free_domains()
+    domain = _email_domain(email)
+    if not domain:
+        return False
+    return bool(allow_free_domains) or domain not in pools.FREE_EMAIL_DOMAINS
+
+
 def _row_is_effectively_sendable(row: dict[str, object], *, skip_role_inboxes: bool) -> bool:
     email = _normalize_email(str(row.get("email") or row.get("contact_email") or ""))
     if not _valid_email(email):
         return False
-    if _email_domain(email) in pools.FREE_EMAIL_DOMAINS:
+    if not _email_domain_allowed(email):
         return False
     if bool(skip_role_inboxes) and _is_role_inbox_email(email):
         return False
@@ -967,6 +980,7 @@ def _compute_input_cohort(
     scope = None if states_scope is None else {_normalize_state(s) for s in list(states_scope or []) if _normalize_state(s)}
     filtered: Counter = Counter()
     eligible = 0
+    allow_free_domains = _allow_free_domains()
     crm_total = 0
 
     rows = conn.execute(
@@ -993,7 +1007,7 @@ def _compute_input_cohort(
         if not _valid_email(email):
             filtered["other"] += 1
             continue
-        if _email_domain(email) in pools.FREE_EMAIL_DOMAINS:
+        if not _email_domain_allowed(email, allow_free_domains=allow_free_domains):
             filtered["free_domain"] += 1
             continue
         if email in suppressed_emails:
@@ -1050,6 +1064,7 @@ def _filter_autogrow_candidates(
     preseen_batch: set[str] = set(preseen_batch_emails or set())
     accepted: list[dict[str, str]] = []
     counters: Counter = Counter()
+    allow_free_domains = _allow_free_domains()
 
     for row in rows:
         email = _normalize_email(row.get("email") or row.get("contact_email") or "")
@@ -1057,7 +1072,7 @@ def _filter_autogrow_candidates(
             counters["invalid_email"] += 1
             continue
 
-        if _email_domain(email) in pools.FREE_EMAIL_DOMAINS:
+        if not _email_domain_allowed(email, allow_free_domains=allow_free_domains):
             counters["free_domain"] += 1
             continue
 
@@ -1152,6 +1167,7 @@ def _aiha_loss_counters_from_candidates(
     counters = _default_aiha_loss_counters()
     seen_emails: set[str] = set(preseen_batch_emails or set())
     seen_domains: set[str] = set(preseen_batch_domains or set())
+    allow_free_domains = _allow_free_domains()
 
     for row in list(rows or []):
         email = _normalize_email(row.get("email") or row.get("contact_email") or "")
@@ -1161,7 +1177,7 @@ def _aiha_loss_counters_from_candidates(
             seen_emails.add(email)
             if email in existing_crm_emails:
                 counters["already_known_crm"] += 1
-            if _email_domain(email) in pools.FREE_EMAIL_DOMAINS:
+            if not _email_domain_allowed(email, allow_free_domains=allow_free_domains):
                 counters["free_domain"] += 1
 
         state = _normalize_us_state(row.get("state") or "")
@@ -1569,6 +1585,7 @@ def _print_tokens(
     print(f"GENERATOR_FILTERED_MISSING_EMAIL={int(input_filtered.get('missing_email') or 0)}")
     print(f"GENERATOR_FILTERED_SUPPRESSED={int(input_filtered.get('suppressed') or 0)}")
     print(f"GENERATOR_FILTERED_FREE_DOMAIN={int(input_filtered.get('free_domain') or 0)}")
+    print(f"GENERATOR_ALLOW_FREE_DOMAINS={1 if _allow_free_domains() else 0}")
     print(
         "GENERATOR_FILTERED_ALREADY_SENT_OR_INELIGIBLE="
         f"{int(input_filtered.get('already_sent_or_ineligible') or 0)}"

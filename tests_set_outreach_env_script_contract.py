@@ -37,6 +37,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "OutreachSuppressionMaxAgeHours",
             "OutreachFallbackOnEmptyState",
             "OutreachSkipRoleInboxes",
+            "OutreachAllowFreeDomains",
             "ProspectAutoGrowEnabled",
             "ProspectAutoGrowSafetyNetEnabled",
             "ProspectAiAssistReviewEnabled",
@@ -111,6 +112,9 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("OUTREACH_FALLBACK_ON_EMPTY_STATE", text)
         self.assertIn("OUTREACH_SKIP_ROLE_INBOXES", text)
         self.assertIn("outreach_skip_role_inboxes=", text)
+        self.assertIn("OUTREACH_ALLOW_FREE_DOMAINS", text)
+        self.assertIn("outreach_allow_free_domains=", text)
+        self.assertIn("invalid_OutreachAllowFreeDomains", text)
         self.assertIn("prospect_ai_assist_review_enabled=", text)
         self.assertIn("prospect_ai_assist_review_raw_target=", text)
         self.assertIn("prospect_ai_assist_review_packet_size=", text)

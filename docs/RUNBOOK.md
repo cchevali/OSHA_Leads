@@ -405,6 +405,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.p
   -AiTriageOpenAiModel gpt-4.1-mini `
   -OutreachFallbackOnEmptyState 0 `
   -OutreachSkipRoleInboxes 1 `
+  -OutreachAllowFreeDomains 0 `
   -ProspectAutoGrowEnabled 1 `
   -ProspectAutoGrowSafetyNetEnabled 1 `
   -ProspectAiAssistReviewEnabled 1 `
@@ -431,7 +432,7 @@ This script:
 - Ensures `OUTREACH_SUPPRESSION_MAX_AGE_HOURS` is set to `240` when missing (or to your explicit parameter value)
 - Ensures `SIGNAL_FRESHNESS_MAX_DAYS` is set to `30` when missing (or to your explicit parameter value)
 - Ensures triage model defaults `AI_TRIAGE_ENABLED=0` and `AI_TRIAGE_OPENAI_MODEL=gpt-4.1-mini`
-- Ensures `OUTREACH_FALLBACK_ON_EMPTY_STATE` default `0` and `OUTREACH_SKIP_ROLE_INBOXES` default `1`
+- Ensures `OUTREACH_FALLBACK_ON_EMPTY_STATE` default `0`, `OUTREACH_SKIP_ROLE_INBOXES` default `1`, and `OUTREACH_ALLOW_FREE_DOMAINS` default `0`
 - Ensures prospect enrichment defaults include `PROSPECT_ENRICH_DOMAIN_ENABLED=0`, `PROSPECT_ENRICH_HUNTER_ENABLED=0`, `PROSPECT_ENRICH_MAX_SITES_PER_RUN=25`, and `PROSPECT_ENRICH_HTTP_SLEEP_MS=750`
 - Ensures trial defaults `TRIAL_SENDS_LIMIT_DEFAULT`, `TRIAL_EXPIRED_BEHAVIOR_DEFAULT`, and optional `TRIAL_CONVERSION_URL` are managed in the same no-editor flow
 - Re-encrypts `.env.sops` on save
@@ -517,7 +518,7 @@ Operating rules:
 - `tools\import_prospect_ai_assist_review.py --pending` scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first, then packet order; `run_outreach_auto.py` calls the same pending-import path before live sends.
 - Legacy reviewed CSVs under `${DATA_DIR}\audits\ai_assist\` are still accepted temporarily and emit a warning token when consumed.
 - External `reviewed_cleaned.csv` sidecars are not part of the intended workflow; the importer now normalizes known AI-output markdown/mailto artifacts in memory and fails fast on ambiguous malformed rows.
-- Import verifies domain/email shape, blocks free personal domains, enforces suppression and `do_not_contact`, dedupes against CRM and within the batch, audits every row, and only upserts verified accepts through the existing discovery/CRM contract.
+- Import verifies domain/email shape, enforces suppression and `do_not_contact`, dedupes against CRM and within the batch, audits every row, and only upserts verified accepts through the existing discovery/CRM contract. Free personal domains remain blocked by default, but you can opt in with `OUTREACH_ALLOW_FREE_DOMAINS=1`.
 - Manual `--input` imports remain the backfill/correction path when you do not want to use the pending inbox.
 - This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
 - No packets means there were no seed rows surviving precision policy, feedback suppressions, caps, and CRM/duplicate filters; reviewed CSV imports remain the only route that can upsert accepted CRM rows.
@@ -646,6 +647,7 @@ Optional empty-state planner fallback:
 - `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default) preserves weekday rotation-selected state.
 - Set `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` to auto-switch plan/send to the configured state with the highest sendable estimate when the rotation-selected state is empty (or below floor).
 - `OUTREACH_SKIP_ROLE_INBOXES=1` (default) skips role inbox local-parts (`info`, `contact`, `admin`, `office`, `support`, `sales`, `hello`, `help`, `billing`, `accounts`, `careers`, `jobs`, `hr`).
+- `OUTREACH_ALLOW_FREE_DOMAINS=0` (default) keeps free personal domains out of reviewed AI-assist imports and generator sendability cohorts; set `OUTREACH_ALLOW_FREE_DOMAINS=1` to admit them.
 - Stable state-selection tokens: `OUTREACH_STATE_ROTATION_SELECTED=<STATE>` and `OUTREACH_STATE_EFFECTIVE_SEND=<STATE>`
 - Fallback token: `OUTREACH_FALLBACK_TRIGGERED=1 from=<STATE> to=<STATE> reason=<SENDABLE_BELOW_FLOOR>`
 - No-signal token: `OUTREACH_SKIP_NO_SIGNALS state=<STATE> window_days=<N>`

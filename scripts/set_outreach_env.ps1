@@ -5,6 +5,7 @@ param(
   [Nullable[int]] $OutreachSuppressionMaxAgeHours = $null,
   [Nullable[int]] $OutreachFallbackOnEmptyState = $null,
   [Nullable[int]] $OutreachSkipRoleInboxes = $null,
+  [Nullable[int]] $OutreachAllowFreeDomains = $null,
   [Nullable[int]] $ProspectAutoGrowEnabled = $null,
   [Nullable[int]] $ProspectAutoGrowSafetyNetEnabled = $null,
   [Nullable[int]] $ProspectAiAssistReviewEnabled = $null,
@@ -397,6 +398,7 @@ try {
     'OutreachSuppressionMaxAgeHours',
     'OutreachFallbackOnEmptyState',
     'OutreachSkipRoleInboxes',
+    'OutreachAllowFreeDomains',
     'ProspectAutoGrowEnabled',
     'ProspectAutoGrowSafetyNetEnabled',
     'ProspectAiAssistReviewEnabled',
@@ -472,6 +474,11 @@ try {
   if ($PSBoundParameters.ContainsKey('OutreachSkipRoleInboxes')) {
     if (($OutreachSkipRoleInboxes -ne 0) -and ($OutreachSkipRoleInboxes -ne 1)) {
       Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachSkipRoleInboxes'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('OutreachAllowFreeDomains')) {
+    if (($OutreachAllowFreeDomains -ne 0) -and ($OutreachAllowFreeDomains -ne 1)) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachAllowFreeDomains'
     }
   }
   if ($PSBoundParameters.ContainsKey('ProspectAutoGrowEnabled') -and $ProspectAutoGrowEnabled -notin @(0, 1)) {
@@ -721,6 +728,8 @@ try {
       $printMap = Parse-DotenvMap $printPlain
       $outreachSkipRoleInboxesValue = if (Map-HasValue $printMap 'OUTREACH_SKIP_ROLE_INBOXES') { ([string]$printMap['OUTREACH_SKIP_ROLE_INBOXES']).Trim() } else { '1' }
       Write-Output ('outreach_skip_role_inboxes=' + $outreachSkipRoleInboxesValue)
+      $outreachAllowFreeDomainsValue = if (Map-HasValue $printMap 'OUTREACH_ALLOW_FREE_DOMAINS') { ([string]$printMap['OUTREACH_ALLOW_FREE_DOMAINS']).Trim() } else { '0' }
+      Write-Output ('outreach_allow_free_domains=' + $outreachAllowFreeDomainsValue)
       $prospectAiAssistReviewEnabledValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_ENABLED') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_ENABLED']).Trim() } else { '1' }
       Write-Output ('prospect_ai_assist_review_enabled=' + $prospectAiAssistReviewEnabledValue)
       $prospectAiAssistReviewRawTargetValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET']).Trim() } else { '30' }
@@ -842,6 +851,12 @@ try {
       Set-MapValue -Map $map -Key 'OUTREACH_SKIP_ROLE_INBOXES' -Value ([string]$OutreachSkipRoleInboxes) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'OUTREACH_SKIP_ROLE_INBOXES')) {
       Set-MapValue -Map $map -Key 'OUTREACH_SKIP_ROLE_INBOXES' -Value '1' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('OutreachAllowFreeDomains')) {
+      Set-MapValue -Map $map -Key 'OUTREACH_ALLOW_FREE_DOMAINS' -Value ([string]$OutreachAllowFreeDomains) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'OUTREACH_ALLOW_FREE_DOMAINS')) {
+      Set-MapValue -Map $map -Key 'OUTREACH_ALLOW_FREE_DOMAINS' -Value '0' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('BounceImapHost')) {

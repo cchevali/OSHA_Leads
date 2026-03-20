@@ -1512,6 +1512,66 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertEqual(audit_map["pat@gmail.com"][1], "free_domain")
             self.assertEqual(audit_map["skip@skipco.example.com"][0], "review_rejected")
 
+    def test_import_allows_free_domains_when_env_enabled(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "runtime"
+            input_path = tmp / "review.csv"
+            with open(input_path, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(import_tool.REQUIRED_COLUMNS))
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "state": "TX",
+                        "decision": "accept",
+                        "firm": "Free Domain Co",
+                        "website": "https://freedomain.example.com",
+                        "contact_name": "Pat Personal",
+                        "title": "Owner",
+                        "email": "pat@gmail.com",
+                        "source_urls": "https://freedomain.example.com/contact",
+                        "confidence": "70",
+                        "evidence_snippet": "gmail explicitly allowed for this run",
+                    }
+                )
+
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_ALLOW_FREE_DOMAINS"] = "1"
+            with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out):
+                rc = import_tool.main(["--input", str(input_path), "--batch", "2026-03-19_AIASSIST"])
+
+            output = out.getvalue()
+            self.assertEqual(rc, 0, msg=output)
+            self.assertIn("AI_ASSIST_IMPORT_ALLOW_FREE_DOMAINS=1", output)
+            self.assertIn("AI_ASSIST_VERIFIED_TOTAL=1", output)
+            self.assertIn("PASS_AI_ASSIST_IMPORT status=OK", output)
+
+            conn = crm_store.connect(data_dir / "crm.sqlite")
+            try:
+                prospect = conn.execute(
+                    "SELECT email, source, enrichment_lane, default_send_eligible FROM prospects WHERE email = 'pat@gmail.com'"
+                ).fetchone()
+                self.assertIsNotNone(prospect)
+                self.assertEqual(str(prospect[1] or ""), "ai_assist_manual")
+                self.assertEqual(str(prospect[2] or ""), "ai_assist")
+                self.assertEqual(int(prospect[3] or 0), 1)
+
+                audit_row = conn.execute(
+                    f"""
+                    SELECT verification_status, rejection_reason
+                    FROM {crm_store.AI_ASSIST_CANDIDATE_TABLE}
+                    WHERE batch_id = '2026-03-19_AIASSIST' AND email = 'pat@gmail.com'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+            self.assertIsNotNone(audit_row)
+            self.assertEqual(str(audit_row[0] or ""), "verified")
+            self.assertEqual(str(audit_row[1] or ""), "")
+
     def test_import_persists_seed_id_provenance_when_seed_index_is_available(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

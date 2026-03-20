@@ -6,6 +6,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -97,6 +98,10 @@ def _normalize_domain(value: str) -> str:
     if "@" in text:
         return contact_normalization.email_domain(text)
     return generation._domain_from_website(contact_normalization.normalize_website(text))
+
+
+def _allow_free_domains() -> bool:
+    return generation._bool_env(os.getenv("OUTREACH_ALLOW_FREE_DOMAINS", "0"))
 
 
 def _candidate_key(row: dict[str, str], email: str, domain: str, state: str) -> str:
@@ -1038,6 +1043,8 @@ def _import_review_file(
     _emit("AI_ASSIST_IMPORT_DATA_DIR_SOURCE", str(data_dir_resolution.source or "default"))
     _emit("AI_ASSIST_IMPORT_CRM_DB", str(db_path))
     _emit("AI_ASSIST_IMPORT_EXPECTED_COLUMNS", ",".join(REQUIRED_COLUMNS))
+    _emit("AI_ASSIST_IMPORT_ALLOW_FREE_DOMAINS", 1 if _allow_free_domains() else 0)
+    _emit("AI_ASSIST_IMPORT_ALLOW_FREE_DOMAINS", 1 if _allow_free_domains() else 0)
 
     if not input_path.exists():
         print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail=missing_input path={input_path}", file=sys.stderr)
@@ -1145,6 +1152,7 @@ def _import_review_file(
         allow_recover_existing = bool(
             (not dry_run) and claim_state in {"resume_failed", "resume_stale_started", "resume_other"}
         )
+        allow_free_domains = _allow_free_domains()
 
         for row in rows:
             state = _normalize_state(str(row.get("state") or ""))
@@ -1215,7 +1223,7 @@ def _import_review_file(
                 rejection_reason = "invalid_email"
             elif not domain:
                 rejection_reason = "missing_domain"
-            elif email_domain in pools.FREE_EMAIL_DOMAINS:
+            elif (not allow_free_domains) and email_domain in pools.FREE_EMAIL_DOMAINS:
                 rejection_reason = "free_domain"
             elif email in suppressed_emails:
                 rejection_reason = "suppressed_email"
