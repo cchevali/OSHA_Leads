@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
+import requests_warning_compat
 import requests
 from bs4 import BeautifulSoup
 

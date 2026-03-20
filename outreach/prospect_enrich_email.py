@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import requests_warning_compat
 import requests
 
 from outreach import contact_normalization

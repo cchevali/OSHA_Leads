@@ -1266,12 +1266,25 @@ def _observable_source_families() -> list[str]:
     return families
 
 
+_AUTOGROW_RUNTIME_PROBE_CACHE: dict[
+    tuple[int, int],
+    tuple[dict[str, object], dict[str, dict[str, object]]],
+] = {}
+
+
 def _probe_autogrow_runtime() -> tuple[dict[str, object], dict[str, dict[str, object]]]:
-    crawl_probe = scraper_engine.probe_crawl4ai_runtime()
-    availability: dict[str, dict[str, object]] = {}
-    for key in ("BLUEBOOK", "BCSP", "OSHA_NEWS", "STATE_LIC"):
-        availability[key] = dict(scraper_engine.probe_source_availability(key))
-    return dict(crawl_probe), availability
+    cache_key = (id(scraper_engine.probe_crawl4ai_runtime), id(scraper_engine.probe_source_availability))
+    cached = _AUTOGROW_RUNTIME_PROBE_CACHE.get(cache_key)
+    if cached is None:
+        crawl_probe = dict(scraper_engine.probe_crawl4ai_runtime())
+        availability: dict[str, dict[str, object]] = {}
+        for key in ("BLUEBOOK", "BCSP", "OSHA_NEWS", "STATE_LIC"):
+            availability[key] = dict(scraper_engine.probe_source_availability(key))
+        cached = (crawl_probe, availability)
+        _AUTOGROW_RUNTIME_PROBE_CACHE.clear()
+        _AUTOGROW_RUNTIME_PROBE_CACHE[cache_key] = cached
+    crawl_probe, availability = cached
+    return dict(crawl_probe), {key: dict(value) for key, value in availability.items()}
 
 
 def _run_apollo_doctor_only(diagnostics_dir: Path) -> int:

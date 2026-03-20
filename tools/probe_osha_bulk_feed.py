@@ -10,12 +10,12 @@ import zipfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import requests
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import requests_warning_compat
+import requests
 
 DEFAULT_STATES = ["TX", "CA", "FL", "OR", "WA"]
 BULK_FEED_URL_TEMPLATE = "https://enfxfr.dol.gov/data_catalog/OSHA/osha_inspection_{yyyymmdd}.csv.zip"

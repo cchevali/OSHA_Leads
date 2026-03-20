@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+import requests_warning_compat
 import requests
 from bs4 import BeautifulSoup
 
