@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urljoin, urlencode, urlparse
 
+import requests_warning_compat
 import requests
 from bs4 import BeautifulSoup
 
