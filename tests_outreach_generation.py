@@ -111,26 +111,29 @@ class TestProspectGeneration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "data"
             out_path = data_dir / "prospect_discovery" / "prospects_latest.csv"
-            p = self._run(["--print-config", "--for-date", "2026-02-18"], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX,CA,FL"})
+            p = self._run(
+                ["--print-config", "--for-date", "2026-02-18"],
+                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX,CA,FL,PA,OH"},
+            )
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             out = p.stdout or ""
             self.assertIn("PASS_GENERATOR_PRINT_CONFIG", out)
             self.assertIn(f"output_path={out_path.resolve()}", out)
             self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", out)
-            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL,PA,OH", out)
             self.assertIn("GENERATOR_APOLLO_ENABLED=0", out)
             self.assertIn("GENERATOR_ENRICH_MAX_SITES_PER_RUN=25", out)
             self.assertIn("GENERATOR_ENRICH_HTTP_SLEEP_MS=800", out)
             self.assertFalse(out_path.exists(), msg="--print-config must not write output")
 
-    def test_print_config_defaults_autogrow_states_to_tx_ca_fl(self):
+    def test_print_config_defaults_autogrow_states_to_tx_ca_fl_pa_oh(self):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "data"
             p = self._run(["--print-config", "--for-date", "2026-02-18"], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": None})
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             out = p.stdout or ""
-            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out)
-            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL", out)
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL,PA,OH", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL,PA,OH", out)
 
     def test_bluebook_canonical_contact_resolution_uses_public_site_email_without_enrichment(self):
         from outreach import run_prospect_generation as generator
@@ -250,7 +253,7 @@ class TestProspectGeneration(unittest.TestCase):
             data_dir = Path(d) / "data"
             p = self._run(
                 ["--print-config", "--for-date", "2026-02-18"],
-                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX,CA,FL"},
+                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX,CA,FL,PA,OH"},
             )
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             self.assertIn("GENERATOR_AUTOGROW_SELECTED_STATE=FL", p.stdout or "")
@@ -259,13 +262,13 @@ class TestProspectGeneration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "data"
             explicit_scope = self._run(
-                ["--print-config", "--for-date", "2026-02-18", "--states", "TX,CA,FL"],
+                ["--print-config", "--for-date", "2026-02-18", "--states", "TX,CA,FL,PA,OH"],
                 {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX"},
             )
             self.assertEqual(explicit_scope.returncode, 0, msg=explicit_scope.stderr + "\n" + explicit_scope.stdout)
             out_explicit = explicit_scope.stdout or ""
-            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out_explicit)
-            self.assertIn("GENERATOR_STATE_SCOPE=TX,CA,FL", out_explicit)
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL,PA,OH", out_explicit)
+            self.assertIn("GENERATOR_STATE_SCOPE=TX,CA,FL,PA,OH", out_explicit)
 
             csv_scope = self._run(
                 ["--print-config", "--for-date", "2026-02-19", "--states", "CA,FL"],
@@ -476,7 +479,7 @@ class TestProspectGeneration(unittest.TestCase):
             now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
             conn = crm_store.connect(db_path)
             try:
-                states = ("TX", "CA", "FL")
+                states = ("TX", "CA", "FL", "PA", "OH")
                 for idx in range(98):
                     state = states[idx % len(states)]
                     conn.execute(
@@ -507,7 +510,7 @@ class TestProspectGeneration(unittest.TestCase):
                 conn.close()
 
             p = self._run(
-                ["--print-config", "--states", "TX,CA,FL"],
+                ["--print-config", "--states", "TX,CA,FL,PA,OH"],
                 {
                     "DATA_DIR": str(data_dir),
                     "OUTREACH_STATES": "TX",
@@ -516,8 +519,8 @@ class TestProspectGeneration(unittest.TestCase):
             )
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             out = p.stdout or ""
-            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out)
-            self.assertIn("GENERATOR_STATE_SCOPE=TX,CA,FL", out)
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL,PA,OH", out)
+            self.assertIn("GENERATOR_STATE_SCOPE=TX,CA,FL,PA,OH", out)
             self.assertIn("GENERATOR_FILTERED_STATE_MISMATCH=0", out)
             crm_total, eligible, excluded = self._parse_input_cohort_counts(out)
             self.assertEqual(crm_total, 98)
@@ -533,15 +536,15 @@ class TestProspectGeneration(unittest.TestCase):
                 ["--print-config", "--for-date", "2026-02-18"],
                 {
                     "DATA_DIR": str(data_dir),
-                    "OUTREACH_STATES": "TX,CA,FL",
+                    "OUTREACH_STATES": "TX,CA,FL,PA,OH",
                     "PROSPECT_AUTOGROW_STATES": "TX,CA,NY",
                 },
             )
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             out = p.stdout or ""
-            self.assertIn("WARN_AUTOGROW_SCOPE_DRIFT=1 outreach_states=TX,CA,FL autogrow_states=TX,CA,NY", out)
-            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL", out)
-            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL", out)
+            self.assertIn("WARN_AUTOGROW_SCOPE_DRIFT=1 outreach_states=TX,CA,FL,PA,OH autogrow_states=TX,CA,NY", out)
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL,PA,OH", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL,PA,OH", out)
 
     def test_states_all_disables_state_mismatch_filtering(self):
         from outreach import crm_store

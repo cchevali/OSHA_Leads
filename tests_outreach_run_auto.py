@@ -904,7 +904,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 conn.close()
             env = {
                 "DATA_DIR": str(data_dir),
-                "OUTREACH_STATES": "TX,CA,FL",
+                "OUTREACH_STATES": "TX,CA,FL,PA,OH",
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
             }
@@ -1336,7 +1336,7 @@ class TestOutreachRunAuto(unittest.TestCase):
 
             env = {
                 "DATA_DIR": str(data_dir),
-                "OUTREACH_STATES": "TX,CA,FL",
+                "OUTREACH_STATES": "TX,CA,FL,PA,OH",
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
             }
@@ -1406,7 +1406,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", stdout)
             self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=CA", stdout)
             self.assertIn("OUTREACH_RAMP_READY=0 desired_daily_limit=10", stdout)
-            self.assertIn("PASS_AUTO_EXPORT outreach_states_config=TX,CA,FL crm_uncontacted_by_state=", stdout)
+            self.assertIn("PASS_AUTO_EXPORT outreach_states_config=TX,CA,FL,PA,OH crm_uncontacted_by_state=", stdout)
             self.assertIn("PASS_AUTO_EXPORT crm_pool_total_by_state=", stdout)
             self.assertIn("PASS_AUTO_EXPORT crm_uncontacted_sendable_by_state=", stdout)
             self.assertIn("PASS_AUTO_EXPORT crm_uncontacted_raw_by_state=", stdout)
@@ -2161,7 +2161,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             _write_suppression(data_dir / "suppression.csv")
             env = {
                 "DATA_DIR": str(data_dir),
-                "OUTREACH_STATES": "TX,CA,FL",
+                "OUTREACH_STATES": "TX,CA,FL,PA,OH",
                 "OUTREACH_DAILY_LIMIT": "10",
                 "OSHA_SMOKE_TO": "allow@example.com",
             }

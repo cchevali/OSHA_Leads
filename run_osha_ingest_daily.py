@@ -45,7 +45,7 @@ def _resolve_outreach_states() -> tuple[list[str], str]:
     env_states = _parse_states(env_states_raw)
     if env_states:
         return env_states, "env"
-    return ["TX"], "fallback"
+    return ["TX", "CA", "FL", "PA", "OH"], "fallback"
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -187,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--print-config", action="store_true", help="Print resolved config and exit.")
     ap.add_argument("--doctor", action="store_true", help="Run runtime/readiness checks and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Print resolved config and skip ingest.")
-    ap.add_argument("--states", default="", help="Optional comma-separated state override (e.g., TX,CA,FL).")
+    ap.add_argument("--states", default="", help="Optional comma-separated state override (e.g., TX,CA,FL,PA,OH).")
     ap.add_argument(
         "--scope-mode",
         choices=["outreach", "outreach_plus_trial_live"],

@@ -397,7 +397,7 @@ Use only:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 `
   -OutreachDailyLimit 10 `
-  -OutreachStates TX,CA,FL `
+  -OutreachStates TX,CA,FL,PA,OH `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
   -SignalFreshnessMaxDays 30 `
@@ -465,7 +465,7 @@ Use these commands instead of inline `py -3 -c "..."` one-liners. PowerShell quo
 
 ### Prospect Replenishment (Scheduled First)
 
-`run_runtime_tick.py` runs replenishment automatically at the daily due window. Use the canonical replenishment wrapper directly only for manual break-glass execution. It runs generation doctor -> generation -> discovery in order. Nightly AI-review dumps are owned by the evening ingest wrapper, not by replenishment:
+`run_runtime_tick.py` runs replenishment automatically at the daily due window. Treat this as the automated background safety net, not the primary net-new prospect workflow. Use the canonical replenishment wrapper directly only for manual break-glass execution. It runs generation doctor -> generation -> discovery in order:
 
 ```powershell
 cd C:\dev\OSHA_Leads
@@ -487,57 +487,56 @@ Direct generation/discovery commands remain available for troubleshooting:
 .\run_with_secrets.ps1 -- py -3 run_prospect_discovery.py
 ```
 
-### Manual AI-Assist Discovery Augmentation
+### Manual Deep Research Prospect Workflow
 
-Use this lane when the nightly evening wrapper emits the prospect AI-assist dump and you want to review/import verified accepts. Dump generation is automatic on the shared nightly AI-review schedule; reviewed CSV import supports both pending-drop automation and manual backfills.
+Manual Deep Research is the canonical net-new prospect lane. The evening ingest wrapper now refreshes the CRM skip list and writes a dated repo-managed prompt artifact under `${DATA_DIR}\audits\prospect_ai_assist\`.
 
 Recommended operator commands:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1 --dry-run
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_prospect_ai_assist_review.ps1 -PacketSize 10
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --pending --dry-run
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_manual_prospect_research.ps1 --print-config
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_manual_prospect_research.ps1 --dry-run
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare_manual_prospect_research.ps1 -TargetFirms 50
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\import_prospect_ai_assist_from_clipboard.ps1 --print-config
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\import_prospect_ai_assist_from_clipboard.ps1 --dry-run
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\import_prospect_ai_assist_from_clipboard.ps1
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --stdin --dry-run
 .\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --pending
-.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\prospect_ai_assist_review_20260315_packet_001_reviewed.csv --batch 2026-03-15_AIASSIST_P001
+.\run_with_secrets.ps1 -- py -3 tools\import_prospect_ai_assist_review.py --input C:\path\to\manual_deep_research_reviewed.csv --batch 2026-03-23_AIASSIST_MANUAL_203000
 .\run_with_secrets.ps1 -- py -3 tools\prospect_growth_decision_pack.py --days 14
 ```
 
 Operating rules:
 
-- The dump writes one daily summary text artifact under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus a sibling packet folder `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
-- The read-only prospect growth decision pack writes `${DATA_DIR}\audits\prospect_growth\prospect_growth_decision_pack_YYYYMMDD_HHMMSS.txt` plus a sibling `.json` file for the same run; use it to review source yield, freshness, backlog posture, and the bounded-next-step recommendation without changing outreach behavior.
-- The packet folder contains `seed_packet_###.csv`, `review_packet_###.txt`, `manifest.json`, `packet_status.txt`, and additive `seed_index.json` provenance so you can split review volume across multiple AI chats without changing the nightly scheduler or import contract.
-- `seed_packet_###.csv` now uses `firm,website,state,city,phone,address,seed_source,seed_source_url,source_record_id,license_number,seed_id`; reviewed CSV output keeps the existing review fields and adds trailing `seed_id`. Legacy reviewed CSVs without `seed_id` still import.
-- Blank `website` values are expected for some `STATE_LIC` review seeds; use the provided city/phone/address/license/source URL context during manual AI review and reject rows when no named principal/contact can be verified.
-- Review-packet eligibility remains broader than live send/import eligibility, but it is now source-aware instead of locator-only. `STATE_LIC` packet rows must clear the shared precision policy: hard-negative TX HVAC license classes are packet-excluded, trade-keyword families are packet-excluded, and blank-website rows must show positive consultant evidence or neutral-but-strong identity with no trade negatives.
-- Packet composition caps are enforced after final selection. Default max `STATE_LIC` share is 30% of selected rows; it drops to 20% when the trailing 7-day reviewed accept rate for `STATE_LIC` is below threshold. If the cap blocks more `STATE_LIC` rows, the packet underfills instead of backfilling noisy rows.
-- `packet_status.txt` gives the fast operator read: if packets exist it reports packet count, blank-website selected rows, and top exclusions; if no packets exist it reports `NO PACKETS TODAY` plus the top exclusion counts.
-- `manifest.json` records candidate counts before/after filters, source-by-source stage counts, exclusion counters by reason and source, selected/source breakdowns after caps, observed non-consultant `STATE_LIC` counts, hard-negative/negative-keyword breakdowns, cap-limited counts, and the trailing accept-rate snapshot used for cap decisions.
-- Reviewed CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packet_###_reviewed.csv` for packet review, or `${DATA_DIR}\imports\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_reviewed.csv` for single-file/manual review.
-- `tools\import_prospect_ai_assist_review.py --pending` scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first, then packet order; `run_outreach_auto.py` calls the same pending-import path before live sends.
-- Legacy reviewed CSVs under `${DATA_DIR}\audits\ai_assist\` are still accepted temporarily and emit a warning token when consumed.
-- External `reviewed_cleaned.csv` sidecars are not part of the intended workflow; the importer now normalizes known AI-output markdown/mailto artifacts in memory and fails fast on ambiguous malformed rows.
-- Import verifies domain/email shape, enforces suppression and `do_not_contact`, dedupes against CRM and within the batch, audits every row, and only upserts verified accepts through the existing discovery/CRM contract. Free personal domains remain blocked by default, but you can opt in with `OUTREACH_ALLOW_FREE_DOMAINS=1`.
-- Manual `--input` imports remain the backfill/correction path when you do not want to use the pending inbox.
+- The prep tool refreshes `${DATA_DIR}\audits\prospect_ai_assist\crm_skip_list_for_ai.csv` and writes `${DATA_DIR}\audits\prospect_ai_assist\manual_prospect_deep_research_YYYYMMDD.txt`.
+- The prompt template is repo-managed. External prompt files are no longer canonical.
+- The prompt locks the active state scope, target-firm count, canonical CSV header, and the explicit `STATE_LIC` diagnostic that `STATE_LIC` remains TX-only while `PA` and `OH` are live through manual Deep Research and multi-state-capable sources.
+- Canonical live scope is `TX,CA,FL,PA,OH`.
+- Attach the current skip-list CSV to Deep Research and paste the generated prompt artifact. Deep Research must return only CSV, not prose, not a markdown table.
+- Canonical Deep Research CSV header is `state,decision,firm,website,contact_name,title,email,source_urls,confidence,evidence_snippet`.
+- `tools\import_prospect_ai_assist_review.py --stdin` accepts plain CSV or a single fenced `csv` block. Any extra commentary fails fast.
+- The clipboard wrapper is the fastest operator path when you want to paste Deep Research output without creating a manual reviewed file yourself.
+- Default stdin/clipboard batches use `YYYY-MM-DD_AIASSIST_MANUAL_HHMMSS`.
+- `tools\import_prospect_ai_assist_review.py --pending` still scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first before live sends, so file-based reviewed CSVs remain valid for queued/manual backfill workflows.
+- Import verifies domain/email shape, enforces suppression and `do_not_contact`, rejects accepted rows outside active `OUTREACH_STATES`, dedupes within the batch, and blocks CRM duplicates by email, root domain, and normalized firm key before any upsert. Free personal domains remain blocked by default, but you can opt in with `OUTREACH_ALLOW_FREE_DOMAINS=1`.
 - This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
-- No packets means there were no seed rows surviving precision policy, feedback suppressions, caps, and CRM/duplicate filters; reviewed CSV imports remain the only route that can upsert accepted CRM rows.
 
-### CRM Skip List Export For External AI
+### CRM Skip List Export (Low-Level Debug Path)
 
-Use this only when you are running a custom external AI research prompt outside the repo-native AI-assist packet flow. The repo-native packet flow already excludes firms and root domains that are already present in CRM.
+The prep wrapper above is the canonical operator command. Use the raw skip-list exporter only for low-level troubleshooting:
 
 ```powershell
-py -3 tools\export_crm_ai_skip_list.py --print-config
-py -3 tools\export_crm_ai_skip_list.py --dry-run
-py -3 tools\export_crm_ai_skip_list.py
+.\run_with_secrets.ps1 -- py -3 tools\export_crm_ai_skip_list.py --print-config
+.\run_with_secrets.ps1 -- py -3 tools\export_crm_ai_skip_list.py --dry-run
+.\run_with_secrets.ps1 -- py -3 tools\export_crm_ai_skip_list.py
 ```
 
 Operating notes:
 
-- Default output path is `${DATA_ROOT}\audits\prospect_ai_assist\crm_skip_list_for_ai.csv`.
+- Default output path is `${DATA_DIR}\audits\prospect_ai_assist\crm_skip_list_for_ai.csv`.
 - With canonical live runtime, that resolves to `C:\osha_data\audits\prospect_ai_assist\crm_skip_list_for_ai.csv`.
-- Each row is a firm/domain-level skip record aggregated from `crm.sqlite`; attach the CSV to your external prompt and instruct the AI to skip any firm or root domain already listed there.
+- Each row is a firm/domain-level skip record aggregated from `crm.sqlite`.
 
 Canonical nightly schedule:
 
@@ -703,7 +702,7 @@ Set preferred discovery input via the canonical no-editor env helper:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 `
   -OutreachDailyLimit 10 `
-  -OutreachStates TX,CA,FL `
+  -OutreachStates TX,CA,FL,PA,OH `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
   -SignalFreshnessMaxDays 30 `
@@ -841,7 +840,7 @@ Print resolved paths/state:
 
 Required outreach env keys (managed by `scripts\set_outreach_env.ps1`):
 
-- `OUTREACH_STATES=TX,CA,FL`
+- `OUTREACH_STATES=TX,CA,FL,PA,OH`
 - `OUTREACH_DAILY_LIMIT=10`
 - `OSHA_SMOKE_TO=cchevali+oshasmoke@gmail.com`
 - `OUTREACH_SUPPRESSION_MAX_AGE_HOURS=240`

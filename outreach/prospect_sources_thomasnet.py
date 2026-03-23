@@ -222,7 +222,9 @@ def evaluate_thomasnet_qualification(
         else 0.0
     )
     states_meeting_target = sum(
-        1 for state in ("TX", "CA", "FL") if int(net_new_by_state.get(state) or 0) >= QUALIFICATION_THRESHOLDS["minimum_state_count"]
+        1
+        for state in ("TX", "CA", "FL", "PA", "OH")
+        if int(net_new_by_state.get(state) or 0) >= QUALIFICATION_THRESHOLDS["minimum_state_count"]
     )
 
     qualified = (
@@ -237,7 +239,9 @@ def evaluate_thomasnet_qualification(
         "unique_consultancy_relevant_firms": int(unique_consultancy_relevant_firms),
         "website_link_rate": round(website_link_rate, 4),
         "public_site_email_yield": round(public_site_email_yield, 4),
-        "state_contactable_rows": {state: int(net_new_by_state.get(state) or 0) for state in ("TX", "CA", "FL")},
+        "state_contactable_rows": {
+            state: int(net_new_by_state.get(state) or 0) for state in ("TX", "CA", "FL", "PA", "OH")
+        },
         "states_meeting_target": int(states_meeting_target),
         "crm_overlap_rate": round(crm_overlap_rate, 4),
         "thresholds": dict(QUALIFICATION_THRESHOLDS),

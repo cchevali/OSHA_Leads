@@ -300,7 +300,7 @@ def _stats() -> int:
             """
         ).fetchall()
         family_counts: dict[tuple[str, str], dict[str, int]] = {}
-        target_states = {"TX", "CA", "FL"}
+        target_states = {"TX", "CA", "FL", "PA", "OH"}
         for row in family_rows:
             state_norm = _norm_us_state(str(row["state"] or ""))
             if state_norm not in target_states:

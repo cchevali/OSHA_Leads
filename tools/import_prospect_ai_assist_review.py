@@ -26,6 +26,7 @@ from outreach import crm_admin
 from outreach import contact_normalization
 from outreach import crm_store
 from outreach import run_prospect_generation as generation
+from outreach.prospect_enrich_email import CORP_SUFFIXES
 from outreach import us_state
 from runtime_data_dir import resolve_data_dir
 
@@ -56,14 +57,35 @@ STALE_STARTED_MINUTES = 30
 TRACKING_STATUS_STARTED = "started"
 TRACKING_STATUS_COMPLETED = "completed"
 TRACKING_STATUS_FAILED = "failed"
+COMMON_MULTI_LABEL_TLDS = {
+    "co.uk",
+    "org.uk",
+    "gov.uk",
+    "ac.uk",
+    "com.au",
+    "net.au",
+    "org.au",
+    "com.br",
+    "com.mx",
+    "co.nz",
+    "com.sg",
+    "com.hk",
+}
+STDIN_CSV_FENCE_RE = re.compile(r"^\s*```(?:csv)?\s*\r?\n(?P<body>.*?)(?:\r?\n)?```\s*$", re.IGNORECASE | re.DOTALL)
+STDIN_REQUIRED_HEADER = ",".join(REQUIRED_COLUMNS)
+STDIN_OPTIONAL_HEADER = STDIN_REQUIRED_HEADER + ",seed_id"
 
 
 def _emit(key: str, value: str | int) -> None:
     print(f"{key}={value}")
 
 
+def _local_now() -> datetime:
+    return datetime.now().astimezone()
+
+
 def _local_today_stamp() -> str:
-    return datetime.now().astimezone().date().isoformat()
+    return _local_now().date().isoformat()
 
 
 def _utc_now() -> datetime:
@@ -83,6 +105,11 @@ def _default_batch_id(input_path: Path | None = None) -> str:
     return f"{_local_today_stamp()}_AIASSIST"
 
 
+def _default_manual_batch_id(now: datetime | None = None) -> str:
+    stamp = (now or _local_now()).strftime("%Y-%m-%d_AIASSIST_MANUAL_%H%M%S")
+    return stamp
+
+
 def _normalize_email(value: str) -> str:
     return contact_normalization.normalize_email(value)
 
@@ -98,6 +125,41 @@ def _normalize_domain(value: str) -> str:
     if "@" in text:
         return contact_normalization.email_domain(text)
     return generation._domain_from_website(contact_normalization.normalize_website(text))
+
+
+def _normalize_text(value: Any) -> str:
+    return " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split()).strip()
+
+
+def _normalize_firm_key(value: str) -> str:
+    text = _normalize_text(value).upper()
+    if not text:
+        return ""
+    tokens = re.split(r"\s+", re.sub(r"[^A-Z0-9 ]", " ", text))
+    while tokens and tokens[-1] in CORP_SUFFIXES:
+        tokens.pop()
+    return "".join(re.sub(r"[^A-Z0-9]", "", token) for token in tokens if token)
+
+
+def _root_domain(domain: str) -> str:
+    host = _normalize_text(domain).lower().strip(".")
+    if not host or re.fullmatch(r"\d+\.\d+\.\d+\.\d+", host):
+        return host
+    parts = [part for part in host.split(".") if part]
+    if len(parts) <= 2:
+        return ".".join(parts)
+    suffix = ".".join(parts[-2:])
+    if suffix in COMMON_MULTI_LABEL_TLDS and len(parts) >= 3:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _active_state_scope_list() -> list[str]:
+    return generation._parse_states(os.getenv("OUTREACH_STATES", "")) or list(generation.DEFAULT_STATE_SCOPE_ALL)
+
+
+def _active_state_scope() -> set[str]:
+    return {str(state or "").strip().upper() for state in _active_state_scope_list() if str(state or "").strip()}
 
 
 def _allow_free_domains() -> bool:
@@ -325,7 +387,11 @@ def _parse_review_line(line: str) -> dict[str, str]:
 
 
 def _load_markdown_review_rows(input_path: Path) -> list[dict[str, str]]:
-    lines = input_path.read_text(encoding="utf-8-sig").splitlines()
+    return _load_markdown_review_rows_from_text(input_path.read_text(encoding="utf-8-sig"))
+
+
+def _load_markdown_review_rows_from_text(raw_text: str) -> list[dict[str, str]]:
+    lines = str(raw_text or "").splitlines()
     if not lines:
         raise ValueError("missing_header")
     header = [part.strip() for part in str(lines[0] or "").split(",")]
@@ -347,6 +413,14 @@ def _load_markdown_review_rows(input_path: Path) -> list[dict[str, str]]:
 def _load_csv_rows(input_path: Path) -> list[dict[str, str]]:
     with open(input_path, "r", newline="", encoding="utf-8-sig") as handle:
         raw_text = handle.read()
+    try:
+        return _load_csv_rows_from_text(raw_text)
+    except ValueError:
+        extracted_text = _extract_stdin_csv_text(raw_text)
+        return _load_csv_rows_from_text(extracted_text)
+
+
+def _load_csv_rows_from_text(raw_text: str) -> list[dict[str, str]]:
     with io.StringIO(raw_text) as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
@@ -358,7 +432,7 @@ def _load_csv_rows(input_path: Path) -> list[dict[str, str]]:
         rows: list[dict[str, str]] = []
         for raw_row in reader:
             if None in raw_row:
-                return _load_markdown_review_rows(input_path)
+                return _load_markdown_review_rows_from_text(raw_text)
             clean: dict[str, str] = {}
             for key, value in dict(raw_row).items():
                 clean[str(key or "").lstrip("\ufeff")] = "" if value is None else str(value)
@@ -378,6 +452,28 @@ def _sha256_file(path: Path) -> str:
                 break
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+
+
+def _extract_stdin_csv_text(raw_text: str) -> str:
+    text = str(raw_text or "").lstrip("\ufeff").strip()
+    if not text:
+        raise ValueError("missing_stdin")
+    fence_match = STDIN_CSV_FENCE_RE.fullmatch(text)
+    if fence_match:
+        text = str(fence_match.group("body") or "").strip()
+    first_nonempty_line = ""
+    for line in text.splitlines():
+        candidate = str(line or "").strip().lstrip("\ufeff")
+        if candidate:
+            first_nonempty_line = candidate
+            break
+    if first_nonempty_line not in {STDIN_REQUIRED_HEADER, STDIN_OPTIONAL_HEADER}:
+        raise ValueError("stdin_commentary_detected")
+    return text
 
 
 def _discover_pending_review_files(
@@ -651,6 +747,43 @@ def _load_existing_prospect_map(conn: sqlite3.Connection | None) -> dict[str, di
             "prospect_id": str(row["prospect_id"] or "").strip(),
             "source": str(row["source"] or "").strip(),
         }
+    return out
+
+
+def _load_existing_root_domains(conn: sqlite3.Connection | None) -> set[str]:
+    if conn is None:
+        return set()
+    rows = conn.execute(
+        """
+        SELECT email, website
+        FROM prospects
+        """
+    ).fetchall()
+    out: set[str] = set()
+    for row in rows:
+        email_domain = _normalize_domain(str(row["email"] or ""))
+        website_domain = _normalize_domain(str(row["website"] or ""))
+        root = _root_domain(email_domain or website_domain)
+        if root:
+            out.add(root)
+    return out
+
+
+def _load_existing_firm_keys(conn: sqlite3.Connection | None) -> set[str]:
+    if conn is None:
+        return set()
+    rows = conn.execute(
+        """
+        SELECT firm
+        FROM prospects
+        WHERE firm IS NOT NULL AND trim(firm) <> ''
+        """
+    ).fetchall()
+    out: set[str] = set()
+    for row in rows:
+        firm_key = _normalize_firm_key(str(row["firm"] or ""))
+        if firm_key:
+            out.add(firm_key)
     return out
 
 
@@ -1028,29 +1161,51 @@ def _print_totals(*, totals: Counter, per_state: dict[str, Counter], dry_run: bo
 
 def _import_review_file(
     *,
-    input_path: Path,
+    input_path: Path | None = None,
     batch_id_override: str = "",
     dry_run: bool = False,
+    stdin_text: str = "",
 ) -> tuple[int, str]:
     data_dir_resolution = resolve_data_dir(REPO_ROOT)
     db_path = crm_store.crm_db_path()
-    batch_id = str(batch_id_override or "").strip() or _default_batch_id(input_path)
-    input_path = input_path.expanduser().resolve(strict=False)
+    is_stdin = bool(str(stdin_text or ""))
+    batch_id = str(batch_id_override or "").strip() or (
+        _default_manual_batch_id() if is_stdin else _default_batch_id(input_path)
+    )
+    tracking_source_path = (
+        Path(f"prospect_ai_assist_manual_{batch_id}.csv")
+        if is_stdin
+        else (input_path or Path("")).expanduser().resolve(strict=False)
+    )
+    display_input_path = "<stdin>" if is_stdin else str(tracking_source_path)
+    active_states = _active_state_scope()
 
     _emit("AI_ASSIST_BATCH_ID", batch_id)
-    _emit("AI_ASSIST_IMPORT_INPUT_PATH", str(input_path))
+    _emit("AI_ASSIST_IMPORT_INPUT_MODE", "stdin" if is_stdin else "file")
+    _emit("AI_ASSIST_IMPORT_INPUT_PATH", display_input_path)
     _emit("AI_ASSIST_IMPORT_DATA_DIR", str(data_dir_resolution.effective_path))
     _emit("AI_ASSIST_IMPORT_DATA_DIR_SOURCE", str(data_dir_resolution.source or "default"))
     _emit("AI_ASSIST_IMPORT_CRM_DB", str(db_path))
     _emit("AI_ASSIST_IMPORT_EXPECTED_COLUMNS", ",".join(REQUIRED_COLUMNS))
-    _emit("AI_ASSIST_IMPORT_ALLOW_FREE_DOMAINS", 1 if _allow_free_domains() else 0)
+    _emit("AI_ASSIST_IMPORT_ACTIVE_STATES", ",".join(_active_state_scope_list()))
     _emit("AI_ASSIST_IMPORT_ALLOW_FREE_DOMAINS", 1 if _allow_free_domains() else 0)
 
-    if not input_path.exists():
-        print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail=missing_input path={input_path}", file=sys.stderr)
+    if (not is_stdin) and (not tracking_source_path.exists()):
+        print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail=missing_input path={tracking_source_path}", file=sys.stderr)
         return 2, "MISSING_INPUT"
 
-    source_hash = _sha256_file(input_path)
+    source_hash = ""
+    raw_stdin_csv = ""
+    if is_stdin:
+        try:
+            raw_stdin_csv = _extract_stdin_csv_text(stdin_text)
+        except Exception as exc:
+            print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
+            return 2, "INVALID_INPUT"
+        source_hash = _sha256_text(raw_stdin_csv)
+        _emit("AI_ASSIST_IMPORT_STDIN_BYTES", len(raw_stdin_csv.encode("utf-8")))
+    else:
+        source_hash = _sha256_file(tracking_source_path)
     _emit("AI_ASSIST_IMPORT_SOURCE_FILE_HASH", source_hash)
 
     conn: sqlite3.Connection | None = None
@@ -1086,7 +1241,7 @@ def _import_review_file(
                 return 0, "SKIPPED_IN_PROGRESS"
 
         try:
-            rows = _load_csv_rows(input_path)
+            rows = _load_csv_rows_from_text(raw_stdin_csv) if is_stdin else _load_csv_rows(tracking_source_path)
         except Exception as exc:
             print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
             return 2, "INVALID_INPUT"
@@ -1095,7 +1250,7 @@ def _import_review_file(
         except Exception as exc:
             print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
             return 2, "INVALID_INPUT"
-        seed_index = _load_seed_index(input_path, batch_id)
+        seed_index = {} if is_stdin else _load_seed_index(tracking_source_path, batch_id)
 
         now_iso = crm_store.utc_now_iso()
         _emit("AI_ASSIST_IMPORT_NORMALIZED_ROWS", normalized_rows_total)
@@ -1108,7 +1263,7 @@ def _import_review_file(
                 _create_completed_batch_tracking(
                     conn,
                     batch_id=batch_id,
-                    source_path=input_path,
+                    source_path=tracking_source_path,
                     source_hash=source_hash,
                     candidates_total=int(legacy_totals.get("candidates", 0)),
                     accepted_total=int(legacy_totals.get("accepted", 0)),
@@ -1123,7 +1278,7 @@ def _import_review_file(
                 claim_state, _existing_row = _begin_batch_tracking(
                     conn,
                     batch_id=batch_id,
-                    source_path=input_path,
+                    source_path=tracking_source_path,
                     source_hash=source_hash,
                     now_iso=now_iso,
                 )
@@ -1140,6 +1295,8 @@ def _import_review_file(
 
         suppressed_emails = generation._load_suppression_set(data_dir_resolution.effective_path, conn)
         existing_prospects = _load_existing_prospect_map(conn)
+        existing_root_domains = _load_existing_root_domains(conn)
+        existing_firm_keys = _load_existing_firm_keys(conn)
         batch_candidate_map = _load_batch_candidate_map(conn, batch_id)
         verified_email_other_batches = _load_verified_email_batches(conn, batch_id)
         do_not_contact_emails, do_not_contact_domains = _load_do_not_contact_sets(conn)
@@ -1169,6 +1326,8 @@ def _import_review_file(
             contact_name = str(row.get("contact_name") or "").strip()
             title = str(row.get("title") or "").strip()
             evidence_snippet = str(row.get("evidence_snippet") or "").strip()
+            root_domain = _root_domain(domain)
+            firm_key = _normalize_firm_key(firm)
             provenance = _seed_provenance_for_row(row=row, seed_index=seed_index)
             prospect_id = _prospect_id_for_email(email) if email else ""
             prior_batch_row = batch_candidate_map.get(candidate_key) or {}
@@ -1219,6 +1378,8 @@ def _import_review_file(
             rejection_reason = ""
             if not state:
                 rejection_reason = "missing_state"
+            elif state not in active_states:
+                rejection_reason = "state_out_of_scope"
             elif not generation._valid_email(email):
                 rejection_reason = "invalid_email"
             elif not domain:
@@ -1262,6 +1423,16 @@ def _import_review_file(
             if email in existing_prospects:
                 candidate["final_verification_status"] = "rejected_by_verification"
                 candidate["final_rejection_reason"] = "duplicate_email_in_crm"
+                candidate_rows.append(candidate)
+                continue
+            if root_domain and root_domain in existing_root_domains:
+                candidate["final_verification_status"] = "rejected_by_verification"
+                candidate["final_rejection_reason"] = "duplicate_root_domain_in_crm"
+                candidate_rows.append(candidate)
+                continue
+            if firm_key and firm_key in existing_firm_keys:
+                candidate["final_verification_status"] = "rejected_by_verification"
+                candidate["final_rejection_reason"] = "duplicate_firm_key_in_crm"
                 candidate_rows.append(candidate)
                 continue
 
@@ -1422,6 +1593,7 @@ def run_pending_imports(*, dry_run: bool = False) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Import reviewed AI-assist discovery augmentation batches.")
     ap.add_argument("--input", default="", help="Reviewed AI-assist CSV input path.")
+    ap.add_argument("--stdin", action="store_true", help="Read reviewed AI-assist CSV from stdin.")
     ap.add_argument("--batch", default="", help="Optional batch id override.")
     ap.add_argument(
         "--pending",
@@ -1435,7 +1607,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if bool(args.pending) and str(args.input or "").strip():
+    input_text = str(args.input or "").strip()
+    selected_modes = int(bool(args.pending)) + int(bool(input_text)) + int(bool(args.stdin))
+    if selected_modes > 1:
         print(f"{ERR_AI_ASSIST_IMPORT_CONFIG} detail=modes_mutually_exclusive", file=sys.stderr)
         return 2
 
@@ -1460,13 +1634,29 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         return run_pending_imports(dry_run=bool(args.dry_run))
 
-    input_text = str(args.input or "").strip()
     if args.print_config:
-        batch_id = (str(args.batch or "").strip() or _default_batch_id(Path(input_text))) if input_text else _default_batch_id()
+        batch_id = str(args.batch or "").strip()
+        if not batch_id:
+            if args.stdin:
+                batch_id = _default_manual_batch_id()
+            elif input_text:
+                batch_id = _default_batch_id(Path(input_text))
+            else:
+                batch_id = _default_batch_id()
         _emit("AI_ASSIST_BATCH_ID", batch_id)
-        _emit("AI_ASSIST_IMPORT_INPUT_PATH", str(Path(input_text).expanduser().resolve(strict=False)) if input_text else "")
+        _emit("AI_ASSIST_IMPORT_INPUT_MODE", "stdin" if args.stdin else ("file" if input_text else ""))
+        _emit("AI_ASSIST_IMPORT_ACTIVE_STATES", ",".join(_active_state_scope_list()))
+        _emit("AI_ASSIST_IMPORT_INPUT_PATH", "<stdin>" if args.stdin else (str(Path(input_text).expanduser().resolve(strict=False)) if input_text else ""))
         _emit("AI_ASSIST_IMPORT_DRY_RUN", 1 if args.dry_run else 0)
         return 0
+    if args.stdin:
+        rc, _status = _import_review_file(
+            input_path=None,
+            batch_id_override=str(args.batch or "").strip(),
+            dry_run=bool(args.dry_run),
+            stdin_text=sys.stdin.read(),
+        )
+        return rc
     if not input_text:
         print(f"{ERR_AI_ASSIST_IMPORT_CONFIG} detail=missing_input", file=sys.stderr)
         return 2

@@ -736,7 +736,7 @@ try {
       Write-Output ('prospect_ai_assist_review_raw_target=' + $prospectAiAssistReviewRawTargetValue)
       $prospectAiAssistReviewPacketSizeValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE']).Trim() } else { '10' }
       Write-Output ('prospect_ai_assist_review_packet_size=' + $prospectAiAssistReviewPacketSizeValue)
-      $outreachStatesValue = if (Map-HasValue $printMap 'OUTREACH_STATES') { ([string]$printMap['OUTREACH_STATES']).Trim() } else { 'TX' }
+      $outreachStatesValue = if (Map-HasValue $printMap 'OUTREACH_STATES') { ([string]$printMap['OUTREACH_STATES']).Trim() } else { 'TX,CA,FL,PA,OH' }
       $prospectAutoGrowStatesValue = if (Map-HasValue $printMap 'PROSPECT_AUTOGROW_STATES') { ([string]$printMap['PROSPECT_AUTOGROW_STATES']).Trim() } else { '(unset)' }
       Write-Output ('outreach_states=' + $outreachStatesValue)
       Write-Output ('prospect_autogrow_states=' + $prospectAutoGrowStatesValue)
@@ -826,7 +826,7 @@ try {
     if ($PSBoundParameters.ContainsKey('OutreachStates')) {
       Set-MapValue -Map $map -Key 'OUTREACH_STATES' -Value (Normalize-OutreachStates $OutreachStates) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'OUTREACH_STATES')) {
-      Set-MapValue -Map $map -Key 'OUTREACH_STATES' -Value 'TX' -TouchedList $touched
+      Set-MapValue -Map $map -Key 'OUTREACH_STATES' -Value 'TX,CA,FL,PA,OH' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('OshaSmokeTo')) {

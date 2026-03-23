@@ -159,7 +159,7 @@ GENERATOR_FILTER_KEYS = (
     "already_sent_or_ineligible",
     "other",
 )
-DEFAULT_STATE_SCOPE_ALL = ("TX", "CA", "FL")
+DEFAULT_STATE_SCOPE_ALL = ("TX", "CA", "FL", "PA", "OH")
 VALID_SOURCE_FIT_TIERS = {"core_consultant", "recoverable_consultant", "adjacent_contractor"}
 US_STATE_NAME_TO_ABBR = dict(us_state.US_STATE_NAME_TO_ABBR)
 US_STATE_ABBREVIATIONS = set(us_state.US_STATE_ABBREVIATIONS)
@@ -1932,7 +1932,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--apollo-doctor", action="store_true", help="Check Apollo master-key endpoint access and exit.")
     ap.add_argument("--dry-run", action="store_true", help="Compute rows only; do not write output files.")
     ap.add_argument("--for-date", default="", help="Override run date (YYYY-MM-DD) for selected_state/backlog preview.")
-    ap.add_argument("--states", default="", help="Override state scope: 'all' or comma-separated states (example: TX,CA,FL).")
+    ap.add_argument(
+        "--states",
+        default="",
+        help="Override state scope: 'all' or comma-separated states (example: TX,CA,FL,PA,OH).",
+    )
     args = ap.parse_args(argv)
 
     try:

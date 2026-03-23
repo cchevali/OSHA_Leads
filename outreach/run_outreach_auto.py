@@ -2587,7 +2587,7 @@ def main() -> int:
             return 2
         return 0
 
-    states = _parse_states(os.getenv("OUTREACH_STATES", "TX,CA,FL"))
+    states = _parse_states(os.getenv("OUTREACH_STATES", "TX,CA,FL,PA,OH"))
     if not states:
         print(f"{ERR_AUTO_ENV} OUTREACH_STATES missing", file=sys.stderr)
         return 2

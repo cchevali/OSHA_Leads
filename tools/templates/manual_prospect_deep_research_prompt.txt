@@ -1,0 +1,44 @@
+OSHA Leads Manual Deep Research Prospect Prompt
+
+Run date: $RUN_DATE
+Active states: $STATE_SCOPE
+Target firms: $TARGET_FIRMS
+Latest CRM skip list CSV: $SKIP_LIST_PATH
+
+Use the attached/current CRM skip list CSV as a hard exclusion list.
+Do not return any firm, firm_key, or root domain already represented there.
+
+Research objective:
+- Find up to $TARGET_FIRMS net-new firms total across the active states above.
+- Focus on firms that actively sell OSHA, safety, industrial hygiene, EHS, compliance, or safety-training consulting services.
+- Prefer one strong business contact per firm.
+
+Contact preferences:
+- Prefer owner, founder, co-founder, president, principal, managing partner, partner, or senior consultant style roles.
+- Use business email addresses only.
+- No personal emails, no sensitive data, and no legal advice content.
+
+State/source diagnostic:
+- $STATE_LIC_DIAGNOSTIC
+
+Output requirements:
+- Return ONLY CSV.
+- No prose, no summary, no bullets, and no markdown table.
+- Raw CSV is preferred.
+- A single fenced ```csv``` block is acceptable only if you return nothing except that fenced block.
+- Use this exact header:
+$CSV_HEADER
+- Use `decision=accept` for rows that should be imported.
+- Use `decision=reject` only when you want a reviewed row kept visible but blocked.
+- `source_urls` must use `|` between multiple URLs inside the field.
+- `confidence` must be an integer from 0 to 100.
+- `evidence_snippet` must be short, factual provenance.
+- Do not invent firms, contacts, websites, titles, or emails.
+- If no named business contact can be verified, prefer `decision=reject`.
+
+Quality bar:
+- Stay inside the active states above.
+- Favor firms with a clear consulting/advisory footprint over pure contractors, installers, or equipment vendors.
+- Exclude obvious duplicates, franchises already present in CRM, and generic directories without firm-level evidence.
+
+Return only the CSV block and nothing else.

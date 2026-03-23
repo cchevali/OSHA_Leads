@@ -118,6 +118,7 @@ def _for_date_args(for_date: str) -> list[str]:
 
 
 def _emit_effective_defaults(env: dict[str, str]) -> None:
+    _emit("PROSPECT_REPLENISH_ACQUISITION_MODE", "MANUAL_PRIMARY_SAFETY_NET_AUTOGROW")
     _emit("PROSPECT_REPLENISH_EFFECTIVE_AUTOGROW_ENABLED", str(env.get("PROSPECT_AUTOGROW_ENABLED") or ""))
     _emit("PROSPECT_REPLENISH_EFFECTIVE_AUTOGROW_SOURCES", str(env.get("PROSPECT_AUTOGROW_SOURCES") or ""))
     _emit(
