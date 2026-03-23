@@ -28,9 +28,12 @@ const steps = [
 const safeguards = [
   "Suppression and unsubscribe enforcement on every send.",
   "Audit logs for every delivery attempt.",
-  "Metro-based filtering with plan-level coverage caps.",
+  "Footprint filtering with metro-based plan caps.",
   "Optional pilot mode before live delivery."
 ];
+
+const COVERAGE_HELPER =
+  "Counties, cities, metros, or OSHA areas work — we translate coverage for you.";
 
 export default function HowItWorksPage() {
   return (
@@ -59,9 +62,10 @@ export default function HowItWorksPage() {
         <SectionHeading
           eyebrow="Delivery cadence"
           title="Daily by default, tuned for your team."
-          description="Set the window, select your metros, and we deliver each morning."
+          description="Set the window, send your footprint, and we deliver each morning."
         />
         <div className="mt-8 rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+          <p className="mb-4 text-sm font-semibold text-inkMuted">{COVERAGE_HELPER}</p>
           <ul className="space-y-3 text-sm text-inkMuted">
             <li>Typical delivery: daily morning brief (timezone and cadence are configurable).</li>
             <li>Daily or weekly summaries supported.</li>
@@ -89,10 +93,11 @@ export default function HowItWorksPage() {
         <div className="rounded-3xl bg-inkFixed px-8 py-10 text-white shadow-soft">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="font-display text-3xl">Ready to pilot your metro coverage?</h2>
+              <h2 className="font-display text-3xl">Ready to pilot your coverage?</h2>
               <p className="mt-3 text-white/70">
-                We can send a sample alert within 24 hours and tune coverage to match your metros.
+                We can send a sample alert within 24 hours and tune coverage to match your footprint.
               </p>
+              <p className="mt-3 text-sm font-semibold text-white/80">{COVERAGE_HELPER}</p>
             </div>
             <CTAButtons variant="dark" />
           </div>

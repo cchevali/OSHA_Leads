@@ -207,7 +207,7 @@ export async function POST(request: Request) {
       "",
       `Company: ${company}`,
       `Email: ${email}`,
-      `Metros: ${metros}`,
+      `Coverage requested: ${metros}`,
       `Recipients (${recipients.length}):`,
       ...recipients.map((recipient, index) =>
         `  ${index + 1}. ${recipient.name ? `${recipient.name} <${recipient.email}>` : recipient.email}`
@@ -220,7 +220,7 @@ export async function POST(request: Request) {
       `IP: ${ip}`,
       `User-Agent: ${userAgent}`,
       "",
-      "Offer context: 14-day trial, up to 4 metros, no credit card.",
+      "Offer context: 14-day trial, up to 4 metros in billed coverage, no credit card.",
       "",
       `Mailing address: ${site.mailingAddress}`
     ].join("\n");
@@ -237,11 +237,12 @@ export async function POST(request: Request) {
         `Hi ${company},`,
         "",
         "We received your MicroFlowOps trial request.",
-        "14-day trial, up to 4 metros, no credit card.",
+        "14-day trial, up to 4 metros in billed coverage, no credit card.",
         "",
-      `We captured: ${metros}`,
-      `Recipients: ${recipients.length}`,
-      "",
+        `We captured this coverage: ${metros}`,
+        `Recipients: ${recipients.length}`,
+        "Counties, cities, metros, or OSHA areas all work. We will confirm the mapping before any billing changes.",
+        "",
         "Request received. We'll respond same business day.",
         "If you don't hear back, email support@microflowops.com",
         "",

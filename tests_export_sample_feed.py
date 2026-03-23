@@ -205,7 +205,7 @@ class TestExportSampleFeed(unittest.TestCase):
             self.assertEqual(stats["territories_selected"], ["TX", "WA", "NV"])
             self.assertEqual([t["territory_id"] for t in payload], ["TX", "WA", "NV"])
 
-    def test_auto_fallback_fills_to_three(self):
+    def test_auto_skips_empty_fallback_territories(self):
         mod = _load_module()
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -233,12 +233,11 @@ class TestExportSampleFeed(unittest.TestCase):
                 rows_per_territory=4,
                 lookback_days=7,
             )
-            self.assertEqual(stats["territories_selected"], ["TX", "CA", "FL"])
-            self.assertEqual(len(payload), 3)
-            self.assertEqual(payload[1]["territory_id"], "CA")
-            self.assertEqual(payload[2]["territory_id"], "FL")
-            self.assertEqual(payload[1]["rows"], [])
-            self.assertIsNone(payload[1]["updated_at_utc"])
+            self.assertEqual(stats["territories_considered"], ["TX"])
+            self.assertEqual(stats["territories_selected"], ["TX"])
+            self.assertEqual(len(payload), 1)
+            self.assertEqual(payload[0]["territory_id"], "TX")
+            self.assertGreaterEqual(len(payload[0]["rows"]), 1)
 
     def test_output_schema_and_updated_at_derivation(self):
         mod = _load_module()
@@ -269,7 +268,7 @@ class TestExportSampleFeed(unittest.TestCase):
                 rows_per_territory=4,
                 lookback_days=7,
             )
-            self.assertEqual(len(payload), 3)
+            self.assertEqual(len(payload), 1)
             first = payload[0]
             self.assertEqual(first["territory_id"], "CA")
             self.assertIn("territory_name", first)
@@ -293,8 +292,6 @@ class TestExportSampleFeed(unittest.TestCase):
             )
             self.assertEqual(row["opened_date"], "2026-02-10")
             self.assertEqual(row["observed_at_utc"], "2026-02-10T00:00:00Z")
-            self.assertIsNone(payload[1]["updated_at_utc"])
-            self.assertEqual(payload[1]["rows"], [])
 
 
 if __name__ == "__main__":

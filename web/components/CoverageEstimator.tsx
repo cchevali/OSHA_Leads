@@ -5,6 +5,7 @@ import { PLANS, recommendPlan } from "@/config/territories";
 
 const PRESETS = [
     { label: "Florida major metros (4)", metros: 4 },
+    { label: "Southern California example (6)", metros: 6 },
 ];
 
 export default function CoverageEstimator() {
@@ -21,7 +22,8 @@ export default function CoverageEstimator() {
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-xl text-ink">Coverage Estimator</h3>
             <p className="mt-2 text-sm text-inkMuted">
-                About how many metros do you need? We recommend a plan, then confirm fit during onboarding.
+                About how many billed metros will your footprint map to? Counties, cities, metros, or OSHA
+                areas work as inputs, and we confirm the mapping during onboarding.
             </p>
 
             {/* Presets */}
@@ -44,7 +46,7 @@ export default function CoverageEstimator() {
             {/* Dropdown */}
             <div className="mt-5 max-w-xs">
                 <label className="grid gap-1.5 text-sm text-inkMuted">
-                    About how many metros?
+                    About how many billed metros?
                     <select
                         value={metros}
                         onChange={(e) => setMetros(Number(e.target.value))}
@@ -71,7 +73,7 @@ export default function CoverageEstimator() {
                             <p className="mt-1 text-sm text-inkMuted">
                                 {rec === "enterprise"
                                     ? "Contact us for a custom quote — includes statewide and OSHA office alignment."
-                                    : `Up to ${plan.metros} metros included.`}
+                                    : `Up to ${plan.metros} metros in billed coverage included.`}
                             </p>
                             <p className="mt-1 text-sm text-inkMuted">We&apos;ll confirm your coverage during onboarding.</p>
                         </div>
@@ -87,7 +89,9 @@ export default function CoverageEstimator() {
                 </div>
             )}
             <p className="mt-4 text-xs text-inkMuted">
-                Example: Miami + Orlando + Tampa Bay + Jacksonville = 4 metros → Core.
+                Examples: Miami + Orlando + Tampa Bay + Jacksonville = 4 metros → Core. LA + Orange +
+                Riverside/San Bernardino + Ventura + Santa Barbara + Kern typically maps to
+                Multi-Territory.
             </p>
         </div>
     );
