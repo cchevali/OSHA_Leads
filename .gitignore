@@ -52,3 +52,4 @@ web/node_modules/
 web/.next/
 web/.turbo/
 web/.vercel/
+.vercel

@@ -441,8 +441,8 @@ def _build_customer_config(req: OnboardingRequest) -> dict[str, Any]:
         "states": states,
         "opened_window_days": 14,
         "new_only_days": 1,
-        "top_k_overall": 30,
-        "top_k_per_state": 30,
+        "top_k_overall": 50,
+        "top_k_per_state": 50,
         # Keep recipients in config as well so deliver_daily.py QA validation passes.
         "email_recipients": [email.lower() for email in req.recipients],
         "pilot_mode": True,

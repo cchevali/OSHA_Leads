@@ -138,6 +138,11 @@ class TestRunTrialDaily(unittest.TestCase):
         self.assertIn("--send-live", joined)
         self.assertIn("--confirm-live-send", joined)
 
+    def test_generate_minimal_customer_config_sets_50_signal_caps(self):
+        cfg = trial_daily._generate_minimal_customer_config(self._policy())
+        self.assertEqual(cfg["top_k_overall"], 50)
+        self.assertEqual(cfg["top_k_per_state"], 50)
+
     def test_send_live_success_records_sent_event_with_live_mode(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

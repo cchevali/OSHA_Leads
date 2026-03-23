@@ -24,14 +24,14 @@ class TestRunOshaIngestDaily(unittest.TestCase):
             return rc, buf.getvalue()
 
     def test_print_config_emits_required_tokens(self):
-        rc, out = self._run(["--print-config"], {"OUTREACH_STATES": "TX,CA,FL"})
+        rc, out = self._run(["--print-config"], {"OUTREACH_STATES": "TX,CA,FL,PA,OH"})
         self.assertEqual(rc, 0, msg=out)
         self.assertIn("INGEST_DB_PATH=", out)
         self.assertIn("INGEST_DB_SOURCE=data_dir", out)
         self.assertIn("INGEST_SCOPE_MODE=outreach", out)
-        self.assertIn("INGEST_SCOPE_STATES=TX,CA,FL", out)
+        self.assertIn("INGEST_SCOPE_STATES=TX,CA,FL,PA,OH", out)
         self.assertIn("INGEST_SCOPE_SOURCE=outreach", out)
-        self.assertIn("INGEST_STATES=TX,CA,FL", out)
+        self.assertIn("INGEST_STATES=TX,CA,FL,PA,OH", out)
         self.assertIn("INGEST_SINCE_DAYS=3", out)
         self.assertIn("INGEST_MAX_DETAILS=200", out)
         self.assertIn("INGEST_RUNTIME_ROLE=", out)
@@ -43,7 +43,7 @@ class TestRunOshaIngestDaily(unittest.TestCase):
 
     def test_dry_run_skips_ingestion_call(self):
         with mock.patch.object(ingest_daily.ingest_osha, "run_ingestion", side_effect=AssertionError("must not call")):
-            rc, out = self._run(["--dry-run"], {"OUTREACH_STATES": "TX,CA,FL"})
+            rc, out = self._run(["--dry-run"], {"OUTREACH_STATES": "TX,CA,FL,PA,OH"})
         self.assertEqual(rc, 0, msg=out)
         self.assertIn("PASS_INGEST_DAILY_COMPLETE status=DRY_RUN", out)
 
@@ -67,10 +67,10 @@ class TestRunOshaIngestDaily(unittest.TestCase):
         self.assertIn("INGEST_STATES=FL,CA", out)
         self.assertIn("INGEST_STATES_SOURCE=cli", out)
 
-    def test_missing_env_falls_back_to_tx(self):
+    def test_missing_env_falls_back_to_default_live_scope(self):
         rc, out = self._run(["--print-config"], {"OUTREACH_STATES": None})
         self.assertEqual(rc, 0, msg=out)
-        self.assertIn("INGEST_STATES=TX", out)
+        self.assertIn("INGEST_STATES=TX,CA,FL,PA,OH", out)
         self.assertIn("INGEST_STATES_SOURCE=fallback", out)
         self.assertIn("INGEST_STATES_FALLBACK_USED=YES", out)
 
@@ -89,13 +89,13 @@ class TestRunOshaIngestDaily(unittest.TestCase):
         with mock.patch.object(ingest_daily, "_trial_live_states_from_crm", return_value=["OR", "WA", "FL"]):
             rc, out = self._run(
                 ["--print-config", "--scope-mode", "outreach_plus_trial_live"],
-                {"OUTREACH_STATES": "TX,CA,FL"},
+                {"OUTREACH_STATES": "TX,CA,FL,PA,OH"},
             )
         self.assertEqual(rc, 0, msg=out)
         self.assertIn("INGEST_SCOPE_MODE=outreach_plus_trial_live", out)
         self.assertIn("INGEST_SCOPE_SOURCE=resolver", out)
-        self.assertIn("INGEST_SCOPE_STATES=TX,CA,FL,OR,WA", out)
-        self.assertIn("INGEST_STATES=TX,CA,FL,OR,WA", out)
+        self.assertIn("INGEST_SCOPE_STATES=TX,CA,FL,PA,OH,OR,WA", out)
+        self.assertIn("INGEST_STATES=TX,CA,FL,PA,OH,OR,WA", out)
         self.assertIn("INGEST_STATES_SOURCE=resolver", out)
 
     def test_print_config_uses_data_dir_backed_osha_db_when_configured(self):

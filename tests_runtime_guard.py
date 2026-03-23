@@ -192,6 +192,35 @@ class TestRuntimeGuard(unittest.TestCase):
         self.assertIn("ERR_RUNTIME_DB_CRM_LEGACY_PRESENT", out)
         self.assertIn("ERR_RUNTIME_DB_CRM_SPLIT", out)
 
+    def test_empty_legacy_repo_crm_db_does_not_error_for_live_send(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d).resolve()
+            (data_dir / "crm.sqlite").write_text("canonical", encoding="utf-8")
+            legacy_crm = (REPO_ROOT / "out" / "crm.sqlite").resolve()
+            original_bytes = legacy_crm.read_bytes() if legacy_crm.exists() else None
+            legacy_crm.parent.mkdir(parents=True, exist_ok=True)
+            legacy_crm.write_bytes(b"")
+            hostname = socket.gethostname().strip().lower()
+            try:
+                proc = self._run(
+                    ["preflight", "--mode", "manual", "--intent", "send", "--confirm-live-send"],
+                    {
+                        "RUNTIME_ROLE": "dev_client",
+                        "CANONICAL_HOSTNAME": hostname,
+                        "DATA_DIR": str(data_dir),
+                        "MFO_TRUSTED_SCHEDULED": "0",
+                    },
+                )
+            finally:
+                if original_bytes is None:
+                    legacy_crm.unlink(missing_ok=True)
+                else:
+                    legacy_crm.write_bytes(original_bytes)
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        self.assertEqual(proc.returncode, 0, msg=out)
+        self.assertNotIn("ERR_RUNTIME_DB_CRM_LEGACY_PRESENT", out)
+        self.assertNotIn("ERR_RUNTIME_DB_CRM_SPLIT", out)
+
     def test_legacy_repo_crm_light_db_errors_for_live_send(self):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d).resolve()
@@ -220,6 +249,35 @@ class TestRuntimeGuard(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0, msg=out)
         self.assertIn("ERR_RUNTIME_DB_CRM_LIGHT_LEGACY_PRESENT", out)
         self.assertIn("ERR_RUNTIME_DB_CRM_LIGHT_SPLIT", out)
+
+    def test_empty_legacy_repo_crm_light_db_does_not_error_for_live_send(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d).resolve()
+            (data_dir / "crm_light.sqlite").write_text("canonical", encoding="utf-8")
+            legacy_db = (REPO_ROOT / "out" / "crm_light.sqlite").resolve()
+            original_bytes = legacy_db.read_bytes() if legacy_db.exists() else None
+            legacy_db.parent.mkdir(parents=True, exist_ok=True)
+            legacy_db.write_bytes(b"")
+            hostname = socket.gethostname().strip().lower()
+            try:
+                proc = self._run(
+                    ["preflight", "--mode", "manual", "--intent", "send", "--confirm-live-send"],
+                    {
+                        "RUNTIME_ROLE": "dev_client",
+                        "CANONICAL_HOSTNAME": hostname,
+                        "DATA_DIR": str(data_dir),
+                        "MFO_TRUSTED_SCHEDULED": "0",
+                    },
+                )
+            finally:
+                if original_bytes is None:
+                    legacy_db.unlink(missing_ok=True)
+                else:
+                    legacy_db.write_bytes(original_bytes)
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        self.assertEqual(proc.returncode, 0, msg=out)
+        self.assertNotIn("ERR_RUNTIME_DB_CRM_LIGHT_LEGACY_PRESENT", out)
+        self.assertNotIn("ERR_RUNTIME_DB_CRM_LIGHT_SPLIT", out)
 
     def test_runtime_lock_blocks_second_holder_until_release(self):
         with tempfile.TemporaryDirectory() as d:

@@ -17,8 +17,8 @@
   "new_only_days": 1,
   "snapshot_when_0_new": true,
   "snapshot_recent_limit": 8,
-  "top_k_overall": 30,
-  "top_k_per_state": 30,
+  "top_k_overall": 50,
+  "top_k_per_state": 50,
   "recipients": [
     "primary@example.com",
     "coworker@example.com"

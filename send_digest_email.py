@@ -69,6 +69,7 @@ DEFAULT_REPLY_TO = "support@microflowops.com"
 DEFAULT_FROM_LOCAL_PART = "alerts"
 LOW_FALLBACK_LIMIT = 5
 TRIAL_STATE_SET_CAP = 25
+TRIAL_SIGNALS_LIMIT_DEFAULT = 50
 HEALTH_MIN_SHARE_DEFAULT = 0.1
 HEALTH_MIN_TOTAL_DEFAULT = 20
 SEND_WINDOW_MINUTES_DEFAULT = 20
@@ -1541,6 +1542,31 @@ def _is_wally_trial_daily_mode(config: dict, mode: str) -> bool:
     customer_id = str(config.get("customer_id") or "").strip().lower()
     subscriber_key = str(config.get("subscriber_key") or "").strip().lower()
     return customer_id == WALLY_TRIAL_CUSTOMER_ID or subscriber_key == WALLY_TRIAL_SUBSCRIBER_KEY
+
+
+def _is_trial_config(config: dict[str, Any] | None) -> bool:
+    if not isinstance(config, dict):
+        return False
+    if str(config.get("trial_length_days") or "").strip():
+        return True
+    subscriber_key = str(config.get("subscriber_key") or "").strip().lower()
+    customer_id = str(config.get("customer_id") or "").strip().lower()
+    if subscriber_key and _is_trial_subscriber(subscriber_key):
+        return True
+    return (
+        customer_id == WALLY_TRIAL_CUSTOMER_ID
+        or customer_id.endswith("_trial")
+        or customer_id.startswith("trial_")
+        or "_trial_" in customer_id
+    )
+
+
+def _default_top_k_overall(config: dict[str, Any] | None) -> int:
+    return TRIAL_SIGNALS_LIMIT_DEFAULT if _is_trial_config(config) else 25
+
+
+def _default_top_k_per_state(config: dict[str, Any] | None) -> int:
+    return TRIAL_SIGNALS_LIMIT_DEFAULT if _is_trial_config(config) else 10
 
 
 def _within_trial_catchup_window(
@@ -3171,8 +3197,8 @@ def generate_digest_html(
     tz: ZoneInfo | None = None,
 ) -> str:
     states = config["states"]
-    top_k_overall = config.get("top_k_overall", 25)
-    top_k_per_state = config.get("top_k_per_state", 10)
+    top_k_overall = config.get("top_k_overall", _default_top_k_overall(config))
+    top_k_per_state = config.get("top_k_per_state", _default_top_k_per_state(config))
     snapshot_report_mode = bool(report_label and "starter snapshot" in str(report_label).strip().lower())
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
     summary_states = [str(s).strip().upper() for s in list(state_summary_states or states) if str(s).strip()]
@@ -4830,9 +4856,9 @@ def main() -> None:
         signals_limit = None
         if main_render_rows:
             try:
-                cap = int(config.get("top_k_overall", 25))
+                cap = int(config.get("top_k_overall", _default_top_k_overall(config)))
             except Exception:
-                cap = 25
+                cap = _default_top_k_overall(config)
             cap = max(1, cap)
             signals_limit = min(len(main_render_rows), cap)
 

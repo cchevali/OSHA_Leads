@@ -13,10 +13,12 @@ OSHA_Leads is an intelligence + alerting system for operational teams.
 
 The current growth engine is an "outbound concierge" motion with CRM auto-run as the operational default:
 
-- Discover and prioritize prospects into `out/crm.sqlite`.
+- Manual Deep Research is the canonical net-new prospect lane using a repo-managed prompt plus refreshed CRM skip list.
+- Automated prospect replenishment remains enabled as a background safety net and continues to flow into `out/crm.sqlite`.
 - Run daily outreach automation via `run_outreach_auto.py` (select -> prioritize -> send -> record).
 - Use mail-merge CSV generation as a debug/compatibility path, not the default send path.
 - Process replies manually and mark lifecycle events (`replied`, `trial_started`, `converted`, `do_not_contact`).
+- Current live outreach/prospect scope is `TX,CA,FL,PA,OH`.
 
 Weekly target (initial): **100-200 new prospects/week**.
 

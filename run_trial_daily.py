@@ -334,6 +334,8 @@ def _generate_minimal_customer_config(policy: TrialPolicy) -> dict[str, Any]:
         "states": states,
         "opened_window_days": 14,
         "new_only_days": 1,
+        "top_k_overall": 50,
+        "top_k_per_state": 50,
         "recipients": [policy.email],
         "email_recipients": [policy.email],
         "pilot_mode": True,
