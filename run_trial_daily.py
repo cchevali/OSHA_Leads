@@ -943,22 +943,23 @@ def run_trial_daily(
                 status = "DRY_RUN" if code == 0 else "ERROR"
                 event_mode = "DRY_RUN" if code == 0 else "ERROR"
             else:
-                mode = _try_extract_latest_send_start_mode(customer_id=customer_id)
-                if mode is None:
-                    # Fallback to subprocess output when latest.json/send_result is unavailable.
-                    mode = _try_extract_last_send_start_mode_from_log_text(out)
-                if code == 0 and mode == "LIVE":
+                if code == 0 and send_live:
                     status = "SENT"
                     event_mode = "LIVE"
-                elif code == 0 and mode == "SAFE":
-                    status = "SAFE_MODE"
-                    event_mode = "SAFE"
-                elif code == 0:
-                    status = "UNKNOWN"
-                    event_mode = "UNKNOWN"
                 else:
-                    status = "ERROR"
-                    event_mode = "ERROR"
+                    mode = _try_extract_latest_send_start_mode(customer_id=customer_id)
+                    if mode is None:
+                        # Fallback to subprocess output when latest.json/send_result is unavailable.
+                        mode = _try_extract_last_send_start_mode_from_log_text(out)
+                    if code == 0 and mode == "SAFE":
+                        status = "SAFE_MODE"
+                        event_mode = "SAFE"
+                    elif code == 0:
+                        status = "UNKNOWN"
+                        event_mode = "UNKNOWN"
+                    else:
+                        status = "ERROR"
+                        event_mode = "ERROR"
 
             crm_light.append_send_event(
                 conn,

@@ -644,6 +644,7 @@ def _is_trial_delivery_event(
     variant: str,
     meta: dict[str, Any],
     primary_recipient: str,
+    recipient_email: str = "",
 ) -> bool:
     normalized_variant = (variant or "").strip().upper()
     if normalized_variant and normalized_variant != "DAILY":
@@ -651,7 +652,13 @@ def _is_trial_delivery_event(
 
     normalized_primary = (primary_recipient or "").strip().lower()
     event_recipient = (
-        str(meta.get("primary_recipient") or meta.get("recipient") or meta.get("to") or "")
+        str(
+            meta.get("primary_recipient")
+            or meta.get("recipient")
+            or meta.get("to")
+            or recipient_email
+            or ""
+        )
         .strip()
         .lower()
     )
@@ -659,7 +666,12 @@ def _is_trial_delivery_event(
         return False
 
     send_mode = str(meta.get("send_mode") or meta.get("mode") or "").strip().upper()
-    if send_mode and send_mode != "LIVE":
+    if send_mode:
+        if send_mode == "LIVE":
+            return True
+        # Legacy send_digest_email rows used mode=daily for live trial sends.
+        if send_mode == "DAILY":
+            return True
         return False
 
     return True
@@ -683,7 +695,7 @@ def count_trial_delivery_days(
     start_iso = f"{sd}T00:00:00+00:00"
     rows = conn.execute(
         """
-        SELECT ts_utc, variant, meta_json
+        SELECT ts_utc, variant, meta_json, recipient_email
         FROM send_events
         WHERE subscriber_key = ?
           AND status = 'SENT'
@@ -702,6 +714,7 @@ def count_trial_delivery_days(
             variant=variant,
             meta=meta,
             primary_recipient=primary_recipient,
+            recipient_email=str(row["recipient_email"] or "").strip(),
         ):
             continue
         dt_utc = _parse_utc_ts(ts_utc)
@@ -737,7 +750,7 @@ def has_trial_delivery_on_local_date(
     start_iso = f"{sd}T00:00:00+00:00"
     rows = conn.execute(
         """
-        SELECT ts_utc, variant, meta_json
+        SELECT ts_utc, variant, meta_json, recipient_email
         FROM send_events
         WHERE subscriber_key = ?
           AND status = 'SENT'
@@ -754,6 +767,7 @@ def has_trial_delivery_on_local_date(
             variant=variant,
             meta=meta,
             primary_recipient=primary_recipient,
+            recipient_email=str(row["recipient_email"] or "").strip(),
         ):
             continue
         dt_utc = _parse_utc_ts(ts_utc)

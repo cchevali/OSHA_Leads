@@ -10,12 +10,16 @@ from scoring import triage_overlay as to
 
 
 class TestTriageOverlay(unittest.TestCase):
+    @staticmethod
+    def _days_ago(days: int) -> str:
+        return (datetime.now(timezone.utc).date() - timedelta(days=int(days))).isoformat()
+
     def _fixture_rows(self):
         return [
             {
                 "activity_nr": "1876272",
                 "lead_score": 3,
-                "date_opened": "2026-02-20",
+                "date_opened": self._days_ago(10),
                 "inspection_type": "Inspection",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -29,7 +33,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "1876218",
                 "lead_score": 3,
-                "date_opened": "2026-02-20",
+                "date_opened": self._days_ago(10),
                 "inspection_type": "Inspection",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -43,7 +47,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "1876221",
                 "lead_score": 3,
-                "date_opened": "2026-02-20",
+                "date_opened": self._days_ago(10),
                 "inspection_type": "Inspection",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -57,7 +61,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "1876394",
                 "lead_score": 6,
-                "date_opened": "2026-02-20",
+                "date_opened": self._days_ago(10),
                 "inspection_type": "Referral",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -70,7 +74,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "1876545",
                 "lead_score": 3,
-                "date_opened": "2026-02-24",
+                "date_opened": self._days_ago(6),
                 "inspection_type": "Referral",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -83,7 +87,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "1876463",
                 "lead_score": 4,
-                "date_opened": "2026-02-23",
+                "date_opened": self._days_ago(7),
                 "inspection_type": "Planned",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -96,7 +100,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "1876197",
                 "lead_score": 1,
-                "date_opened": "2026-02-20",
+                "date_opened": self._days_ago(10),
                 "inspection_type": "Planned",
                 "scope": "No Insp/10 or Fewer Empe",
                 "case_status": "CLOSED",
@@ -109,7 +113,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "1876259",
                 "lead_score": 0,
-                "date_opened": "2026-02-20",
+                "date_opened": self._days_ago(10),
                 "inspection_type": "Inspection",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -122,7 +126,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "1875646",
                 "lead_score": 8,
-                "date_opened": "2026-02-19",
+                "date_opened": self._days_ago(11),
                 "inspection_type": "Accident",
                 "scope": "Complete",
                 "case_status": "OPEN",
@@ -135,7 +139,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "1867716",
                 "lead_score": 8,
-                "date_opened": "2026-01-08",
+                "date_opened": self._days_ago(74),
                 "inspection_type": "Accident",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -213,7 +217,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "m1",
                 "lead_score": 6,
-                "date_opened": "2026-02-20",
+                "date_opened": self._days_ago(10),
                 "inspection_type": "Inspection",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -226,7 +230,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "s1",
                 "lead_score": 8,
-                "date_opened": "2026-02-20",
+                "date_opened": self._days_ago(10),
                 "inspection_type": "Planned",
                 "scope": "No Insp/10 or Fewer Empe",
                 "case_status": "CLOSED",
@@ -275,7 +279,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "x1",
                 "lead_score": 7,
-                "date_opened": "2026-02-20",
+                "date_opened": self._days_ago(10),
                 "inspection_type": "Inspection",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -301,7 +305,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "t1",
                 "lead_score": 6,
-                "date_opened": "2026-02-20",
+                "date_opened": self._days_ago(10),
                 "inspection_type": "Inspection",
                 "scope": "Partial",
                 "case_status": "OPEN",
@@ -314,7 +318,7 @@ class TestTriageOverlay(unittest.TestCase):
             {
                 "activity_nr": "t2",
                 "lead_score": 6,
-                "date_opened": "2026-02-20",
+                "date_opened": self._days_ago(10),
                 "inspection_type": "Inspection",
                 "scope": "Partial",
                 "case_status": "OPEN",
