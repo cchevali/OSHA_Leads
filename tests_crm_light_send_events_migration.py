@@ -194,6 +194,67 @@ class TestCrmLightSendEventsMigration(unittest.TestCase):
             self.assertEqual(last_for_recipient, "2026-03-01T12:00:00+00:00")
             self.assertEqual(last_overall, "2026-03-01T12:00:00+00:00")
 
+    def test_trial_delivery_days_accept_legacy_live_digest_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "crm_light.sqlite"
+            crm_light.ensure_database(db_path)
+
+            with crm_light.open_conn(db_path) as conn:
+                crm_light.init_schema(conn)
+                crm_light.upsert_subscriber(
+                    conn,
+                    subscriber_key="facs_trial",
+                    email="taylor.thomas@facs.com",
+                    territory_code="FACS_TRIAL_STATES",
+                    tz="America/New_York",
+                    status="trial",
+                )
+                crm_light.upsert_trial_state(
+                    conn,
+                    subscriber_key="facs_trial",
+                    start_date="2026-03-03",
+                    sends_limit=14,
+                )
+                for ts_utc in [
+                    "2026-03-19T13:02:19.381974+00:00",
+                    "2026-03-20T13:02:36.101250+00:00",
+                ]:
+                    crm_light.append_send_event(
+                        conn,
+                        subscriber_key="facs_trial",
+                        recipient_email="taylor.thomas@facs.com",
+                        variant="DAILY",
+                        status="SENT",
+                        run_id=f"legacy_{ts_utc}",
+                        meta={
+                            "customer_id": "facs_trial",
+                            "mode": "daily",
+                            "territory_code": "FACS_TRIAL_STATES",
+                            "smtp_message_id": "<msgid>",
+                        },
+                        ts_utc=ts_utc,
+                    )
+
+                sent_days = crm_light.count_trial_delivery_days(
+                    conn,
+                    "facs_trial",
+                    "2026-03-03",
+                    tz_name="America/New_York",
+                    primary_recipient="taylor.thomas@facs.com",
+                    weekdays_only=True,
+                )
+                sent_same_day = crm_light.has_trial_delivery_on_local_date(
+                    conn,
+                    subscriber_key="facs_trial",
+                    start_date="2026-03-03",
+                    tz_name="America/New_York",
+                    primary_recipient="taylor.thomas@facs.com",
+                    local_date_text="2026-03-20",
+                )
+
+            self.assertEqual(sent_days, 2)
+            self.assertTrue(sent_same_day)
+
 
 if __name__ == "__main__":
     unittest.main()

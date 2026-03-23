@@ -80,6 +80,7 @@ class TestRunRuntimeTickWrapper(unittest.TestCase):
         live_wrapper_markers = (
             r".\scripts\scheduled\run_trial_facs_daily.ps1",
             r".\scripts\scheduled\run_trial_jl_safety_daily.ps1",
+            r".\scripts\scheduled\run_trial_roi_safety_daily.ps1",
             r".\scripts\scheduled\run_osha_ingest_evening.ps1",
             r".\scripts\scheduled\run_outreach_auto.ps1",
         )
