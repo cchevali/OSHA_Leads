@@ -289,16 +289,19 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
       </div>
 
       <label className="grid gap-1.5 text-sm text-inkMuted">
-        Metros to cover (cities or states work too)
+        Coverage to monitor (counties, cities, metros, or OSHA areas)
         <input
           required
           type="text"
           value={metros}
           onChange={(event) => setMetros(event.target.value)}
-          placeholder="e.g. Miami–Fort Lauderdale, Orlando, Tampa–St. Petersburg, Jacksonville"
+          placeholder="e.g. Orange County, Ventura County, Los Angeles, Riverside/San Bernardino"
           className="rounded-xl border border-cardBorder bg-surface px-3 py-2.5 text-ink placeholder:text-inkMuted/50 outline-none transition focus:border-ocean"
         />
         {metrosError ? <p className="text-xs font-semibold text-red-700">{metrosError}</p> : null}
+        <p className="text-xs text-inkMuted">
+          Counties, cities, metros, or OSHA areas work — we translate coverage for you.
+        </p>
       </label>
       <label className="grid gap-1.5 text-sm text-inkMuted">
         Notes (optional)

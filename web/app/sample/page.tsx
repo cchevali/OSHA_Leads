@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import Link from "next/link";
 import CTAButtons from "@/components/CTAButtons";
 import sampleSignals from "./sample_signals.json";
 
 export const metadata: Metadata = {
-  title: "Live OSHA Sample Feed",
+  title: "Sample OSHA Alert Snapshot",
   description:
-    "Live sample feed using real public OSHA inspection data across multiple territories, with opened/observed timestamps and source links.",
+    "Frozen, populated sample showing MicroFlowOps alert proof, public OSHA record verification, and recent committed rows.",
   alternates: { canonical: "/sample" }
 };
 
@@ -28,10 +29,8 @@ type SampleTerritory = {
   rows: SampleSignalRow[];
 };
 
-const ABOVE_FOLD_TERRITORY_LIMIT = 3;
-const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 const FOUNDER_BLURB =
-  "I'm Chase. I built MicroFlowOps to surface public OSHA inspection activity faster than teams can find it manually. My background is data engineering, not law, so the product focuses on monitoring, timestamps, and territory routing.";
+  "Built by a data engineer for teams that need earlier visibility into public OSHA activity.";
 
 function parseUtc(value: string | null | undefined): Date | null {
   const text = (value || "").trim();
@@ -42,15 +41,19 @@ function parseUtc(value: string | null | undefined): Date | null {
   return Number.isNaN(dt.getTime()) ? null : dt;
 }
 
-function formatDateShort(value: string | null | undefined): string {
+function formatUtcStamp(value: string | null | undefined): string {
   const dt = parseUtc(value);
   if (!dt) {
-    return "";
+    return "Recent public snapshot";
   }
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
-    timeZone: "UTC"
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "UTC",
+    hour12: true
   }).format(dt);
 }
 
@@ -71,30 +74,6 @@ function formatOpenedDate(value: string | null | undefined): string {
   }).format(dt);
 }
 
-function formatUpdatedLabel(updatedAtUtc: string | null, nowMs: number): {
-  label: string;
-  stale: boolean;
-} {
-  const dt = parseUtc(updatedAtUtc);
-  if (!dt) {
-    return { label: "Recent OSHA activity sample", stale: true };
-  }
-  const stale = nowMs - dt.getTime() > STALE_AFTER_MS;
-  if (stale) {
-    return { label: "Recent OSHA activity sample", stale: true };
-  }
-  const stamp = new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: "UTC",
-    hour12: true
-  }).format(dt);
-  return { label: `Updated ${stamp} UTC`, stale: false };
-}
-
 function SignalRowCard({ row }: { row: SampleSignalRow }) {
   return (
     <article className="rounded-2xl border border-cardBorder bg-surface p-4">
@@ -103,7 +82,7 @@ function SignalRowCard({ row }: { row: SampleSignalRow }) {
           {row.inspection_type}
         </p>
         <p className="text-xs font-semibold text-inkMuted">
-          Observed {row.observed_at_utc ? formatDateShort(row.observed_at_utc) : "Unknown"}
+          Observed {formatUtcStamp(row.observed_at_utc)} UTC
         </p>
       </div>
       <h3 className="mt-3 text-base font-semibold text-ink">{row.establishment_name}</h3>
@@ -128,24 +107,19 @@ function SignalRowCard({ row }: { row: SampleSignalRow }) {
 }
 
 export default function SamplePage() {
-  const typedTerritories = sampleSignals as SampleTerritory[];
-  const visibleTerritories = typedTerritories.slice(0, ABOVE_FOLD_TERRITORY_LIMIT);
-  const hiddenTerritories = typedTerritories.slice(ABOVE_FOLD_TERRITORY_LIMIT);
-  const nowMs = Date.now();
-  const allVisibleStale = visibleTerritories.every((territory) =>
-    formatUpdatedLabel(territory.updated_at_utc, nowMs).stale
-  );
+  const [snapshot] = sampleSignals as SampleTerritory[];
+  const rows = snapshot?.rows ?? [];
 
   return (
     <div className="space-y-12 pb-24 pt-12">
       <section className="mx-auto w-full max-w-4xl px-6">
         <div className="space-y-4 text-center">
           <h1 className="font-display text-4xl text-ink md:text-5xl">
-            Sample: Live OSHA Activity Feed
+            Sample: populated OSHA alert proof
           </h1>
           <p className="text-base text-inkMuted md:text-lg">
-            Nationwide sample: multiple metros. Real public OSHA inspection activity, refreshed into a
-            committed preview feed.
+            Frozen recent snapshot with real public OSHA rows, plus the verification view buyers use
+            to confirm a record in seconds.
           </p>
           <p className="mx-auto max-w-3xl text-sm text-inkMuted">{FOUNDER_BLURB}</p>
           <p className="text-sm font-semibold text-inkMuted">Not legal advice.</p>
@@ -155,123 +129,96 @@ export default function SamplePage() {
         </div>
       </section>
 
-      <section className="mx-auto w-full max-w-5xl px-6">
-        <div className="bg-paper rounded-3xl border border-cardBorder p-6 shadow-soft">
+      <section className="mx-auto w-full max-w-6xl px-6">
+        <div className="rounded-3xl border border-cardBorder bg-paper p-6 shadow-soft">
           <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-semibold text-inkMuted">
-            <span>Live public sample feed</span>
-            <span>Opened + observed timestamps included</span>
+            <span>Proof snapshot</span>
+            <span>Frozen to stay populated</span>
           </div>
-          <div className="mt-4 rounded-2xl bg-card p-4">
+          <div className="mt-4 grid gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl border border-cardBorder bg-surface p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
+                Alert screenshot
+              </p>
+              <p className="mt-2 text-sm text-inkMuted">
+                Recent MicroFlowOps alert format with ranked rows and timestamps.
+              </p>
+              <Image
+                src="/assets/alert-proof-snapshot.svg"
+                alt="Frozen MicroFlowOps alert snapshot"
+                width={1200}
+                height={780}
+                className="mt-4 w-full rounded-2xl border border-cardBorder bg-white"
+              />
+            </div>
             <div className="rounded-2xl border border-cardBorder bg-surface p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
                 Verify in 30 seconds
               </p>
               <p className="mt-2 text-sm text-inkMuted">
-                Every item includes opened/observed timestamps and a direct link to the public OSHA record.
+                The alert points back to the public OSHA record so a buyer can validate the signal fast.
+              </p>
+              <Image
+                src="/assets/osha-record-verification.svg"
+                alt="OSHA record verification snapshot"
+                width={1200}
+                height={780}
+                className="mt-4 w-full rounded-2xl border border-cardBorder bg-white"
+              />
+            </div>
+          </div>
+          <div className="mt-6 rounded-2xl border border-cardBorder bg-surface p-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
+              Why this was actionable
+            </p>
+            <p className="mt-2 text-sm text-inkMuted">
+              This example showed a new Midland, Texas record with an opened date of March 3, 2026
+              and an observed timestamp of March 6, 2026. That gives the buyer something concrete to
+              verify quickly and decide whether to route for outreach while the signal is still fresh.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {snapshot ? (
+        <section className="mx-auto w-full max-w-5xl px-6">
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="font-display text-2xl text-ink">
+                  {snapshot.territory_name} frozen snapshot
+                </h2>
+                <p className="mt-2 text-sm text-inkMuted">
+                  Captured {formatUtcStamp(snapshot.updated_at_utc)} UTC from public OSHA records.
+                </p>
+              </div>
+              <p className="text-sm font-semibold text-inkMuted">
+                {rows.length} populated item{rows.length === 1 ? "" : "s"}
               </p>
             </div>
-
-            {allVisibleStale ? (
-              <p className="mt-4 text-xs font-semibold text-inkMuted">Sample refresh is delayed.</p>
-            ) : null}
-
-            <div className="mt-4 space-y-6">
-              {visibleTerritories.map((territory) => {
-                const freshness = formatUpdatedLabel(territory.updated_at_utc, nowMs);
-                return (
-                  <section
-                    key={territory.territory_id}
-                    className="rounded-2xl border border-cardBorder bg-surface p-4"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <h2 className="text-base font-semibold text-ink">{territory.territory_name}</h2>
-                        <p className="text-xs font-semibold text-inkMuted">{freshness.label}</p>
-                      </div>
-                      <p className="text-xs font-semibold text-inkMuted">
-                        {territory.rows.length} item{territory.rows.length === 1 ? "" : "s"}
-                      </p>
-                    </div>
-
-                    {territory.rows.length > 0 ? (
-                      <div className="mt-4 grid gap-4 md:grid-cols-2">
-                        {territory.rows.map((row) => (
-                          <SignalRowCard key={`${territory.territory_id}-${row.activity_nr}`} row={row} />
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="mt-4 text-sm text-inkMuted">
-                        No current rows in this sample snapshot for {territory.territory_name}.
-                      </p>
-                    )}
-                  </section>
-                );
-              })}
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
+              {rows.map((row) => (
+                <SignalRowCard key={`${snapshot.territory_id}-${row.activity_nr}`} row={row} />
+              ))}
             </div>
+          </div>
+        </section>
+      ) : null}
 
-            <div className="mt-6 flex flex-wrap items-center gap-4">
-              <CTAButtons />
-              <Link
-                href="/contact"
-                className="text-sm font-semibold text-inkMuted underline-offset-4 transition hover:text-ink hover:underline"
-              >
-                Contact
-              </Link>
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-cardBorder bg-surface p-4">
-              <p className="text-sm font-semibold text-ink">See a live sample feed (real public data)</p>
-              <p className="mt-2 text-sm text-inkMuted">
-                <a
-                  href="https://microflowops.com/sample"
-                  className="font-semibold text-ocean underline-offset-4 transition hover:text-oceanDark hover:underline"
-                >
-                  https://microflowops.com/sample
-                </a>
-              </p>
-              <p className="mt-2 text-sm text-inkMuted">
-                If you want daily coverage for your metros, reply with the cities you care about and
-                I&apos;ll set up a trial.
-              </p>
-            </div>
-
-            {hiddenTerritories.length > 0 ? (
-              <details className="mt-6">
-                <summary className="cursor-pointer text-sm font-semibold text-ink">
-                  View additional territories
-                </summary>
-                <div className="mt-4 space-y-6">
-                  {hiddenTerritories.map((territory) => {
-                    const freshness = formatUpdatedLabel(territory.updated_at_utc, nowMs);
-                    return (
-                      <section
-                        key={territory.territory_id}
-                        className="rounded-2xl border border-cardBorder bg-surface p-4"
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <h2 className="text-base font-semibold text-ink">{territory.territory_name}</h2>
-                          <p className="text-xs font-semibold text-inkMuted">{freshness.label}</p>
-                        </div>
-                        {territory.rows.length > 0 ? (
-                          <div className="mt-4 grid gap-4 md:grid-cols-2">
-                            {territory.rows.map((row) => (
-                              <SignalRowCard
-                                key={`${territory.territory_id}-${row.activity_nr}`}
-                                row={row}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="mt-4 text-sm text-inkMuted">
-                            No current rows in this sample snapshot for {territory.territory_name}.
-                          </p>
-                        )}
-                      </section>
-                    );
-                  })}
-                </div>
-              </details>
-            ) : null}
+      <section className="mx-auto w-full max-w-5xl px-6">
+        <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+          <p className="text-sm font-semibold text-ink">Need your footprint instead?</p>
+          <p className="mt-2 text-sm text-inkMuted">
+            Counties, cities, metros, or OSHA areas work — we translate coverage for you.
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-4">
+            <CTAButtons />
+            <Link
+              href="/pricing"
+              className="text-sm font-semibold text-inkMuted underline-offset-4 transition hover:text-ink hover:underline"
+            >
+              Review pricing
+            </Link>
           </div>
         </div>
       </section>

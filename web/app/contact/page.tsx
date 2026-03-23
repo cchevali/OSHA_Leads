@@ -8,14 +8,14 @@ import { resolveCheckoutCta } from "@/lib/checkout";
 export const metadata: Metadata = {
   title: "Contact",
   description:
-    "Request a trial feed, confirm metro coverage, or contact MicroFlowOps about OSHA activity signal delivery for your team.",
+    "Request a trial feed, confirm coverage, or contact MicroFlowOps about OSHA activity signal delivery for your team.",
   alternates: { canonical: "/contact" }
 };
 
 export default function ContactPage() {
   const coreFallbackMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
     subject: "Core plan inquiry",
-    body: "Hi MicroFlowOps,\n\nI want to start Core at $299/mo.\n\nOrganization:\nMetros to cover:\nRecipients:\n\nThanks"
+    body: "Hi MicroFlowOps,\n\nI want to start Core at $299/mo.\n\nOrganization:\nCounties, cities, metros, or OSHA areas to cover:\nRecipients:\n\nThanks"
   }).toString()}`;
   const stripeCheckout = resolveCheckoutCta(site.stripePaymentLinkCore, coreFallbackMailto);
 
@@ -25,9 +25,12 @@ export default function ContactPage() {
         <SectionHeading
           eyebrow="Contact"
           title="Request a trial feed."
-          description="Tell us your metros and we will start a 14-day trial — up to 4 metros included. No credit card needed."
+          description="Counties, cities, metros, or OSHA areas work — we translate coverage for you."
           align="center"
         />
+        <p className="mt-4 text-center text-sm text-inkMuted">
+          Pilot includes up to 4 metros. No credit card needed.
+        </p>
       </section>
 
       <section id="trial" className="mx-auto w-full max-w-5xl px-6">
@@ -35,7 +38,8 @@ export default function ContactPage() {
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-2xl text-ink">Start a free trial</h3>
             <p className="mt-2 mb-5 text-sm text-inkMuted">
-              We will send a sample alert and set up a trial feed for your metros. Add up to 6 recipients for the pilot, and keep your company email as the billing/admin contact.
+              We will send a sample alert and set up a trial feed for your coverage. Add up to 6 recipients
+              for the pilot, and keep your company email as the billing/admin contact.
             </p>
             <TrialRequestForm />
           </div>
@@ -43,7 +47,8 @@ export default function ContactPage() {
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">Email us directly</h3>
               <p className="mt-3 text-inkMuted">
-                We respond same business day. Include your metros (or cities/states — we will translate), recipient names/emails, and any timing preferences.
+                We respond same business day. Counties, cities, metros, or OSHA areas work — we translate
+                coverage for you. Include recipient names/emails and any timing preferences.
               </p>
               <div className="mt-4 flex flex-wrap items-center gap-4">
                 <p className="text-sm font-semibold text-ink">{site.ctaEmail}</p>
@@ -55,6 +60,13 @@ export default function ContactPage() {
               >
                 Open in email app (optional)
               </a>
+            </div>
+            <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+              <h3 className="font-display text-2xl text-ink">Southern California example</h3>
+              <p className="mt-3 text-inkMuted">
+                LA + Orange + Riverside/San Bernardino + Ventura + Santa Barbara + Kern → typically
+                Multi-Territory; exact mapping confirmed before billing.
+              </p>
             </div>
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">Already decided?</h3>

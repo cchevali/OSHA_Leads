@@ -9,7 +9,11 @@ export const metadata: Metadata = {
 const faqs = [
   {
     q: "Do I need to count metros exactly?",
-    a: "No. List the cities or metros you care about and we map coverage during onboarding. We will not change billing without your explicit approval."
+    a: "No. List the counties, cities, metros, or OSHA areas you care about and we map coverage during onboarding. We will not change billing without your explicit approval."
+  },
+  {
+    q: "Can I send counties instead of metros?",
+    a: "Yes. Counties, cities, metros, or OSHA areas work — we translate coverage for you. For example, LA + Orange + Riverside/San Bernardino + Ventura + Santa Barbara + Kern typically maps to Multi-Territory, with exact mapping confirmed before billing."
   },
   {
     q: "How do I choose a plan?",
@@ -17,7 +21,7 @@ const faqs = [
   },
   {
     q: "What counts as a metro?",
-    a: "A metro is a major city plus nearby surrounding communities, similar to an MSA-style boundary. You can list city names and we will confirm the exact mapping."
+    a: "A metro is a major city plus nearby surrounding communities, similar to an MSA-style boundary. You can list counties, city names, or OSHA areas and we will confirm the exact mapping."
   },
   {
     q: "Can I change my metros later?",

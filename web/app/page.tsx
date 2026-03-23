@@ -1,7 +1,11 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import CTAButtons from "@/components/CTAButtons";
 import SectionHeading from "@/components/SectionHeading";
 import site from "@/config/site.json";
+
+const COVERAGE_HELPER =
+  "Counties, cities, metros, or OSHA areas work — we translate coverage for you.";
 
 export const metadata: Metadata = {
   title: "OSHA Activity Signals for Safety and Defense Teams",
@@ -12,7 +16,7 @@ export const metadata: Metadata = {
 
 export default function HomePage() {
   const founderBlurb =
-    "I'm Chase. I built MicroFlowOps to surface public OSHA inspection activity faster than teams can find it manually. My background is data engineering, not law, so the product focuses on monitoring, timestamps, and territory routing.";
+    "Built by a data engineer for teams that need earlier visibility into public OSHA activity.";
   const sampleSignals = [
     {
       severityTier: "High",
@@ -49,15 +53,16 @@ export default function HomePage() {
         <div className="grid gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
           <div className="space-y-6">
             <p className="inline-flex items-center rounded-full border border-cardBorder bg-card px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
-              Nationwide, territory-based (metro) OSHA enforcement alerts
+              Nationwide OSHA enforcement alerts mapped to your footprint
             </p>
             <h1 className="font-display text-4xl text-ink md:text-5xl lg:text-6xl">
               Daily OSHA enforcement signals that surface new inspections before citations post.
             </h1>
             <p className="text-lg text-inkMuted md:text-xl">
-              {site.brandName} delivers nationwide, territory-based (metro) OSHA enforcement signal alerts to help
-              employer-side attorneys and safety consultants prioritize outreach while the window is still open.
+              {site.brandName} delivers nationwide OSHA enforcement signal alerts to help safety-facing
+              teams prioritize outreach while the window is still open.
             </p>
+            <p className="text-sm font-semibold text-inkMuted">{COVERAGE_HELPER}</p>
             <CTAButtons />
             <div className="rounded-2xl border border-cardBorder bg-card p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
@@ -67,7 +72,7 @@ export default function HomePage() {
               <p className="mt-2 text-sm font-semibold text-inkMuted">Not legal advice.</p>
             </div>
             <p className="text-sm text-inkMuted">
-              Core starts at $299/mo for up to 4 metros. Tell us your metros and we confirm coverage during onboarding.
+              Core starts at $299/mo for up to 4 metros. {COVERAGE_HELPER}
             </p>
           </div>
           <div className="bg-paper rounded-3xl border border-cardBorder p-6 shadow-soft">
@@ -141,7 +146,7 @@ export default function HomePage() {
             },
             {
               title: "Metro fit",
-              body: "Signals are filtered to your metro areas — not a national firehose. We confirm coverage during onboarding."
+              body: "Signals are filtered to your footprint, not a national firehose. Counties, cities, metros, or OSHA areas work."
             }
           ].map((item, index) => (
             <div
@@ -198,21 +203,64 @@ export default function HomePage() {
 
       <section className="mx-auto w-full max-w-6xl px-6">
         <SectionHeading
+          eyebrow="Proof"
+          title="See the alert, then verify the OSHA record."
+          description="Show the buyer the commercial value: a ranked alert, a source record, and a quick reason to act."
+        />
+        <div className="mt-10 grid gap-6 lg:grid-cols-2">
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
+              Real alert screenshot
+            </p>
+            <Image
+              src="/assets/alert-proof-snapshot.svg"
+              alt="Frozen MicroFlowOps alert snapshot"
+              width={1200}
+              height={780}
+              className="mt-4 w-full rounded-2xl border border-cardBorder bg-white"
+            />
+          </div>
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
+              OSHA record verification screenshot
+            </p>
+            <Image
+              src="/assets/osha-record-verification.svg"
+              alt="OSHA record verification snapshot"
+              width={1200}
+              height={780}
+              className="mt-4 w-full rounded-2xl border border-cardBorder bg-white"
+            />
+          </div>
+        </div>
+        <div className="mt-6 rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+          <p className="text-sm font-semibold text-ink">Why this was actionable</p>
+          <p className="mt-3 text-inkMuted">
+            A buyer can see the alert, click through to the public OSHA record, and confirm the opened
+            date and location in about 30 seconds. That makes the signal commercially useful instead of
+            just technically interesting.
+          </p>
+        </div>
+      </section>
+
+      <section className="mx-auto w-full max-w-6xl px-6">
+        <SectionHeading
           eyebrow="Territories"
-          title="Coverage based on metro areas."
-          description="Each plan includes a set number of metros. Tell us where you operate and we confirm coverage — no per-metro billing, no surprises."
+          title="Coverage based on your footprint."
+          description="Plans are still metro-based for billing, but counties, cities, metros, or OSHA areas all work as inputs."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-2">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h3 className="font-display text-xl text-ink">Metro-based coverage</h3>
+            <h3 className="font-display text-xl text-ink">Metro-based billing</h3>
             <p className="mt-3 text-inkMuted">
-              Pick a plan based on how many metros you need. Core covers up to 4, Multi-Territory up to 10. Daily morning delivery.
+              Pick a plan based on how many metros you need. Core covers up to 4, Multi-Territory up to 10.
+              Daily morning delivery.
             </p>
           </div>
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h3 className="font-display text-xl text-ink">Onboarding confirms fit</h3>
+            <h3 className="font-display text-xl text-ink">Onboarding translates coverage</h3>
             <p className="mt-3 text-inkMuted">
-              List your cities or states and we translate to metros. We will not increase billing without explicit approval.
+              {COVERAGE_HELPER} We will not increase billing without explicit approval.
             </p>
           </div>
         </div>
@@ -243,11 +291,12 @@ export default function HomePage() {
               <p className="text-xs font-semibold uppercase tracking-[0.3em] text-white/70">
                 Ready to see signals
               </p>
-              <h2 className="mt-3 font-display text-3xl">Request a trial feed for your metros.</h2>
+              <h2 className="mt-3 font-display text-3xl">Request a trial feed for your footprint.</h2>
               <p className="mt-3 text-white/70">
-                We will send a sample alert and set up a short trial feed so you can evaluate signal
-                quality.
+                We will send a sample alert, map your coverage, and set up a short trial feed so you can
+                evaluate signal quality.
               </p>
+              <p className="mt-3 text-sm font-semibold text-white/80">{COVERAGE_HELPER}</p>
               <div className="mt-4 rounded-2xl border border-white/15 bg-white/5 p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/70">
                   Verify in 30 seconds
