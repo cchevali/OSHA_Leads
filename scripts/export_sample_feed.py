@@ -242,12 +242,9 @@ def _choose_auto_territories(
 
     ranked.sort(key=lambda t: (-t[0], -(t[1].timestamp()), t[2]))
     chosen = [state for _, _, state in ranked[:3]]
-    for item in fallback:
-        if len(chosen) >= 3:
-            break
-        if item.territory_id not in chosen:
-            chosen.append(item.territory_id)
-    return chosen[:3]
+    if chosen:
+        return chosen
+    return [item.territory_id for item in fallback[:1]]
 
 
 def _explicit_territories(value: str, fallback: list[TerritoryConfig]) -> list[str]:
@@ -307,6 +304,8 @@ def build_sample_feed(
     total_rows = 0
     for territory_id in chosen:
         terr_rows, updated_at_utc = _rows_for_territory(rows, territory_id, rows_per_territory)
+        if not terr_rows:
+            continue
         total_rows += len(terr_rows)
         payload.append(
             {
@@ -319,7 +318,8 @@ def build_sample_feed(
 
     stats = {
         "territory_mode": territory_mode,
-        "territories_selected": chosen,
+        "territories_selected": [item["territory_id"] for item in payload],
+        "territories_considered": chosen,
         "territory_count": len(payload),
         "row_count": total_rows,
         "rows_per_territory": rows_per_territory,

@@ -4,6 +4,9 @@ import OnboardingMetroForm from "@/components/OnboardingMetroForm";
 import site from "@/config/site.json";
 import { loadCbsaOptions } from "@/lib/cbsa";
 
+const COVERAGE_HELPER =
+  "Counties, cities, metros, or OSHA areas work — we translate coverage for you.";
+
 export const metadata: Metadata = {
   alternates: { canonical: "/onboarding" }
 };
@@ -26,15 +29,19 @@ export default function OnboardingPage({ searchParams }: OnboardingPageProps) {
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="Onboarding"
-          title="Set your metro coverage"
-          description="Select your metros as Census CBSA/MSA boundaries (city + suburbs). We enforce your plan cap on submission so coverage is deterministic."
+          title="Set your coverage"
+          description="Tell us your footprint and we translate it to Census CBSA/MSA boundaries before saving your coverage."
           align="center"
         />
+        <p className="mt-4 text-center text-sm font-semibold text-inkMuted">{COVERAGE_HELPER}</p>
       </section>
 
       <section className="mx-auto w-full max-w-5xl px-6">
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <h2 className="font-display text-2xl text-ink">Submit onboarding details</h2>
+          <p className="mt-3 text-sm text-inkMuted">
+            A metro area is a Census CBSA/MSA (city + suburbs). We use that mapping so plan coverage stays deterministic.
+          </p>
           <p className="mt-3 text-sm text-inkMuted">
             Core supports up to 4 metros. Multi-Territory supports up to 10 metros. If you need expansion beyond your cap,
             submission is blocked and routed to contact.

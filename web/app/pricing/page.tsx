@@ -9,7 +9,7 @@ import { resolveCheckoutCta } from "@/lib/checkout";
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "OSHA activity signal plans priced by metro coverage. Core starts at $299/mo with daily delivery, onboarding, and coverage confirmation.",
+    "OSHA activity signal plans priced by billed coverage. Core starts at $299/mo with daily delivery, onboarding, and coverage confirmation for counties, cities, metros, or OSHA areas.",
   alternates: { canonical: "/pricing" }
 };
 
@@ -19,11 +19,11 @@ export default function PricingPage() {
   const trialContactPath = "/contact?source=pricing&intent=trial";
   const contactMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
     subject: "Enterprise inquiry",
-    body: "Hi MicroFlowOps,\n\nI am interested in enterprise or multi-state coverage.\n\nOrganization:\nMetros or states needed:\n\nThanks"
+    body: "Hi MicroFlowOps,\n\nI am interested in enterprise or multi-state coverage.\n\nOrganization:\nCounties, cities, metros, or OSHA areas needed:\n\nThanks"
   }).toString()}`;
   const confirmFirstMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
     subject: "Confirm coverage before checkout",
-    body: "Hi MicroFlowOps,\n\nI would rather confirm coverage before checkout.\n\nOrganization:\nMetros/cities to cover:\n\nThanks"
+    body: "Hi MicroFlowOps,\n\nI would rather confirm coverage before checkout.\n\nOrganization:\nCounties, cities, metros, or OSHA areas to cover:\n\nThanks"
   }).toString()}`;
 
   const plans = [
@@ -51,7 +51,7 @@ export default function PricingPage() {
       features: [
         "Up to 4 metros",
         "Daily email delivery",
-        "Coverage filters tuned to your metros",
+        "Coverage filters tuned to your footprint",
         "Up to 6 recipients",
         "Weekly summary included"
       ],
@@ -84,8 +84,8 @@ export default function PricingPage() {
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="Pricing"
-          title="Pick a plan. Tell us your metros. We handle the rest."
-          description="Coverage is based on metro areas. Choose the plan that fits your footprint — we confirm everything during onboarding. No per-metro billing, no surprises."
+          title="Pick a plan. Tell us your footprint. We handle the rest."
+          description="A metro area is a Census CBSA/MSA (city + suburbs). Counties, cities, metros, or OSHA areas work — we translate coverage for you."
           align="center"
         />
         <p className="mx-auto mt-4 max-w-2xl text-center text-sm text-inkMuted">
@@ -93,12 +93,16 @@ export default function PricingPage() {
           multiple metros. For most teams, that&apos;s several hours/week. Core starts at $299/mo, less
           than one billable hour for many practices.
         </p>
+        <p className="mx-auto mt-3 max-w-2xl text-center text-sm text-inkMuted">
+          No per-metro billing, no surprises.
+        </p>
       </section>
 
       {/* Plan cards */}
       <section className="mx-auto w-full max-w-6xl px-6">
         <p className="mx-auto mb-5 max-w-3xl text-center text-sm text-inkMuted">
-          Checkout takes 30 seconds. After payment, we&apos;ll ask for your metros/cities and confirm fit. We will not increase billing without your approval.
+          Checkout takes 30 seconds. After payment, you can send counties, cities, metros, or OSHA areas
+          and we&apos;ll confirm fit. We will not increase billing without your approval.
         </p>
         <div className="grid gap-6 md:grid-cols-3">
           {plans.map((plan) => (
@@ -133,7 +137,12 @@ export default function PricingPage() {
                 {(plan.name === "Core" || plan.name === "Multi-Territory") && (
                   <>
                     <p className="mt-2 text-xs text-inkMuted">
-                      After checkout, you&apos;ll be redirected to onboarding to enter the metros/cities and recipients you want covered. No calls required; onboarding is handled via a short form + email confirmation. We&apos;ll confirm fit before any changes.
+                      After checkout, you&apos;ll be redirected to onboarding to enter the coverage and
+                      recipients you want covered. Counties, cities, metros, or OSHA areas all work.
+                    </p>
+                    <p className="mt-2 text-xs text-inkMuted">
+                      No calls required; onboarding is handled via a short form + email confirmation.
+                      We&apos;ll confirm fit before any changes.
                     </p>
                     <a
                       href={confirmFirstMailto}
@@ -172,8 +181,8 @@ export default function PricingPage() {
       <section className="mx-auto w-full max-w-5xl px-6">
         <SectionHeading
           eyebrow="How coverage works"
-          title="Coverage is based on metro areas."
-          description="A metro area is a Census CBSA/MSA (city + suburbs). Tell us your metros during onboarding and we will configure your alerts."
+          title="Coverage is metro-based, but you do not need to speak in metros."
+          description="Counties, cities, metros, or OSHA areas work — we translate coverage for you."
         />
         <p className="mt-3 text-sm text-inkMuted">DFW metro includes Dallas, Fort Worth, Frisco, Plano, Arlington…</p>
 
@@ -181,7 +190,8 @@ export default function PricingPage() {
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h4 className="font-display text-lg text-ink">Trust flow</h4>
             <p className="mt-3 text-sm text-inkMuted">
-              1) Pick a plan → 2) Tell us your metros → 3) We confirm fit. We will not increase billing without your explicit approval.
+              1) Pick a plan → 2) Send your footprint → 3) We confirm fit. We will not increase billing
+              without your explicit approval.
             </p>
           </div>
 
@@ -194,6 +204,14 @@ export default function PricingPage() {
               <li>Jacksonville</li>
             </ul>
             <p className="mt-3 text-sm font-semibold text-ink">→ 4 metros → Core at $299/mo</p>
+          </div>
+
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+            <h4 className="font-display text-lg text-ink">Example: Southern California county-style footprint</h4>
+            <p className="mt-3 text-sm text-inkMuted">
+              LA + Orange + Riverside/San Bernardino + Ventura + Santa Barbara + Kern → typically
+              Multi-Territory; exact mapping confirmed before billing.
+            </p>
           </div>
 
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
@@ -214,7 +232,7 @@ export default function PricingPage() {
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <h3 className="font-display text-2xl text-ink">Questions before subscribing?</h3>
           <p className="mt-3 text-inkMuted">
-            See plan selection, metro definitions, coverage changes, and OSHA Area Office alignment details.
+            See plan selection, coverage mapping, coverage changes, and OSHA Area Office alignment details.
           </p>
           <div className="mt-4">
             <Link
@@ -233,7 +251,8 @@ export default function PricingPage() {
             <div>
               <h2 className="font-display text-3xl">Try it free for 14 days.</h2>
               <p className="mt-3 text-white/70">
-                Up to 4 metros included. We will send a sample alert and configure a trial feed so you can evaluate signal quality.
+                Up to 4 metros in billed coverage included. Counties, cities, metros, or OSHA areas
+                work — we translate coverage for you.
               </p>
             </div>
             <CTAButtons variant="dark" />
