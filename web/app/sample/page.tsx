@@ -180,7 +180,7 @@ export default function SamplePage() {
         </div>
       </section>
 
-      {snapshot ? (
+      {snapshot && rows.length > 0 ? (
         <section className="mx-auto w-full max-w-5xl px-6">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <div className="flex flex-wrap items-center justify-between gap-3">

@@ -28,7 +28,7 @@ const steps = [
 const safeguards = [
   "Suppression and unsubscribe enforcement on every send.",
   "Audit logs for every delivery attempt.",
-  "Metro-based filtering with plan-level coverage caps.",
+  "Footprint filtering with metro-based plan caps.",
   "Optional pilot mode before live delivery."
 ];
 

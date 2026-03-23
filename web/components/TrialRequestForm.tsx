@@ -108,7 +108,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
     }
 
     if (!trimmedMetros) {
-      setMetrosError("Metros to cover is required.");
+      setMetrosError("Coverage to monitor is required.");
       hasError = true;
     } else {
       setMetrosError("");

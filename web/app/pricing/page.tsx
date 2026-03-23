@@ -9,7 +9,7 @@ import { resolveCheckoutCta } from "@/lib/checkout";
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "OSHA activity signal plans priced by metro coverage. Core starts at $299/mo with daily delivery, onboarding, and coverage confirmation.",
+    "OSHA activity signal plans priced by billed coverage. Core starts at $299/mo with daily delivery, onboarding, and coverage confirmation for counties, cities, metros, or OSHA areas.",
   alternates: { canonical: "/pricing" }
 };
 
@@ -51,7 +51,7 @@ export default function PricingPage() {
       features: [
         "Up to 4 metros",
         "Daily email delivery",
-        "Coverage filters tuned to your metros",
+        "Coverage filters tuned to your footprint",
         "Up to 6 recipients",
         "Weekly summary included"
       ],
@@ -137,8 +137,8 @@ export default function PricingPage() {
                 {(plan.name === "Core" || plan.name === "Multi-Territory") && (
                   <>
                     <p className="mt-2 text-xs text-inkMuted">
-                      After checkout, you&apos;ll be redirected to onboarding to enter the metros/cities and
-                      recipients you want covered. Counties and OSHA areas work too.
+                      After checkout, you&apos;ll be redirected to onboarding to enter the coverage and
+                      recipients you want covered. Counties, cities, metros, or OSHA areas all work.
                     </p>
                     <p className="mt-2 text-xs text-inkMuted">
                       No calls required; onboarding is handled via a short form + email confirmation.
@@ -232,7 +232,7 @@ export default function PricingPage() {
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <h3 className="font-display text-2xl text-ink">Questions before subscribing?</h3>
           <p className="mt-3 text-inkMuted">
-            See plan selection, metro definitions, coverage changes, and OSHA Area Office alignment details.
+            See plan selection, coverage mapping, coverage changes, and OSHA Area Office alignment details.
           </p>
           <div className="mt-4">
             <Link
@@ -251,8 +251,8 @@ export default function PricingPage() {
             <div>
               <h2 className="font-display text-3xl">Try it free for 14 days.</h2>
               <p className="mt-3 text-white/70">
-                Up to 4 metros included. Counties, cities, metros, or OSHA areas work — we translate
-                coverage for you.
+                Up to 4 metros in billed coverage included. Counties, cities, metros, or OSHA areas
+                work — we translate coverage for you.
               </p>
             </div>
             <CTAButtons variant="dark" />

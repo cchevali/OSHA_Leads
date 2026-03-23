@@ -29,7 +29,7 @@ export default function ContactPage() {
           align="center"
         />
         <p className="mt-4 text-center text-sm text-inkMuted">
-          Pilot includes up to 4 metros. No credit card needed.
+          Pilot includes up to 4 metros in billed coverage. No credit card needed.
         </p>
       </section>
 
@@ -40,6 +40,10 @@ export default function ContactPage() {
             <p className="mt-2 mb-5 text-sm text-inkMuted">
               We will send a sample alert and set up a trial feed for your coverage. Add up to 6 recipients
               for the pilot, and keep your company email as the billing/admin contact.
+            </p>
+            <p className="mb-5 text-sm text-inkMuted">
+              Every sample alert includes opened and observed timestamps plus a direct link to the public
+              OSHA record so your team can verify the signal fast.
             </p>
             <TrialRequestForm />
           </div>
