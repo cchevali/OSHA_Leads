@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import requests_warning_compat
 import requests
 from bs4 import BeautifulSoup
 

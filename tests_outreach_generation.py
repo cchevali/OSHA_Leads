@@ -352,6 +352,54 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertEqual(eligible + excluded, crm_total)
             self.assertEqual(self._extract_token_int(out, "GENERATOR_ROWS_READ"), eligible)
 
+    def test_input_cohort_allows_free_domains_when_env_enabled(self):
+        from outreach import crm_store
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            db_path = data_dir / "crm.sqlite"
+            crm_store.ensure_database(path=db_path)
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            conn = crm_store.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO prospects(
+                      prospect_id, firm, contact_name, email, title, city, state, website, source,
+                      score, status, created_at, last_contacted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "free_domain",
+                        "Firm",
+                        "",
+                        "freedomain@gmail.com",
+                        "Owner",
+                        "City",
+                        "TX",
+                        "",
+                        "seed",
+                        0,
+                        "new",
+                        now,
+                        None,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            p = self._run(
+                ["--print-config"],
+                {"DATA_DIR": str(data_dir), "OUTREACH_STATES": "TX", "OUTREACH_ALLOW_FREE_DOMAINS": "1"},
+            )
+            self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
+            out = p.stdout or ""
+            self.assertIn("GENERATOR_ALLOW_FREE_DOMAINS=1", out)
+            self.assertIn("GENERATOR_FILTERED_FREE_DOMAIN=0", out)
+            self.assertIn("GENERATOR_INPUT_COHORT crm_total=1 eligible=1 excluded=0", out)
+
     def test_backlog_and_input_cohort_ignore_legacy_state_lic_sendable_flags(self):
         from outreach import crm_store
         from outreach import run_prospect_generation as generator

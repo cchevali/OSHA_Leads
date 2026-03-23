@@ -35,6 +35,10 @@ EXPECTED_JL_SAFETY_TRIAL_TR = (
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
     r"C:\dev\OSHA_Leads\scripts\scheduled\run_trial_jl_safety_daily.ps1"
 )
+EXPECTED_ROI_SAFETY_TRIAL_TR = (
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
+    r"C:\dev\OSHA_Leads\scripts\scheduled\run_trial_roi_safety_daily.ps1"
+)
 
 
 def _run(*args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -110,13 +114,13 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, msg=out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_MODE=print-config", out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_PRIMARY_SCHEDULER=runtime_tick_selfhosted", out)
-        self.assertIn("INSTALL_SCHEDULED_TASKS_RECOVERY_ONLY_COUNT=6", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_RECOVERY_ONLY_COUNT=7", out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=0", out)
         self.assertIn("INSTALL_SCHEDULED_TASKS_WEEKDAY_SCHEDULE=MON,TUE,WED,THU,FRI", out)
         self.assertIn("PASS_INSTALL_SCHEDULED_TASKS_PRINT_CONFIG", out)
 
         tasks = _parse_task_config(out)
-        self.assertEqual(len(tasks), 7, msg=out)
+        self.assertEqual(len(tasks), 8, msg=out)
 
         ingest = [t for t in tasks.values() if t.get("NAME") == "OSHA_Osha_Ingest_Daily"]
         self.assertEqual(len(ingest), 1, msg=out)
@@ -195,6 +199,19 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertEqual(int(jl_safety_trial[0].get("TR_LENGTH", "0")), len(EXPECTED_JL_SAFETY_TRIAL_TR), msg=out)
         self._assert_future_boundary(jl_safety_trial[0].get("START_BOUNDARY_LOCAL", ""), out)
 
+        roi_safety_trial = [t for t in tasks.values() if t.get("NAME") == "OSHA_Trial_ROI_Safety_Daily"]
+        self.assertEqual(len(roi_safety_trial), 1, msg=out)
+        self.assertEqual(roi_safety_trial[0].get("SCHEDULE"), "weekly", msg=out)
+        self.assertEqual(roi_safety_trial[0].get("RECOVERY_ONLY"), "YES", msg=out)
+        self.assertEqual(roi_safety_trial[0].get("EXPECTED_STATE"), "Enabled", msg=out)
+        self.assertEqual(roi_safety_trial[0].get("WEEKDAYS"), "MON,TUE,WED,THU,FRI", msg=out)
+        self.assertEqual(roi_safety_trial[0].get("TIME"), "09:00", msg=out)
+        self.assertEqual(roi_safety_trial[0].get("RL"), "HIGHEST", msg=out)
+        self.assertEqual(roi_safety_trial[0].get("TR"), EXPECTED_ROI_SAFETY_TRIAL_TR, msg=out)
+        self.assertLess(len(EXPECTED_ROI_SAFETY_TRIAL_TR), 261)
+        self.assertEqual(int(roi_safety_trial[0].get("TR_LENGTH", "0")), len(EXPECTED_ROI_SAFETY_TRIAL_TR), msg=out)
+        self._assert_future_boundary(roi_safety_trial[0].get("START_BOUNDARY_LOCAL", ""), out)
+
         inbound = [t for t in tasks.values() if t.get("NAME") == "OSHA_Inbound_Triage"]
         self.assertEqual(len(inbound), 1, msg=out)
         self.assertEqual(inbound[0].get("SCHEDULE"), "minute", msg=out)
@@ -224,6 +241,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn("DRY_RUN_COMMAND_5=", out)
         self.assertIn("DRY_RUN_COMMAND_6=", out)
         self.assertIn("DRY_RUN_COMMAND_7=", out)
+        self.assertIn("DRY_RUN_COMMAND_8=", out)
         self.assertIn("DRY_RUN_STATE_COMMAND_1=schtasks /Change /TN \"\\OSHA_Osha_Ingest_Daily\" /Enable", out)
         self.assertIn("/RU \"DESKTOP-Q8QM4N9\\lever\" /RP ***REDACTED***", out)
         self.assertNotIn("dont-print-me", out)
@@ -237,6 +255,7 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn(EXPECTED_REPLENISH_TR, out)
         self.assertIn(EXPECTED_FACS_TRIAL_TR, out)
         self.assertIn(EXPECTED_JL_SAFETY_TRIAL_TR, out)
+        self.assertIn(EXPECTED_ROI_SAFETY_TRIAL_TR, out)
         self.assertNotIn(r"C:\dev\OSHA_Leads\run_inbound_triage.ps1", out)
 
     def test_print_config_has_single_inbound_task(self):

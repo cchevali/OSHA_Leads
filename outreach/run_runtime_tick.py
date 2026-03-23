@@ -37,7 +37,14 @@ RUNTIME_JOB_STATE_SCHEMA = "runtime_tick_job_state_v1"
 ALERTS_SCHEMA = "runtime_tick_alert_v1"
 ALERTS_SUMMARY_SCHEMA = "runtime_tick_alert_summary_v1"
 CRITICAL_WINDOW_JOBS = frozenset(
-    {"ingest_daily", "prospect_replenish_daily", "outreach_auto", "trial_facs_daily", "trial_jl_safety_daily"}
+    {
+        "ingest_daily",
+        "prospect_replenish_daily",
+        "outreach_auto",
+        "trial_facs_daily",
+        "trial_jl_safety_daily",
+        "trial_roi_safety_daily",
+    }
 )
 
 
@@ -89,6 +96,7 @@ JOBS: tuple[JobSpec, ...] = (
     JobSpec(name="outreach_auto", kind="daily", weekday_only=True, target_hhmm="08:00", catchup_minutes=180),
     JobSpec(name="trial_facs_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
     JobSpec(name="trial_jl_safety_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
+    JobSpec(name="trial_roi_safety_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
 )
 JOB_NAMES = tuple(job.name for job in JOBS)
 
@@ -371,6 +379,14 @@ def _job_commands(repo_root: Path, job_name: str, mode: str) -> list[list[str]]:
             return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--doctor"])]
         return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--dry-run"])]
 
+    if job_name == "trial_roi_safety_daily":
+        base = ["--subscriber-key", "roi_safety_trial"]
+        if mode == "live":
+            return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--send-live"])]
+        if mode == "doctor":
+            return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--doctor"])]
+        return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--dry-run"])]
+
     raise ValueError(f"unsupported_job={job_name}")
 
 
@@ -420,6 +436,7 @@ def _wrapper_names_for_job(job_name: str) -> tuple[str, ...]:
         "outreach_auto": ("OSHA_Outreach_Auto_SafetyNet", "OSHA_Outreach_Auto"),
         "trial_facs_daily": ("OSHA_Trial_FACS_Daily",),
         "trial_jl_safety_daily": ("OSHA_Trial_JL_Safety_Daily",),
+        "trial_roi_safety_daily": ("OSHA_Trial_ROI_Safety_Daily",),
     }
     return tuple(mapping.get(str(job_name or "").strip(), ()) or ())
 

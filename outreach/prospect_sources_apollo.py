@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+import requests_warning_compat
 import requests
 
 from outreach import contact_normalization
