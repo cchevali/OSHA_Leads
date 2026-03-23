@@ -2,6 +2,8 @@ import os
 import unittest
 
 from send_digest_email import (
+    _default_top_k_overall,
+    _default_top_k_per_state,
     build_email_message,
     generate_digest_html,
     generate_digest_text,
@@ -104,6 +106,24 @@ class TestDigestFallback(unittest.TestCase):
         )
         self.assertIn("mailto:support@acme.com?subject=unsubscribe", msg["List-Unsubscribe"])
         self.assertIsNone(msg.get("List-Unsubscribe-Post"))
+
+    def test_trial_configs_default_to_50_signal_caps(self):
+        trial_config = {
+            "customer_id": "facs_trial",
+            "subscriber_key": "facs_trial",
+            "trial_length_days": 14,
+            "states": ["CA"],
+        }
+        non_trial_config = {
+            "customer_id": "sunbelt_ca_pilot",
+            "subscriber_key": "sunbelt_ca_pilot",
+            "states": ["CA"],
+        }
+
+        self.assertEqual(_default_top_k_overall(trial_config), 50)
+        self.assertEqual(_default_top_k_per_state(trial_config), 50)
+        self.assertEqual(_default_top_k_overall(non_trial_config), 25)
+        self.assertEqual(_default_top_k_per_state(non_trial_config), 10)
 
     def test_empty_high_medium_with_fallback_off(self):
         html = generate_digest_html(

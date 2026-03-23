@@ -661,9 +661,9 @@ def compute_expected_daily_digest(
     low_available_keys = [_lead_key(item) for item in all_leads_deduped if _lead_score(item) < 6 and _lead_key(item)]
 
     try:
-        top_k = int(customer_config.get("top_k_overall", 25))
+        top_k = int(customer_config.get("top_k_overall", 50))
     except Exception:
-        top_k = 25
+        top_k = 50
     top_k = max(1, top_k)
     main_shown = list(leads)[: min(len(leads), top_k)]
     shown_keys = [_lead_key(item) for item in main_shown if _lead_key(item)]
