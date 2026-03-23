@@ -137,6 +137,13 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _nonempty_file_exists(path: Path) -> bool:
+    try:
+        return path.exists() and path.is_file() and path.stat().st_size > 0
+    except Exception:
+        return False
+
+
 def _detect_legacy_db_state(root: Path, effective_db: Path, *, family: str) -> dict[str, Any]:
     legacy_lookup = {
         "osha": _legacy_repo_osha_db,
@@ -146,13 +153,14 @@ def _detect_legacy_db_state(root: Path, effective_db: Path, *, family: str) -> d
     resolver = legacy_lookup[str(family)]
     legacy = resolver(root)
     canonical = Path(effective_db).resolve(strict=False)
+    legacy_exists = _nonempty_file_exists(legacy)
     result: dict[str, Any] = {
         "legacy_path": str(legacy),
-        "legacy_exists": legacy.exists(),
+        "legacy_exists": legacy_exists,
         "conflict": False,
         "reason": "",
     }
-    if legacy == canonical or (not legacy.exists()):
+    if legacy == canonical or (not legacy_exists):
         return result
     if not canonical.exists():
         result["conflict"] = True
