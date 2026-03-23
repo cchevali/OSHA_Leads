@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -16,6 +16,10 @@ from tools import import_ai_triage as import_tool
 
 
 class TestSignalReviewTools(unittest.TestCase):
+    @staticmethod
+    def _recent_opened_date(days_ago: int = 2) -> str:
+        return (date.today() - timedelta(days=int(days_ago))).isoformat()
+
     @staticmethod
     def _create_inspections_table(conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -53,7 +57,9 @@ class TestSignalReviewTools(unittest.TestCase):
         lead_score: int,
         case_status: str = "OPEN",
         scope: str = "Partial",
+        date_opened: str = "",
     ) -> None:
+        opened = str(date_opened or TestSignalReviewTools._recent_opened_date()).strip()
         conn.execute(
             "INSERT INTO inspections VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
@@ -73,8 +79,8 @@ class TestSignalReviewTools(unittest.TestCase):
                 None,
                 None,
                 None,
-                "2026-02-20",
-                "2026-02-20T00:00:00Z",
+                opened,
+                f"{opened}T00:00:00Z",
                 int(lead_score),
                 "TX",
             ),
