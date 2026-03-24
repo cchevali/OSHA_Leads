@@ -24,7 +24,8 @@ class TestWebMarketingCopy(unittest.TestCase):
         self.assertIn("Verify in 30 seconds", home_text)
         self.assertIn("We confirm mapping before billing", home_text)
         self.assertNotIn("Example City, ST", home_text)
-        self.assertIn("Why this was actionable", home_text)
+        self.assertIn("What a buyer can confirm", home_text)
+        self.assertNotIn("Why this was actionable", home_text)
 
     def test_pricing_page_keeps_public_plan_promises(self):
         pricing_text = PRICING_PAGE.read_text(encoding="utf-8")

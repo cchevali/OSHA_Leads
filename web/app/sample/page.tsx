@@ -29,9 +29,6 @@ type SampleTerritory = {
   rows: SampleSignalRow[];
 };
 
-const FOUNDER_BLURB =
-  "Built by a data engineer for earlier visibility into public OSHA activity.";
-
 function parseUtc(value: string | null | undefined): Date | null {
   const text = (value || "").trim();
   if (!text) {
@@ -115,14 +112,14 @@ export default function SamplePage() {
       <section className="mx-auto w-full max-w-4xl px-6">
         <div className="space-y-4 text-center">
           <h1 className="font-display text-4xl text-ink md:text-5xl">
-            Sample: populated OSHA alert proof
+            Sample: alert and OSHA record
           </h1>
           <p className="text-base text-inkMuted md:text-lg">
-            Frozen public sample with real public OSHA rows and the verification view buyers use to
-            confirm a record fast.
+            A fixed public example showing the alert format, the opened date, the observed timestamp,
+            and the matching OSHA record.
           </p>
           <p className="mx-auto max-w-3xl text-sm text-inkMuted">
-            {FOUNDER_BLURB} Independent service using public OSHA data. Not legal advice.
+            Public example using OSHA data. Not affiliated with OSHA. Not legal advice.
           </p>
         </div>
       </section>
@@ -130,8 +127,8 @@ export default function SamplePage() {
       <section className="mx-auto w-full max-w-6xl px-6">
         <div className="rounded-3xl border border-cardBorder bg-paper p-6 shadow-soft">
           <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-semibold text-inkMuted">
-            <span>Proof snapshot</span>
-            <span>Kept populated for proof</span>
+            <span>Sample alert and OSHA record</span>
+            <span>Public example</span>
           </div>
           <div className="mt-4 grid gap-6 lg:grid-cols-2">
             <div className="rounded-2xl border border-cardBorder bg-surface p-4">
@@ -154,7 +151,7 @@ export default function SamplePage() {
                 Verify in 30 seconds
               </p>
               <p className="mt-2 text-sm text-inkMuted">
-                The alert points back to the public OSHA record so a buyer can validate the signal fast.
+                Open the source record and confirm the signal quickly.
               </p>
               <Image
                 src="/assets/osha-record-verification.svg"
@@ -167,13 +164,12 @@ export default function SamplePage() {
           </div>
           <div className="mt-6 rounded-2xl border border-cardBorder bg-surface p-5">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
-              Why this was actionable
+              What a buyer can confirm
             </p>
             <p className="mt-2 text-sm text-inkMuted">
-              This public page stays fixed so buyers always see a populated proof set, while customer
-              feeds keep refreshing on schedule. In this example, a Midland, Texas record opened on
-              March 3, 2026 and was observed on March 6, 2026, giving the buyer something concrete to
-              verify before deciding whether to route it for outreach.
+              In this example, Rhino Specialty Services in Midland, Texas opened on March 3, 2026 and
+              was observed on March 6, 2026. A buyer can confirm both details on the public OSHA
+              record before deciding whether to route the alert for outreach.
             </p>
           </div>
         </div>

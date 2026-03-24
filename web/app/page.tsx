@@ -301,7 +301,7 @@ export default function HomePage() {
           </div>
         </div>
         <div className="mt-6 rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-          <p className="text-sm font-semibold text-ink">Why this was actionable</p>
+          <p className="text-sm font-semibold text-ink">What a buyer can confirm</p>
           <p className="mt-3 text-inkMuted">
             {leadProofRow ? (
               <>
