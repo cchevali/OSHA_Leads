@@ -8,6 +8,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
 $startLocal = Get-Date
 $startUtc = [datetime]::UtcNow
+$runtimeTickState = $null
 $taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
 $runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
 $runId = New-RuntimeRunId -StartLocal $startLocal -StartUtc $startUtc
@@ -26,6 +27,14 @@ $manualProspectSkipListPath = ''
 $manualProspectPromptOutputPath = ''
 $preflight = $null
 $commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_osha_ingest_daily.py --scope-mode outreach_plus_trial_live; .\scripts\dump_signals_for_ai_review.ps1 -SinceDays 14; .\scripts\prepare_manual_prospect_research.ps1"
+$bootstrapLines = New-Object System.Collections.Generic.List[string]
+
+function Add-BootstrapLine([string]$Line) {
+  $text = [string]$Line
+  if ($text) {
+    [void]$bootstrapLines.Add($text)
+  }
+}
 
 function Write-TaskLine([string]$Line) {
   $text = [string]$Line
@@ -42,46 +51,68 @@ function Invoke-And-Log([scriptblock]$Invocation) {
   }
 }
 
+$preflight = Invoke-RuntimePreflight `
+  -RepoRoot $repoRoot `
+  -Mode 'scheduled' `
+  -Intent 'write' `
+  -DryRun:$false `
+  -TaskLogRoot $taskLogDir `
+  -RunSummaryRoot $runSummaryRoot `
+  -EmitLine ${function:Add-BootstrapLine}
+
+$runtimeTickState = Test-RuntimeTickDailySlotAlreadyCompleted `
+  -RepoRoot $repoRoot `
+  -JobName 'ingest_evening' `
+  -NowLocal $startLocal `
+  -EmitLine ${function:Add-BootstrapLine}
+
+foreach ($line in @($bootstrapLines)) {
+  Write-TaskLine ([string]$line)
+}
+
 try {
   Push-Location $repoRoot
   try {
-    $preflight = Invoke-RuntimePreflight `
-      -RepoRoot $repoRoot `
-      -Mode 'scheduled' `
-      -Intent 'write' `
-      -DryRun:$false `
-      -TaskLogRoot $taskLogDir `
-      -RunSummaryRoot $runSummaryRoot `
-      -EmitLine ${function:Write-TaskLine}
     if (-not [bool]$preflight.Ok) {
       throw "runtime preflight failed"
     }
-
-    Invoke-And-Log { & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_osha_ingest_daily.py" --scope-mode "outreach_plus_trial_live" }
-    $ingestExitCode = [int]$LASTEXITCODE
+    if ([bool]$runtimeTickState.Skip) {
+      $ingestExitCode = 0
+      $signalsDumpExitCode = 0
+      $manualProspectPrepExitCode = 0
+      Write-TaskLine ('INGEST_EVENING_SKIPPED reason=runtime_tick_same_slot slot=' + [string]$runtimeTickState.SlotKey)
+    }
+    else {
+      Invoke-And-Log { & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_osha_ingest_daily.py" --scope-mode "outreach_plus_trial_live" }
+      $ingestExitCode = [int]$LASTEXITCODE
+    }
   }
   catch {
     $ingestExitCode = 1
     Write-TaskLine ('INGEST_EXCEPTION=' + ([string]$_.Exception.Message))
   }
   finally {
-    try {
-      Invoke-And-Log { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\dump_signals_for_ai_review.ps1") -SinceDays 14 }
-      $signalsDumpExitCode = [int]$LASTEXITCODE
-    }
-    catch {
-      $signalsDumpExitCode = 1
-      Write-TaskLine ('AI_REVIEW_DUMP_EXCEPTION=' + ([string]$_.Exception.Message))
+    if (-not [bool]$runtimeTickState.Skip) {
+      try {
+        Invoke-And-Log { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\dump_signals_for_ai_review.ps1") -SinceDays 14 }
+        $signalsDumpExitCode = [int]$LASTEXITCODE
+      }
+      catch {
+        $signalsDumpExitCode = 1
+        Write-TaskLine ('AI_REVIEW_DUMP_EXCEPTION=' + ([string]$_.Exception.Message))
+      }
     }
   }
 
-  try {
-    Invoke-And-Log { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\prepare_manual_prospect_research.ps1") }
-    $manualProspectPrepExitCode = [int]$LASTEXITCODE
-  }
-  catch {
-    $manualProspectPrepExitCode = 1
-    Write-TaskLine ('MANUAL_PROSPECT_RESEARCH_PREP_EXCEPTION=' + ([string]$_.Exception.Message))
+  if (-not [bool]$runtimeTickState.Skip) {
+    try {
+      Invoke-And-Log { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\prepare_manual_prospect_research.ps1") }
+      $manualProspectPrepExitCode = [int]$LASTEXITCODE
+    }
+    catch {
+      $manualProspectPrepExitCode = 1
+      Write-TaskLine ('MANUAL_PROSPECT_RESEARCH_PREP_EXCEPTION=' + ([string]$_.Exception.Message))
+    }
   }
 
   $logTail = Get-Content -Path $taskLogPath -ErrorAction SilentlyContinue

@@ -30,6 +30,8 @@ from email.mime.text import MIMEText
 from email.utils import parseaddr
 from pathlib import Path
 
+from outreach import import_bounces_imap as bounce_import
+
 # Load environment variables
 try:
     from dotenv import load_dotenv
@@ -50,6 +52,42 @@ except ImportError:
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
+def first_env_value(*keys: str, default: str = "") -> str:
+    """Return the first non-empty environment value for the provided keys."""
+    for key in keys:
+        candidate = str(os.getenv(str(key or "").strip()) or "").strip()
+        if candidate:
+            return candidate
+    return str(default or "").strip()
+
+
+def resolve_inbound_backend() -> str:
+    """Resolve the inbound backend, preferring explicit config and inferring IMAP from saved mailbox settings."""
+    explicit = first_env_value("INBOUND_BACKEND").strip().lower()
+    if explicit:
+        return explicit
+
+    imap_markers = (
+        first_env_value("IMAP_USER", "BOUNCE_IMAP_USER"),
+        first_env_value("IMAP_PASS", "BOUNCE_IMAP_PASS"),
+        first_env_value("IMAP_HOST", "BOUNCE_IMAP_HOST"),
+    )
+    return "imap" if any(str(marker or "").strip() for marker in imap_markers) else "gmail"
+
+
+def resolve_imap_settings() -> dict[str, str]:
+    """Resolve IMAP settings, falling back to the saved bounce-mailbox settings for Zoho setups."""
+    return {
+        "host": first_env_value("IMAP_HOST", "BOUNCE_IMAP_HOST", default="imappro.zoho.com"),
+        "port": first_env_value("IMAP_PORT", "BOUNCE_IMAP_PORT", default="993"),
+        "user": first_env_value("IMAP_USER", "BOUNCE_IMAP_USER"),
+        "password": first_env_value("IMAP_PASS", "BOUNCE_IMAP_PASS"),
+        "folder": first_env_value("IMAP_FOLDER", "BOUNCE_IMAP_FOLDER", default="INBOX"),
+        "folder_unsub": first_env_value("IMAP_FOLDER_UNSUB", default="Processed/Unsubscribe"),
+        "folder_bounce": first_env_value("IMAP_FOLDER_BOUNCE", default="Processed/Bounce"),
+    }
+
+
 SCRIPT_DIR = Path(__file__).parent.resolve()
 SECRETS_DIR = SCRIPT_DIR / "secrets"
 OUT_DIR = SCRIPT_DIR / "out"
@@ -66,16 +104,17 @@ ENG_TICKETS_DIR = OUT_DIR / "eng_tickets"
 TRIAGE_LOG_PATH = OUT_DIR / "inbox_triage_log.csv"
 
 # Inbound backend
-INBOUND_BACKEND = os.getenv("INBOUND_BACKEND", "gmail").strip().lower()
+INBOUND_BACKEND = resolve_inbound_backend()
 
 # IMAP configuration (Zoho)
-IMAP_HOST = os.getenv("IMAP_HOST", "imappro.zoho.com")
-IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
-IMAP_USER = os.getenv("IMAP_USER", "")
-IMAP_PASS = os.getenv("IMAP_PASS", "")
-IMAP_FOLDER = os.getenv("IMAP_FOLDER", "INBOX")
-IMAP_FOLDER_UNSUB = os.getenv("IMAP_FOLDER_UNSUB", "Processed/Unsubscribe")
-IMAP_FOLDER_BOUNCE = os.getenv("IMAP_FOLDER_BOUNCE", "Processed/Bounce")
+_IMAP_SETTINGS = resolve_imap_settings()
+IMAP_HOST = _IMAP_SETTINGS["host"]
+IMAP_PORT = int(_IMAP_SETTINGS["port"])
+IMAP_USER = _IMAP_SETTINGS["user"]
+IMAP_PASS = _IMAP_SETTINGS["password"]
+IMAP_FOLDER = _IMAP_SETTINGS["folder"]
+IMAP_FOLDER_UNSUB = _IMAP_SETTINGS["folder_unsub"]
+IMAP_FOLDER_BOUNCE = _IMAP_SETTINGS["folder_bounce"]
 SUPPORT_INBOX = os.getenv("REPLY_TO_EMAIL", "support@microflowops.com").strip().lower()
 
 # Gmail OAuth scopes
@@ -96,6 +135,13 @@ BOUNCE_PATTERNS = [
     "undelivered", "delivery status notification", "returned mail",
     "delivery failed", "undeliverable", "mailbox not found",
     "550 ", "553 ", "bounced", "permanent failure", "user unknown"
+]
+MODERATION_BOUNCE_SUBJECT_PREFIX = "email held for moderation -"
+MODERATION_BOUNCE_MARKERS = [
+    "this message was created automatically by mail delivery software",
+    "could not be delivered to one or more of its recipients",
+    "this is a permanent error",
+    "error code :",
 ]
 
 HOT_INTEREST_PATTERNS = [
@@ -235,6 +281,15 @@ def backup_suppression_file():
 # =============================================================================
 # EMAIL CLASSIFICATION
 # =============================================================================
+def looks_like_moderation_bounce(subject: str, body: str) -> bool:
+    """Return True for Zoho moderation notices that wrap delivery-failure content."""
+    subject_lower = (subject or "").strip().lower()
+    if not subject_lower.startswith(MODERATION_BOUNCE_SUBJECT_PREFIX):
+        return False
+    text = f"{subject}\n{body}".lower()
+    return any(marker in text for marker in MODERATION_BOUNCE_MARKERS)
+
+
 def classify_email(subject: str, body: str, from_email: str) -> str:
     """
     Classify email into category.
@@ -247,7 +302,11 @@ def classify_email(subject: str, body: str, from_email: str) -> str:
     for pattern in UNSUBSCRIBE_PATTERNS:
         if pattern in text:
             return "unsubscribe"
-    
+
+    # Zoho moderation notices are deliverability system mail, not lead replies.
+    if looks_like_moderation_bounce(subject, body):
+        return "bounce"
+
     # Check for bounce (from address or content)
     for sender in BOUNCE_SENDERS:
         if sender in from_lower:
@@ -284,6 +343,66 @@ def classify_email(subject: str, body: str, from_email: str) -> str:
             return "question"
     
     return "other"
+
+
+def _headers_to_text(headers) -> str:
+    """Render a headers mapping into newline-delimited text for bounce parsing."""
+    if isinstance(headers, dict):
+        lines: list[str] = []
+        for key, value in headers.items():
+            key_text = str(key or "").strip()
+            value_text = str(value or "").strip()
+            if key_text:
+                lines.append(f"{key_text}: {value_text}")
+        return "\n".join(lines)
+    return str(headers or "")
+
+
+def parse_bounce_details(subject: str, from_email: str, headers, body: str, message_id: str):
+    """Parse bounce/moderation details using the canonical importer logic."""
+    headers_text = _headers_to_text(headers)
+    return bounce_import._parse_bounce(subject, from_email, headers_text, body, message_id)
+
+
+def handle_bounce_category(
+    *,
+    subject: str,
+    from_email: str,
+    headers,
+    body: str,
+    message_id: str,
+    dry_run: bool = False,
+) -> dict:
+    """Handle a bounce classification using canonical hard/soft parsing before any suppression write."""
+    parsed = parse_bounce_details(subject, from_email, headers, body, message_id)
+    if not parsed:
+        print("    [WARN] Could not extract bounce recipient")
+        return {
+            "action": "bounce_unknown",
+            "suppression_changed": False,
+            "bounce_class": "",
+            "recipient": "",
+        }
+
+    bounce_class = str(parsed.bounce_class or "").strip().lower()
+    recipient = str(parsed.recipient_email or "").strip().lower()
+    if bounce_class == "hard":
+        add_to_suppression(recipient, "bounce", "inbound_triage", message_id, dry_run)
+        print(f"    [INFO] Bounce classified as HARD recipient={recipient}")
+        return {
+            "action": "suppressed_recipient_hard_bounce",
+            "suppression_changed": (not dry_run),
+            "bounce_class": bounce_class,
+            "recipient": recipient,
+        }
+
+    print(f"    [INFO] Bounce classified as SOFT recipient={recipient}")
+    return {
+        "action": "soft_bounce_no_suppression",
+        "suppression_changed": False,
+        "bounce_class": bounce_class,
+        "recipient": recipient,
+    }
 
 
 def extract_sender_email(from_header: str) -> str:
@@ -404,7 +523,7 @@ def extract_original_sender(from_email: str, reply_to: str, body: str) -> str:
 def imap_connect() -> imaplib.IMAP4_SSL:
     """Connect to IMAP and login."""
     if not IMAP_USER or not IMAP_PASS:
-        print("[ERROR] IMAP_USER / IMAP_PASS not configured in .env")
+        print("[ERROR] IMAP_USER / IMAP_PASS not configured in env or saved secrets flow")
         return None
     try:
         conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
@@ -1032,15 +1151,15 @@ def process_message(service, msg: dict, state: dict, label_map: dict,
         action = "suppressed"
     
     elif category == "bounce":
-        # Try to extract original recipient
-        recipient = extract_bounce_recipient(body, details.get("headers", {}))
-        if recipient:
-            add_to_suppression(recipient, "bounce", "inbound_triage", msg_id, dry_run)
-            action = "suppressed_recipient"
-        else:
-            # Log as unknown bounce
-            print(f"    [WARN] Could not extract bounce recipient")
-            action = "bounce_unknown"
+        bounce_result = handle_bounce_category(
+            subject=subject,
+            from_email=from_email,
+            headers=details.get("headers", {}),
+            body=body,
+            message_id=msg_id,
+            dry_run=dry_run,
+        )
+        action = str(bounce_result.get("action") or "")
     
     elif category == "hot_interest":
         create_reply_draft(from_email, subject, body, category, msg_id, dry_run)
@@ -1078,7 +1197,8 @@ def process_message(service, msg: dict, state: dict, label_map: dict,
         if len(state["processed_message_ids"]) > 1000:
             state["processed_message_ids"] = state["processed_message_ids"][-1000:]
     
-    return {"category": category}
+    suppression_changed = bool((not dry_run) and action in {"suppressed", "suppressed_recipient_hard_bounce"})
+    return {"category": category, "suppression_changed": suppression_changed}
 
 
 def process_imap_message(conn: imaplib.IMAP4_SSL, msg_id: str, state: dict,
@@ -1117,14 +1237,17 @@ def process_imap_message(conn: imaplib.IMAP4_SSL, msg_id: str, state: dict,
         imap_move_message(conn, msg_id, IMAP_FOLDER_UNSUB, dry_run)
     
     elif category == "bounce":
-        recipient = extract_bounce_recipient(body, headers)
-        if recipient:
-            add_to_suppression(recipient, "bounce", "inbound_triage", message_id, dry_run)
-            action = "suppressed_recipient"
+        bounce_result = handle_bounce_category(
+            subject=subject,
+            from_email=effective_from,
+            headers=headers,
+            body=body,
+            message_id=message_id,
+            dry_run=dry_run,
+        )
+        action = str(bounce_result.get("action") or "")
+        if str(bounce_result.get("bounce_class") or "") in {"hard", "soft"}:
             imap_move_message(conn, msg_id, IMAP_FOLDER_BOUNCE, dry_run)
-        else:
-            print("    [WARN] Could not extract bounce recipient")
-            action = "bounce_unknown"
     
     elif category == "hot_interest":
         create_reply_draft(effective_from, subject, body, category, message_id, dry_run)
@@ -1156,7 +1279,8 @@ def process_imap_message(conn: imaplib.IMAP4_SSL, msg_id: str, state: dict,
         if len(state["processed_message_ids"]) > 1000:
             state["processed_message_ids"] = state["processed_message_ids"][-1000:]
     
-    return {"category": category}
+    suppression_changed = bool((not dry_run) and action in {"suppressed", "suppressed_recipient_hard_bounce"})
+    return {"category": category, "suppression_changed": suppression_changed}
 
 
 # =============================================================================
@@ -1215,6 +1339,7 @@ def main():
         counts = {"unsubscribe": 0, "bounce": 0, "hot_interest": 0, 
                   "question": 0, "objection": 0, "out_of_office": 0,
                   "bug_feature": 0, "other": 0}
+        suppression_changed = False
         
         for msg_id in msg_ids:
             try:
@@ -1222,6 +1347,8 @@ def main():
                 cat = result.get("category")
                 if cat:
                     counts[cat] = counts.get(cat, 0) + 1
+                if result.get("suppression_changed"):
+                    suppression_changed = True
             except Exception as e:
                 print(f"[ERROR] Failed to process IMAP message: {e}")
         
@@ -1256,9 +1383,7 @@ def main():
             state["last_processed_time"] = datetime.now().isoformat()
             save_state(state)
             
-            if (counts.get("unsubscribe", 0) > 0 or 
-                counts.get("objection", 0) > 0 or 
-                counts.get("bounce", 0) > 0):
+            if suppression_changed:
                 backup_suppression_file()
         
         # Summary
@@ -1297,6 +1422,7 @@ def main():
     counts = {"unsubscribe": 0, "bounce": 0, "hot_interest": 0, 
               "question": 0, "objection": 0, "out_of_office": 0,
               "bug_feature": 0, "other": 0}
+    suppression_changed = False
     
     for msg in messages:
         try:
@@ -1304,6 +1430,8 @@ def main():
             cat = result.get("category")
             if cat:
                 counts[cat] = counts.get(cat, 0) + 1
+            if result.get("suppression_changed"):
+                suppression_changed = True
         except Exception as e:
             print(f"[ERROR] Failed to process: {e}")
     
@@ -1331,10 +1459,8 @@ def main():
         state["last_processed_time"] = datetime.now().isoformat()
         save_state(state)
         
-        # Backup suppression list if it may have changed
-        if (counts.get("unsubscribe", 0) > 0 or 
-            counts.get("objection", 0) > 0 or 
-            counts.get("bounce", 0) > 0):
+        # Backup suppression list only when a live suppression write occurred.
+        if suppression_changed:
             backup_suppression_file()
     
     # Summary

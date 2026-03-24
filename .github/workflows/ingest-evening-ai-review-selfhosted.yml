@@ -1,9 +1,6 @@
 name: Ingest Evening + AI Review Dump (Self-Hosted)
 
 on:
-  schedule:
-    - cron: '45 0 * * *'
-    - cron: '45 1 * * *'
   workflow_dispatch:
 
 jobs:
@@ -13,26 +10,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Gate Exact 8:45 PM ET Daily
-        id: gate
-        shell: powershell
-        run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            "run_now=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            exit 0
-          }
-          $utcNow = [datetime]::UtcNow
-          $etNow = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId($utcNow, 'Eastern Standard Time')
-          $isTargetMinute = ($etNow.Hour -eq 20 -and $etNow.Minute -eq 45)
-          if ($isTargetMinute) {
-            "run_now=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          } else {
-            "run_now=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            Write-Output ("SKIP_ET_GATE now_et=" + $etNow.ToString("o"))
-          }
-
       - name: Run Evening Ingest Wrapper
-        if: steps.gate.outputs.run_now == 'true'
         shell: powershell
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File "${{ github.workspace }}\scripts\scheduled\run_osha_ingest_evening.ps1"

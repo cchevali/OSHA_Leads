@@ -65,6 +65,15 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             "StripePriceIdMulti",
             "StripePriceIdPilot",
             "WebStripeWebhookSecret",
+            "InboundBackend",
+            "ImapHost",
+            "ImapPort",
+            "ImapUser",
+            "ImapPass",
+            "ImapFolder",
+            "ImapFolderUnsub",
+            "ImapFolderBounce",
+            "SyncInboundImapFromBounce",
             "TaskSchedUser",
             "TaskSchedPassword",
             "RuntimeRole",
@@ -115,6 +124,10 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("OUTREACH_ALLOW_FREE_DOMAINS", text)
         self.assertIn("outreach_allow_free_domains=", text)
         self.assertIn("invalid_OutreachAllowFreeDomains", text)
+        self.assertIn("outreach_daily_limit=", text)
+        self.assertIn("outreach_fallback_on_empty_state=", text)
+        self.assertIn("prospect_autogrow_enabled=", text)
+        self.assertIn("prospect_autogrow_safety_net_enabled=", text)
         self.assertIn("prospect_ai_assist_review_enabled=", text)
         self.assertIn("prospect_ai_assist_review_raw_target=", text)
         self.assertIn("prospect_ai_assist_review_packet_size=", text)
@@ -163,6 +176,27 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("apollo_person_locations_mode=", text)
         self.assertIn("task_sched_user=", text)
         self.assertIn("task_sched_password_present=", text)
+        self.assertIn("INBOUND_BACKEND", text)
+        self.assertIn("IMAP_HOST", text)
+        self.assertIn("IMAP_USER", text)
+        self.assertIn("IMAP_PASS", text)
+        self.assertIn("IMAP_FOLDER", text)
+        self.assertIn("IMAP_FOLDER_UNSUB", text)
+        self.assertIn("IMAP_FOLDER_BOUNCE", text)
+        self.assertIn("SyncInboundImapFromBounce", text)
+        self.assertIn("inbound_backend=", text)
+        self.assertIn("inbound_backend_source=", text)
+        self.assertIn("imap_source=", text)
+        self.assertIn("imap_host=", text)
+        self.assertIn("imap_port=", text)
+        self.assertIn("imap_user=", text)
+        self.assertIn("imap_pass_present=", text)
+        self.assertIn("imap_folder=", text)
+        self.assertIn("imap_folder_unsub=", text)
+        self.assertIn("imap_folder_bounce=", text)
+        self.assertIn("missing_BOUNCE_IMAP_USER_for_SyncInboundImapFromBounce", text)
+        self.assertIn("missing_BOUNCE_IMAP_PASS_for_SyncInboundImapFromBounce", text)
+        self.assertIn("invalid_InboundBackend_gmail_conflicts_with_imap_settings", text)
         self.assertIn("PROSPECT_ENRICH_MAX_SITES_PER_RUN", text)
         self.assertIn("PROSPECT_ENRICH_HTTP_SLEEP_MS", text)
         self.assertIn("prospect_enrich_max_sites_per_run=", text)

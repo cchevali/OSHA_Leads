@@ -1,0 +1,263 @@
+:root {
+  --bg: #f5f2e8;
+  --panel: #fffdf8;
+  --panel-alt: #f0eadf;
+  --ink: #1f2a24;
+  --muted: #5f685f;
+  --border: #d3c9b7;
+  --accent: #0c5b47;
+  --accent-soft: #dff0e6;
+  --danger: #9a2d20;
+  --shadow: 0 10px 24px rgba(31, 42, 36, 0.08);
+  --radius: 18px;
+  --mono: "Cascadia Mono", "Consolas", monospace;
+  --sans: "Segoe UI", "Trebuchet MS", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(12, 91, 71, 0.10), transparent 28%),
+    linear-gradient(180deg, #f9f6ee 0%, var(--bg) 100%);
+}
+
+a {
+  color: inherit;
+}
+
+code,
+pre {
+  font-family: var(--mono);
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1.5rem 2rem 1rem;
+  border-bottom: 1px solid rgba(211, 201, 183, 0.8);
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 2rem;
+  letter-spacing: 0.02em;
+}
+
+.subhead {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+}
+
+.runtime-meta {
+  min-width: 20rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(255, 253, 248, 0.82);
+  box-shadow: var(--shadow);
+}
+
+.runtime-meta div + div {
+  margin-top: 0.45rem;
+}
+
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  padding: 1rem 2rem;
+}
+
+.nav-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.6rem 0.95rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 253, 248, 0.8);
+  text-decoration: none;
+}
+
+.nav-link.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.banner {
+  margin: 0 2rem 1rem;
+  padding: 0.9rem 1rem;
+  border-left: 4px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0.8rem;
+}
+
+.page {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+  padding: 0 2rem 2rem;
+}
+
+.card {
+  padding: 1.1rem 1.2rem 1.2rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.preview-card {
+  border-color: rgba(12, 91, 71, 0.35);
+  background: linear-gradient(180deg, #fcfff7 0%, var(--panel) 100%);
+}
+
+.card h2 {
+  margin-top: 0;
+  margin-bottom: 0.9rem;
+  font-size: 1.05rem;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: minmax(11rem, 15rem) 1fr;
+  gap: 0.55rem 0.9rem;
+  margin: 0;
+}
+
+.kv dt {
+  font-weight: 700;
+}
+
+.kv dd {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.85rem;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.95rem;
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  background: #fff;
+}
+
+textarea {
+  min-height: 10rem;
+  resize: vertical;
+}
+
+button {
+  margin-top: 0.9rem;
+  padding: 0.7rem 1rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+button:hover {
+  filter: brightness(1.05);
+}
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+  margin-bottom: 0.8rem;
+}
+
+.inline-form button {
+  margin-top: 0;
+}
+
+.grid {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.grid th,
+.grid td {
+  padding: 0.65rem 0.55rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  text-align: left;
+}
+
+.grid th {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+li + li {
+  margin-top: 0.35rem;
+}
+
+pre {
+  margin: 0;
+  padding: 0.9rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 0.9rem;
+  background: #f0eadf;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+@media (max-width: 860px) {
+  .topbar {
+    flex-direction: column;
+  }
+
+  .runtime-meta {
+    min-width: 0;
+  }
+
+  .page,
+  .nav,
+  .topbar,
+  .banner {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+}

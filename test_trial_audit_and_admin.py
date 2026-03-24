@@ -16,6 +16,7 @@ import crm_light
 import run_trial_admin
 import send_digest_email
 import trial_audit
+from runtime_schedule_config import write_runtime_schedule
 
 
 class TestTrialAuditAndAdmin(unittest.TestCase):
@@ -110,6 +111,54 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
         self.assertIsNotNone(req)
         self.assertEqual(getattr(req, "territory_code"), "FACS_TRIAL_STATES")
         self.assertEqual(getattr(req, "subscriber_key"), "facs_trial")
+
+    def test_add_trial_defaults_send_time_from_shared_schedule(self) -> None:
+        leads_db = self._tmp_path / "osha.sqlite"
+        schema_path = Path(__file__).resolve().parent / "schema.sql"
+        captured: dict[str, object] = {}
+
+        write_runtime_schedule(
+            crm_light.data_dir(),
+            outreach_send_local_hhmm="08:00",
+            trial_default_send_local_hhmm="11:25",
+            evening_prep_local_hhmm="20:45",
+            updated_by="unit_test",
+        )
+
+        def _fake_add_trial(req, leads_db_path, schema_path, crm_db_path):  # type: ignore[no-untyped-def]
+            captured["req"] = req
+            captured["leads_db_path"] = leads_db_path
+            captured["schema_path"] = schema_path
+            captured["crm_db_path"] = crm_db_path
+
+        with (
+            mock.patch.object(run_trial_admin, "merge_territory_definition"),
+            mock.patch.object(run_trial_admin, "add_trial", side_effect=_fake_add_trial),
+        ):
+            code = run_trial_admin.main(
+                [
+                    "add-trial",
+                    "--subscriber-key",
+                    "facs_trial",
+                    "--email",
+                    "taylor.thomas@facs.com",
+                    "--states",
+                    "ca,or,wa",
+                    "--start-date",
+                    "2026-03-03",
+                    "--sends-limit",
+                    "14",
+                    "--db",
+                    str(leads_db),
+                    "--schema",
+                    str(schema_path),
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        req = captured.get("req")
+        self.assertIsNotNone(req)
+        self.assertEqual(getattr(req, "send_time_local"), "11:25")
 
     def test_digest_diff_reports_missing_and_unexpected(self) -> None:
         diff = trial_audit.digest_diff(

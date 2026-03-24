@@ -10,7 +10,7 @@ Purpose: preserve customer-validated V1 requirements and operator truths while d
 - Last commit touching source: `704355f` (2026-02-02, Chase Chevali) "Cold email: require reply-to, enforce suppression, set footer address"
 - What this doc asserts:
   - Outbound send path uses `outbound_cold_email.py` with dry-run/live modes, score-tier selection, and send logging in `out/cold_email_log.csv`.
-  - Inbound reply handling uses `inbound_inbox_triage.py` with Gmail OAuth, message classification, suppression updates, and daily digest notification.
+  - Inbound reply handling uses `inbound_inbox_triage.py` with Gmail OAuth or IMAP (Zoho-compatible), plus message classification, suppression updates, and daily digest notification.
   - Outbound sends must enforce suppression checks before send.
   - Live outbound footer must include real mailing address and unsubscribe option.
   - Operator-visible artifacts include `out/cold_email_log.csv`, `out/inbox_triage_log.csv`, `out/inbox_state.json`, and `out/suppression.csv`.

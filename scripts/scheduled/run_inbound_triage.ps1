@@ -9,6 +9,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $wrapper = Join-Path $repoRoot 'run_with_secrets.ps1'
 $triageScript = Join-Path $repoRoot 'inbound_inbox_triage.py'
 $captureScript = Join-Path $repoRoot 'run_capture_sync.py'
+$setOutreachEnv = Join-Path $repoRoot 'scripts\set_outreach_env.ps1'
 $gmailCredentials = Join-Path $repoRoot 'secrets\gmail_credentials.json'
 $startLocal = Get-Date
 $startUtc = [datetime]::UtcNow
@@ -55,6 +56,33 @@ function Write-TaskLine([string]$Line) {
   Write-RuntimeTaskLogLine -TaskLogPath $taskLogPath -Line $text
 }
 
+function Get-InboundConfigSnapshot {
+  $lines = & powershell -NoProfile -ExecutionPolicy Bypass -File $setOutreachEnv -PrintConfig 2>&1
+  $exitCode = [int]$LASTEXITCODE
+  $values = @{}
+  foreach ($line in @($lines)) {
+    $text = [string]$line
+    if (-not [string]::IsNullOrWhiteSpace($text)) {
+      Write-TaskLine $text
+    }
+    $equalsIndex = $text.IndexOf('=')
+    if ($equalsIndex -le 0) {
+      continue
+    }
+    $key = $text.Substring(0, $equalsIndex).Trim().ToLowerInvariant()
+    if (-not $key) {
+      continue
+    }
+    $value = $text.Substring($equalsIndex + 1).Trim()
+    $values[$key] = $value
+  }
+  return @{
+    Ok = ($exitCode -eq 0)
+    ExitCode = $exitCode
+    Values = $values
+  }
+}
+
 foreach ($line in @($bootstrapLines)) {
   Write-TaskLine ([string]$line)
 }
@@ -69,27 +97,65 @@ function Invoke-And-Log([scriptblock]$Invocation) {
 try {
   Push-Location $repoRoot
   try {
+    $inboundConfig = Get-InboundConfigSnapshot
     if (-not [bool]$preflight.Ok) {
       throw 'runtime preflight failed'
+    }
+    if (-not [bool]$inboundConfig.Ok) {
+      throw ('set_outreach_env_print_config_failed code=' + [string]$inboundConfig.ExitCode)
     }
     if ([bool]$runtimeTickState.Skip) {
       $inboundExitCode = 0
       Write-TaskLine ('INBOUND_TRIAGE_SKIPPED reason=runtime_tick_same_slot slot=' + [string]$runtimeTickState.SlotKey)
     }
-    elseif (-not (Test-Path -LiteralPath $gmailCredentials)) {
-      $inboundExitCode = 0
-      Write-TaskLine ('INBOUND_TRIAGE_SKIPPED reason=gmail_credentials_missing path=' + $gmailCredentials)
-    }
     else {
-      Invoke-And-Log {
-        & $wrapper -- py -3 $triageScript --run-once
+      $configValues = [hashtable]$inboundConfig.Values
+      $backend = ''
+      if ($configValues.ContainsKey('inbound_backend')) {
+        $backend = ([string]$configValues['inbound_backend']).Trim().ToLowerInvariant()
       }
-      $inboundExitCode = [int]$LASTEXITCODE
-      if ($inboundExitCode -eq 0) {
-        Invoke-And-Log {
-          & $wrapper -- py -3 $captureScript
+      if (-not $backend) {
+        $backend = 'gmail'
+      }
+      if ($backend -eq 'imap') {
+        $imapUser = if ($configValues.ContainsKey('imap_user')) { ([string]$configValues['imap_user']).Trim() } else { '' }
+        $imapPassPresent = if ($configValues.ContainsKey('imap_pass_present')) { ([string]$configValues['imap_pass_present']).Trim().ToUpperInvariant() } else { 'NO' }
+        if ((-not $imapUser) -or ($imapPassPresent -ne 'YES')) {
+          $inboundExitCode = 0
+          Write-TaskLine 'INBOUND_TRIAGE_SKIPPED reason=imap_credentials_missing'
+        } else {
+          Invoke-And-Log {
+            & $wrapper -- py -3 $triageScript --run-once
+          }
+          $inboundExitCode = [int]$LASTEXITCODE
+          if ($inboundExitCode -eq 0) {
+            Invoke-And-Log {
+              & $wrapper -- py -3 $captureScript
+            }
+            $inboundExitCode = [int]$LASTEXITCODE
+          }
         }
-        $inboundExitCode = [int]$LASTEXITCODE
+      }
+      elseif ($backend -eq 'gmail') {
+        if (-not (Test-Path -LiteralPath $gmailCredentials)) {
+          $inboundExitCode = 0
+          Write-TaskLine ('INBOUND_TRIAGE_SKIPPED reason=gmail_credentials_missing path=' + $gmailCredentials)
+        } else {
+          Invoke-And-Log {
+            & $wrapper -- py -3 $triageScript --run-once
+          }
+          $inboundExitCode = [int]$LASTEXITCODE
+          if ($inboundExitCode -eq 0) {
+            Invoke-And-Log {
+              & $wrapper -- py -3 $captureScript
+            }
+            $inboundExitCode = [int]$LASTEXITCODE
+          }
+        }
+      }
+      else {
+        $inboundExitCode = 0
+        Write-TaskLine ('INBOUND_TRIAGE_SKIPPED reason=invalid_inbound_backend backend=' + $backend)
       }
     }
   }

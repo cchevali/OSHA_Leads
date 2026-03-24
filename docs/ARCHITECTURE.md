@@ -21,7 +21,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Primary scheduler entrypoint: `run_runtime_tick.py`, invoked by `.github/workflows/runtime-tick-selfhosted.yml` every 15 minutes and fanning into due jobs by local time.
 - Windows Task Scheduler wrappers remain as managed safety-net recovery tasks on the canonical PC; runtime tick stays primary, and duplicate or legacy scheduler entries are treated as drift.
 - Wrappers emit deterministic run summaries (`runtime_run_summary_v1`) plus task logs and optional backup manifests.
-- Runtime tick emits operator alert candidates and sends live SMTP alerts (recipient `RUNTIME_ALERT_RECIPIENT` fallback `OSHA_SMOKE_TO`) for job failures and critical missed morning windows with per-slot dedupe markers under `${DATA_DIR}\runtime\status\alerts\`.
+- Runtime tick emits operator alert candidates and sends live SMTP alerts (recipient `RUNTIME_ALERT_RECIPIENT` fallback `OSHA_SMOKE_TO`) for job failures and critical missed scheduled windows with per-slot dedupe markers under `${DATA_DIR}\runtime\status\alerts\`.
 - Runtime tick persists per-job status for the latest ran/skipped/reconciled slot under `${DATA_DIR}\runtime\status\jobs\*.json` and records external-wrapper reconciliation metadata when break-glass execution is detected.
 - Artifact roots:
   - Task logs: `${TASK_LOG_ROOT}` or `${DATA_DIR}\out\task_logs` or `<repo>\out\task_logs`
@@ -30,6 +30,45 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
   - Optional mirror: `${ARTIFACT_SYNC_DIR}` (artifacts/backups only; never live DB)
 - Runtime tick status artifacts live under `${DATA_DIR}\runtime\status\` and include `runtime_latest.json`, `runtime_latest.md`, and per-job status JSON files.
 - Laptop/dev clients are read-only operationally: print-config, doctor, dry-run, and artifact inspection.
+
+## MicroFlowOps Ops Console
+
+- `ops_console/` is a stdlib-only local web app that binds to `127.0.0.1` and acts as an operator control plane, not a second runtime.
+- The console is server-rendered and has no remote hosting or auth surface in v1 beyond localhost binding.
+- Read models are assembled from existing DBs/artifacts:
+  - `${DATA_DIR}\runtime\status\runtime_latest.json`
+  - `${DATA_DIR}\runtime\status\jobs\*.json`
+  - `${DATA_DIR}\outreach\ops_snapshots\latest.json`
+  - `${DATA_DIR}\crm_light.sqlite`
+  - `${DATA_DIR}\crm.sqlite`
+  - `${DATA_DIR}\audits\prospect_ai_assist\...`
+  - `${DATA_DIR}\imports\prospect_ai_assist\...`
+  - repo-local `out\...` onboarding/inbox artifacts when present
+- Runtime tick owns console freshness support for `${DATA_DIR}\outreach\ops_snapshots\latest.json` and stale repo-local dry-run cleanup via weekday `ops_snapshot_daily` and `outreach_cleanup_daily` jobs, so the dashboard does not depend on ad hoc operator refreshes.
+- The console never bypasses runtime guard, suppression, send paths, or importer paths. Mutations call existing entrypoints or write only the controlled schedule/audit/preview seams.
+- Every console mutation is two-step:
+  1. Generate a stored preview record with payload hash.
+  2. Apply only if the submitted `preview_id` and `payload_hash` still match.
+- Console-owned artifacts live under:
+  - `${DATA_DIR}\ops_console\previews\*.json`
+  - `${DATA_DIR}\ops_console\audit\ops_console_audit.jsonl`
+- Inbox / Requests remains read-only and derives backend-aware setup guidance from local filesystem plus env inspection only:
+  - Gmail backend checks `secrets\gmail_credentials.json`, `secrets\gmail_token.json`, and client package availability
+  - IMAP backend checks `IMAP_HOST`, `IMAP_USER`, and `IMAP_PASS`
+  - Zoho/IMAP operators can set `INBOUND_BACKEND=imap` and populate `IMAP_*` through the guarded `scripts\set_outreach_env.ps1 -InboundBackend imap -SyncInboundImapFromBounce` path, which reuses the saved `BOUNCE_IMAP_*` mailbox settings instead of requiring hand-managed env edits
+  - latest triage log, reply-draft, and engineering-ticket artifact paths are surfaced without turning the console into an email client
+
+## Shared Schedule Override Seam
+
+- `${DATA_DIR}\runtime\config\schedule_overrides.json` is the shared HH:MM-only override file for:
+  - `outreach_send_local_hhmm`
+  - `trial_default_send_local_hhmm`
+  - `evening_prep_local_hhmm`
+- `runtime_schedule_config.py` owns validation, defaults, read/write behavior, and schema tagging (`ops_console_schedule_v1`).
+- `outreach/run_runtime_tick.py` reads the schedule seam for runtime-owned outreach, trial, and evening-prep slots and emits the resolved schedule in `--print-config`.
+- `scripts/install_scheduled_tasks.ps1` reads the same file so managed Windows Task Scheduler safety-net entries mirror the operator-selected times.
+- `run_trial_admin.py add-trial` defaults `--send-time-local` from the shared trial schedule and the console also updates the managed trial customer configs (`customers/facs_trial.json`, `customers/jl_safety_trial.json`, `customers/roi_safety_trial.json`) on successful schedule apply.
+- Schedule apply follows a sync-both policy: write the JSON seam, update managed trial config files, then re-sync scheduled tasks; if task sync fails, the schedule/config edits are rolled back.
 
 ## Outreach CRM Auto-Run Data Flow
 
@@ -59,7 +98,8 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - Generation-owned cache/diagnostics live under `${DATA_DIR}/prospect_generation/`.
    - Generator-side BYO CSV inbox paths are removed (manual CSV seed remains available via `outreach/crm_admin.py seed --input ...`).
 2. Prospect discovery import: `run_prospect_discovery.py` imports/upserts `${DATA_DIR}/prospect_discovery/prospects_latest.csv` into `crm.sqlite`.
-3. Nightly manual research prep: `scripts/scheduled/run_osha_ingest_evening.ps1` runs OSHA ingest, `tools/dump_signals_for_review.py`, and `tools/prepare_manual_prospect_research.py` at the shared 8:45 PM Eastern slot.
+3. Nightly manual research prep: runtime tick owns the `ingest_evening` daily job, reads its HH:MM from `${DATA_DIR}/runtime/config/schedule_overrides.json`, and executes `scripts/scheduled/run_osha_ingest_evening.ps1` as the underlying wrapper.
+   - The separate `.github/workflows/ingest-evening-ai-review-selfhosted.yml` workflow is dispatch-only break-glass/manual execution and no longer owns the schedule.
    - Signals dumps land under `${DATA_DIR}\audits\signals_ai_review\`.
    - Manual prospect prep lands under `${DATA_DIR}\audits\prospect_ai_assist\` as a refreshed `crm_skip_list_for_ai.csv` plus a dated repo-managed Deep Research prompt artifact.
    - The prompt artifact bakes in the active state scope, target firm count, canonical CSV header, and the explicit TX-only `STATE_LIC` diagnostic.
@@ -105,9 +145,13 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - `out/outreach_export_ledger.jsonl`: optional compatibility ledger for contacted records
 - `out/outreach/<batch>/outbox_*_dry_run.csv` + manifest: non-sending artifact output from `run_outreach_auto.py --dry-run`
 - `${DATA_DIR}/outreach/ops_snapshots/*.json`: persisted operator artifact combining ops KPIs with runtime/suppression readiness state
+- `${DATA_DIR}/outreach/ops_snapshots/latest.json`: refreshed automatically by the weekday runtime-tick `ops_snapshot_daily` support job
 - `${DATA_DIR}/runtime/status/jobs/*.json`: runtime scheduler state for latest slot evaluation and external scheduler drift visibility
+- `${DATA_DIR}/runtime/config/schedule_overrides.json`: shared operator-owned schedule override seam for outreach/trials/evening prep
 - `${DATA_DIR}/audits/prospect_ai_assist/crm_skip_list_for_ai.csv`: nightly/manual Deep Research skip list
 - `${DATA_DIR}/audits/prospect_ai_assist/manual_prospect_deep_research_YYYYMMDD.txt`: dated repo-managed Deep Research prompt artifact
+- `${DATA_DIR}/ops_console/previews/*.json`: preview-before-apply cache for console mutations
+- `${DATA_DIR}/ops_console/audit/ops_console_audit.jsonl`: append-only console audit trail
 
 ## V1 Preserved Invariants
 

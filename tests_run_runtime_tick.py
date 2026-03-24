@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from outreach import run_runtime_tick as tick
+from runtime_schedule_config import write_runtime_schedule
 
 
 class _Preflight:
@@ -62,6 +63,160 @@ class TestRunRuntimeTick(unittest.TestCase):
         self.assertIn("RUNTIME_TICK_SELECTED_JOBS=ingest_daily", out)
         self.assertIn("PASS_RUNTIME_TICK_PRINT_CONFIG status=OK", out)
         self.assertIn("PASS_RUNTIME_TICK_COMPLETE status=PRINT_CONFIG", out)
+
+    def test_print_config_uses_schedule_override_times_for_timed_jobs(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False):
+            write_runtime_schedule(
+                d,
+                outreach_send_local_hhmm="10:10",
+                trial_default_send_local_hhmm="11:11",
+                evening_prep_local_hhmm="21:20",
+                updated_by="unit_test",
+            )
+
+            outreach_buf = io.StringIO()
+            with redirect_stdout(outreach_buf):
+                outreach_rc = tick.main(["--print-config", "--job", "outreach_auto"])
+            outreach_out = outreach_buf.getvalue()
+            self.assertEqual(outreach_rc, 0, msg=outreach_out)
+            self.assertIn("RUNTIME_TICK_SCHEDULE_SOURCE=file", outreach_out)
+            self.assertIn("RUNTIME_TICK_SCHEDULE_OUTREACH_SEND_LOCAL_HHMM=10:10", outreach_out)
+            self.assertIn("RUNTIME_TICK_JOB_TIME=10:10", outreach_out)
+
+            trial_buf = io.StringIO()
+            with redirect_stdout(trial_buf):
+                trial_rc = tick.main(["--print-config", "--job", "trial_facs_daily"])
+            trial_out = trial_buf.getvalue()
+            self.assertEqual(trial_rc, 0, msg=trial_out)
+            self.assertIn("RUNTIME_TICK_SCHEDULE_TRIAL_DEFAULT_SEND_LOCAL_HHMM=11:11", trial_out)
+            self.assertIn("RUNTIME_TICK_JOB_TIME=11:11", trial_out)
+
+            evening_buf = io.StringIO()
+            with redirect_stdout(evening_buf):
+                evening_rc = tick.main(["--print-config", "--job", "ingest_evening"])
+            evening_out = evening_buf.getvalue()
+            self.assertEqual(evening_rc, 0, msg=evening_out)
+            self.assertIn("RUNTIME_TICK_SCHEDULE_EVENING_PREP_LOCAL_HHMM=21:20", evening_out)
+            self.assertIn("RUNTIME_TICK_JOB_TIME=21:20", evening_out)
+
+    def test_print_config_includes_ops_snapshot_and_cleanup_support_jobs(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False):
+            snapshot_buf = io.StringIO()
+            with redirect_stdout(snapshot_buf):
+                snapshot_rc = tick.main(["--print-config", "--job", "ops_snapshot_daily"])
+            snapshot_out = snapshot_buf.getvalue()
+            self.assertEqual(snapshot_rc, 0, msg=snapshot_out)
+            self.assertIn("RUNTIME_TICK_SELECTED_JOBS=ops_snapshot_daily", snapshot_out)
+            self.assertIn("RUNTIME_TICK_JOB_TIME=09:30", snapshot_out)
+
+            cleanup_buf = io.StringIO()
+            with redirect_stdout(cleanup_buf):
+                cleanup_rc = tick.main(["--print-config", "--job", "outreach_cleanup_daily"])
+            cleanup_out = cleanup_buf.getvalue()
+            self.assertEqual(cleanup_rc, 0, msg=cleanup_out)
+            self.assertIn("RUNTIME_TICK_SELECTED_JOBS=outreach_cleanup_daily", cleanup_out)
+            self.assertIn("RUNTIME_TICK_JOB_TIME=09:45", cleanup_out)
+
+    def test_support_jobs_are_not_critical_missed_window_candidates(self):
+        self.assertNotIn("ops_snapshot_daily", tick.CRITICAL_WINDOW_JOBS)
+        self.assertNotIn("outreach_cleanup_daily", tick.CRITICAL_WINDOW_JOBS)
+
+    def test_doctor_ops_snapshot_job_uses_print_config_then_dry_run(self):
+        calls: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            parts = [str(c) for c in cmd]
+            calls.append(parts)
+            return self._proc(0, stdout="PASS_OPS_SNAPSHOT status=OK\n")
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick.subprocess, "run", side_effect=_run),
+        ):
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                rc = tick.main(["--doctor", "--job", "ops_snapshot_daily"])
+        out = out_buf.getvalue() + "\n" + err_buf.getvalue()
+        self.assertEqual(rc, 0, msg=out)
+        job_calls = [parts for parts in calls if "run_ops_snapshot.py" in " ".join(parts)]
+        self.assertEqual(len(job_calls), 2, msg=out)
+        self.assertIn("--print-config", " ".join(job_calls[0]))
+        self.assertIn("--dry-run", " ".join(job_calls[1]))
+        self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
+
+    def test_doctor_outreach_cleanup_job_uses_guarded_cleanup_commands(self):
+        calls: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            parts = [str(c) for c in cmd]
+            calls.append(parts)
+            return self._proc(0, stdout="PASS_OUTREACH_CLEANUP status=OK\n")
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick.subprocess, "run", side_effect=_run),
+        ):
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                rc = tick.main(["--doctor", "--job", "outreach_cleanup_daily"])
+        out = out_buf.getvalue() + "\n" + err_buf.getvalue()
+        self.assertEqual(rc, 0, msg=out)
+        job_calls = [parts for parts in calls if "cleanup_outreach_dry_run_artifacts.py" in " ".join(parts)]
+        self.assertEqual(len(job_calls), 2, msg=out)
+        self.assertIn("--print-config", " ".join(job_calls[0]))
+        self.assertIn("--dry-run", " ".join(job_calls[1]))
+        self.assertIn("--retention-days 14", " ".join(job_calls[1]))
+        self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
+
+    def test_doctor_evening_job_uses_existing_guarded_commands(self):
+        calls: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            parts = [str(c) for c in cmd]
+            calls.append(parts)
+            return self._proc(0, stdout="PASS_RUNTIME_TICK_STAGE status=OK\n")
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick.subprocess, "run", side_effect=_run),
+        ):
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                rc = tick.main(["--doctor", "--job", "ingest_evening"])
+        out = out_buf.getvalue() + "\n" + err_buf.getvalue()
+        job_calls = [
+            parts for parts in calls
+            if any(
+                marker in " ".join(parts)
+                for marker in (
+                    "run_osha_ingest_daily.py",
+                    "dump_signals_for_ai_review.ps1",
+                    "prepare_manual_prospect_research.ps1",
+                )
+            )
+        ]
+        self.assertEqual(rc, 0, msg=out)
+        self.assertEqual(len(job_calls), 3, msg=out)
+        self.assertIn("run_osha_ingest_daily.py", " ".join(job_calls[0]))
+        self.assertIn("--doctor", " ".join(job_calls[0]))
+        self.assertIn("--scope-mode outreach_plus_trial_live", " ".join(job_calls[0]))
+        self.assertIn("dump_signals_for_ai_review.ps1", " ".join(job_calls[1]))
+        self.assertIn("-PrintConfig", " ".join(job_calls[1]))
+        self.assertIn("prepare_manual_prospect_research.ps1", " ".join(job_calls[2]))
+        self.assertIn("-PrintConfig", " ".join(job_calls[2]))
+        self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
 
     def test_doctor_trial_job_uses_trial_daily_doctor_flag(self):
         calls: list[list[str]] = []
@@ -257,6 +412,48 @@ class TestRunRuntimeTick(unittest.TestCase):
             "RUNTIME_TICK_JOB_RESULT=name=inbound_triage result=skipped exit_code=0 reason=gmail_credentials_missing",
             out,
         )
+        self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
+
+    def test_doctor_inbound_triage_runs_when_imap_is_configured_from_saved_mailbox_env(self):
+        calls: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            parts = [str(c) for c in cmd]
+            calls.append(parts)
+            return self._proc(0, stdout="PASS_INBOUND_TRIAGE status=OK\n")
+
+        with tempfile.TemporaryDirectory() as d:
+            repo_root = Path(d)
+            (repo_root / "run_with_secrets.ps1").write_text("", encoding="utf-8")
+            data_dir = repo_root / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            out_buf = io.StringIO()
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "DATA_DIR": str(data_dir),
+                        "BOUNCE_IMAP_USER": "ops@example.com",
+                        "BOUNCE_IMAP_PASS": "secret",
+                    },
+                    clear=True,
+                ),
+                mock.patch.object(tick, "_repo_root", return_value=repo_root),
+                mock.patch.object(tick, "_git_sha", return_value="deadbeef"),
+                mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+                mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+                mock.patch.object(tick.subprocess, "run", side_effect=_run),
+                redirect_stdout(out_buf),
+            ):
+                rc = tick.main(["--doctor", "--job", "inbound_triage"])
+        out = out_buf.getvalue()
+        self.assertEqual(rc, 0, msg=out)
+        self.assertTrue(calls, msg=out)
+        joined = " ".join(calls[0])
+        self.assertIn("inbound_inbox_triage.py", joined)
+        self.assertIn("--run-once", joined)
+        self.assertIn("--dry-run", joined)
+        self.assertNotIn("gmail_credentials_missing", out)
         self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
 
     def test_live_mode_writes_state_and_next_run_skips_same_slot(self):

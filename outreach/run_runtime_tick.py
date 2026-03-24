@@ -15,6 +15,7 @@ from typing import Any
 from outreach.runtime_operator_alerts import resolve_alert_recipient, send_plain_text_alert, smtp_missing_key
 from runtime_data_dir import resolve_data_dir
 from runtime_guard import render_runtime_lines, run_runtime_preflight
+from runtime_schedule_config import load_runtime_schedule
 
 try:
     from zoneinfo import ZoneInfo
@@ -39,6 +40,7 @@ ALERTS_SUMMARY_SCHEMA = "runtime_tick_alert_summary_v1"
 CRITICAL_WINDOW_JOBS = frozenset(
     {
         "ingest_daily",
+        "ingest_evening",
         "prospect_replenish_daily",
         "outreach_auto",
         "trial_facs_daily",
@@ -97,8 +99,40 @@ JOBS: tuple[JobSpec, ...] = (
     JobSpec(name="trial_facs_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
     JobSpec(name="trial_jl_safety_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
     JobSpec(name="trial_roi_safety_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
+    JobSpec(name="ops_snapshot_daily", kind="daily", weekday_only=True, target_hhmm="09:30", catchup_minutes=180),
+    JobSpec(name="outreach_cleanup_daily", kind="daily", weekday_only=True, target_hhmm="09:45", catchup_minutes=180),
+    JobSpec(name="ingest_evening", kind="daily", weekday_only=False, target_hhmm="20:45", catchup_minutes=180),
 )
 JOB_NAMES = tuple(job.name for job in JOBS)
+
+
+def _jobs_for_data_dir(data_dir: Path) -> tuple[JobSpec, ...]:
+    schedule = load_runtime_schedule(data_dir)
+    overrides = {
+        "outreach_auto": schedule.outreach_send_local_hhmm,
+        "trial_facs_daily": schedule.trial_default_send_local_hhmm,
+        "trial_jl_safety_daily": schedule.trial_default_send_local_hhmm,
+        "trial_roi_safety_daily": schedule.trial_default_send_local_hhmm,
+        "ingest_evening": schedule.evening_prep_local_hhmm,
+    }
+    resolved: list[JobSpec] = []
+    for spec in JOBS:
+        override_hhmm = overrides.get(spec.name)
+        if not override_hhmm or spec.kind != "daily":
+            resolved.append(spec)
+            continue
+        resolved.append(
+            JobSpec(
+                name=spec.name,
+                kind=spec.kind,
+                weekday_only=spec.weekday_only,
+                target_hhmm=override_hhmm,
+                interval_minutes=spec.interval_minutes,
+                catchup_minutes=spec.catchup_minutes,
+                max_attempts_per_slot=spec.max_attempts_per_slot,
+            )
+        )
+    return tuple(resolved)
 
 
 def _emit(key: str, value: str | int) -> None:
@@ -322,11 +356,105 @@ def _powershell_file_cmd(path: Path, args: list[str] | None = None) -> list[str]
     return cmd
 
 
+def _read_local_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = str(raw_line or "").strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _first_env_config_value(repo_root: Path, *keys: str, default: str = "") -> str:
+    env_file = _read_local_env_file(repo_root / ".env")
+    for key in keys:
+        candidate = str(os.environ.get(key) or env_file.get(key) or "").strip()
+        if candidate:
+            return candidate
+    return str(default or "").strip()
+
+
+def _set_outreach_env_print_config(repo_root: Path) -> dict[str, str]:
+    script_path = (repo_root / "scripts" / "set_outreach_env.ps1").resolve(strict=False)
+    if not script_path.exists():
+        return {}
+    proc = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+            "-PrintConfig",
+        ],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=180,
+    )
+    if proc.returncode != 0:
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in str(proc.stdout or "").splitlines():
+        if "=" not in raw_line:
+            continue
+        key, value = raw_line.split("=", 1)
+        key_norm = str(key or "").strip().lower()
+        if not key_norm:
+            continue
+        values[key_norm] = str(value or "").strip()
+    return values
+
+
+def _resolve_inbound_backend(repo_root: Path) -> str:
+    print_values = _set_outreach_env_print_config(repo_root)
+    backend = str(print_values.get("inbound_backend") or "").strip().lower()
+    if backend:
+        return backend
+    explicit = _first_env_config_value(repo_root, "INBOUND_BACKEND").strip().lower()
+    if explicit:
+        return explicit
+    imap_markers = (
+        _first_env_config_value(repo_root, "IMAP_USER", "BOUNCE_IMAP_USER"),
+        _first_env_config_value(repo_root, "IMAP_PASS", "BOUNCE_IMAP_PASS"),
+        _first_env_config_value(repo_root, "IMAP_HOST", "BOUNCE_IMAP_HOST"),
+    )
+    return "imap" if any(str(marker or "").strip() for marker in imap_markers) else "gmail"
+
+
+def _python_file_cmd(repo_root: Path, relative_path: str, args: list[str] | None = None) -> list[str]:
+    cmd: list[str] = ["py", "-3", str((repo_root / relative_path).resolve(strict=False))]
+    cmd.extend(args or [])
+    return cmd
+
+
 def _job_skip_reason(repo_root: Path, job_name: str) -> str:
     if job_name == "inbound_triage":
-        gmail_credentials = (repo_root / "secrets" / "gmail_credentials.json").resolve(strict=False)
-        if not gmail_credentials.exists():
-            return "gmail_credentials_missing"
+        backend = _resolve_inbound_backend(repo_root)
+        if backend == "imap":
+            print_values = _set_outreach_env_print_config(repo_root)
+            imap_user = str(print_values.get("imap_user") or "").strip()
+            imap_pass_present = str(print_values.get("imap_pass_present") or "").strip().upper()
+            if not imap_user:
+                imap_user = _first_env_config_value(repo_root, "IMAP_USER", "BOUNCE_IMAP_USER")
+            if not imap_pass_present:
+                imap_pass = _first_env_config_value(repo_root, "IMAP_PASS", "BOUNCE_IMAP_PASS")
+                imap_pass_present = "YES" if imap_pass else "NO"
+            if not imap_user or imap_pass_present != "YES":
+                return "imap_credentials_missing"
+            return ""
+        if backend == "gmail":
+            gmail_credentials = (repo_root / "secrets" / "gmail_credentials.json").resolve(strict=False)
+            if not gmail_credentials.exists():
+                return "gmail_credentials_missing"
+            return ""
+        return f"invalid_inbound_backend_{backend}"
     return ""
 
 
@@ -387,6 +515,63 @@ def _job_commands(repo_root: Path, job_name: str, mode: str) -> list[list[str]]:
             return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--doctor"])]
         return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--dry-run"])]
 
+    if job_name == "ops_snapshot_daily":
+        if mode == "live":
+            return [_python_file_cmd(repo_root, "outreach/run_ops_snapshot.py")]
+        if mode == "doctor":
+            return [
+                _python_file_cmd(repo_root, "outreach/run_ops_snapshot.py", ["--print-config"]),
+                _python_file_cmd(repo_root, "outreach/run_ops_snapshot.py", ["--dry-run"]),
+            ]
+        return [_python_file_cmd(repo_root, "outreach/run_ops_snapshot.py", ["--dry-run"])]
+
+    if job_name == "outreach_cleanup_daily":
+        cleanup_args = ["--retention-days", "14"]
+        if mode == "live":
+            return [_python_file_cmd(repo_root, "outreach/cleanup_outreach_dry_run_artifacts.py", cleanup_args)]
+        if mode == "doctor":
+            return [
+                _python_file_cmd(repo_root, "outreach/cleanup_outreach_dry_run_artifacts.py", ["--print-config"]),
+                _python_file_cmd(
+                    repo_root,
+                    "outreach/cleanup_outreach_dry_run_artifacts.py",
+                    ["--dry-run", *cleanup_args],
+                ),
+            ]
+        return [
+            _python_file_cmd(
+                repo_root,
+                "outreach/cleanup_outreach_dry_run_artifacts.py",
+                ["--dry-run", *cleanup_args],
+            )
+        ]
+
+    if job_name == "ingest_evening":
+        evening_wrapper = (repo_root / "scripts" / "scheduled" / "run_osha_ingest_evening.ps1").resolve(strict=False)
+        signals_dump = (repo_root / "scripts" / "dump_signals_for_ai_review.ps1").resolve(strict=False)
+        manual_prep = (repo_root / "scripts" / "prepare_manual_prospect_research.ps1").resolve(strict=False)
+        if mode == "live":
+            return [_powershell_file_cmd(evening_wrapper)]
+        if mode == "doctor":
+            return [
+                _run_with_secrets_cmd(
+                    repo_root,
+                    "run_osha_ingest_daily.py",
+                    ["--doctor", "--scope-mode", "outreach_plus_trial_live"],
+                ),
+                _powershell_file_cmd(signals_dump, ["-SinceDays", "14", "-PrintConfig"]),
+                _powershell_file_cmd(manual_prep, ["-PrintConfig"]),
+            ]
+        return [
+            _run_with_secrets_cmd(
+                repo_root,
+                "run_osha_ingest_daily.py",
+                ["--dry-run", "--scope-mode", "outreach_plus_trial_live"],
+            ),
+            _powershell_file_cmd(signals_dump, ["-SinceDays", "14", "-DryRun"]),
+            _powershell_file_cmd(manual_prep, ["-DryRun"]),
+        ]
+
     raise ValueError(f"unsupported_job={job_name}")
 
 
@@ -432,6 +617,7 @@ def _parse_iso_local(raw: str) -> datetime | None:
 def _wrapper_names_for_job(job_name: str) -> tuple[str, ...]:
     mapping = {
         "ingest_daily": ("OSHA_Osha_Ingest_Daily",),
+        "ingest_evening": ("OSHA_Osha_Ingest_Evening",),
         "prospect_replenish_daily": ("OSHA_Prospect_Replenish_SafetyNet", "OSHA_Prospect_Replenish_Daily"),
         "outreach_auto": ("OSHA_Outreach_Auto_SafetyNet", "OSHA_Outreach_Auto"),
         "trial_facs_daily": ("OSHA_Trial_FACS_Daily",),
@@ -715,11 +901,11 @@ def _release_lock(lock_path: Path) -> None:
         pass
 
 
-def _selected_jobs(job_arg: str) -> list[JobSpec]:
+def _selected_jobs(job_arg: str, *, jobs: tuple[JobSpec, ...]) -> list[JobSpec]:
     if str(job_arg or "").strip().lower() == "all":
-        return list(JOBS)
+        return list(jobs)
     wanted = str(job_arg or "").strip().lower()
-    for spec in JOBS:
+    for spec in jobs:
         if spec.name == wanted:
             return [spec]
     raise ValueError(f"invalid_job={job_arg}")
@@ -1069,10 +1255,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print_config(repo_root: Path, data_dir: Path, selected: list[JobSpec]) -> None:
+    schedule = load_runtime_schedule(data_dir)
     _emit("RUNTIME_TICK_REPO_ROOT", str(repo_root))
     _emit("RUNTIME_TICK_DATA_DIR", str(data_dir))
     _emit("RUNTIME_TICK_STATUS_ROOT", str(_status_root(data_dir)))
     _emit("RUNTIME_TICK_LOCK_ROOT", str(_locks_root(data_dir)))
+    _emit("RUNTIME_TICK_SCHEDULE_CONFIG_PATH", str(schedule.path))
+    _emit("RUNTIME_TICK_SCHEDULE_SCHEMA", schedule.schema)
+    _emit("RUNTIME_TICK_SCHEDULE_SOURCE", schedule.source)
+    _emit("RUNTIME_TICK_SCHEDULE_OUTREACH_SEND_LOCAL_HHMM", schedule.outreach_send_local_hhmm)
+    _emit("RUNTIME_TICK_SCHEDULE_TRIAL_DEFAULT_SEND_LOCAL_HHMM", schedule.trial_default_send_local_hhmm)
+    _emit("RUNTIME_TICK_SCHEDULE_EVENING_PREP_LOCAL_HHMM", schedule.evening_prep_local_hhmm)
     _emit("RUNTIME_TICK_PRIMARY_SCHEDULER", "runtime_tick_selfhosted")
     _emit("RUNTIME_TICK_CANONICAL_RUN_SUMMARY_ROOT", str((data_dir / "out" / "run_summaries").resolve(strict=False)))
     _emit("RUNTIME_TICK_SELECTED_JOBS", ",".join(spec.name for spec in selected))
@@ -1099,15 +1292,16 @@ def main(argv: list[str] | None = None) -> int:
     if not (repo_root / "run_with_secrets.ps1").exists():
         return _error("missing_run_with_secrets")
 
-    try:
-        selected_jobs = _selected_jobs(str(args.job or "all"))
-    except ValueError as exc:
-        return _error(str(exc))
-
     resolution = resolve_data_dir(repo_root)
     data_dir = resolution.effective_path
     if not data_dir.is_absolute():
         return _error(f"data_dir_not_absolute path={data_dir}")
+
+    jobs = _jobs_for_data_dir(data_dir)
+    try:
+        selected_jobs = _selected_jobs(str(args.job or "all"), jobs=jobs)
+    except ValueError as exc:
+        return _error(str(exc))
 
     try:
         now_local = _now_local(str(args.now_local or ""))
