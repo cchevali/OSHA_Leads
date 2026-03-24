@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from outreach import run_runtime_tick as tick
+from runtime_schedule_config import write_runtime_schedule
 
 
 class _Preflight:
@@ -62,6 +63,83 @@ class TestRunRuntimeTick(unittest.TestCase):
         self.assertIn("RUNTIME_TICK_SELECTED_JOBS=ingest_daily", out)
         self.assertIn("PASS_RUNTIME_TICK_PRINT_CONFIG status=OK", out)
         self.assertIn("PASS_RUNTIME_TICK_COMPLETE status=PRINT_CONFIG", out)
+
+    def test_print_config_uses_schedule_override_times_for_timed_jobs(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False):
+            write_runtime_schedule(
+                d,
+                outreach_send_local_hhmm="10:10",
+                trial_default_send_local_hhmm="11:11",
+                evening_prep_local_hhmm="21:20",
+                updated_by="unit_test",
+            )
+
+            outreach_buf = io.StringIO()
+            with redirect_stdout(outreach_buf):
+                outreach_rc = tick.main(["--print-config", "--job", "outreach_auto"])
+            outreach_out = outreach_buf.getvalue()
+            self.assertEqual(outreach_rc, 0, msg=outreach_out)
+            self.assertIn("RUNTIME_TICK_SCHEDULE_SOURCE=file", outreach_out)
+            self.assertIn("RUNTIME_TICK_SCHEDULE_OUTREACH_SEND_LOCAL_HHMM=10:10", outreach_out)
+            self.assertIn("RUNTIME_TICK_JOB_TIME=10:10", outreach_out)
+
+            trial_buf = io.StringIO()
+            with redirect_stdout(trial_buf):
+                trial_rc = tick.main(["--print-config", "--job", "trial_facs_daily"])
+            trial_out = trial_buf.getvalue()
+            self.assertEqual(trial_rc, 0, msg=trial_out)
+            self.assertIn("RUNTIME_TICK_SCHEDULE_TRIAL_DEFAULT_SEND_LOCAL_HHMM=11:11", trial_out)
+            self.assertIn("RUNTIME_TICK_JOB_TIME=11:11", trial_out)
+
+            evening_buf = io.StringIO()
+            with redirect_stdout(evening_buf):
+                evening_rc = tick.main(["--print-config", "--job", "ingest_evening"])
+            evening_out = evening_buf.getvalue()
+            self.assertEqual(evening_rc, 0, msg=evening_out)
+            self.assertIn("RUNTIME_TICK_SCHEDULE_EVENING_PREP_LOCAL_HHMM=21:20", evening_out)
+            self.assertIn("RUNTIME_TICK_JOB_TIME=21:20", evening_out)
+
+    def test_doctor_evening_job_uses_existing_guarded_commands(self):
+        calls: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            parts = [str(c) for c in cmd]
+            calls.append(parts)
+            return self._proc(0, stdout="PASS_RUNTIME_TICK_STAGE status=OK\n")
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick.subprocess, "run", side_effect=_run),
+        ):
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                rc = tick.main(["--doctor", "--job", "ingest_evening"])
+        out = out_buf.getvalue() + "\n" + err_buf.getvalue()
+        job_calls = [
+            parts for parts in calls
+            if any(
+                marker in " ".join(parts)
+                for marker in (
+                    "run_osha_ingest_daily.py",
+                    "dump_signals_for_ai_review.ps1",
+                    "prepare_manual_prospect_research.ps1",
+                )
+            )
+        ]
+        self.assertEqual(rc, 0, msg=out)
+        self.assertEqual(len(job_calls), 3, msg=out)
+        self.assertIn("run_osha_ingest_daily.py", " ".join(job_calls[0]))
+        self.assertIn("--doctor", " ".join(job_calls[0]))
+        self.assertIn("--scope-mode outreach_plus_trial_live", " ".join(job_calls[0]))
+        self.assertIn("dump_signals_for_ai_review.ps1", " ".join(job_calls[1]))
+        self.assertIn("-PrintConfig", " ".join(job_calls[1]))
+        self.assertIn("prepare_manual_prospect_research.ps1", " ".join(job_calls[2]))
+        self.assertIn("-PrintConfig", " ".join(job_calls[2]))
+        self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
 
     def test_doctor_trial_job_uses_trial_daily_doctor_flag(self):
         calls: list[list[str]] = []

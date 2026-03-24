@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>$title</title>
+  <link rel="stylesheet" href="/static/ops_console.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>MicroFlowOps Ops Console</h1>
+      <p class="subhead">Local-only control plane on 127.0.0.1</p>
+    </div>
+    <div class="runtime-meta">
+      <div><strong>Repo</strong> $repo_root</div>
+      <div><strong>Data</strong> $data_dir</div>
+      <div><strong>Schedule</strong> $schedule_path</div>
+    </div>
+  </header>
+  <nav class="nav">$nav</nav>
+  $message
+  <main class="page">$content</main>
+</body>
+</html>

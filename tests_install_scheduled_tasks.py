@@ -1,6 +1,8 @@
+import json
 import re
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -257,6 +259,42 @@ class TestInstallScheduledTasks(unittest.TestCase):
         self.assertIn(EXPECTED_JL_SAFETY_TRIAL_TR, out)
         self.assertIn(EXPECTED_ROI_SAFETY_TRIAL_TR, out)
         self.assertNotIn(r"C:\dev\OSHA_Leads\run_inbound_triage.ps1", out)
+
+    def test_print_config_reads_schedule_override_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d).resolve()
+            schedule_path = data_dir / "runtime" / "config" / "schedule_overrides.json"
+            schedule_path.parent.mkdir(parents=True, exist_ok=True)
+            schedule_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "ops_console_schedule_v1",
+                        "outreach_send_local_hhmm": "10:10",
+                        "trial_default_send_local_hhmm": "11:11",
+                        "evening_prep_local_hhmm": "21:20",
+                        "updated_by": "unit_test",
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            proc = _run("--print-config", extra_env={"DATA_DIR": str(data_dir)})
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        self.assertEqual(proc.returncode, 0, msg=out)
+        self.assertIn(f"INSTALL_SCHEDULED_TASKS_DATA_DIR={data_dir}", out)
+        self.assertIn(f"INSTALL_SCHEDULED_TASKS_SCHEDULE_CONFIG_PATH={schedule_path}", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_SCHEDULE_CONFIG_SOURCE=file", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_OUTREACH_SEND_LOCAL_HHMM=10:10", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_TRIAL_DEFAULT_SEND_LOCAL_HHMM=11:11", out)
+        self.assertIn("INSTALL_SCHEDULED_TASKS_EVENING_PREP_LOCAL_HHMM=21:20", out)
+        tasks = _parse_task_config(out)
+        outreach = [t for t in tasks.values() if t.get("NAME") == "OSHA_Outreach_Auto_SafetyNet"]
+        facs_trial = [t for t in tasks.values() if t.get("NAME") == "OSHA_Trial_FACS_Daily"]
+        evening = [t for t in tasks.values() if t.get("NAME") == "OSHA_Osha_Ingest_Evening"]
+        self.assertEqual(outreach[0].get("TIME"), "10:10", msg=out)
+        self.assertEqual(facs_trial[0].get("TIME"), "11:11", msg=out)
+        self.assertEqual(evening[0].get("TIME"), "21:20", msg=out)
 
     def test_print_config_has_single_inbound_task(self):
         proc = _run("--print-config")

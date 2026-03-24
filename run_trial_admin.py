@@ -23,6 +23,7 @@ import trial_audit
 from email_footer import build_footer_html, build_footer_text
 from lead_filters import load_territory_definitions, merge_territory_definition, resolve_territory_code
 from runtime_data_dir import resolve_osha_db_path
+from runtime_schedule_config import load_runtime_schedule, validate_local_hhmm
 from send_digest_email import (
     build_unsubscribe_payload,
     resolve_branding,
@@ -128,6 +129,7 @@ class TrialAddRequest:
     email: str
     territory_code: str
     tz: str
+    send_time_local: str
     start_date: str
     sends_limit: int
 
@@ -666,7 +668,7 @@ def _upsert_leads_db_subscriber(conn: sqlite3.Connection, req: TrialAddRequest) 
         INSERT INTO subscribers
             (subscriber_key, display_name, email, recipients_json, territory_code, content_filter, include_low_fallback,
              trial_length_days, trial_started_at, trial_ends_at, active, send_enabled, send_time_local, timezone, customer_id)
-        VALUES (?, ?, ?, ?, ?, 'high_medium', 1, 14, ?, ?, 1, 1, '08:00', ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'high_medium', 1, 14, ?, ?, 1, 1, ?, ?, ?)
         ON CONFLICT(subscriber_key) DO UPDATE SET
             display_name=excluded.display_name,
             email=excluded.email,
@@ -676,6 +678,7 @@ def _upsert_leads_db_subscriber(conn: sqlite3.Connection, req: TrialAddRequest) 
             trial_ends_at=excluded.trial_ends_at,
             active=1,
             send_enabled=1,
+            send_time_local=excluded.send_time_local,
             timezone=excluded.timezone
         """,
         (
@@ -686,6 +689,7 @@ def _upsert_leads_db_subscriber(conn: sqlite3.Connection, req: TrialAddRequest) 
             req.territory_code,
             trial_started_at,
             trial_ends_at,
+            req.send_time_local,
             req.tz,
             req.subscriber_key,
         ),
@@ -2383,6 +2387,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Comma-separated state scope (for example: CA,OR,WA).",
     )
     add.add_argument("--tz", default="America/Chicago")
+    add.add_argument("--send-time-local", default="", help="HH:MM local send time (defaults to shared trial schedule).")
     add.add_argument("--start-date", required=True, help="YYYY-MM-DD")
     add.add_argument("--sends-limit", type=int, default=DEFAULT_SENDS_LIMIT)
     add.add_argument("--db", default=_default_leads_db_path(), help=r"Leads SQLite database path (default: ${DATA_DIR}\osha.sqlite)")
@@ -2722,6 +2727,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             territory_code = _normalize_territory(args.territory)
         tz = (args.tz or "").strip() or "America/Chicago"
+        schedule = load_runtime_schedule(crm_light.data_dir())
+        send_time_local = validate_local_hhmm(
+            str(args.send_time_local or "").strip() or schedule.trial_default_send_local_hhmm,
+            field_name="send_time_local",
+        )
         start_date = (args.start_date or "").strip()
         date.fromisoformat(start_date)
         sends_limit = int(args.sends_limit)
@@ -2732,6 +2742,7 @@ def main(argv: list[str] | None = None) -> int:
             email=email,
             territory_code=territory_code,
             tz=tz,
+            send_time_local=send_time_local,
             start_date=start_date,
             sends_limit=sends_limit,
         )
@@ -2746,6 +2757,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"territory_code={territory_code}")
         if str(args.states or "").strip():
             print(f"states={','.join(_normalize_states_input(str(args.states)))}")
+        print(f"send_time_local={send_time_local}")
         print(f"start_date={start_date}")
         print(f"sends_limit={sends_limit}")
         return 0

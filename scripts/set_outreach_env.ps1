@@ -730,6 +730,14 @@ try {
       Write-Output ('outreach_skip_role_inboxes=' + $outreachSkipRoleInboxesValue)
       $outreachAllowFreeDomainsValue = if (Map-HasValue $printMap 'OUTREACH_ALLOW_FREE_DOMAINS') { ([string]$printMap['OUTREACH_ALLOW_FREE_DOMAINS']).Trim() } else { '0' }
       Write-Output ('outreach_allow_free_domains=' + $outreachAllowFreeDomainsValue)
+      $outreachDailyLimitValue = if (Map-HasValue $printMap 'OUTREACH_DAILY_LIMIT') { ([string]$printMap['OUTREACH_DAILY_LIMIT']).Trim() } else { '10' }
+      Write-Output ('outreach_daily_limit=' + $outreachDailyLimitValue)
+      $outreachFallbackOnEmptyStateValue = if (Map-HasValue $printMap 'OUTREACH_FALLBACK_ON_EMPTY_STATE') { ([string]$printMap['OUTREACH_FALLBACK_ON_EMPTY_STATE']).Trim() } else { '0' }
+      Write-Output ('outreach_fallback_on_empty_state=' + $outreachFallbackOnEmptyStateValue)
+      $prospectAutoGrowEnabledValue = if (Map-HasValue $printMap 'PROSPECT_AUTOGROW_ENABLED') { ([string]$printMap['PROSPECT_AUTOGROW_ENABLED']).Trim() } else { '1' }
+      Write-Output ('prospect_autogrow_enabled=' + $prospectAutoGrowEnabledValue)
+      $prospectAutoGrowSafetyNetEnabledValue = if (Map-HasValue $printMap 'PROSPECT_AUTOGROW_SAFETY_NET_ENABLED') { ([string]$printMap['PROSPECT_AUTOGROW_SAFETY_NET_ENABLED']).Trim() } else { '1' }
+      Write-Output ('prospect_autogrow_safety_net_enabled=' + $prospectAutoGrowSafetyNetEnabledValue)
       $prospectAiAssistReviewEnabledValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_ENABLED') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_ENABLED']).Trim() } else { '1' }
       Write-Output ('prospect_ai_assist_review_enabled=' + $prospectAiAssistReviewEnabledValue)
       $prospectAiAssistReviewRawTargetValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET']).Trim() } else { '30' }

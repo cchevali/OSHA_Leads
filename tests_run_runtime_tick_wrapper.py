@@ -54,19 +54,16 @@ class TestRunRuntimeTickWrapper(unittest.TestCase):
         self.assertIn(r"C:\osha_data\runtime\status\**", text)
 
     def test_break_glass_wrapper_workflows_are_dispatch_only(self):
-        for path in [TRIAL_WORKFLOW, MANUAL_WRAPPER_WORKFLOW]:
+        for path in [TRIAL_WORKFLOW, INGEST_EVENING_WORKFLOW, MANUAL_WRAPPER_WORKFLOW]:
             text = path.read_text(encoding="utf-8")
             self.assertIn("workflow_dispatch:", text, msg=f"expected dispatch-only workflow: {path}")
             self.assertNotIn("\nschedule:", text, msg=f"unexpected scheduled trigger in {path}")
 
-    def test_ingest_evening_workflow_has_dst_safe_schedule_and_local_gate(self):
+    def test_ingest_evening_workflow_dispatches_existing_wrapper(self):
         text = INGEST_EVENING_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", text)
-        self.assertIn("  schedule:", text)
-        self.assertIn("cron: '45 0 * * *'", text)
-        self.assertIn("cron: '45 1 * * *'", text)
-        self.assertIn("Gate Exact 8:45 PM ET Daily", text)
-        self.assertIn("$etNow.Hour -eq 20 -and $etNow.Minute -eq 45", text)
+        self.assertNotIn("\nschedule:", text)
+        self.assertIn(r"scripts\scheduled\run_osha_ingest_evening.ps1", text)
 
     def test_manual_wrapper_artifact_paths_match_canonical_out_roots(self):
         for path in [TRIAL_WORKFLOW, INGEST_EVENING_WORKFLOW, MANUAL_WRAPPER_WORKFLOW]:
@@ -86,7 +83,7 @@ class TestRunRuntimeTickWrapper(unittest.TestCase):
         )
         offenders: list[str] = []
         for path in workflow_paths:
-            if path in {WORKFLOW, INGEST_EVENING_WORKFLOW}:
+            if path == WORKFLOW:
                 continue
             text = path.read_text(encoding="utf-8")
             if "\nschedule:" not in text:

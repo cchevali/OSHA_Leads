@@ -86,10 +86,58 @@ Runtime tick operator alerts:
 - Enablement: `RUNTIME_ALERTS_ENABLED` (`1|0`), default on when a recipient is resolvable.
 - Alert categories:
   - `job_failure` for any failed runtime tick job.
-  - `missed_window` for skipped `window_closed_*` on `ingest_daily`, `prospect_replenish_daily`, `outreach_auto`, and `trial_facs_daily`.
+  - `missed_window` for skipped `window_closed_*` on `ingest_daily`, `ingest_evening`, `prospect_replenish_daily`, `outreach_auto`, `trial_facs_daily`, `trial_jl_safety_daily`, and `trial_roi_safety_daily`.
 - Alerts are live-mode only; `--doctor` and `--dry-run` emit candidate/skipped tokens but do not send email.
 - Runtime tick reconciles same-slot wrapper summaries before sending `missed_window`; successful break-glass wrapper evidence within the catchup window suppresses the alert and records a reconciled job state instead of leaving an empty missed-window marker.
 - External wrapper evidence emits `WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER` and records `last_external_scheduler_detected=1` plus `last_reconciliation_status` in `${DATA_DIR}\runtime\status\jobs\<job>.json`.
+
+## MicroFlowOps Ops Console
+
+Purpose:
+
+- Local-only operator console for runtime visibility, guarded config changes, state-scope edits, trial operations, manual prospect import visibility, and inbound/request triage.
+- Control plane only: read from existing DBs/artifacts, invoke existing guarded commands for mutations, and keep console-owned preview/audit artifacts under `${DATA_DIR}`.
+
+Launch from repo root:
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_ops_console.ps1
+```
+
+Default URL:
+
+- `http://127.0.0.1:8420/`
+
+Screen summary:
+
+- Dashboard: runtime status, latest job state, next 7 day outreach preview, state backlog, trials expiring soon, manual import queue, ops snapshot, and recent failures/missed windows.
+- Outreach Control: current guarded env values, next-week rotation preview before apply, and one-click `--print-config`, `--doctor`, `--dry-run`, and `--plan --for-date`.
+- Scheduling Control: shared HH:MM editor for outreach send, shared trial send default, and evening prep schedule seam.
+- State Scope: add/remove `OUTREACH_STATES` with impact preview across outreach rotation, replenishment visibility, and manual Deep Research scope. `STATE_LIC` remains TX-only.
+- Trials: active/pending/expired trial view plus guarded preview/apply flows for add-trial, daily-send dry-run, conversion draft, and CRM lifecycle marks.
+- Manual Prospect Research / Import Queue: newest skip-list + prompt artifacts, pending reviewed CSV imports, latest import results, and guarded file/paste/pending import flows.
+- Inbox / Requests: read-only queue for onboarding/request artifacts, entitlement rows, inbound triage artifacts, reply drafts, engineering tickets, and Gmail OAuth status.
+- Audit Log: append-only record of preview/apply activity owned by the console.
+
+Mutation contract:
+
+- Every mutation is preview-first. Apply requires the stored `preview_id` plus matching `payload_hash`.
+- Outreach env changes apply only through `scripts\set_outreach_env.ps1`.
+- Trial mutations apply only through existing `run_trial_admin.py`, `run_trial_daily.py`, or `outreach\crm_admin.py` entrypoints.
+- Reviewed CSV imports apply only through `tools\import_prospect_ai_assist_review.py`.
+- Schedule changes write `${DATA_DIR}\runtime\config\schedule_overrides.json`, update runtime-tick-managed trial customer configs, then re-sync managed Task Scheduler entries. If Task Scheduler sync fails, the schedule write is rolled back.
+
+Console-owned artifacts:
+
+- Previews: `${DATA_DIR}\ops_console\previews\*.json`
+- Audit log: `${DATA_DIR}\ops_console\audit\ops_console_audit.jsonl`
+- Shared schedule seam: `${DATA_DIR}\runtime\config\schedule_overrides.json`
+
+Verification:
+
+- Console binds to `127.0.0.1` only.
+- Missing secrets/artifacts must render explicit empty or `not configured` states instead of crashing.
 
 ## Runtime State Migration
 
@@ -538,12 +586,27 @@ Operating notes:
 - With canonical live runtime, that resolves to `C:\osha_data\audits\prospect_ai_assist\crm_skip_list_for_ai.csv`.
 - Each row is a firm/domain-level skip record aggregated from `crm.sqlite`.
 
-Canonical nightly schedule:
+Primary evening schedule inspection:
 
 ```powershell
 cd C:\dev\OSHA_Leads
-gh workflow view ingest-evening-ai-review-selfhosted.yml
-gh run list --workflow "Ingest Evening + AI Review Dump (Self-Hosted)" --limit 5
+.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --print-config --job ingest_evening
+.\run_with_secrets.ps1 -- py -3 run_runtime_tick.py --doctor --job ingest_evening
+gh workflow view runtime-tick-selfhosted.yml
+gh run list --workflow "Runtime Tick (Self-Hosted)" --limit 5
+```
+
+Operating note:
+
+- `run_runtime_tick.py` owns the primary evening-prep schedule and reads the operator-selected HH:MM from `${DATA_DIR}\runtime\config\schedule_overrides.json`.
+- `.github\workflows\ingest-evening-ai-review-selfhosted.yml` is dispatch-only break-glass/manual wrapper execution; it no longer owns the nightly schedule.
+- `scripts\scheduled\run_osha_ingest_evening.ps1` remains the underlying wrapper and now skips the same slot when runtime tick already completed `ingest_evening`.
+
+Break-glass manual execution:
+
+```powershell
+cd C:\dev\OSHA_Leads
+gh workflow run ingest-evening-ai-review-selfhosted.yml
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\scheduled\run_osha_ingest_evening.ps1
 ```
 
@@ -995,8 +1058,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dump_signals_for_a
 
 Evening scheduler note:
 
-- `.github\workflows\ingest-evening-ai-review-selfhosted.yml` and `scripts\scheduled\run_osha_ingest_evening.ps1` are the single canonical nightly AI-review generator at `20:45` America/New_York, all 7 days.
+- `run_runtime_tick.py --job ingest_evening` is the canonical nightly AI-review scheduler, and its time comes from `${DATA_DIR}\runtime\config\schedule_overrides.json` (`evening_prep_local_hhmm`, default `20:45`, all 7 days).
+- `.github\workflows\ingest-evening-ai-review-selfhosted.yml` is dispatch-only break-glass/manual wrapper execution and does not define the primary schedule.
 - `scripts\scheduled\run_osha_ingest_evening.ps1` runs ingest with `--scope-mode outreach_plus_trial_live`, then writes signals dumps to `${DATA_DIR}\audits\signals_ai_review\signals_for_ai_review_YYYYMMDD.txt`, then writes prospect dumps to `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD.txt` plus packet slices under `${DATA_DIR}\audits\prospect_ai_assist\prospect_ai_assist_review_YYYYMMDD_packets\`.
+- Managed Task Scheduler safety-net entries read the same schedule seam, and the wrapper skips with `INGEST_EVENING_SKIPPED reason=runtime_tick_same_slot` when runtime tick already completed that slot.
 - Reviewed signals CSV drops belong under `${DATA_DIR}\imports\signals_ai_review\ai_review_YYYYMMDD.csv`; auto-import prefers that folder and falls back to legacy root `imports` only during migration.
 - WA/OR can still be zero on a given day when upstream data has no in-window records.
 
@@ -1378,7 +1443,7 @@ schtasks.exe /Query /TN \OSHA_Osha_Ingest_Daily /V /FO LIST
 1. Update `suppression.csv` with yesterday's unsubscribes/bounces.
 2. Confirm generation run produced `${DATA_DIR}\prospect_discovery\prospects_latest.csv` (or `.\out\prospect_discovery\prospects_latest.csv`).
 3. Confirm discovery run populated/updated prospects in `crm.sqlite`.
-4. If the evening wrapper emitted a prospect AI-assist dump under `${DATA_DIR}\audits\prospect_ai_assist\`, place the reviewed CSV under `${DATA_DIR}\imports\prospect_ai_assist\` so the pending importer can apply it before the next business-day send pool.
+4. If the runtime tick evening job or break-glass evening wrapper emitted a prospect AI-assist dump under `${DATA_DIR}\audits\prospect_ai_assist\`, place the reviewed CSV under `${DATA_DIR}\imports\prospect_ai_assist\` so the pending importer can apply it before the next business-day send pool.
 5. Confirm auto summary email arrived at `OSHA_SMOKE_TO` with contacted/skipped/new-replies-trials-conversions.
 6. Use `outreach\crm_admin.py mark` to record `replied`, `trial_started`, `converted`, or `do_not_contact`.
 

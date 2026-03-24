@@ -54,6 +54,76 @@ function Resolve-SchedulerCredentials([bool]$RequirePassword) {
   }
 }
 
+function Resolve-InstallTasksDataDir([string]$RepoRoot) {
+  $toolingPath = Join-Path $RepoRoot 'scripts\secrets_tooling.ps1'
+  if (-not (Test-Path -LiteralPath $toolingPath)) {
+    Fail 'ERR_INSTALL_SCHEDULED_TASKS_CONFIG' ('missing ' + $toolingPath)
+  }
+  . $toolingPath
+
+  $inheritedDataDir = ''
+  if (Test-Path -LiteralPath 'Env:DATA_DIR') {
+    $inheritedDataDir = [string]$env:DATA_DIR
+  }
+
+  $dotenvDataDir = ''
+  $envPath = Join-Path $RepoRoot '.env'
+  if (Test-Path -LiteralPath $envPath) {
+    foreach ($line in Get-Content -LiteralPath $envPath -Encoding UTF8) {
+      if ($line -match '^\s*DATA_DIR\s*=\s*(.*)$') {
+        $dotenvDataDir = ([string]$Matches[1]).Trim().Trim('"').Trim("'")
+        break
+      }
+    }
+  }
+
+  $policy = Resolve-MfoDataDirPolicy -RepoRoot $RepoRoot -InheritedDataDir $inheritedDataDir -DotenvDataDir $dotenvDataDir
+  return [System.IO.Path]::GetFullPath([string]$policy.EffectivePath)
+}
+
+function Read-ScheduleOverrides([string]$DataDir) {
+  $path = Join-Path $DataDir 'runtime\config\schedule_overrides.json'
+  $schedule = @{
+    Path = $path
+    Source = 'default'
+    Schema = 'ops_console_schedule_v1'
+    OutreachSendLocalHHMM = '08:00'
+    TrialDefaultSendLocalHHMM = '09:00'
+    EveningPrepLocalHHMM = '20:45'
+  }
+  if (-not (Test-Path -LiteralPath $path)) {
+    return $schedule
+  }
+
+  try {
+    $raw = Get-Content -LiteralPath $path -Encoding UTF8 -Raw | ConvertFrom-Json
+  }
+  catch {
+    Fail 'ERR_INSTALL_SCHEDULED_TASKS_CONFIG' ('invalid_schedule_override_json path=' + $path)
+  }
+
+  if ($null -ne $raw) {
+    $schemaValue = [string]($raw.schema)
+    if ($schemaValue.Trim()) {
+      $schedule.Schema = $schemaValue.Trim()
+    }
+    $outreachValue = [string]($raw.outreach_send_local_hhmm)
+    if ($outreachValue.Trim()) {
+      $schedule.OutreachSendLocalHHMM = $outreachValue.Trim()
+    }
+    $trialValue = [string]($raw.trial_default_send_local_hhmm)
+    if ($trialValue.Trim()) {
+      $schedule.TrialDefaultSendLocalHHMM = $trialValue.Trim()
+    }
+    $eveningValue = [string]($raw.evening_prep_local_hhmm)
+    if ($eveningValue.Trim()) {
+      $schedule.EveningPrepLocalHHMM = $eveningValue.Trim()
+    }
+  }
+  $schedule.Source = 'file'
+  return $schedule
+}
+
 function New-TaskDefinition(
   [string]$Name,
   [string]$ScheduleType,
@@ -75,7 +145,7 @@ function New-TaskDefinition(
   }
 }
 
-function Get-TaskDefinitions([string]$RepoRoot) {
+function Get-TaskDefinitions([string]$RepoRoot, [hashtable]$ScheduleConfig) {
   $weekdaySpec = 'MON,TUE,WED,THU,FRI'
   $dailySpec = 'SUN,MON,TUE,WED,THU,FRI,SAT'
   $ingestRunner = Join-Path $RepoRoot 'scripts\scheduled\run_osha_ingest_daily.ps1'
@@ -89,12 +159,12 @@ function Get-TaskDefinitions([string]$RepoRoot) {
 
   return @(
     (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '06:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestRunner) -RecoveryOnly:$true),
-    (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Evening' -ScheduleType 'weekly' -Weekdays $dailySpec -StartTime '20:45' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestEveningRunner) -RecoveryOnly:$true),
+    (New-TaskDefinition -Name 'OSHA_Osha_Ingest_Evening' -ScheduleType 'weekly' -Weekdays $dailySpec -StartTime ([string]$ScheduleConfig.EveningPrepLocalHHMM) -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $ingestEveningRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Prospect_Replenish_SafetyNet' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '07:15' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $replenishRunner) -RecoveryOnly:$true),
-    (New-TaskDefinition -Name 'OSHA_Outreach_Auto_SafetyNet' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '08:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $outreachRunner) -RecoveryOnly:$true),
-    (New-TaskDefinition -Name 'OSHA_Trial_FACS_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '09:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $facsTrialRunner) -RecoveryOnly:$true),
-    (New-TaskDefinition -Name 'OSHA_Trial_JL_Safety_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '09:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $jlSafetyTrialRunner) -RecoveryOnly:$true),
-    (New-TaskDefinition -Name 'OSHA_Trial_ROI_Safety_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime '09:00' -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $roiSafetyTrialRunner) -RecoveryOnly:$true),
+    (New-TaskDefinition -Name 'OSHA_Outreach_Auto_SafetyNet' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime ([string]$ScheduleConfig.OutreachSendLocalHHMM) -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $outreachRunner) -RecoveryOnly:$true),
+    (New-TaskDefinition -Name 'OSHA_Trial_FACS_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime ([string]$ScheduleConfig.TrialDefaultSendLocalHHMM) -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $facsTrialRunner) -RecoveryOnly:$true),
+    (New-TaskDefinition -Name 'OSHA_Trial_JL_Safety_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime ([string]$ScheduleConfig.TrialDefaultSendLocalHHMM) -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $jlSafetyTrialRunner) -RecoveryOnly:$true),
+    (New-TaskDefinition -Name 'OSHA_Trial_ROI_Safety_Daily' -ScheduleType 'weekly' -Weekdays $weekdaySpec -StartTime ([string]$ScheduleConfig.TrialDefaultSendLocalHHMM) -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $roiSafetyTrialRunner) -RecoveryOnly:$true),
     (New-TaskDefinition -Name 'OSHA_Inbound_Triage' -ScheduleType 'minute' -StartTime '' -MinuteInterval 15 -TaskRun ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' + $inboundRunner))
   )
 }
@@ -165,10 +235,17 @@ function Add-ResolvedSchedule([array]$Tasks, [datetime]$NowLocal) {
   return $resolved
 }
 
-function Emit-TaskConfig([array]$Tasks, [string]$Mode, [hashtable]$SchedulerCredentials) {
+function Emit-TaskConfig([array]$Tasks, [string]$Mode, [hashtable]$SchedulerCredentials, [hashtable]$ScheduleConfig) {
   $recoveryOnlyCount = @($Tasks | Where-Object { [bool]$_.RecoveryOnly }).Count
   Write-Output ('INSTALL_SCHEDULED_TASKS_MODE=' + $Mode)
   Write-Output 'INSTALL_SCHEDULED_TASKS_PRIMARY_SCHEDULER=runtime_tick_selfhosted'
+  Write-Output ('INSTALL_SCHEDULED_TASKS_DATA_DIR=' + ([string]$ScheduleConfig.DataDir))
+  Write-Output ('INSTALL_SCHEDULED_TASKS_SCHEDULE_CONFIG_PATH=' + ([string]$ScheduleConfig.Path))
+  Write-Output ('INSTALL_SCHEDULED_TASKS_SCHEDULE_CONFIG_SOURCE=' + ([string]$ScheduleConfig.Source))
+  Write-Output ('INSTALL_SCHEDULED_TASKS_SCHEDULE_CONFIG_SCHEMA=' + ([string]$ScheduleConfig.Schema))
+  Write-Output ('INSTALL_SCHEDULED_TASKS_OUTREACH_SEND_LOCAL_HHMM=' + ([string]$ScheduleConfig.OutreachSendLocalHHMM))
+  Write-Output ('INSTALL_SCHEDULED_TASKS_TRIAL_DEFAULT_SEND_LOCAL_HHMM=' + ([string]$ScheduleConfig.TrialDefaultSendLocalHHMM))
+  Write-Output ('INSTALL_SCHEDULED_TASKS_EVENING_PREP_LOCAL_HHMM=' + ([string]$ScheduleConfig.EveningPrepLocalHHMM))
   Write-Output ('INSTALL_SCHEDULED_TASKS_TASK_COUNT=' + $Tasks.Count)
   Write-Output ('INSTALL_SCHEDULED_TASKS_RECOVERY_ONLY_COUNT=' + $recoveryOnlyCount)
   Write-Output 'INSTALL_SCHEDULED_TASKS_WEEKDAYS_ONLY=0'
@@ -828,18 +905,21 @@ foreach ($path in $requiredPaths) {
   }
 }
 
-$rawTasks = Get-TaskDefinitions -RepoRoot $repoRoot
+$dataDir = Resolve-InstallTasksDataDir -RepoRoot $repoRoot
+$scheduleConfig = Read-ScheduleOverrides -DataDir $dataDir
+$scheduleConfig['DataDir'] = $dataDir
+$rawTasks = Get-TaskDefinitions -RepoRoot $repoRoot -ScheduleConfig $scheduleConfig
 $resolvedTasks = Add-ResolvedSchedule -Tasks $rawTasks -NowLocal (Get-Date)
 $schedulerCredentials = Resolve-SchedulerCredentials -RequirePassword:($modeArg -eq '--apply')
 
 if ($modeArg -eq '--print-config') {
-  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'print-config' -SchedulerCredentials $schedulerCredentials
+  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'print-config' -SchedulerCredentials $schedulerCredentials -ScheduleConfig $scheduleConfig
   Write-Output 'PASS_INSTALL_SCHEDULED_TASKS_PRINT_CONFIG'
   exit 0
 }
 
 if ($modeArg -eq '--dry-run') {
-  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'dry-run' -SchedulerCredentials $schedulerCredentials
+  Emit-TaskConfig -Tasks $resolvedTasks -Mode 'dry-run' -SchedulerCredentials $schedulerCredentials -ScheduleConfig $scheduleConfig
   for ($i = 0; $i -lt $resolvedTasks.Count; $i++) {
     $idx = $i + 1
     Write-Output ('DRY_RUN_COMMAND_' + $idx + '=' + (Build-SchtasksPreviewLine -Task $resolvedTasks[$i] -SchedulerUser ([string]$schedulerCredentials.User)))
@@ -854,7 +934,7 @@ if ($modeArg -eq '--verify' -or $modeArg -eq '--status') {
   exit 0
 }
 
-Emit-TaskConfig -Tasks $resolvedTasks -Mode 'apply' -SchedulerCredentials $schedulerCredentials
+Emit-TaskConfig -Tasks $resolvedTasks -Mode 'apply' -SchedulerCredentials $schedulerCredentials -ScheduleConfig $scheduleConfig
 $legacyCleanupFailures = New-Object System.Collections.Generic.List[string]
 foreach ($legacyTaskName in @(Get-KnownLegacyTaskNames)) {
   $deleteState = Delete-TaskIfExists -TaskName $legacyTaskName

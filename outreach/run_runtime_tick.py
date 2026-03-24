@@ -15,6 +15,7 @@ from typing import Any
 from outreach.runtime_operator_alerts import resolve_alert_recipient, send_plain_text_alert, smtp_missing_key
 from runtime_data_dir import resolve_data_dir
 from runtime_guard import render_runtime_lines, run_runtime_preflight
+from runtime_schedule_config import load_runtime_schedule
 
 try:
     from zoneinfo import ZoneInfo
@@ -39,6 +40,7 @@ ALERTS_SUMMARY_SCHEMA = "runtime_tick_alert_summary_v1"
 CRITICAL_WINDOW_JOBS = frozenset(
     {
         "ingest_daily",
+        "ingest_evening",
         "prospect_replenish_daily",
         "outreach_auto",
         "trial_facs_daily",
@@ -97,8 +99,38 @@ JOBS: tuple[JobSpec, ...] = (
     JobSpec(name="trial_facs_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
     JobSpec(name="trial_jl_safety_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
     JobSpec(name="trial_roi_safety_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
+    JobSpec(name="ingest_evening", kind="daily", weekday_only=False, target_hhmm="20:45", catchup_minutes=180),
 )
 JOB_NAMES = tuple(job.name for job in JOBS)
+
+
+def _jobs_for_data_dir(data_dir: Path) -> tuple[JobSpec, ...]:
+    schedule = load_runtime_schedule(data_dir)
+    overrides = {
+        "outreach_auto": schedule.outreach_send_local_hhmm,
+        "trial_facs_daily": schedule.trial_default_send_local_hhmm,
+        "trial_jl_safety_daily": schedule.trial_default_send_local_hhmm,
+        "trial_roi_safety_daily": schedule.trial_default_send_local_hhmm,
+        "ingest_evening": schedule.evening_prep_local_hhmm,
+    }
+    resolved: list[JobSpec] = []
+    for spec in JOBS:
+        override_hhmm = overrides.get(spec.name)
+        if not override_hhmm or spec.kind != "daily":
+            resolved.append(spec)
+            continue
+        resolved.append(
+            JobSpec(
+                name=spec.name,
+                kind=spec.kind,
+                weekday_only=spec.weekday_only,
+                target_hhmm=override_hhmm,
+                interval_minutes=spec.interval_minutes,
+                catchup_minutes=spec.catchup_minutes,
+                max_attempts_per_slot=spec.max_attempts_per_slot,
+            )
+        )
+    return tuple(resolved)
 
 
 def _emit(key: str, value: str | int) -> None:
@@ -387,6 +419,32 @@ def _job_commands(repo_root: Path, job_name: str, mode: str) -> list[list[str]]:
             return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--doctor"])]
         return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--dry-run"])]
 
+    if job_name == "ingest_evening":
+        evening_wrapper = (repo_root / "scripts" / "scheduled" / "run_osha_ingest_evening.ps1").resolve(strict=False)
+        signals_dump = (repo_root / "scripts" / "dump_signals_for_ai_review.ps1").resolve(strict=False)
+        manual_prep = (repo_root / "scripts" / "prepare_manual_prospect_research.ps1").resolve(strict=False)
+        if mode == "live":
+            return [_powershell_file_cmd(evening_wrapper)]
+        if mode == "doctor":
+            return [
+                _run_with_secrets_cmd(
+                    repo_root,
+                    "run_osha_ingest_daily.py",
+                    ["--doctor", "--scope-mode", "outreach_plus_trial_live"],
+                ),
+                _powershell_file_cmd(signals_dump, ["-SinceDays", "14", "-PrintConfig"]),
+                _powershell_file_cmd(manual_prep, ["-PrintConfig"]),
+            ]
+        return [
+            _run_with_secrets_cmd(
+                repo_root,
+                "run_osha_ingest_daily.py",
+                ["--dry-run", "--scope-mode", "outreach_plus_trial_live"],
+            ),
+            _powershell_file_cmd(signals_dump, ["-SinceDays", "14", "-DryRun"]),
+            _powershell_file_cmd(manual_prep, ["-DryRun"]),
+        ]
+
     raise ValueError(f"unsupported_job={job_name}")
 
 
@@ -432,6 +490,7 @@ def _parse_iso_local(raw: str) -> datetime | None:
 def _wrapper_names_for_job(job_name: str) -> tuple[str, ...]:
     mapping = {
         "ingest_daily": ("OSHA_Osha_Ingest_Daily",),
+        "ingest_evening": ("OSHA_Osha_Ingest_Evening",),
         "prospect_replenish_daily": ("OSHA_Prospect_Replenish_SafetyNet", "OSHA_Prospect_Replenish_Daily"),
         "outreach_auto": ("OSHA_Outreach_Auto_SafetyNet", "OSHA_Outreach_Auto"),
         "trial_facs_daily": ("OSHA_Trial_FACS_Daily",),
@@ -715,11 +774,11 @@ def _release_lock(lock_path: Path) -> None:
         pass
 
 
-def _selected_jobs(job_arg: str) -> list[JobSpec]:
+def _selected_jobs(job_arg: str, *, jobs: tuple[JobSpec, ...]) -> list[JobSpec]:
     if str(job_arg or "").strip().lower() == "all":
-        return list(JOBS)
+        return list(jobs)
     wanted = str(job_arg or "").strip().lower()
-    for spec in JOBS:
+    for spec in jobs:
         if spec.name == wanted:
             return [spec]
     raise ValueError(f"invalid_job={job_arg}")
@@ -1069,10 +1128,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print_config(repo_root: Path, data_dir: Path, selected: list[JobSpec]) -> None:
+    schedule = load_runtime_schedule(data_dir)
     _emit("RUNTIME_TICK_REPO_ROOT", str(repo_root))
     _emit("RUNTIME_TICK_DATA_DIR", str(data_dir))
     _emit("RUNTIME_TICK_STATUS_ROOT", str(_status_root(data_dir)))
     _emit("RUNTIME_TICK_LOCK_ROOT", str(_locks_root(data_dir)))
+    _emit("RUNTIME_TICK_SCHEDULE_CONFIG_PATH", str(schedule.path))
+    _emit("RUNTIME_TICK_SCHEDULE_SCHEMA", schedule.schema)
+    _emit("RUNTIME_TICK_SCHEDULE_SOURCE", schedule.source)
+    _emit("RUNTIME_TICK_SCHEDULE_OUTREACH_SEND_LOCAL_HHMM", schedule.outreach_send_local_hhmm)
+    _emit("RUNTIME_TICK_SCHEDULE_TRIAL_DEFAULT_SEND_LOCAL_HHMM", schedule.trial_default_send_local_hhmm)
+    _emit("RUNTIME_TICK_SCHEDULE_EVENING_PREP_LOCAL_HHMM", schedule.evening_prep_local_hhmm)
     _emit("RUNTIME_TICK_PRIMARY_SCHEDULER", "runtime_tick_selfhosted")
     _emit("RUNTIME_TICK_CANONICAL_RUN_SUMMARY_ROOT", str((data_dir / "out" / "run_summaries").resolve(strict=False)))
     _emit("RUNTIME_TICK_SELECTED_JOBS", ",".join(spec.name for spec in selected))
@@ -1099,15 +1165,16 @@ def main(argv: list[str] | None = None) -> int:
     if not (repo_root / "run_with_secrets.ps1").exists():
         return _error("missing_run_with_secrets")
 
-    try:
-        selected_jobs = _selected_jobs(str(args.job or "all"))
-    except ValueError as exc:
-        return _error(str(exc))
-
     resolution = resolve_data_dir(repo_root)
     data_dir = resolution.effective_path
     if not data_dir.is_absolute():
         return _error(f"data_dir_not_absolute path={data_dir}")
+
+    jobs = _jobs_for_data_dir(data_dir)
+    try:
+        selected_jobs = _selected_jobs(str(args.job or "all"), jobs=jobs)
+    except ValueError as exc:
+        return _error(str(exc))
 
     try:
         now_local = _now_local(str(args.now_local or ""))
