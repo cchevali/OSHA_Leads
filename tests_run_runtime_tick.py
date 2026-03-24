@@ -414,6 +414,48 @@ class TestRunRuntimeTick(unittest.TestCase):
         )
         self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
 
+    def test_doctor_inbound_triage_runs_when_imap_is_configured_from_saved_mailbox_env(self):
+        calls: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            parts = [str(c) for c in cmd]
+            calls.append(parts)
+            return self._proc(0, stdout="PASS_INBOUND_TRIAGE status=OK\n")
+
+        with tempfile.TemporaryDirectory() as d:
+            repo_root = Path(d)
+            (repo_root / "run_with_secrets.ps1").write_text("", encoding="utf-8")
+            data_dir = repo_root / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            out_buf = io.StringIO()
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "DATA_DIR": str(data_dir),
+                        "BOUNCE_IMAP_USER": "ops@example.com",
+                        "BOUNCE_IMAP_PASS": "secret",
+                    },
+                    clear=True,
+                ),
+                mock.patch.object(tick, "_repo_root", return_value=repo_root),
+                mock.patch.object(tick, "_git_sha", return_value="deadbeef"),
+                mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+                mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+                mock.patch.object(tick.subprocess, "run", side_effect=_run),
+                redirect_stdout(out_buf),
+            ):
+                rc = tick.main(["--doctor", "--job", "inbound_triage"])
+        out = out_buf.getvalue()
+        self.assertEqual(rc, 0, msg=out)
+        self.assertTrue(calls, msg=out)
+        joined = " ".join(calls[0])
+        self.assertIn("inbound_inbox_triage.py", joined)
+        self.assertIn("--run-once", joined)
+        self.assertIn("--dry-run", joined)
+        self.assertNotIn("gmail_credentials_missing", out)
+        self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
+
     def test_live_mode_writes_state_and_next_run_skips_same_slot(self):
         calls: list[list[str]] = []
 

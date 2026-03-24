@@ -1,8 +1,15 @@
 import email
 import email.policy
 import unittest
+from unittest import mock
 
-from inbound_inbox_triage import decode_header_value, extract_plain_body, extract_original_sender
+from inbound_inbox_triage import (
+    decode_header_value,
+    extract_plain_body,
+    extract_original_sender,
+    resolve_imap_settings,
+    resolve_inbound_backend,
+)
 
 
 class TestInboundImapParsing(unittest.TestCase):
@@ -36,6 +43,33 @@ class TestInboundImapParsing(unittest.TestCase):
 
         extracted = extract_original_sender(from_email, reply_to, body)
         self.assertEqual(extracted, "reply@example.com")
+
+    def test_resolve_inbound_backend_infers_imap_from_saved_bounce_settings(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"BOUNCE_IMAP_USER": "ops@example.com", "BOUNCE_IMAP_PASS": "secret"},
+            clear=True,
+        ):
+            self.assertEqual(resolve_inbound_backend(), "imap")
+
+    def test_resolve_imap_settings_falls_back_to_bounce_mailbox_values(self):
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "BOUNCE_IMAP_HOST": "imappro.zoho.com",
+                "BOUNCE_IMAP_PORT": "993",
+                "BOUNCE_IMAP_USER": "ops@example.com",
+                "BOUNCE_IMAP_PASS": "secret",
+                "BOUNCE_IMAP_FOLDER": "INBOX",
+            },
+            clear=True,
+        ):
+            settings = resolve_imap_settings()
+        self.assertEqual(settings["host"], "imappro.zoho.com")
+        self.assertEqual(settings["port"], "993")
+        self.assertEqual(settings["user"], "ops@example.com")
+        self.assertEqual(settings["password"], "secret")
+        self.assertEqual(settings["folder"], "INBOX")
 
 
 if __name__ == "__main__":

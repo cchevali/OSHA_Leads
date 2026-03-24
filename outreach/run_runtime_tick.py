@@ -356,6 +356,78 @@ def _powershell_file_cmd(path: Path, args: list[str] | None = None) -> list[str]
     return cmd
 
 
+def _read_local_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = str(raw_line or "").strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _first_env_config_value(repo_root: Path, *keys: str, default: str = "") -> str:
+    env_file = _read_local_env_file(repo_root / ".env")
+    for key in keys:
+        candidate = str(os.environ.get(key) or env_file.get(key) or "").strip()
+        if candidate:
+            return candidate
+    return str(default or "").strip()
+
+
+def _set_outreach_env_print_config(repo_root: Path) -> dict[str, str]:
+    script_path = (repo_root / "scripts" / "set_outreach_env.ps1").resolve(strict=False)
+    if not script_path.exists():
+        return {}
+    proc = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+            "-PrintConfig",
+        ],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=180,
+    )
+    if proc.returncode != 0:
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in str(proc.stdout or "").splitlines():
+        if "=" not in raw_line:
+            continue
+        key, value = raw_line.split("=", 1)
+        key_norm = str(key or "").strip().lower()
+        if not key_norm:
+            continue
+        values[key_norm] = str(value or "").strip()
+    return values
+
+
+def _resolve_inbound_backend(repo_root: Path) -> str:
+    print_values = _set_outreach_env_print_config(repo_root)
+    backend = str(print_values.get("inbound_backend") or "").strip().lower()
+    if backend:
+        return backend
+    explicit = _first_env_config_value(repo_root, "INBOUND_BACKEND").strip().lower()
+    if explicit:
+        return explicit
+    imap_markers = (
+        _first_env_config_value(repo_root, "IMAP_USER", "BOUNCE_IMAP_USER"),
+        _first_env_config_value(repo_root, "IMAP_PASS", "BOUNCE_IMAP_PASS"),
+        _first_env_config_value(repo_root, "IMAP_HOST", "BOUNCE_IMAP_HOST"),
+    )
+    return "imap" if any(str(marker or "").strip() for marker in imap_markers) else "gmail"
+
+
 def _python_file_cmd(repo_root: Path, relative_path: str, args: list[str] | None = None) -> list[str]:
     cmd: list[str] = ["py", "-3", str((repo_root / relative_path).resolve(strict=False))]
     cmd.extend(args or [])
@@ -364,9 +436,25 @@ def _python_file_cmd(repo_root: Path, relative_path: str, args: list[str] | None
 
 def _job_skip_reason(repo_root: Path, job_name: str) -> str:
     if job_name == "inbound_triage":
-        gmail_credentials = (repo_root / "secrets" / "gmail_credentials.json").resolve(strict=False)
-        if not gmail_credentials.exists():
-            return "gmail_credentials_missing"
+        backend = _resolve_inbound_backend(repo_root)
+        if backend == "imap":
+            print_values = _set_outreach_env_print_config(repo_root)
+            imap_user = str(print_values.get("imap_user") or "").strip()
+            imap_pass_present = str(print_values.get("imap_pass_present") or "").strip().upper()
+            if not imap_user:
+                imap_user = _first_env_config_value(repo_root, "IMAP_USER", "BOUNCE_IMAP_USER")
+            if not imap_pass_present:
+                imap_pass = _first_env_config_value(repo_root, "IMAP_PASS", "BOUNCE_IMAP_PASS")
+                imap_pass_present = "YES" if imap_pass else "NO"
+            if not imap_user or imap_pass_present != "YES":
+                return "imap_credentials_missing"
+            return ""
+        if backend == "gmail":
+            gmail_credentials = (repo_root / "secrets" / "gmail_credentials.json").resolve(strict=False)
+            if not gmail_credentials.exists():
+                return "gmail_credentials_missing"
+            return ""
+        return f"invalid_inbound_backend_{backend}"
     return ""
 
 

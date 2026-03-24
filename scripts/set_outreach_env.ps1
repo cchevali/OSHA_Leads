@@ -48,6 +48,15 @@ param(
   [string] $BounceImapFolder = '',
   [Nullable[int]] $BounceImapSinceHours = $null,
   [Nullable[int]] $BounceImapMaxMessages = $null,
+  [string] $InboundBackend = '',
+  [string] $ImapHost = '',
+  [Nullable[int]] $ImapPort = $null,
+  [string] $ImapUser = '',
+  [string] $ImapPass = '',
+  [string] $ImapFolder = '',
+  [string] $ImapFolderUnsub = '',
+  [string] $ImapFolderBounce = '',
+  [switch] $SyncInboundImapFromBounce,
   [string] $TaskSchedUser = '',
   [string] $TaskSchedPassword = '',
   [string] $RuntimeRole = '',
@@ -267,6 +276,84 @@ function Get-ScopeDriftWarning($Map) {
   return ($WARN_SET_OUTREACH_ENV_SCOPE_DRIFT + ' outreach_states=' + $outreachStates + ' autogrow_states=' + $prospectAutoGrowStates)
 }
 
+function Get-FirstMapOrEnvValue($Map, [string[]]$Keys, [string]$Default = '') {
+  foreach ($key in @($Keys)) {
+    if ($Map -and (Map-HasValue $Map $key)) {
+      return ([string]$Map[$key]).Trim()
+    }
+    $envCandidateRaw = [System.Environment]::GetEnvironmentVariable($key)
+    $envCandidate = if ($null -eq $envCandidateRaw) { '' } else { [string]$envCandidateRaw }
+    $envCandidate = $envCandidate.Trim()
+    if ($envCandidate) {
+      return $envCandidate
+    }
+  }
+  if ($null -eq $Default) {
+    return ''
+  }
+  return ([string]$Default).Trim()
+}
+
+function Resolve-InboundConfig($Map) {
+  $rawBackend = (Get-FirstMapOrEnvValue $Map @('INBOUND_BACKEND') '')
+  $backend = ''
+  $backendSource = 'default'
+  if ($rawBackend) {
+    $backend = $rawBackend.Trim().ToLowerInvariant()
+    $backendSource = 'explicit'
+  } else {
+    $imapMarkers = @(
+      (Get-FirstMapOrEnvValue $Map @('IMAP_HOST', 'BOUNCE_IMAP_HOST') ''),
+      (Get-FirstMapOrEnvValue $Map @('IMAP_USER', 'BOUNCE_IMAP_USER') ''),
+      (Get-FirstMapOrEnvValue $Map @('IMAP_PASS', 'BOUNCE_IMAP_PASS') '')
+    )
+    $hasSavedImap = $false
+    foreach ($marker in $imapMarkers) {
+      $markerValue = if ($null -eq $marker) { '' } else { [string]$marker }
+      if ($markerValue.Trim()) {
+        $hasSavedImap = $true
+        break
+      }
+    }
+    if ($hasSavedImap) {
+      $backend = 'imap'
+      $backendSource = 'inferred_imap_saved'
+    } else {
+      $backend = 'gmail'
+      $backendSource = 'default'
+    }
+  }
+
+  $directImapUser = (Get-FirstMapOrEnvValue $Map @('IMAP_USER') '')
+  $directImapPass = (Get-FirstMapOrEnvValue $Map @('IMAP_PASS') '')
+  $directImapHost = (Get-FirstMapOrEnvValue $Map @('IMAP_HOST') '')
+  $imapSource = 'direct_inbound'
+  if (-not $directImapUser -and -not $directImapPass -and -not $directImapHost) {
+    $imapSource = 'bounce_fallback'
+  }
+
+  $imapHost = (Get-FirstMapOrEnvValue $Map @('IMAP_HOST', 'BOUNCE_IMAP_HOST') 'imappro.zoho.com')
+  $imapPort = (Get-FirstMapOrEnvValue $Map @('IMAP_PORT', 'BOUNCE_IMAP_PORT') '993')
+  $imapUser = (Get-FirstMapOrEnvValue $Map @('IMAP_USER', 'BOUNCE_IMAP_USER') '')
+  $imapPass = (Get-FirstMapOrEnvValue $Map @('IMAP_PASS', 'BOUNCE_IMAP_PASS') '')
+  $imapFolder = (Get-FirstMapOrEnvValue $Map @('IMAP_FOLDER', 'BOUNCE_IMAP_FOLDER') 'INBOX')
+  $imapFolderUnsub = (Get-FirstMapOrEnvValue $Map @('IMAP_FOLDER_UNSUB') 'Processed/Unsubscribe')
+  $imapFolderBounce = (Get-FirstMapOrEnvValue $Map @('IMAP_FOLDER_BOUNCE') 'Processed/Bounce')
+
+  return @{
+    Backend = $backend
+    BackendSource = $backendSource
+    ImapSource = $imapSource
+    ImapHost = $imapHost
+    ImapPort = $imapPort
+    ImapUser = $imapUser
+    ImapPass = $imapPass
+    ImapFolder = $imapFolder
+    ImapFolderUnsub = $imapFolderUnsub
+    ImapFolderBounce = $imapFolderBounce
+  }
+}
+
 function Ensure-ToolsAndFiles([string]$EnvSopsPath) {
   $sopsExe = Resolve-SopsExe
   if (-not $sopsExe) {
@@ -441,6 +528,15 @@ try {
     'BounceImapFolder',
     'BounceImapSinceHours',
     'BounceImapMaxMessages',
+    'InboundBackend',
+    'ImapHost',
+    'ImapPort',
+    'ImapUser',
+    'ImapPass',
+    'ImapFolder',
+    'ImapFolderUnsub',
+    'ImapFolderBounce',
+    'SyncInboundImapFromBounce',
     'TaskSchedUser',
     'TaskSchedPassword',
     'RuntimeRole',
@@ -707,6 +803,61 @@ try {
       Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_BounceImapFolder'
     }
   }
+  if ($PSBoundParameters.ContainsKey('InboundBackend')) {
+    $normalizedInboundBackend = (($InboundBackend -as [string]).Trim().ToLowerInvariant())
+    if ($normalizedInboundBackend -notin @('gmail', 'imap')) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_InboundBackend'
+    }
+    $hasImapMutation = $PSBoundParameters.ContainsKey('SyncInboundImapFromBounce') `
+      -or $PSBoundParameters.ContainsKey('ImapHost') `
+      -or $PSBoundParameters.ContainsKey('ImapPort') `
+      -or $PSBoundParameters.ContainsKey('ImapUser') `
+      -or $PSBoundParameters.ContainsKey('ImapPass') `
+      -or $PSBoundParameters.ContainsKey('ImapFolder') `
+      -or $PSBoundParameters.ContainsKey('ImapFolderUnsub') `
+      -or $PSBoundParameters.ContainsKey('ImapFolderBounce')
+    if (($normalizedInboundBackend -eq 'gmail') -and $hasImapMutation) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_InboundBackend_gmail_conflicts_with_imap_settings'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ImapHost')) {
+    if (-not (($ImapHost -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ImapHost'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ImapPort') -and $ImapPort -lt 1) {
+    Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ImapPort'
+  }
+  if ($PSBoundParameters.ContainsKey('ImapUser')) {
+    if (-not (($ImapUser -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ImapUser'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ImapPass')) {
+    if (-not (($ImapPass -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ImapPass'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ImapFolder')) {
+    if (-not (($ImapFolder -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ImapFolder'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ImapFolderUnsub')) {
+    if (-not (($ImapFolderUnsub -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ImapFolderUnsub'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ImapFolderBounce')) {
+    if (-not (($ImapFolderBounce -as [string]).Trim())) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_ImapFolderBounce'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('SyncInboundImapFromBounce') -and $PSBoundParameters.ContainsKey('InboundBackend')) {
+    if ((($InboundBackend -as [string]).Trim().ToLowerInvariant()) -ne 'imap') {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_SyncInboundImapFromBounce_requires_imap'
+    }
+  }
 
   $tooling = Ensure-ToolsAndFiles $envSopsPath
   $sopsExe = [string]$tooling.SopsExe
@@ -792,6 +943,18 @@ try {
       $taskSchedPasswordPresent = if (Map-HasValue $printMap 'TASK_SCHED_PASSWORD') { 'YES' } else { 'NO' }
       Write-Output ('task_sched_user=' + $taskSchedUserValue)
       Write-Output ('task_sched_password_present=' + $taskSchedPasswordPresent)
+      $inboundConfig = Resolve-InboundConfig $printMap
+      $imapPassPresent = if (([string]$inboundConfig.ImapPass).Trim()) { 'YES' } else { 'NO' }
+      Write-Output ('inbound_backend=' + [string]$inboundConfig.Backend)
+      Write-Output ('inbound_backend_source=' + [string]$inboundConfig.BackendSource)
+      Write-Output ('imap_source=' + [string]$inboundConfig.ImapSource)
+      Write-Output ('imap_host=' + [string]$inboundConfig.ImapHost)
+      Write-Output ('imap_port=' + [string]$inboundConfig.ImapPort)
+      Write-Output ('imap_user=' + [string]$inboundConfig.ImapUser)
+      Write-Output ('imap_pass_present=' + $imapPassPresent)
+      Write-Output ('imap_folder=' + [string]$inboundConfig.ImapFolder)
+      Write-Output ('imap_folder_unsub=' + [string]$inboundConfig.ImapFolderUnsub)
+      Write-Output ('imap_folder_bounce=' + [string]$inboundConfig.ImapFolderBounce)
       $runtimeRoleValue = if (Map-HasValue $printMap 'RUNTIME_ROLE') { ([string]$printMap['RUNTIME_ROLE']).Trim().ToLowerInvariant() } else { 'dev_client' }
       $canonicalHostnameValue = if (Map-HasValue $printMap 'CANONICAL_HOSTNAME') { ([string]$printMap['CANONICAL_HOSTNAME']).Trim() } else { '' }
       $artifactSyncDirValue = if (Map-HasValue $printMap 'ARTIFACT_SYNC_DIR') { ([string]$printMap['ARTIFACT_SYNC_DIR']).Trim() } else { '' }
@@ -901,6 +1064,74 @@ try {
 
     if ($PSBoundParameters.ContainsKey('BounceImapMaxMessages')) {
       Set-MapValue -Map $map -Key 'BOUNCE_IMAP_MAX_MESSAGES' -Value ([string]$BounceImapMaxMessages) -TouchedList $touched
+    }
+
+    $shouldWriteInboundBackend = $PSBoundParameters.ContainsKey('InboundBackend') `
+      -or $PSBoundParameters.ContainsKey('SyncInboundImapFromBounce') `
+      -or $PSBoundParameters.ContainsKey('ImapHost') `
+      -or $PSBoundParameters.ContainsKey('ImapPort') `
+      -or $PSBoundParameters.ContainsKey('ImapUser') `
+      -or $PSBoundParameters.ContainsKey('ImapPass') `
+      -or $PSBoundParameters.ContainsKey('ImapFolder') `
+      -or $PSBoundParameters.ContainsKey('ImapFolderUnsub') `
+      -or $PSBoundParameters.ContainsKey('ImapFolderBounce')
+    $targetInboundBackend = ''
+    if ($PSBoundParameters.ContainsKey('InboundBackend')) {
+      $targetInboundBackend = (($InboundBackend -as [string]).Trim().ToLowerInvariant())
+    } elseif ($shouldWriteInboundBackend) {
+      $targetInboundBackend = 'imap'
+    }
+    if ($targetInboundBackend) {
+      Set-MapValue -Map $map -Key 'INBOUND_BACKEND' -Value $targetInboundBackend -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('SyncInboundImapFromBounce')) {
+      $syncBounceHost = (Get-FirstMapOrEnvValue $map @('BOUNCE_IMAP_HOST') 'imappro.zoho.com')
+      $syncBouncePort = (Get-FirstMapOrEnvValue $map @('BOUNCE_IMAP_PORT') '993')
+      $syncBounceUser = (Get-FirstMapOrEnvValue $map @('BOUNCE_IMAP_USER') '')
+      $syncBouncePass = (Get-FirstMapOrEnvValue $map @('BOUNCE_IMAP_PASS') '')
+      $syncBounceFolder = (Get-FirstMapOrEnvValue $map @('BOUNCE_IMAP_FOLDER') 'INBOX')
+      if (-not $syncBounceUser) {
+        Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'missing_BOUNCE_IMAP_USER_for_SyncInboundImapFromBounce'
+      }
+      if (-not $syncBouncePass) {
+        Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'missing_BOUNCE_IMAP_PASS_for_SyncInboundImapFromBounce'
+      }
+      Set-MapValue -Map $map -Key 'IMAP_HOST' -Value $syncBounceHost -TouchedList $touched
+      Set-MapValue -Map $map -Key 'IMAP_PORT' -Value $syncBouncePort -TouchedList $touched
+      Set-MapValue -Map $map -Key 'IMAP_USER' -Value $syncBounceUser.Trim().ToLowerInvariant() -TouchedList $touched
+      Set-MapValue -Map $map -Key 'IMAP_PASS' -Value $syncBouncePass -TouchedList $touched
+      Set-MapValue -Map $map -Key 'IMAP_FOLDER' -Value $syncBounceFolder -TouchedList $touched
+      Set-MapValue -Map $map -Key 'IMAP_FOLDER_UNSUB' -Value 'Processed/Unsubscribe' -TouchedList $touched
+      Set-MapValue -Map $map -Key 'IMAP_FOLDER_BOUNCE' -Value 'Processed/Bounce' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ImapHost')) {
+      Set-MapValue -Map $map -Key 'IMAP_HOST' -Value (($ImapHost -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ImapPort')) {
+      Set-MapValue -Map $map -Key 'IMAP_PORT' -Value ([string]$ImapPort) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ImapUser')) {
+      Set-MapValue -Map $map -Key 'IMAP_USER' -Value (($ImapUser -as [string]).Trim().ToLowerInvariant()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ImapPass')) {
+      Set-MapValue -Map $map -Key 'IMAP_PASS' -Value (($ImapPass -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ImapFolder')) {
+      Set-MapValue -Map $map -Key 'IMAP_FOLDER' -Value (($ImapFolder -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ImapFolderUnsub')) {
+      Set-MapValue -Map $map -Key 'IMAP_FOLDER_UNSUB' -Value (($ImapFolderUnsub -as [string]).Trim()) -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('ImapFolderBounce')) {
+      Set-MapValue -Map $map -Key 'IMAP_FOLDER_BOUNCE' -Value (($ImapFolderBounce -as [string]).Trim()) -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('ProspectAutoGrowEnabled')) {

@@ -144,11 +144,27 @@ Verification:
 
 Inbox setup guidance:
 
+- For a Zoho mailbox, prefer the IMAP backend. Gmail OAuth is optional and only needed if you intentionally want Gmail as the inbound reader.
 - Gmail backend status shows `secrets\gmail_credentials.json`, `secrets\gmail_token.json`, Gmail client dependency status, the latest triage/reply-draft/engineering-ticket paths, and one recommended next step.
 - IMAP backend status shows `INBOUND_BACKEND=imap`, `IMAP_HOST`, `IMAP_USER` / `IMAP_PASS` presence, the same artifact paths, and one recommended next step.
 - The screen stays read-only; there is no credential upload, OAuth launcher, or bootstrap button in v1.
 
-Canonical Gmail bootstrap commands:
+Canonical Zoho / IMAP sync and verification commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -InboundBackend imap -SyncInboundImapFromBounce
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 -PrintConfig
+.\run_with_secrets.ps1 -- py -3 inbound_inbox_triage.py --dry-run --since-hours 1
+.\run_with_secrets.ps1 -- py -3 inbound_inbox_triage.py --run-once
+```
+
+Notes:
+
+- `-SyncInboundImapFromBounce` copies the already-saved mailbox settings from `BOUNCE_IMAP_*` into `INBOUND_BACKEND=imap` plus `IMAP_*`, so operators do not need to hand-edit env values.
+- The safe sync path is the preferred setup for Zoho because the repo already uses the same mailbox family for bounce/import flows.
+
+Optional Gmail bootstrap commands:
 
 ```powershell
 cd C:\dev\OSHA_Leads

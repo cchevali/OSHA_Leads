@@ -34,6 +34,34 @@ class _StubRunner:
         joined = " ".join(parts)
 
         if "set_outreach_env.ps1" in joined and "-PrintConfig" in parts:
+            env_source = ops_app.os.environ
+
+            def _first(*keys: str, default: str = "") -> str:
+                for key in keys:
+                    candidate = str(env_source.get(key) or "").strip()
+                    if candidate:
+                        return candidate
+                return str(default or "").strip()
+
+            inbound_backend = _first("INBOUND_BACKEND").lower()
+            backend_source = "explicit"
+            if not inbound_backend:
+                if any(
+                    _first(*keys)
+                    for keys in (
+                        ("IMAP_HOST", "BOUNCE_IMAP_HOST"),
+                        ("IMAP_USER", "BOUNCE_IMAP_USER"),
+                        ("IMAP_PASS", "BOUNCE_IMAP_PASS"),
+                    )
+                ):
+                    inbound_backend = "imap"
+                    backend_source = "inferred_imap_saved"
+                else:
+                    inbound_backend = "gmail"
+                    backend_source = "default"
+            imap_source = "direct_inbound" if any(_first(key) for key in ("IMAP_HOST", "IMAP_USER", "IMAP_PASS")) else "bounce_fallback"
+            imap_user = _first("IMAP_USER", "BOUNCE_IMAP_USER")
+            imap_pass_present = "YES" if _first("IMAP_PASS", "BOUNCE_IMAP_PASS") else "NO"
             stdout = "\n".join(
                 [
                     "outreach_daily_limit=10",
@@ -44,6 +72,16 @@ class _StubRunner:
                     "prospect_ai_assist_review_enabled=1",
                     "ai_triage_enabled=0",
                     "prospect_autogrow_states=TX,CA",
+                    f"inbound_backend={inbound_backend}",
+                    f"inbound_backend_source={backend_source}",
+                    f"imap_source={imap_source}",
+                    f"imap_host={_first('IMAP_HOST', 'BOUNCE_IMAP_HOST', default='imappro.zoho.com')}",
+                    f"imap_port={_first('IMAP_PORT', 'BOUNCE_IMAP_PORT', default='993')}",
+                    f"imap_user={imap_user}",
+                    f"imap_pass_present={imap_pass_present}",
+                    f"imap_folder={_first('IMAP_FOLDER', 'BOUNCE_IMAP_FOLDER', default='INBOX')}",
+                    f"imap_folder_unsub={_first('IMAP_FOLDER_UNSUB', default='Processed/Unsubscribe')}",
+                    f"imap_folder_bounce={_first('IMAP_FOLDER_BOUNCE', default='Processed/Bounce')}",
                     "PASS_SET_OUTREACH_ENV_PRINT_CONFIG status=OK",
                 ]
             )
@@ -161,7 +199,8 @@ class TestOpsConsole(unittest.TestCase):
         self.assertIn("Nothing urgent is queued.", dashboard)
         self.assertIn("Inbound Setup", inbox)
         self.assertIn("not configured", inbox)
-        self.assertIn("Create secrets/gmail_credentials.json", inbox)
+        self.assertIn("Gmail is optional", inbox)
+        self.assertIn("set_outreach_env.ps1 -InboundBackend imap -SyncInboundImapFromBounce", inbox)
         self.assertIn("py -3 -m pip install google-api-python-client google-auth-oauthlib", inbox)
         self.assertIn("py -3 inbound_inbox_triage.py --dry-run --since-hours 1", inbox)
         self.assertIn("py -3 inbound_inbox_triage.py --run-once", inbox)
@@ -203,7 +242,26 @@ class TestOpsConsole(unittest.TestCase):
         self.assertIn("<dd>imap</dd>", inbox)
         self.assertIn("configured", inbox)
         self.assertIn("imap.example.com", inbox)
+        self.assertIn("ops@example.com", inbox)
+        self.assertIn("set_outreach_env.ps1 -InboundBackend imap -SyncInboundImapFromBounce", inbox)
         self.assertIn(".\\run_with_secrets.ps1 -- py -3 inbound_inbox_triage.py --dry-run --since-hours 1", inbox)
+        self.assertIn("Run the IMAP dry-run triage check when you want to verify the inbound path.", inbox)
+
+    def test_inbox_imap_status_can_be_inferred_from_saved_bounce_mailbox_values(self):
+        with mock.patch.dict(
+            ops_app.os.environ,
+            {
+                "BOUNCE_IMAP_USER": "zoho-ops@example.com",
+                "BOUNCE_IMAP_PASS": "topsecret",
+                "BOUNCE_IMAP_HOST": "imappro.zoho.com",
+            },
+            clear=True,
+        ):
+            inbox = self._body(self.app.dispatch("GET", "/inbox"))
+        self.assertIn("<dd>imap</dd>", inbox)
+        self.assertIn("inferred_imap_saved", inbox)
+        self.assertIn("bounce_fallback", inbox)
+        self.assertIn("zoho-ops@example.com", inbox)
         self.assertIn("Run the IMAP dry-run triage check when you want to verify the inbound path.", inbox)
 
     def test_build_server_rejects_non_localhost_binding(self):

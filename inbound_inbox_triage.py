@@ -50,6 +50,42 @@ except ImportError:
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
+def first_env_value(*keys: str, default: str = "") -> str:
+    """Return the first non-empty environment value for the provided keys."""
+    for key in keys:
+        candidate = str(os.getenv(str(key or "").strip()) or "").strip()
+        if candidate:
+            return candidate
+    return str(default or "").strip()
+
+
+def resolve_inbound_backend() -> str:
+    """Resolve the inbound backend, preferring explicit config and inferring IMAP from saved mailbox settings."""
+    explicit = first_env_value("INBOUND_BACKEND").strip().lower()
+    if explicit:
+        return explicit
+
+    imap_markers = (
+        first_env_value("IMAP_USER", "BOUNCE_IMAP_USER"),
+        first_env_value("IMAP_PASS", "BOUNCE_IMAP_PASS"),
+        first_env_value("IMAP_HOST", "BOUNCE_IMAP_HOST"),
+    )
+    return "imap" if any(str(marker or "").strip() for marker in imap_markers) else "gmail"
+
+
+def resolve_imap_settings() -> dict[str, str]:
+    """Resolve IMAP settings, falling back to the saved bounce-mailbox settings for Zoho setups."""
+    return {
+        "host": first_env_value("IMAP_HOST", "BOUNCE_IMAP_HOST", default="imappro.zoho.com"),
+        "port": first_env_value("IMAP_PORT", "BOUNCE_IMAP_PORT", default="993"),
+        "user": first_env_value("IMAP_USER", "BOUNCE_IMAP_USER"),
+        "password": first_env_value("IMAP_PASS", "BOUNCE_IMAP_PASS"),
+        "folder": first_env_value("IMAP_FOLDER", "BOUNCE_IMAP_FOLDER", default="INBOX"),
+        "folder_unsub": first_env_value("IMAP_FOLDER_UNSUB", default="Processed/Unsubscribe"),
+        "folder_bounce": first_env_value("IMAP_FOLDER_BOUNCE", default="Processed/Bounce"),
+    }
+
+
 SCRIPT_DIR = Path(__file__).parent.resolve()
 SECRETS_DIR = SCRIPT_DIR / "secrets"
 OUT_DIR = SCRIPT_DIR / "out"
@@ -66,16 +102,17 @@ ENG_TICKETS_DIR = OUT_DIR / "eng_tickets"
 TRIAGE_LOG_PATH = OUT_DIR / "inbox_triage_log.csv"
 
 # Inbound backend
-INBOUND_BACKEND = os.getenv("INBOUND_BACKEND", "gmail").strip().lower()
+INBOUND_BACKEND = resolve_inbound_backend()
 
 # IMAP configuration (Zoho)
-IMAP_HOST = os.getenv("IMAP_HOST", "imappro.zoho.com")
-IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
-IMAP_USER = os.getenv("IMAP_USER", "")
-IMAP_PASS = os.getenv("IMAP_PASS", "")
-IMAP_FOLDER = os.getenv("IMAP_FOLDER", "INBOX")
-IMAP_FOLDER_UNSUB = os.getenv("IMAP_FOLDER_UNSUB", "Processed/Unsubscribe")
-IMAP_FOLDER_BOUNCE = os.getenv("IMAP_FOLDER_BOUNCE", "Processed/Bounce")
+_IMAP_SETTINGS = resolve_imap_settings()
+IMAP_HOST = _IMAP_SETTINGS["host"]
+IMAP_PORT = int(_IMAP_SETTINGS["port"])
+IMAP_USER = _IMAP_SETTINGS["user"]
+IMAP_PASS = _IMAP_SETTINGS["password"]
+IMAP_FOLDER = _IMAP_SETTINGS["folder"]
+IMAP_FOLDER_UNSUB = _IMAP_SETTINGS["folder_unsub"]
+IMAP_FOLDER_BOUNCE = _IMAP_SETTINGS["folder_bounce"]
 SUPPORT_INBOX = os.getenv("REPLY_TO_EMAIL", "support@microflowops.com").strip().lower()
 
 # Gmail OAuth scopes
@@ -404,7 +441,7 @@ def extract_original_sender(from_email: str, reply_to: str, body: str) -> str:
 def imap_connect() -> imaplib.IMAP4_SSL:
     """Connect to IMAP and login."""
     if not IMAP_USER or not IMAP_PASS:
-        print("[ERROR] IMAP_USER / IMAP_PASS not configured in .env")
+        print("[ERROR] IMAP_USER / IMAP_PASS not configured in env or saved secrets flow")
         return None
     try:
         conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)

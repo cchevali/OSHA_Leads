@@ -468,21 +468,31 @@ class OpsConsoleService:
             "prospect_autogrow_states": "",
         }
 
-    def outreach_env_snapshot(self) -> dict[str, Any]:
-        values = self._current_outreach_defaults()
-        warnings: list[str] = []
+    def _set_outreach_env_print_config(self) -> tuple[dict[str, str], CommandResult]:
         result = self._command_runner(
             self._powershell_file_command("scripts/set_outreach_env.ps1", "-PrintConfig"),
             timeout_seconds=180,
         )
+        values: dict[str, str] = {}
         if result.exit_code == 0:
             for line in result.stdout.splitlines():
                 if "=" not in line:
                     continue
                 key, value = line.split("=", 1)
                 key_norm = str(key or "").strip().lower()
+                if not key_norm:
+                    continue
+                values[key_norm] = str(value or "").strip()
+        return values, result
+
+    def outreach_env_snapshot(self) -> dict[str, Any]:
+        values = self._current_outreach_defaults()
+        warnings: list[str] = []
+        print_values, result = self._set_outreach_env_print_config()
+        if result.exit_code == 0:
+            for key_norm, value in print_values.items():
                 if key_norm in values:
-                    values[key_norm] = str(value or "").strip()
+                    values[key_norm] = value
             source = "set_outreach_env_print_config"
         else:
             warnings.append("Canonical env print-config unavailable; using shell/.env fallbacks instead.")
@@ -738,7 +748,30 @@ class OpsConsoleService:
         reply_drafts_dir = out_root / "reply_drafts"
         eng_tickets_dir = out_root / "eng_tickets"
         env_file = _read_env_file(self.repo_root / ".env")
-        backend = _env_or_file_value(env_file, "INBOUND_BACKEND", default="gmail").lower() or "gmail"
+        print_values, print_result = self._set_outreach_env_print_config()
+
+        def _print_or_env(key: str, *fallback_keys: str, default: str = "") -> str:
+            normalized_keys = [str(key or "").strip().lower(), *[str(item or "").strip().lower() for item in fallback_keys]]
+            for normalized_key in normalized_keys:
+                if normalized_key and normalized_key in print_values:
+                    candidate = str(print_values.get(normalized_key) or "").strip()
+                    if candidate:
+                        return candidate
+            env_keys = [key, *fallback_keys]
+            for env_key in env_keys:
+                candidate = _env_or_file_value(env_file, env_key, default="")
+                if candidate:
+                    return candidate
+            return str(default or "").strip()
+
+        backend = _print_or_env("INBOUND_BACKEND", default="").lower()
+        if not backend:
+            imap_markers = (
+                _print_or_env("IMAP_USER", "BOUNCE_IMAP_USER"),
+                _print_or_env("IMAP_PASS", "BOUNCE_IMAP_PASS"),
+                _print_or_env("IMAP_HOST", "BOUNCE_IMAP_HOST"),
+            )
+            backend = "imap" if any(str(marker or "").strip() for marker in imap_markers) else "gmail"
         credentials_path = (self.repo_root / "secrets" / "gmail_credentials.json").resolve(strict=False)
         token_path = (self.repo_root / "secrets" / "gmail_token.json").resolve(strict=False)
         reply_drafts = sorted(reply_drafts_dir.glob("*"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)[:10]
@@ -770,11 +803,18 @@ class OpsConsoleService:
             for module_name in ("googleapiclient.discovery", "google_auth_oauthlib.flow", "google.oauth2.credentials")
             if not _python_module_available(module_name)
         ]
-        imap_user_present = bool(_env_or_file_value(env_file, "IMAP_USER"))
-        imap_pass_present = bool(_env_or_file_value(env_file, "IMAP_PASS"))
-        imap_host = _env_or_file_value(env_file, "IMAP_HOST", default="imappro.zoho.com") or "imappro.zoho.com"
+        imap_user = _print_or_env("IMAP_USER", "BOUNCE_IMAP_USER")
+        imap_pass_present = _print_or_env("imap_pass_present")
+        if not imap_pass_present:
+            imap_pass_present = "YES" if _print_or_env("IMAP_PASS", "BOUNCE_IMAP_PASS") else "NO"
+        imap_host = _print_or_env("IMAP_HOST", "BOUNCE_IMAP_HOST", default="imappro.zoho.com") or "imappro.zoho.com"
+        imap_port = _print_or_env("IMAP_PORT", "BOUNCE_IMAP_PORT", default="993") or "993"
+        imap_folder = _print_or_env("IMAP_FOLDER", "BOUNCE_IMAP_FOLDER", default="INBOX") or "INBOX"
+        imap_folder_unsub = _print_or_env("IMAP_FOLDER_UNSUB", default="Processed/Unsubscribe") or "Processed/Unsubscribe"
+        imap_folder_bounce = _print_or_env("IMAP_FOLDER_BOUNCE", default="Processed/Bounce") or "Processed/Bounce"
         inbound_setup: dict[str, Any] = {
             "backend": backend,
+            "backend_source": _print_or_env("inbound_backend_source", default="fallback" if print_result.exit_code else ""),
             "credentials_path": credentials_path,
             "credentials_present": credentials_path.exists(),
             "token_path": token_path,
@@ -782,8 +822,14 @@ class OpsConsoleService:
             "gmail_client_deps_installed": not gmail_missing_modules,
             "gmail_missing_modules": gmail_missing_modules,
             "imap_host": imap_host,
-            "imap_user_present": imap_user_present,
-            "imap_pass_present": imap_pass_present,
+            "imap_port": imap_port,
+            "imap_user": imap_user,
+            "imap_user_present": bool(imap_user),
+            "imap_pass_present": str(imap_pass_present).strip().upper() == "YES",
+            "imap_source": _print_or_env("imap_source", default="fallback" if print_result.exit_code else ""),
+            "imap_folder": imap_folder,
+            "imap_folder_unsub": imap_folder_unsub,
+            "imap_folder_bounce": imap_folder_bounce,
             "triage_log_path": triage_log_path,
             "reply_drafts_dir": reply_drafts_dir,
             "eng_tickets_dir": eng_tickets_dir,
@@ -793,16 +839,20 @@ class OpsConsoleService:
         }
         if backend == "imap":
             inbound_setup["commands"] = [
+                "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\set_outreach_env.ps1 -InboundBackend imap -SyncInboundImapFromBounce",
+                "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\set_outreach_env.ps1 -PrintConfig",
                 ".\\run_with_secrets.ps1 -- py -3 inbound_inbox_triage.py --dry-run --since-hours 1",
+                ".\\run_with_secrets.ps1 -- py -3 inbound_inbox_triage.py --run-once",
             ]
-            if imap_user_present and imap_pass_present:
+            if bool(imap_user) and (str(imap_pass_present).strip().upper() == "YES"):
                 inbound_setup["status"] = "configured"
                 inbound_setup["recommended_next_step"] = "Run the IMAP dry-run triage check when you want to verify the inbound path."
             else:
                 inbound_setup["status"] = "not configured"
-                inbound_setup["recommended_next_step"] = "Load IMAP_USER and IMAP_PASS through the secrets flow, then rerun the IMAP dry-run triage check."
+                inbound_setup["recommended_next_step"] = "Run the safe IMAP sync command to copy the saved Zoho mailbox values into INBOUND_BACKEND and IMAP_* before rerunning the IMAP dry-run triage check."
         elif backend == "gmail":
             inbound_setup["commands"] = [
+                "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\set_outreach_env.ps1 -InboundBackend imap -SyncInboundImapFromBounce",
                 "py -3 -m pip install google-api-python-client google-auth-oauthlib",
                 "py -3 inbound_inbox_triage.py --dry-run --since-hours 1",
                 "py -3 inbound_inbox_triage.py --run-once",
@@ -812,7 +862,7 @@ class OpsConsoleService:
                 inbound_setup["recommended_next_step"] = "Install the Gmail client packages, then rerun the dry-run triage bootstrap."
             elif not credentials_path.exists():
                 inbound_setup["status"] = "not configured"
-                inbound_setup["recommended_next_step"] = "Create secrets/gmail_credentials.json, then rerun the dry-run triage bootstrap."
+                inbound_setup["recommended_next_step"] = "Gmail is optional. For Zoho/IMAP use the safe IMAP sync command; only create secrets/gmail_credentials.json if you intentionally want the Gmail backend."
             elif not token_path.exists():
                 inbound_setup["status"] = "ready for first OAuth bootstrap"
                 inbound_setup["recommended_next_step"] = "Run the dry-run triage bootstrap, then a single --run-once bootstrap on the canonical PC."
@@ -1753,6 +1803,7 @@ class OpsConsoleApp:
         backend = str(setup.get("backend") or "gmail").strip().lower() or "gmail"
         setup_details = {
             "backend": backend,
+            "backend_source": str(setup.get("backend_source") or ""),
             "status": str(setup.get("status") or "unknown"),
             "recommended_next_step": str(setup.get("recommended_next_step") or ""),
             "triage_log": _path_with_presence(Path(setup["triage_log_path"])) if setup.get("triage_log_path") else "missing",
@@ -1761,8 +1812,13 @@ class OpsConsoleApp:
         }
         if backend == "imap":
             setup_details["imap_host"] = str(setup.get("imap_host") or "")
-            setup_details["imap_user"] = "present" if bool(setup.get("imap_user_present")) else "missing"
+            setup_details["imap_port"] = str(setup.get("imap_port") or "")
+            setup_details["imap_source"] = str(setup.get("imap_source") or "")
+            setup_details["imap_user"] = str(setup.get("imap_user") or "") if bool(setup.get("imap_user_present")) else "missing"
             setup_details["imap_password"] = "present" if bool(setup.get("imap_pass_present")) else "missing"
+            setup_details["imap_folder"] = str(setup.get("imap_folder") or "")
+            setup_details["imap_folder_unsub"] = str(setup.get("imap_folder_unsub") or "")
+            setup_details["imap_folder_bounce"] = str(setup.get("imap_folder_bounce") or "")
         else:
             credentials_path = Path(setup["credentials_path"]) if setup.get("credentials_path") else None
             token_path = Path(setup["token_path"]) if setup.get("token_path") else None

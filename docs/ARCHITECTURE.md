@@ -55,6 +55,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Inbox / Requests remains read-only and derives backend-aware setup guidance from local filesystem plus env inspection only:
   - Gmail backend checks `secrets\gmail_credentials.json`, `secrets\gmail_token.json`, and client package availability
   - IMAP backend checks `IMAP_HOST`, `IMAP_USER`, and `IMAP_PASS`
+  - Zoho/IMAP operators can set `INBOUND_BACKEND=imap` and populate `IMAP_*` through the guarded `scripts\set_outreach_env.ps1 -InboundBackend imap -SyncInboundImapFromBounce` path, which reuses the saved `BOUNCE_IMAP_*` mailbox settings instead of requiring hand-managed env edits
   - latest triage log, reply-draft, and engineering-ticket artifact paths are surfaced without turning the console into an email client
 
 ## Shared Schedule Override Seam
