@@ -640,7 +640,16 @@ class OpsConsoleService:
             for row in query_rows:
                 payload = dict(row)
                 subscriber_key = str(payload.get("subscriber_key") or "").strip().lower()
-                customer_config = run_trial_admin._resolve_customer_config_for_subscriber(subscriber_key)  # type: ignore[attr-defined]
+                customer_config_result = run_trial_admin._resolve_customer_config_for_subscriber(subscriber_key)  # type: ignore[attr-defined]
+                customer_config_path: Path | None = None
+                customer_config: dict[str, Any] = {}
+                if isinstance(customer_config_result, tuple):
+                    if len(customer_config_result) >= 1 and isinstance(customer_config_result[0], Path):
+                        customer_config_path = customer_config_result[0]
+                    if len(customer_config_result) >= 2 and isinstance(customer_config_result[1], dict):
+                        customer_config = dict(customer_config_result[1])
+                elif isinstance(customer_config_result, dict):
+                    customer_config = dict(customer_config_result)
                 recipients = list(customer_config.get("email_recipients") or customer_config.get("recipients") or [])
                 if not recipients:
                     recipients = [str(payload.get("email") or "").strip()]
@@ -673,6 +682,7 @@ class OpsConsoleService:
                         "conversion_due": conversion_due,
                         "conversion_draft_exists": conversion_path.exists(),
                         "conversion_draft_path": conversion_path,
+                        "customer_config_path": customer_config_path,
                         "state_scope": list(customer_config.get("states") or []),
                         "territory_scope": str(customer_config.get("territory_code") or payload.get("territory_code") or ""),
                         "trial_status_group": "expired" if expired else ("pending" if pending else "active"),

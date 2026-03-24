@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import crm_light
 from ops_console import app as ops_app
 from runtime_schedule_config import schedule_config_path, write_runtime_schedule
 
@@ -407,3 +409,36 @@ class TestOpsConsole(unittest.TestCase):
         add_command = [str(part) for part in add_calls[-1]["command"]]
         self.assertIn("--send-time-local", add_command)
         self.assertIn("11:30", add_command)
+
+    def test_dashboard_handles_trial_customer_config_tuple_shape(self):
+        crm_db = crm_light.ensure_database(self.data_dir / "crm_light.sqlite")
+        conn = sqlite3.connect(str(crm_db))
+        try:
+            crm_light.upsert_subscriber(
+                conn,
+                subscriber_key="tuple_trial",
+                email="ops@example.com",
+                territory_code="TX_TRI",
+                tz="America/New_York",
+                status="trial",
+            )
+            crm_light.upsert_trial_state(
+                conn,
+                subscriber_key="tuple_trial",
+                start_date="2026-03-24",
+                sends_limit=14,
+            )
+        finally:
+            conn.close()
+
+        trials = self.service.trials_data()
+        self.assertEqual(len(list(trials.get("rows") or [])), 1)
+        row = list(trials.get("rows") or [])[0]
+        self.assertEqual(row["subscriber_key"], "tuple_trial")
+        self.assertEqual(row["recipients"], ["ops@example.com"])
+        self.assertEqual(row["customer_config_path"], None)
+
+        with mock.patch.object(ops_app, "_python_module_available", return_value=True):
+            dashboard = self._body(self.app.dispatch("GET", "/"))
+        self.assertIn("MicroFlowOps Ops Console", dashboard)
+        self.assertNotIn("Request Error", dashboard)
