@@ -1,4 +1,10 @@
-OSHA Leads Manual Deep Research Prospect Prompt
+OSHA Leads Manual Prospect Research Task
+
+Important execution rule:
+- Execute this research task. Do not review, critique, summarize, rewrite, or improve these instructions.
+- Do not return an executive summary, requirements analysis, ambiguity log, QA plan, or recommendations.
+- Use the attached/current CRM skip list CSV as input data for exclusions.
+- Return only the final CSV output requested below.
 
 Run date: $RUN_DATE
 Active states: $STATE_SCOPE
@@ -18,7 +24,7 @@ Contact preferences:
 - Use business email addresses only.
 - No personal emails, no sensitive data, and no legal advice content.
 
-State/source diagnostic:
+Research source guidance:
 - $STATE_LIC_DIAGNOSTIC
 
 Output requirements:
