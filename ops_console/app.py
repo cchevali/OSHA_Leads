@@ -4,6 +4,7 @@ import argparse
 import csv
 import hashlib
 import html
+import importlib.util
 import json
 import os
 import re
@@ -181,6 +182,24 @@ def _read_env_file(path: Path) -> dict[str, str]:
         key, value = line.split("=", 1)
         out[key.strip()] = value.strip().strip('"').strip("'")
     return out
+
+
+def _env_or_file_value(env_file: dict[str, str], key: str, *, default: str = "") -> str:
+    candidate = str(os.environ.get(key) or env_file.get(key) or "").strip()
+    if candidate:
+        return candidate
+    return str(default or "").strip()
+
+
+def _python_module_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(str(module_name or "").strip()) is not None
+    except Exception:
+        return False
+
+
+def _path_with_presence(path: Path) -> str:
+    return f"{_repo_relative(path)} ({'present' if path.exists() else 'missing'})"
 
 
 def _parse_state_csv(raw: str) -> list[str]:
@@ -718,6 +737,10 @@ class OpsConsoleService:
         triage_log_path = out_root / "inbox_triage_log.csv"
         reply_drafts_dir = out_root / "reply_drafts"
         eng_tickets_dir = out_root / "eng_tickets"
+        env_file = _read_env_file(self.repo_root / ".env")
+        backend = _env_or_file_value(env_file, "INBOUND_BACKEND", default="gmail").lower() or "gmail"
+        credentials_path = (self.repo_root / "secrets" / "gmail_credentials.json").resolve(strict=False)
+        token_path = (self.repo_root / "secrets" / "gmail_token.json").resolve(strict=False)
         reply_drafts = sorted(reply_drafts_dir.glob("*"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)[:10]
         eng_tickets = sorted(eng_tickets_dir.glob("*"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)[:10]
         entitlement_rows: list[dict[str, Any]] = []
@@ -741,6 +764,64 @@ class OpsConsoleService:
                 entitlement_rows = []
             finally:
                 conn.close()
+
+        gmail_missing_modules = [
+            module_name
+            for module_name in ("googleapiclient.discovery", "google_auth_oauthlib.flow", "google.oauth2.credentials")
+            if not _python_module_available(module_name)
+        ]
+        imap_user_present = bool(_env_or_file_value(env_file, "IMAP_USER"))
+        imap_pass_present = bool(_env_or_file_value(env_file, "IMAP_PASS"))
+        imap_host = _env_or_file_value(env_file, "IMAP_HOST", default="imappro.zoho.com") or "imappro.zoho.com"
+        inbound_setup: dict[str, Any] = {
+            "backend": backend,
+            "credentials_path": credentials_path,
+            "credentials_present": credentials_path.exists(),
+            "token_path": token_path,
+            "token_present": token_path.exists(),
+            "gmail_client_deps_installed": not gmail_missing_modules,
+            "gmail_missing_modules": gmail_missing_modules,
+            "imap_host": imap_host,
+            "imap_user_present": imap_user_present,
+            "imap_pass_present": imap_pass_present,
+            "triage_log_path": triage_log_path,
+            "reply_drafts_dir": reply_drafts_dir,
+            "eng_tickets_dir": eng_tickets_dir,
+            "commands": [],
+            "recommended_next_step": "",
+            "status": "",
+        }
+        if backend == "imap":
+            inbound_setup["commands"] = [
+                ".\\run_with_secrets.ps1 -- py -3 inbound_inbox_triage.py --dry-run --since-hours 1",
+            ]
+            if imap_user_present and imap_pass_present:
+                inbound_setup["status"] = "configured"
+                inbound_setup["recommended_next_step"] = "Run the IMAP dry-run triage check when you want to verify the inbound path."
+            else:
+                inbound_setup["status"] = "not configured"
+                inbound_setup["recommended_next_step"] = "Load IMAP_USER and IMAP_PASS through the secrets flow, then rerun the IMAP dry-run triage check."
+        elif backend == "gmail":
+            inbound_setup["commands"] = [
+                "py -3 -m pip install google-api-python-client google-auth-oauthlib",
+                "py -3 inbound_inbox_triage.py --dry-run --since-hours 1",
+                "py -3 inbound_inbox_triage.py --run-once",
+            ]
+            if gmail_missing_modules:
+                inbound_setup["status"] = "deps missing"
+                inbound_setup["recommended_next_step"] = "Install the Gmail client packages, then rerun the dry-run triage bootstrap."
+            elif not credentials_path.exists():
+                inbound_setup["status"] = "not configured"
+                inbound_setup["recommended_next_step"] = "Create secrets/gmail_credentials.json, then rerun the dry-run triage bootstrap."
+            elif not token_path.exists():
+                inbound_setup["status"] = "ready for first OAuth bootstrap"
+                inbound_setup["recommended_next_step"] = "Run the dry-run triage bootstrap, then a single --run-once bootstrap on the canonical PC."
+            else:
+                inbound_setup["status"] = "configured"
+                inbound_setup["recommended_next_step"] = "Run the dry-run triage check when you want to verify the Gmail inbox path."
+        else:
+            inbound_setup["status"] = f"unsupported backend: {backend}"
+            inbound_setup["recommended_next_step"] = "Set INBOUND_BACKEND to gmail or imap, then rerun the inbox check."
         return {
             "onboarding_path": onboarding_path,
             "onboarding_rows": _csv_rows(onboarding_path, limit=12),
@@ -748,7 +829,7 @@ class OpsConsoleService:
             "triage_rows": _csv_rows(triage_log_path, limit=12),
             "reply_drafts": reply_drafts,
             "eng_tickets": eng_tickets,
-            "gmail_configured": (self.repo_root / "secrets" / "gmail_credentials.json").exists(),
+            "inbound_setup": inbound_setup,
             "entitlements": entitlement_rows,
             "trial_request_registry_status": "No local trial-request artifact",
         }
@@ -1668,13 +1749,46 @@ class OpsConsoleApp:
 
     def _render_inbox(self, *, message: str = "") -> Response:
         data = self.service.inbox_data()
+        setup = dict(data.get("inbound_setup") or {})
+        backend = str(setup.get("backend") or "gmail").strip().lower() or "gmail"
+        setup_details = {
+            "backend": backend,
+            "status": str(setup.get("status") or "unknown"),
+            "recommended_next_step": str(setup.get("recommended_next_step") or ""),
+            "triage_log": _path_with_presence(Path(setup["triage_log_path"])) if setup.get("triage_log_path") else "missing",
+            "reply_drafts_dir": _path_with_presence(Path(setup["reply_drafts_dir"])) if setup.get("reply_drafts_dir") else "missing",
+            "eng_tickets_dir": _path_with_presence(Path(setup["eng_tickets_dir"])) if setup.get("eng_tickets_dir") else "missing",
+        }
+        if backend == "imap":
+            setup_details["imap_host"] = str(setup.get("imap_host") or "")
+            setup_details["imap_user"] = "present" if bool(setup.get("imap_user_present")) else "missing"
+            setup_details["imap_password"] = "present" if bool(setup.get("imap_pass_present")) else "missing"
+        else:
+            credentials_path = Path(setup["credentials_path"]) if setup.get("credentials_path") else None
+            token_path = Path(setup["token_path"]) if setup.get("token_path") else None
+            setup_details["gmail_credentials_json"] = _path_with_presence(credentials_path) if credentials_path is not None else "missing"
+            setup_details["gmail_token_json"] = _path_with_presence(token_path) if token_path is not None else "missing"
+            missing_modules = list(setup.get("gmail_missing_modules") or [])
+            setup_details["gmail_client_deps"] = (
+                "installed"
+                if bool(setup.get("gmail_client_deps_installed"))
+                else ("missing: " + ", ".join(str(item) for item in missing_modules))
+            )
+        commands = [str(item) for item in list(setup.get("commands") or []) if str(item).strip()]
+        commands_html = ""
+        if commands:
+            commands_html = (
+                "<p><strong>Commands</strong></p><ul>"
+                + "".join(f"<li><code>{_html(command)}</code></li>" for command in commands)
+                + "</ul>"
+            )
         content = [
+            self._card("Inbound Setup", self._dl(setup_details) + commands_html),
             self._card("Trial / Onboarding Requests", self._list([json.dumps(row, sort_keys=True) for row in list(data.get("onboarding_rows") or [])], empty="No onboarding audit rows found.")),
             self._card("Subscriber Entitlements", self._list([json.dumps(row, sort_keys=True) for row in list(data.get("entitlements") or [])], empty="No entitlement rows found.")),
             self._card("Inbound Triage Queue", self._list([json.dumps(row, sort_keys=True) for row in list(data.get("triage_rows") or [])], empty="No inbox triage artifacts found.")),
             self._card("Reply Drafts", self._list([_repo_relative(path) for path in list(data.get("reply_drafts") or [])], empty="No reply drafts found.")),
             self._card("Engineering Tickets", self._list([_repo_relative(path) for path in list(data.get("eng_tickets") or [])], empty="No engineering tickets found.")),
-            self._card("Gmail OAuth", f'<p>{"configured" if bool(data.get("gmail_configured")) else "not configured"}</p>'),
             self._card("Trial Request Registry", f'<p class="muted">{_html(data.get("trial_request_registry_status"))}</p>'),
         ]
         return self._wrap(title="Inbox / Requests", path="/inbox", content="".join(content), message=message)

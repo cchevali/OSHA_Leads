@@ -90,6 +90,9 @@ Runtime tick operator alerts:
 - Alerts are live-mode only; `--doctor` and `--dry-run` emit candidate/skipped tokens but do not send email.
 - Runtime tick reconciles same-slot wrapper summaries before sending `missed_window`; successful break-glass wrapper evidence within the catchup window suppresses the alert and records a reconciled job state instead of leaving an empty missed-window marker.
 - External wrapper evidence emits `WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER` and records `last_external_scheduler_detected=1` plus `last_reconciliation_status` in `${DATA_DIR}\runtime\status\jobs\<job>.json`.
+- Runtime tick also owns two weekday console-support freshness jobs that do not emit missed-window alerts:
+  - `ops_snapshot_daily` at `09:30` local runs `py -3 outreach\run_ops_snapshot.py`
+  - `outreach_cleanup_daily` at `09:45` local runs `py -3 outreach\cleanup_outreach_dry_run_artifacts.py --retention-days 14`
 
 ## MicroFlowOps Ops Console
 
@@ -117,7 +120,7 @@ Screen summary:
 - State Scope: add/remove `OUTREACH_STATES` with impact preview across outreach rotation, replenishment visibility, and manual Deep Research scope. `STATE_LIC` remains TX-only.
 - Trials: active/pending/expired trial view plus guarded preview/apply flows for add-trial, daily-send dry-run, conversion draft, and CRM lifecycle marks.
 - Manual Prospect Research / Import Queue: newest skip-list + prompt artifacts, pending reviewed CSV imports, latest import results, and guarded file/paste/pending import flows.
-- Inbox / Requests: read-only queue for onboarding/request artifacts, entitlement rows, inbound triage artifacts, reply drafts, engineering tickets, and Gmail OAuth status.
+- Inbox / Requests: read-only queue for onboarding/request artifacts, entitlement rows, inbound triage artifacts, reply drafts, engineering tickets, and backend-aware inbound setup status for Gmail or IMAP.
 - Audit Log: append-only record of preview/apply activity owned by the console.
 
 Mutation contract:
@@ -138,6 +141,21 @@ Verification:
 
 - Console binds to `127.0.0.1` only.
 - Missing secrets/artifacts must render explicit empty or `not configured` states instead of crashing.
+
+Inbox setup guidance:
+
+- Gmail backend status shows `secrets\gmail_credentials.json`, `secrets\gmail_token.json`, Gmail client dependency status, the latest triage/reply-draft/engineering-ticket paths, and one recommended next step.
+- IMAP backend status shows `INBOUND_BACKEND=imap`, `IMAP_HOST`, `IMAP_USER` / `IMAP_PASS` presence, the same artifact paths, and one recommended next step.
+- The screen stays read-only; there is no credential upload, OAuth launcher, or bootstrap button in v1.
+
+Canonical Gmail bootstrap commands:
+
+```powershell
+cd C:\dev\OSHA_Leads
+py -3 -m pip install google-api-python-client google-auth-oauthlib
+py -3 inbound_inbox_triage.py --dry-run --since-hours 1
+py -3 inbound_inbox_triage.py --run-once
+```
 
 ## Runtime State Migration
 
@@ -1217,6 +1235,7 @@ py -3 outreach\run_ops_snapshot.py --format json
 
 Snapshot behavior:
 
+- Runtime tick refreshes the snapshot automatically on weekdays via `ops_snapshot_daily` at `09:30` local.
 - `--print-config` is side-effect free and prints resolved artifact/config paths.
 - `--dry-run` computes the snapshot without writing files and prints `OPS_SNAPSHOT_JSON_PATH=(no-write)`.
 - Live mode writes:
@@ -1235,6 +1254,7 @@ py -3 outreach\cleanup_outreach_dry_run_artifacts.py --retention-days 14
 
 Cleanup scope:
 
+- Runtime tick runs this cleanup automatically on weekdays via `outreach_cleanup_daily` at `09:45` local with `--retention-days 14`.
 - Targets only stale dry-run artifacts under `out\outreach\<batch>\`:
 - `outbox_*_dry_run.csv`
 - `outbox_*_dry_run_manifest.csv`

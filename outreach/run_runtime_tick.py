@@ -99,6 +99,8 @@ JOBS: tuple[JobSpec, ...] = (
     JobSpec(name="trial_facs_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
     JobSpec(name="trial_jl_safety_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
     JobSpec(name="trial_roi_safety_daily", kind="daily", weekday_only=True, target_hhmm="09:00", catchup_minutes=180),
+    JobSpec(name="ops_snapshot_daily", kind="daily", weekday_only=True, target_hhmm="09:30", catchup_minutes=180),
+    JobSpec(name="outreach_cleanup_daily", kind="daily", weekday_only=True, target_hhmm="09:45", catchup_minutes=180),
     JobSpec(name="ingest_evening", kind="daily", weekday_only=False, target_hhmm="20:45", catchup_minutes=180),
 )
 JOB_NAMES = tuple(job.name for job in JOBS)
@@ -354,6 +356,12 @@ def _powershell_file_cmd(path: Path, args: list[str] | None = None) -> list[str]
     return cmd
 
 
+def _python_file_cmd(repo_root: Path, relative_path: str, args: list[str] | None = None) -> list[str]:
+    cmd: list[str] = ["py", "-3", str((repo_root / relative_path).resolve(strict=False))]
+    cmd.extend(args or [])
+    return cmd
+
+
 def _job_skip_reason(repo_root: Path, job_name: str) -> str:
     if job_name == "inbound_triage":
         gmail_credentials = (repo_root / "secrets" / "gmail_credentials.json").resolve(strict=False)
@@ -418,6 +426,37 @@ def _job_commands(repo_root: Path, job_name: str, mode: str) -> list[list[str]]:
         if mode == "doctor":
             return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--doctor"])]
         return [_run_with_secrets_cmd(repo_root, "run_trial_daily.py", [*base, "--dry-run"])]
+
+    if job_name == "ops_snapshot_daily":
+        if mode == "live":
+            return [_python_file_cmd(repo_root, "outreach/run_ops_snapshot.py")]
+        if mode == "doctor":
+            return [
+                _python_file_cmd(repo_root, "outreach/run_ops_snapshot.py", ["--print-config"]),
+                _python_file_cmd(repo_root, "outreach/run_ops_snapshot.py", ["--dry-run"]),
+            ]
+        return [_python_file_cmd(repo_root, "outreach/run_ops_snapshot.py", ["--dry-run"])]
+
+    if job_name == "outreach_cleanup_daily":
+        cleanup_args = ["--retention-days", "14"]
+        if mode == "live":
+            return [_python_file_cmd(repo_root, "outreach/cleanup_outreach_dry_run_artifacts.py", cleanup_args)]
+        if mode == "doctor":
+            return [
+                _python_file_cmd(repo_root, "outreach/cleanup_outreach_dry_run_artifacts.py", ["--print-config"]),
+                _python_file_cmd(
+                    repo_root,
+                    "outreach/cleanup_outreach_dry_run_artifacts.py",
+                    ["--dry-run", *cleanup_args],
+                ),
+            ]
+        return [
+            _python_file_cmd(
+                repo_root,
+                "outreach/cleanup_outreach_dry_run_artifacts.py",
+                ["--dry-run", *cleanup_args],
+            )
+        ]
 
     if job_name == "ingest_evening":
         evening_wrapper = (repo_root / "scripts" / "scheduled" / "run_osha_ingest_evening.ps1").resolve(strict=False)

@@ -44,6 +44,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
   - `${DATA_DIR}\audits\prospect_ai_assist\...`
   - `${DATA_DIR}\imports\prospect_ai_assist\...`
   - repo-local `out\...` onboarding/inbox artifacts when present
+- Runtime tick owns console freshness support for `${DATA_DIR}\outreach\ops_snapshots\latest.json` and stale repo-local dry-run cleanup via weekday `ops_snapshot_daily` and `outreach_cleanup_daily` jobs, so the dashboard does not depend on ad hoc operator refreshes.
 - The console never bypasses runtime guard, suppression, send paths, or importer paths. Mutations call existing entrypoints or write only the controlled schedule/audit/preview seams.
 - Every console mutation is two-step:
   1. Generate a stored preview record with payload hash.
@@ -51,6 +52,10 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - Console-owned artifacts live under:
   - `${DATA_DIR}\ops_console\previews\*.json`
   - `${DATA_DIR}\ops_console\audit\ops_console_audit.jsonl`
+- Inbox / Requests remains read-only and derives backend-aware setup guidance from local filesystem plus env inspection only:
+  - Gmail backend checks `secrets\gmail_credentials.json`, `secrets\gmail_token.json`, and client package availability
+  - IMAP backend checks `IMAP_HOST`, `IMAP_USER`, and `IMAP_PASS`
+  - latest triage log, reply-draft, and engineering-ticket artifact paths are surfaced without turning the console into an email client
 
 ## Shared Schedule Override Seam
 
@@ -139,6 +144,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
 - `out/outreach_export_ledger.jsonl`: optional compatibility ledger for contacted records
 - `out/outreach/<batch>/outbox_*_dry_run.csv` + manifest: non-sending artifact output from `run_outreach_auto.py --dry-run`
 - `${DATA_DIR}/outreach/ops_snapshots/*.json`: persisted operator artifact combining ops KPIs with runtime/suppression readiness state
+- `${DATA_DIR}/outreach/ops_snapshots/latest.json`: refreshed automatically by the weekday runtime-tick `ops_snapshot_daily` support job
 - `${DATA_DIR}/runtime/status/jobs/*.json`: runtime scheduler state for latest slot evaluation and external scheduler drift visibility
 - `${DATA_DIR}/runtime/config/schedule_overrides.json`: shared operator-owned schedule override seam for outreach/trials/evening prep
 - `${DATA_DIR}/audits/prospect_ai_assist/crm_skip_list_for_ai.csv`: nightly/manual Deep Research skip list

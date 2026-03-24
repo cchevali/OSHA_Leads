@@ -152,15 +152,59 @@ class TestOpsConsole(unittest.TestCase):
         return rows
 
     def test_dashboard_and_inbox_render_without_secrets_or_artifacts(self):
-        dashboard = self._body(self.app.dispatch("GET", "/"))
-        inbox = self._body(self.app.dispatch("GET", "/inbox"))
+        with mock.patch.object(ops_app, "_python_module_available", return_value=True):
+            dashboard = self._body(self.app.dispatch("GET", "/"))
+            inbox = self._body(self.app.dispatch("GET", "/inbox"))
         css = self._body(self.app.dispatch("GET", "/static/ops_console.css"))
         self.assertIn("MicroFlowOps Ops Console", dashboard)
         self.assertIn("Needs Attention", dashboard)
         self.assertIn("Nothing urgent is queued.", dashboard)
+        self.assertIn("Inbound Setup", inbox)
         self.assertIn("not configured", inbox)
+        self.assertIn("Create secrets/gmail_credentials.json", inbox)
+        self.assertIn("py -3 -m pip install google-api-python-client google-auth-oauthlib", inbox)
+        self.assertIn("py -3 inbound_inbox_triage.py --dry-run --since-hours 1", inbox)
+        self.assertIn("py -3 inbound_inbox_triage.py --run-once", inbox)
+        self.assertIn(str((self.repo_root / "secrets" / "gmail_credentials.json").resolve(strict=False)), inbox)
+        self.assertIn(str((self.repo_root / "out" / "inbox_triage_log.csv").resolve(strict=False)), inbox)
         self.assertIn("No local trial-request artifact", inbox)
         self.assertIn("color: #123", css)
+
+    def test_inbox_gmail_status_shows_oauth_bootstrap_when_credentials_exist_without_token(self):
+        (self.repo_root / "secrets" / "gmail_credentials.json").write_text('{"installed":{}}\n', encoding="utf-8")
+        with mock.patch.object(ops_app, "_python_module_available", return_value=True):
+            inbox = self._body(self.app.dispatch("GET", "/inbox"))
+        self.assertIn("ready for first OAuth bootstrap", inbox)
+        self.assertIn("Run the dry-run triage bootstrap, then a single --run-once bootstrap on the canonical PC.", inbox)
+        self.assertIn("gmail_client_deps", inbox)
+        self.assertIn("installed", inbox)
+
+    def test_inbox_gmail_status_shows_configured_when_credentials_and_token_exist(self):
+        (self.repo_root / "secrets" / "gmail_credentials.json").write_text('{"installed":{}}\n', encoding="utf-8")
+        (self.repo_root / "secrets" / "gmail_token.json").write_text('{"token":"abc"}\n', encoding="utf-8")
+        with mock.patch.object(ops_app, "_python_module_available", return_value=True):
+            inbox = self._body(self.app.dispatch("GET", "/inbox"))
+        self.assertIn("configured", inbox)
+        self.assertIn("Run the dry-run triage check when you want to verify the Gmail inbox path.", inbox)
+        self.assertIn(str((self.repo_root / "secrets" / "gmail_token.json").resolve(strict=False)), inbox)
+
+    def test_inbox_imap_status_shows_readiness_from_env_file(self):
+        with mock.patch.dict(
+            ops_app.os.environ,
+            {
+                "INBOUND_BACKEND": "imap",
+                "IMAP_USER": "ops@example.com",
+                "IMAP_PASS": "topsecret",
+                "IMAP_HOST": "imap.example.com",
+            },
+            clear=False,
+        ):
+            inbox = self._body(self.app.dispatch("GET", "/inbox"))
+        self.assertIn("<dd>imap</dd>", inbox)
+        self.assertIn("configured", inbox)
+        self.assertIn("imap.example.com", inbox)
+        self.assertIn(".\\run_with_secrets.ps1 -- py -3 inbound_inbox_triage.py --dry-run --since-hours 1", inbox)
+        self.assertIn("Run the IMAP dry-run triage check when you want to verify the inbound path.", inbox)
 
     def test_build_server_rejects_non_localhost_binding(self):
         with self.assertRaises(ValueError):

@@ -99,6 +99,83 @@ class TestRunRuntimeTick(unittest.TestCase):
             self.assertIn("RUNTIME_TICK_SCHEDULE_EVENING_PREP_LOCAL_HHMM=21:20", evening_out)
             self.assertIn("RUNTIME_TICK_JOB_TIME=21:20", evening_out)
 
+    def test_print_config_includes_ops_snapshot_and_cleanup_support_jobs(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False):
+            snapshot_buf = io.StringIO()
+            with redirect_stdout(snapshot_buf):
+                snapshot_rc = tick.main(["--print-config", "--job", "ops_snapshot_daily"])
+            snapshot_out = snapshot_buf.getvalue()
+            self.assertEqual(snapshot_rc, 0, msg=snapshot_out)
+            self.assertIn("RUNTIME_TICK_SELECTED_JOBS=ops_snapshot_daily", snapshot_out)
+            self.assertIn("RUNTIME_TICK_JOB_TIME=09:30", snapshot_out)
+
+            cleanup_buf = io.StringIO()
+            with redirect_stdout(cleanup_buf):
+                cleanup_rc = tick.main(["--print-config", "--job", "outreach_cleanup_daily"])
+            cleanup_out = cleanup_buf.getvalue()
+            self.assertEqual(cleanup_rc, 0, msg=cleanup_out)
+            self.assertIn("RUNTIME_TICK_SELECTED_JOBS=outreach_cleanup_daily", cleanup_out)
+            self.assertIn("RUNTIME_TICK_JOB_TIME=09:45", cleanup_out)
+
+    def test_support_jobs_are_not_critical_missed_window_candidates(self):
+        self.assertNotIn("ops_snapshot_daily", tick.CRITICAL_WINDOW_JOBS)
+        self.assertNotIn("outreach_cleanup_daily", tick.CRITICAL_WINDOW_JOBS)
+
+    def test_doctor_ops_snapshot_job_uses_print_config_then_dry_run(self):
+        calls: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            parts = [str(c) for c in cmd]
+            calls.append(parts)
+            return self._proc(0, stdout="PASS_OPS_SNAPSHOT status=OK\n")
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick.subprocess, "run", side_effect=_run),
+        ):
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                rc = tick.main(["--doctor", "--job", "ops_snapshot_daily"])
+        out = out_buf.getvalue() + "\n" + err_buf.getvalue()
+        self.assertEqual(rc, 0, msg=out)
+        job_calls = [parts for parts in calls if "run_ops_snapshot.py" in " ".join(parts)]
+        self.assertEqual(len(job_calls), 2, msg=out)
+        self.assertIn("--print-config", " ".join(job_calls[0]))
+        self.assertIn("--dry-run", " ".join(job_calls[1]))
+        self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
+
+    def test_doctor_outreach_cleanup_job_uses_guarded_cleanup_commands(self):
+        calls: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            parts = [str(c) for c in cmd]
+            calls.append(parts)
+            return self._proc(0, stdout="PASS_OUTREACH_CLEANUP status=OK\n")
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True, trusted_scheduled=True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick.subprocess, "run", side_effect=_run),
+        ):
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                rc = tick.main(["--doctor", "--job", "outreach_cleanup_daily"])
+        out = out_buf.getvalue() + "\n" + err_buf.getvalue()
+        self.assertEqual(rc, 0, msg=out)
+        job_calls = [parts for parts in calls if "cleanup_outreach_dry_run_artifacts.py" in " ".join(parts)]
+        self.assertEqual(len(job_calls), 2, msg=out)
+        self.assertIn("--print-config", " ".join(job_calls[0]))
+        self.assertIn("--dry-run", " ".join(job_calls[1]))
+        self.assertIn("--retention-days 14", " ".join(job_calls[1]))
+        self.assertIn("PASS_RUNTIME_TICK_DOCTOR status=OK", out)
+
     def test_doctor_evening_job_uses_existing_guarded_commands(self):
         calls: list[list[str]] = []
 
