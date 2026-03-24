@@ -78,7 +78,7 @@ class TestPrepareManualProspectResearch(unittest.TestCase):
                 f"MANUAL_PROSPECT_RESEARCH_PROMPT_OUTPUT_PATH={(data_dir / 'audits' / 'prospect_ai_assist' / 'manual_prospect_deep_research_20260323.txt').resolve()}",
                 text,
             )
-            self.assertIn("STATE_LIC remains TX-only", text)
+            self.assertIn("For PA/OH, do not rely on STATE_LIC.", text)
             self.assertIn("PASS_MANUAL_PROSPECT_RESEARCH_PRINT_CONFIG status=OK", text)
             self.assertFalse((data_dir / "audits" / "prospect_ai_assist" / "crm_skip_list_for_ai.csv").exists())
             self.assertFalse((data_dir / "audits" / "prospect_ai_assist" / "manual_prospect_deep_research_20260323.txt").exists())
@@ -152,9 +152,11 @@ class TestPrepareManualProspectResearch(unittest.TestCase):
             self.assertIn("Target firms: 50", prompt_text)
             self.assertIn(str(skip_list_path.resolve()), prompt_text)
             self.assertIn(prep_tool.CSV_HEADER, prompt_text)
+            self.assertIn("Important execution rule:", prompt_text)
+            self.assertIn("Do not return an executive summary", prompt_text)
             self.assertIn("Return ONLY CSV.", prompt_text)
-            self.assertIn("STATE_LIC remains TX-only", prompt_text)
-            self.assertIn("PA/OH as live states", prompt_text)
+            self.assertIn("For PA/OH, do not rely on STATE_LIC.", prompt_text)
+            self.assertIn("Research source guidance:", prompt_text)
             self.assertIn("PASS_MANUAL_PROSPECT_RESEARCH status=OK", out.getvalue())
 
 

@@ -46,8 +46,8 @@ CSV_HEADER = ",".join(
     )
 )
 STATE_LIC_DIAGNOSTIC = (
-    "STATE_LIC remains TX-only in this pipeline; treat PA/OH as live states and rely on manual Deep Research plus "
-    "multi-state-capable sources such as AIHA, OHS_BG, BCSP, and OSHA_NEWS."
+    "For PA/OH, do not rely on STATE_LIC. Use multi-state-capable sources such as AIHA, OHS_BG, BCSP, "
+    "OSHA_NEWS, company websites, and direct business-profile pages."
 )
 
 

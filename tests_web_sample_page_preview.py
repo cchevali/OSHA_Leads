@@ -16,16 +16,18 @@ class TestWebSamplePagePreview(unittest.TestCase):
         self.assertNotIn("EXAMPLE_TERRITORY", combined_text)
         self.assertNotIn("Sample refresh is delayed.", combined_text)
 
-    def test_founder_and_disclaimer_strings_exist(self):
+    def test_sample_page_uses_production_trust_language(self):
         page_text = SAMPLE_PAGE.read_text(encoding="utf-8")
-        self.assertIn(
-            "Built by a data engineer for teams that need earlier visibility into public OSHA activity.",
-            page_text,
-        )
+        self.assertIn("Sample: alert and OSHA record", page_text)
+        self.assertIn("Public example using OSHA data. Not affiliated with OSHA. Not legal advice.", page_text)
         self.assertIn("Not legal advice.", page_text)
-        self.assertIn("Frozen recent snapshot with real public OSHA rows", page_text)
         self.assertIn("Verify in 30 seconds", page_text)
-        self.assertIn("Why this was actionable", page_text)
+        self.assertIn("We confirm mapping before billing", page_text)
+        self.assertIn("What a buyer can confirm", page_text)
+        self.assertNotIn("Built by a data engineer", page_text)
+        self.assertNotIn("Proof snapshot", page_text)
+        self.assertNotIn("Kept populated for proof", page_text)
+        self.assertNotIn("Why this was actionable", page_text)
 
     def test_sample_snapshot_schema_is_populated(self):
         page_text = SAMPLE_PAGE.read_text(encoding="utf-8")

@@ -9,31 +9,28 @@ export const metadata: Metadata = {
 const steps = [
   {
     title: "Signal capture",
-    body: "We monitor new OSHA inspection activity and flag fresh updates as soon as they appear."
+    body: "We monitor new public OSHA inspection activity."
   },
   {
     title: "Enrichment",
-    body: "We attach industry, location, enforcement history, and category context."
+    body: "We attach location, industry, and enforcement context."
   },
   {
     title: "Scoring",
-    body: "Signals are ranked by severity, recency, and commercial intent."
+    body: "Signals are ranked by severity, recency, and likely urgency."
   },
   {
     title: "Delivery",
-    body: "Your team gets a concise brief by email at the same time every morning."
+    body: "Your team gets a short brief by email each morning."
   }
 ];
 
 const safeguards = [
   "Suppression and unsubscribe enforcement on every send.",
-  "Audit logs for every delivery attempt.",
-  "Footprint filtering with metro-based plan caps.",
-  "Optional pilot mode before live delivery."
+  "Audit logs for each delivery attempt.",
+  "Footprint filtering against plan limits.",
+  "Pilot mode before live delivery."
 ];
-
-const COVERAGE_HELPER =
-  "Counties, cities, metros, or OSHA areas work — we translate coverage for you.";
 
 export default function HowItWorksPage() {
   return (
@@ -42,7 +39,7 @@ export default function HowItWorksPage() {
         <SectionHeading
           eyebrow="How it works"
           title="From public activity to a short, ranked morning brief."
-          description="Our daily pipeline turns public OSHA inspection activity into usable signals without manual research."
+          description="A simple daily pipeline from public OSHA activity to the signals your team reviews each morning."
           align="center"
         />
       </section>
@@ -60,25 +57,9 @@ export default function HowItWorksPage() {
 
       <section className="mx-auto w-full max-w-5xl px-6">
         <SectionHeading
-          eyebrow="Delivery cadence"
-          title="Daily by default, tuned for your team."
-          description="Set the window, send your footprint, and we deliver each morning."
-        />
-        <div className="mt-8 rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-          <p className="mb-4 text-sm font-semibold text-inkMuted">{COVERAGE_HELPER}</p>
-          <ul className="space-y-3 text-sm text-inkMuted">
-            <li>Typical delivery: daily morning brief (timezone and cadence are configurable).</li>
-            <li>Daily or weekly summaries supported.</li>
-            <li>Configurable scoring thresholds for high-severity signals.</li>
-          </ul>
-        </div>
-      </section>
-
-      <section className="mx-auto w-full max-w-5xl px-6">
-        <SectionHeading
           eyebrow="Safeguards"
           title="Operational guardrails are built in."
-          description="We keep sends clean and compliant with a few critical controls."
+          description="A few controls keep delivery clean and documented."
         />
         <div className="mt-8 grid gap-4 md:grid-cols-2">
           {safeguards.map((item) => (
@@ -95,9 +76,8 @@ export default function HowItWorksPage() {
             <div>
               <h2 className="font-display text-3xl">Ready to pilot your coverage?</h2>
               <p className="mt-3 text-white/70">
-                We can send a sample alert within 24 hours and tune coverage to match your footprint.
+                Send your footprint and recipients. We confirm mapping before billing.
               </p>
-              <p className="mt-3 text-sm font-semibold text-white/80">{COVERAGE_HELPER}</p>
             </div>
             <CTAButtons variant="dark" />
           </div>

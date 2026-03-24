@@ -84,14 +84,12 @@ export default function PricingPage() {
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="Pricing"
-          title="Pick a plan. Tell us your footprint. We handle the rest."
-          description="A metro area is a Census CBSA/MSA (city + suburbs). Counties, cities, metros, or OSHA areas work — we translate coverage for you."
+          title="Pick a plan, send your footprint, and get clear coverage."
+          description="A metro area is a Census CBSA/MSA (city + suburbs). Send counties, cities, metros, or OSHA areas."
           align="center"
         />
         <p className="mx-auto mt-4 max-w-2xl text-center text-sm text-inkMuted">
-          What this replaces: manually checking OSHA sources, filtering, and routing updates across
-          multiple metros. For most teams, that&apos;s several hours/week. Core starts at $299/mo, less
-          than one billable hour for many practices.
+          Pick the plan that fits, then send the coverage and recipients you want handled.
         </p>
         <p className="mx-auto mt-3 max-w-2xl text-center text-sm text-inkMuted">
           No per-metro billing, no surprises.
@@ -100,10 +98,6 @@ export default function PricingPage() {
 
       {/* Plan cards */}
       <section className="mx-auto w-full max-w-6xl px-6">
-        <p className="mx-auto mb-5 max-w-3xl text-center text-sm text-inkMuted">
-          Checkout takes 30 seconds. After payment, you can send counties, cities, metros, or OSHA areas
-          and we&apos;ll confirm fit. We will not increase billing without your approval.
-        </p>
         <div className="grid gap-6 md:grid-cols-3">
           {plans.map((plan) => (
             <div
@@ -137,12 +131,7 @@ export default function PricingPage() {
                 {(plan.name === "Core" || plan.name === "Multi-Territory") && (
                   <>
                     <p className="mt-2 text-xs text-inkMuted">
-                      After checkout, you&apos;ll be redirected to onboarding to enter the coverage and
-                      recipients you want covered. Counties, cities, metros, or OSHA areas all work.
-                    </p>
-                    <p className="mt-2 text-xs text-inkMuted">
                       No calls required; onboarding is handled via a short form + email confirmation.
-                      We&apos;ll confirm fit before any changes.
                     </p>
                     <a
                       href={confirmFirstMailto}
@@ -182,16 +171,15 @@ export default function PricingPage() {
         <SectionHeading
           eyebrow="How coverage works"
           title="Coverage is metro-based, but you do not need to speak in metros."
-          description="Counties, cities, metros, or OSHA areas work — we translate coverage for you."
+          description="Use the footprint labels you already use internally. We map them to billed coverage."
         />
         <p className="mt-3 text-sm text-inkMuted">DFW metro includes Dallas, Fort Worth, Frisco, Plano, Arlington…</p>
 
         <div className="mt-8 space-y-4">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h4 className="font-display text-lg text-ink">Trust flow</h4>
+            <h4 className="font-display text-lg text-ink">We confirm mapping before billing</h4>
             <p className="mt-3 text-sm text-inkMuted">
-              1) Pick a plan → 2) Send your footprint → 3) We confirm fit. We will not increase billing
-              without your explicit approval.
+              1) Pick a plan → 2) Send your footprint → 3) We confirm fit before any billing change.
             </p>
           </div>
 
@@ -210,7 +198,7 @@ export default function PricingPage() {
             <h4 className="font-display text-lg text-ink">Example: Southern California county-style footprint</h4>
             <p className="mt-3 text-sm text-inkMuted">
               LA + Orange + Riverside/San Bernardino + Ventura + Santa Barbara + Kern → typically
-              Multi-Territory; exact mapping confirmed before billing.
+              Multi-Territory.
             </p>
           </div>
 
@@ -251,8 +239,7 @@ export default function PricingPage() {
             <div>
               <h2 className="font-display text-3xl">Try it free for 14 days.</h2>
               <p className="mt-3 text-white/70">
-                Up to 4 metros in billed coverage included. Counties, cities, metros, or OSHA areas
-                work — we translate coverage for you.
+                Up to 4 metros in billed coverage included.
               </p>
             </div>
             <CTAButtons variant="dark" />

@@ -25,11 +25,11 @@ export default function ContactPage() {
         <SectionHeading
           eyebrow="Contact"
           title="Request a trial feed."
-          description="Counties, cities, metros, or OSHA areas work — we translate coverage for you."
+          description="Send your footprint and recipient list. We will return a sample alert and a short trial plan."
           align="center"
         />
         <p className="mt-4 text-center text-sm text-inkMuted">
-          Pilot includes up to 4 metros in billed coverage. No credit card needed.
+          Pilot includes 14 days and up to 4 metros in billed coverage. No credit card needed.
         </p>
       </section>
 
@@ -38,8 +38,11 @@ export default function ContactPage() {
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-2xl text-ink">Start a free trial</h3>
             <p className="mt-2 mb-5 text-sm text-inkMuted">
-              We will send a sample alert and set up a trial feed for your coverage. Add up to 6 recipients
-              for the pilot, and keep your company email as the billing/admin contact.
+              Add up to 6 recipients for the pilot, plus the company email that should stay on billing
+              and admin updates.
+            </p>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
+              Verify in 30 seconds
             </p>
             <p className="mb-5 text-sm text-inkMuted">
               Every sample alert includes opened and observed timestamps plus a direct link to the public
@@ -51,8 +54,8 @@ export default function ContactPage() {
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">Email us directly</h3>
               <p className="mt-3 text-inkMuted">
-                We respond same business day. Counties, cities, metros, or OSHA areas work — we translate
-                coverage for you. Include recipient names/emails and any timing preferences.
+                We respond same business day. Send the footprint you want covered, the recipients to
+                include, and any timing preferences.
               </p>
               <div className="mt-4 flex flex-wrap items-center gap-4">
                 <p className="text-sm font-semibold text-ink">{site.ctaEmail}</p>
@@ -69,8 +72,9 @@ export default function ContactPage() {
               <h3 className="font-display text-2xl text-ink">Southern California example</h3>
               <p className="mt-3 text-inkMuted">
                 LA + Orange + Riverside/San Bernardino + Ventura + Santa Barbara + Kern → typically
-                Multi-Territory; exact mapping confirmed before billing.
+                Multi-Territory.
               </p>
+              <p className="mt-3 text-sm font-semibold text-inkMuted">We confirm mapping before billing.</p>
             </div>
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">Already decided?</h3>
