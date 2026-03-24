@@ -8,7 +8,9 @@ from inbound_inbox_triage import (
     decode_header_value,
     extract_plain_body,
     extract_original_sender,
+    handle_bounce_category,
     looks_like_moderation_bounce,
+    parse_bounce_details,
     resolve_imap_settings,
     resolve_inbound_backend,
 )
@@ -83,6 +85,60 @@ class TestInboundImapParsing(unittest.TestCase):
         )
         self.assertTrue(looks_like_moderation_bounce(subject, body))
         self.assertEqual(classify_email(subject, body, "noreply@zoho.com"), "bounce")
+
+    def test_parse_bounce_details_recognizes_soft_moderation_bounce(self):
+        subject = "Email held for Moderation - alerts@microflowops.com"
+        body = (
+            "This message was created automatically by mail delivery software.\n"
+            "A message that you sent could not be delivered to one or more of its recipients. "
+            "This is a permanent error.\n"
+            "jeff@g8safety.com, ERROR CODE :421 - Host not reachable.\n"
+        )
+        parsed = parse_bounce_details(subject, "noreply@zoho.com", {}, body, "<m-soft>")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.recipient_email, "jeff@g8safety.com")
+        self.assertEqual(parsed.bounce_class, "soft")
+
+    def test_handle_bounce_category_skips_suppression_for_soft_bounce(self):
+        subject = "Email held for Moderation - alerts@microflowops.com"
+        body = (
+            "This message was created automatically by mail delivery software.\n"
+            "jeff@g8safety.com, ERROR CODE :421 - Host not reachable.\n"
+        )
+        with mock.patch("inbound_inbox_triage.add_to_suppression") as mocked_add:
+            result = handle_bounce_category(
+                subject=subject,
+                from_email="noreply@zoho.com",
+                headers={},
+                body=body,
+                message_id="<m-soft>",
+                dry_run=False,
+            )
+        mocked_add.assert_not_called()
+        self.assertEqual(result["action"], "soft_bounce_no_suppression")
+        self.assertFalse(result["suppression_changed"])
+        self.assertEqual(result["bounce_class"], "soft")
+
+    def test_handle_bounce_category_suppresses_hard_bounce(self):
+        subject = "Email held for Moderation - alerts@microflowops.com"
+        body = (
+            "This message was created automatically by mail delivery software.\n"
+            "rivera@precisionair.com, ERROR CODE :557 - You are not allowed to send mail to rivera@precisionair.com\n"
+        )
+        with mock.patch("inbound_inbox_triage.add_to_suppression") as mocked_add:
+            result = handle_bounce_category(
+                subject=subject,
+                from_email="noreply@zoho.com",
+                headers={},
+                body=body,
+                message_id="<m-hard>",
+                dry_run=False,
+            )
+        mocked_add.assert_called_once()
+        self.assertEqual(result["action"], "suppressed_recipient_hard_bounce")
+        self.assertTrue(result["suppression_changed"])
+        self.assertEqual(result["bounce_class"], "hard")
 
 
 if __name__ == "__main__":

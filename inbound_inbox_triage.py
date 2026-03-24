@@ -30,6 +30,8 @@ from email.mime.text import MIMEText
 from email.utils import parseaddr
 from pathlib import Path
 
+from outreach import import_bounces_imap as bounce_import
+
 # Load environment variables
 try:
     from dotenv import load_dotenv
@@ -341,6 +343,66 @@ def classify_email(subject: str, body: str, from_email: str) -> str:
             return "question"
     
     return "other"
+
+
+def _headers_to_text(headers) -> str:
+    """Render a headers mapping into newline-delimited text for bounce parsing."""
+    if isinstance(headers, dict):
+        lines: list[str] = []
+        for key, value in headers.items():
+            key_text = str(key or "").strip()
+            value_text = str(value or "").strip()
+            if key_text:
+                lines.append(f"{key_text}: {value_text}")
+        return "\n".join(lines)
+    return str(headers or "")
+
+
+def parse_bounce_details(subject: str, from_email: str, headers, body: str, message_id: str):
+    """Parse bounce/moderation details using the canonical importer logic."""
+    headers_text = _headers_to_text(headers)
+    return bounce_import._parse_bounce(subject, from_email, headers_text, body, message_id)
+
+
+def handle_bounce_category(
+    *,
+    subject: str,
+    from_email: str,
+    headers,
+    body: str,
+    message_id: str,
+    dry_run: bool = False,
+) -> dict:
+    """Handle a bounce classification using canonical hard/soft parsing before any suppression write."""
+    parsed = parse_bounce_details(subject, from_email, headers, body, message_id)
+    if not parsed:
+        print("    [WARN] Could not extract bounce recipient")
+        return {
+            "action": "bounce_unknown",
+            "suppression_changed": False,
+            "bounce_class": "",
+            "recipient": "",
+        }
+
+    bounce_class = str(parsed.bounce_class or "").strip().lower()
+    recipient = str(parsed.recipient_email or "").strip().lower()
+    if bounce_class == "hard":
+        add_to_suppression(recipient, "bounce", "inbound_triage", message_id, dry_run)
+        print(f"    [INFO] Bounce classified as HARD recipient={recipient}")
+        return {
+            "action": "suppressed_recipient_hard_bounce",
+            "suppression_changed": (not dry_run),
+            "bounce_class": bounce_class,
+            "recipient": recipient,
+        }
+
+    print(f"    [INFO] Bounce classified as SOFT recipient={recipient}")
+    return {
+        "action": "soft_bounce_no_suppression",
+        "suppression_changed": False,
+        "bounce_class": bounce_class,
+        "recipient": recipient,
+    }
 
 
 def extract_sender_email(from_header: str) -> str:
@@ -1089,15 +1151,15 @@ def process_message(service, msg: dict, state: dict, label_map: dict,
         action = "suppressed"
     
     elif category == "bounce":
-        # Try to extract original recipient
-        recipient = extract_bounce_recipient(body, details.get("headers", {}))
-        if recipient:
-            add_to_suppression(recipient, "bounce", "inbound_triage", msg_id, dry_run)
-            action = "suppressed_recipient"
-        else:
-            # Log as unknown bounce
-            print(f"    [WARN] Could not extract bounce recipient")
-            action = "bounce_unknown"
+        bounce_result = handle_bounce_category(
+            subject=subject,
+            from_email=from_email,
+            headers=details.get("headers", {}),
+            body=body,
+            message_id=msg_id,
+            dry_run=dry_run,
+        )
+        action = str(bounce_result.get("action") or "")
     
     elif category == "hot_interest":
         create_reply_draft(from_email, subject, body, category, msg_id, dry_run)
@@ -1135,7 +1197,8 @@ def process_message(service, msg: dict, state: dict, label_map: dict,
         if len(state["processed_message_ids"]) > 1000:
             state["processed_message_ids"] = state["processed_message_ids"][-1000:]
     
-    return {"category": category}
+    suppression_changed = bool((not dry_run) and action in {"suppressed", "suppressed_recipient_hard_bounce"})
+    return {"category": category, "suppression_changed": suppression_changed}
 
 
 def process_imap_message(conn: imaplib.IMAP4_SSL, msg_id: str, state: dict,
@@ -1174,14 +1237,17 @@ def process_imap_message(conn: imaplib.IMAP4_SSL, msg_id: str, state: dict,
         imap_move_message(conn, msg_id, IMAP_FOLDER_UNSUB, dry_run)
     
     elif category == "bounce":
-        recipient = extract_bounce_recipient(body, headers)
-        if recipient:
-            add_to_suppression(recipient, "bounce", "inbound_triage", message_id, dry_run)
-            action = "suppressed_recipient"
+        bounce_result = handle_bounce_category(
+            subject=subject,
+            from_email=effective_from,
+            headers=headers,
+            body=body,
+            message_id=message_id,
+            dry_run=dry_run,
+        )
+        action = str(bounce_result.get("action") or "")
+        if str(bounce_result.get("bounce_class") or "") in {"hard", "soft"}:
             imap_move_message(conn, msg_id, IMAP_FOLDER_BOUNCE, dry_run)
-        else:
-            print("    [WARN] Could not extract bounce recipient")
-            action = "bounce_unknown"
     
     elif category == "hot_interest":
         create_reply_draft(effective_from, subject, body, category, message_id, dry_run)
@@ -1213,7 +1279,8 @@ def process_imap_message(conn: imaplib.IMAP4_SSL, msg_id: str, state: dict,
         if len(state["processed_message_ids"]) > 1000:
             state["processed_message_ids"] = state["processed_message_ids"][-1000:]
     
-    return {"category": category}
+    suppression_changed = bool((not dry_run) and action in {"suppressed", "suppressed_recipient_hard_bounce"})
+    return {"category": category, "suppression_changed": suppression_changed}
 
 
 # =============================================================================
@@ -1272,6 +1339,7 @@ def main():
         counts = {"unsubscribe": 0, "bounce": 0, "hot_interest": 0, 
                   "question": 0, "objection": 0, "out_of_office": 0,
                   "bug_feature": 0, "other": 0}
+        suppression_changed = False
         
         for msg_id in msg_ids:
             try:
@@ -1279,6 +1347,8 @@ def main():
                 cat = result.get("category")
                 if cat:
                     counts[cat] = counts.get(cat, 0) + 1
+                if result.get("suppression_changed"):
+                    suppression_changed = True
             except Exception as e:
                 print(f"[ERROR] Failed to process IMAP message: {e}")
         
@@ -1313,9 +1383,7 @@ def main():
             state["last_processed_time"] = datetime.now().isoformat()
             save_state(state)
             
-            if (counts.get("unsubscribe", 0) > 0 or 
-                counts.get("objection", 0) > 0 or 
-                counts.get("bounce", 0) > 0):
+            if suppression_changed:
                 backup_suppression_file()
         
         # Summary
@@ -1354,6 +1422,7 @@ def main():
     counts = {"unsubscribe": 0, "bounce": 0, "hot_interest": 0, 
               "question": 0, "objection": 0, "out_of_office": 0,
               "bug_feature": 0, "other": 0}
+    suppression_changed = False
     
     for msg in messages:
         try:
@@ -1361,6 +1430,8 @@ def main():
             cat = result.get("category")
             if cat:
                 counts[cat] = counts.get(cat, 0) + 1
+            if result.get("suppression_changed"):
+                suppression_changed = True
         except Exception as e:
             print(f"[ERROR] Failed to process: {e}")
     
@@ -1388,10 +1459,8 @@ def main():
         state["last_processed_time"] = datetime.now().isoformat()
         save_state(state)
         
-        # Backup suppression list if it may have changed
-        if (counts.get("unsubscribe", 0) > 0 or 
-            counts.get("objection", 0) > 0 or 
-            counts.get("bounce", 0) > 0):
+        # Backup suppression list only when a live suppression write occurred.
+        if suppression_changed:
             backup_suppression_file()
     
     # Summary
