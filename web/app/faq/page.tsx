@@ -8,28 +8,24 @@ export const metadata: Metadata = {
 
 const faqs = [
   {
-    q: "Do I need to count metros exactly?",
-    a: "No. List the counties, cities, metros, or OSHA areas you care about and we map coverage during onboarding. We will not change billing without your explicit approval."
-  },
-  {
-    q: "Can I send counties instead of metros?",
-    a: "Yes. Counties, cities, metros, or OSHA areas work — we translate coverage for you. For example, LA + Orange + Riverside/San Bernardino + Ventura + Santa Barbara + Kern typically maps to Multi-Territory, with exact mapping confirmed before billing."
+    q: "How does coverage mapping work?",
+    a: "Send counties, cities, metros, or OSHA areas. We confirm mapping before billing. For example, LA + Orange + Riverside/San Bernardino + Ventura + Santa Barbara + Kern typically maps to Multi-Territory."
   },
   {
     q: "Why is the public sample frozen instead of live?",
-    a: "Because a proof page should stay populated. We keep the public sample frozen with real rows so buyers always see an actual alert set, while customer feeds continue to refresh on their normal schedule."
+    a: "The Frozen public sample stays populated with real rows so buyers can inspect an actual alert set any time, while customer feeds continue to refresh on schedule."
   },
   {
     q: "How do I choose a plan?",
-    a: "If you are unsure, start with Core. It covers up to 4 metros in billed coverage after mapping. If your footprint is larger, we can move you to Multi-Territory or Enterprise only with your approval."
+    a: "Start with Core if you need up to 4 billed metros. If the mapped footprint is larger, we can move you to Multi-Territory or Enterprise only with your approval."
   },
   {
-    q: "What counts as a metro?",
-    a: "A metro is a major city plus nearby surrounding communities, similar to an MSA-style boundary. You can list counties, city names, or OSHA areas and we will confirm the exact mapping."
+    q: "How do I verify a signal?",
+    a: "Verify in 30 seconds. Each sample item shows opened and observed timestamps plus a direct link to the public OSHA record."
   },
   {
     q: "Can I change my coverage later?",
-    a: "Yes. You can swap your mapped metro coverage once per billing cycle at no charge. Just email us with the change and we will confirm the new fit."
+    a: "Yes. You can swap mapped coverage once per billing cycle at no charge. Email us with the change and we will confirm the new fit."
   },
   {
     q: "Do you support OSHA Area Office alignment?",
@@ -37,7 +33,7 @@ const faqs = [
   },
   {
     q: "Will my price change?",
-    a: "Founding customer rate locked for 12 months while your subscription remains active. We will not increase your billing without explicit approval."
+    a: "Founding customer rate is locked for 12 months while your subscription remains active."
   },
   {
     q: "Is onboarding handled over email only?",
@@ -72,7 +68,7 @@ export default function FaqPage() {
         <SectionHeading
           eyebrow="FAQ"
           title="Answers to common questions."
-          description="If you need something specific, email us and we will help."
+          description="Short answers on coverage, proof, onboarding, and delivery."
           align="center"
         />
       </section>

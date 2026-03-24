@@ -7,7 +7,7 @@ import site from "@/config/site.json";
 import sampleSignals from "./sample/sample_signals.json";
 
 const COVERAGE_HELPER =
-  "Counties, cities, metros, or OSHA areas work — we translate coverage for you.";
+  "Send counties, cities, metros, or OSHA areas.";
 
 type SampleSignalRow = {
   activity_nr: string;
@@ -78,7 +78,7 @@ function formatOpenedDate(value: string | null | undefined): string {
 
 export default function HomePage() {
   const founderBlurb =
-    "Built by a data engineer for teams that need earlier visibility into public OSHA activity.";
+    "Built by a data engineer for earlier visibility into public OSHA activity.";
   const [snapshot] = sampleSignals as SampleTerritory[];
   const snapshotRows = (snapshot?.rows || []).slice(0, 3);
   const leadProofRow = snapshot?.rows?.[0] ?? null;
@@ -92,34 +92,43 @@ export default function HomePage() {
               Nationwide OSHA enforcement alerts mapped to your footprint
             </p>
             <h1 className="font-display text-4xl text-ink md:text-5xl lg:text-6xl">
-              Daily OSHA enforcement signals that surface new inspections before citations post.
+              Daily OSHA inspection signals before citations post.
             </h1>
             <p className="text-lg text-inkMuted md:text-xl">
-              {site.brandName} delivers nationwide OSHA enforcement signal alerts to help safety-facing
-              teams prioritize outreach while the window is still open.
+              {site.brandName} surfaces public OSHA inspection activity with timestamps and routing for
+              safety-facing teams.
             </p>
-            <p className="text-sm font-semibold text-inkMuted">{COVERAGE_HELPER}</p>
+            <p className="text-sm font-semibold text-inkMuted">
+              Core starts at $299/mo for up to 4 billed metros. {COVERAGE_HELPER}
+            </p>
             <CTAButtons />
+            <div className="grid gap-3 text-sm font-semibold text-ink md:grid-cols-3">
+              <Link href="/sample" className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
+                Frozen public sample
+              </Link>
+              <Link href="/sample" className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
+                Verify in 30 seconds
+              </Link>
+              <Link href="/pricing" className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
+                We confirm mapping before billing
+              </Link>
+            </div>
             <div className="rounded-2xl border border-cardBorder bg-card p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
                 Founder
               </p>
-              <p className="mt-2 text-sm text-inkMuted">{founderBlurb}</p>
-              <p className="mt-2 text-sm font-semibold text-inkMuted">Not legal advice.</p>
+              <p className="mt-2 text-sm text-inkMuted">{founderBlurb} Not legal advice.</p>
             </div>
-            <p className="text-sm text-inkMuted">
-              Core starts at $299/mo for up to 4 metros in billed coverage. {COVERAGE_HELPER}
-            </p>
           </div>
           <div className="rounded-3xl border border-cardBorder bg-paper p-6 shadow-soft">
             <div className="space-y-4">
               <div className="flex items-center justify-between text-xs font-semibold text-inkMuted">
-                <span>Frozen recent public snapshot</span>
+                <span>Recent public snapshot</span>
                 <span>{formatUtcStamp(snapshot?.updated_at_utc)} UTC</span>
               </div>
               <div className="space-y-3 rounded-2xl bg-card p-4">
                 <p className="text-sm font-semibold text-ink">
-                  Frozen proof rows from {snapshot?.territory_name || "the latest snapshot"}
+                  Proof rows from {snapshot?.territory_name || "the latest snapshot"}
                 </p>
                 {snapshotRows.length > 0 ? (
                   <div className="space-y-3 text-sm text-inkMuted">
@@ -147,7 +156,7 @@ export default function HomePage() {
                 )}
                 <div className="flex items-center justify-between gap-4 pt-2">
                   <p className="text-xs text-inkMuted">
-                    Opened and observed timestamps make the public record easy to verify.
+                    Opened and observed timestamps link back to the public OSHA record.
                   </p>
                   <Link
                     href="/sample"
@@ -166,7 +175,7 @@ export default function HomePage() {
         <SectionHeading
           eyebrow="Who it is for"
           title="Built for teams who live inside OSHA timelines."
-          description="We focus on employer-side defense and safety consulting, where early awareness changes the odds of winning the relationship."
+          description="Employer-side defense and safety teams use early awareness to act while the need is still fresh."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-2">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
@@ -190,7 +199,7 @@ export default function HomePage() {
         <SectionHeading
           eyebrow="Why pay"
           title="Timing and relevance are the whole game."
-          description="We do the filtering so your team only sees activity that is both timely and likely to convert."
+          description="We filter the feed so your team gets timely signals that still deserve attention."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-3">
           {[
@@ -204,7 +213,7 @@ export default function HomePage() {
             },
             {
               title: "Footprint fit",
-              body: "Signals are filtered to your footprint, not a national firehose. Counties, cities, metros, or OSHA areas work."
+              body: "Signals are filtered to the footprint your team actually covers, not a national firehose."
             }
           ].map((item, index) => (
             <div
@@ -223,7 +232,7 @@ export default function HomePage() {
         <SectionHeading
           eyebrow="How it works"
           title="A daily pipeline that never misses the window."
-          description="We transform public OSHA activity into a short, ranked brief you can act on immediately."
+          description="Public OSHA activity becomes a short, ranked brief your team can act on the same morning."
         />
         <div className="mt-10 grid gap-6 lg:grid-cols-4">
           {[
@@ -262,8 +271,8 @@ export default function HomePage() {
       <section className="mx-auto w-full max-w-6xl px-6">
         <SectionHeading
           eyebrow="Proof"
-          title="See the alert, then verify the OSHA record."
-          description="Show the buyer the commercial value: a ranked alert, a source record, and a quick reason to act."
+          title="See the alert, then check the public record."
+          description="The value is simple: a ranked alert, a source record, and a concrete reason to move."
         />
         <div className="mt-10 grid gap-6 lg:grid-cols-2">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
@@ -314,21 +323,21 @@ export default function HomePage() {
       <section className="mx-auto w-full max-w-6xl px-6">
         <SectionHeading
           eyebrow="Territories"
-          title="Coverage based on your footprint."
-          description="Plans are still metro-based for billing, but counties, cities, metros, or OSHA areas all work as inputs."
+          title="Coverage mapped to your footprint."
+          description="Plans bill by metro count, but onboarding maps the footprint you already use."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-2">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-xl text-ink">Metro-based billing</h3>
             <p className="mt-3 text-inkMuted">
-              Pick a plan based on how many metros you need in billed coverage. Core covers up to 4,
-              Multi-Territory up to 10. Daily morning delivery.
+              Core covers up to 4 billed metros. Multi-Territory covers up to 10, with daily morning
+              delivery.
             </p>
           </div>
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h3 className="font-display text-xl text-ink">Onboarding translates coverage</h3>
+            <h3 className="font-display text-xl text-ink">Coverage inputs</h3>
             <p className="mt-3 text-inkMuted">
-              {COVERAGE_HELPER} We will not increase billing without explicit approval.
+              Share the footprint labels your team already uses and we map them during onboarding.
             </p>
           </div>
         </div>
@@ -338,16 +347,14 @@ export default function HomePage() {
         <SectionHeading
           eyebrow="Compliance"
           title="Clear boundaries, clean data handling."
-          description="We keep the service useful without crossing legal or privacy lines."
+          description="Useful operational signals, with clear limits."
         />
         <div className="mt-8 rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-          <p className="text-sm font-semibold text-ink">Disclaimer</p>
-          <ul className="mt-3 space-y-3 text-sm text-inkMuted">
+          <ul className="space-y-3 text-sm text-inkMuted">
             <li>Not affiliated with OSHA.</li>
             <li>Uses public enforcement data; freshness varies.</li>
             <li>Business contact only; opt-out honored.</li>
-            <li>No legal advice. Alerts are informational signals only.</li>
-            <li>Deadlines are included only when the public record supports them.</li>
+            <li>Deadlines appear only when the public record supports them.</li>
           </ul>
         </div>
       </section>
@@ -361,19 +368,9 @@ export default function HomePage() {
               </p>
               <h2 className="mt-3 font-display text-3xl">Request a trial feed for your footprint.</h2>
               <p className="mt-3 text-white/70">
-                We will send a sample alert, map your coverage, and set up a short trial feed so you can
-                evaluate signal quality.
+                We will send a sample alert, map your footprint, and start a short trial feed so you can
+                judge signal quality for yourself.
               </p>
-              <p className="mt-3 text-sm font-semibold text-white/80">{COVERAGE_HELPER}</p>
-              <div className="mt-4 rounded-2xl border border-white/15 bg-white/5 p-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/70">
-                  Verify in 30 seconds
-                </p>
-                <p className="mt-2 text-sm text-white/80">
-                  Every item includes opened/observed timestamps and a direct link to the public OSHA
-                  record.
-                </p>
-              </div>
             </div>
             <CTAButtons variant="dark" />
           </div>

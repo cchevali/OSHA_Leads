@@ -7,7 +7,7 @@ import sampleSignals from "./sample_signals.json";
 export const metadata: Metadata = {
   title: "Sample OSHA Alert Snapshot",
   description:
-    "Frozen, populated sample showing MicroFlowOps alert proof, public OSHA record verification, and recent committed rows.",
+    "Frozen public sample showing MicroFlowOps alert proof, public OSHA record verification, and recent committed rows.",
   alternates: { canonical: "/sample" }
 };
 
@@ -30,7 +30,7 @@ type SampleTerritory = {
 };
 
 const FOUNDER_BLURB =
-  "Built by a data engineer for teams that need earlier visibility into public OSHA activity.";
+  "Built by a data engineer for earlier visibility into public OSHA activity.";
 
 function parseUtc(value: string | null | undefined): Date | null {
   const text = (value || "").trim();
@@ -118,13 +118,11 @@ export default function SamplePage() {
             Sample: populated OSHA alert proof
           </h1>
           <p className="text-base text-inkMuted md:text-lg">
-            Frozen recent snapshot with real public OSHA rows, plus the verification view buyers use
-            to confirm a record in seconds.
+            Frozen public sample with real public OSHA rows and the verification view buyers use to
+            confirm a record fast.
           </p>
-          <p className="mx-auto max-w-3xl text-sm text-inkMuted">{FOUNDER_BLURB}</p>
-          <p className="text-sm font-semibold text-inkMuted">Not legal advice.</p>
-          <p className="text-sm text-inkMuted">
-            Not affiliated with OSHA or any government agency.
+          <p className="mx-auto max-w-3xl text-sm text-inkMuted">
+            {FOUNDER_BLURB} Independent service using public OSHA data. Not legal advice.
           </p>
         </div>
       </section>
@@ -133,7 +131,7 @@ export default function SamplePage() {
         <div className="rounded-3xl border border-cardBorder bg-paper p-6 shadow-soft">
           <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-semibold text-inkMuted">
             <span>Proof snapshot</span>
-            <span>Frozen to stay populated</span>
+            <span>Kept populated for proof</span>
           </div>
           <div className="mt-4 grid gap-6 lg:grid-cols-2">
             <div className="rounded-2xl border border-cardBorder bg-surface p-4">
@@ -172,9 +170,10 @@ export default function SamplePage() {
               Why this was actionable
             </p>
             <p className="mt-2 text-sm text-inkMuted">
-              This example showed a new Midland, Texas record with an opened date of March 3, 2026
-              and an observed timestamp of March 6, 2026. That gives the buyer something concrete to
-              verify quickly and decide whether to route for outreach while the signal is still fresh.
+              This public page stays fixed so buyers always see a populated proof set, while customer
+              feeds keep refreshing on schedule. In this example, a Midland, Texas record opened on
+              March 3, 2026 and was observed on March 6, 2026, giving the buyer something concrete to
+              verify before deciding whether to route it for outreach.
             </p>
           </div>
         </div>
@@ -186,7 +185,7 @@ export default function SamplePage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="font-display text-2xl text-ink">
-                  {snapshot.territory_name} frozen snapshot
+                  {snapshot.territory_name} sample rows
                 </h2>
                 <p className="mt-2 text-sm text-inkMuted">
                   Captured {formatUtcStamp(snapshot.updated_at_utc)} UTC from public OSHA records.
@@ -209,7 +208,7 @@ export default function SamplePage() {
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <p className="text-sm font-semibold text-ink">Need your footprint instead?</p>
           <p className="mt-2 text-sm text-inkMuted">
-            Counties, cities, metros, or OSHA areas work — we translate coverage for you.
+            Send the coverage and recipients you want watched. We confirm mapping before billing.
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-4">
             <CTAButtons />

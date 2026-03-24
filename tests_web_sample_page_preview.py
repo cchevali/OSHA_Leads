@@ -19,12 +19,13 @@ class TestWebSamplePagePreview(unittest.TestCase):
     def test_founder_and_disclaimer_strings_exist(self):
         page_text = SAMPLE_PAGE.read_text(encoding="utf-8")
         self.assertIn(
-            "Built by a data engineer for teams that need earlier visibility into public OSHA activity.",
+            "Built by a data engineer for earlier visibility into public OSHA activity.",
             page_text,
         )
         self.assertIn("Not legal advice.", page_text)
-        self.assertIn("Frozen recent snapshot with real public OSHA rows", page_text)
+        self.assertIn("Frozen public sample", page_text)
         self.assertIn("Verify in 30 seconds", page_text)
+        self.assertIn("We confirm mapping before billing", page_text)
         self.assertIn("Why this was actionable", page_text)
 
     def test_sample_snapshot_schema_is_populated(self):
