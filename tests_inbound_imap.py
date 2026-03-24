@@ -4,9 +4,11 @@ import unittest
 from unittest import mock
 
 from inbound_inbox_triage import (
+    classify_email,
     decode_header_value,
     extract_plain_body,
     extract_original_sender,
+    looks_like_moderation_bounce,
     resolve_imap_settings,
     resolve_inbound_backend,
 )
@@ -70,6 +72,17 @@ class TestInboundImapParsing(unittest.TestCase):
         self.assertEqual(settings["user"], "ops@example.com")
         self.assertEqual(settings["password"], "secret")
         self.assertEqual(settings["folder"], "INBOX")
+
+    def test_zoho_moderation_notice_is_treated_as_bounce_not_hot_interest(self):
+        subject = "Email held for Moderation - alerts@microflowops.com"
+        body = (
+            "This message was created automatically by mail delivery software.\n\n"
+            "A message that you sent could not be delivered to one or more of its recipients. "
+            "This is a permanent error.\n\n"
+            "jeff@g8safety.com, ERROR CODE :421 - Host not reachable.\n"
+        )
+        self.assertTrue(looks_like_moderation_bounce(subject, body))
+        self.assertEqual(classify_email(subject, body, "noreply@zoho.com"), "bounce")
 
 
 if __name__ == "__main__":

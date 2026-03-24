@@ -134,6 +134,13 @@ BOUNCE_PATTERNS = [
     "delivery failed", "undeliverable", "mailbox not found",
     "550 ", "553 ", "bounced", "permanent failure", "user unknown"
 ]
+MODERATION_BOUNCE_SUBJECT_PREFIX = "email held for moderation -"
+MODERATION_BOUNCE_MARKERS = [
+    "this message was created automatically by mail delivery software",
+    "could not be delivered to one or more of its recipients",
+    "this is a permanent error",
+    "error code :",
+]
 
 HOT_INTEREST_PATTERNS = [
     "yes", "interested", "let's talk", "call", "meeting", "calendar",
@@ -272,6 +279,15 @@ def backup_suppression_file():
 # =============================================================================
 # EMAIL CLASSIFICATION
 # =============================================================================
+def looks_like_moderation_bounce(subject: str, body: str) -> bool:
+    """Return True for Zoho moderation notices that wrap delivery-failure content."""
+    subject_lower = (subject or "").strip().lower()
+    if not subject_lower.startswith(MODERATION_BOUNCE_SUBJECT_PREFIX):
+        return False
+    text = f"{subject}\n{body}".lower()
+    return any(marker in text for marker in MODERATION_BOUNCE_MARKERS)
+
+
 def classify_email(subject: str, body: str, from_email: str) -> str:
     """
     Classify email into category.
@@ -284,7 +300,11 @@ def classify_email(subject: str, body: str, from_email: str) -> str:
     for pattern in UNSUBSCRIBE_PATTERNS:
         if pattern in text:
             return "unsubscribe"
-    
+
+    # Zoho moderation notices are deliverability system mail, not lead replies.
+    if looks_like_moderation_bounce(subject, body):
+        return "bounce"
+
     # Check for bounce (from address or content)
     for sender in BOUNCE_SENDERS:
         if sender in from_lower:
