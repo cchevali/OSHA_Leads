@@ -132,6 +132,15 @@ def _candidate_manifest_row(candidate: dict, *, status: str, reason: str, origin
     return row
 
 
+def _legacy_extra_selection_reason(row: sqlite3.Row) -> str:
+    email = roa._norm_email(str(row["email"] or ""))
+    if not roa._is_send_eligible_for_default(row, include_adjacent_contractors=False):
+        return "not_default_send_eligible"
+    if roa._is_role_inbox_email(email):
+        return "role_inbox_email"
+    return ""
+
+
 def _select_skipped_unsent_candidates(
     *,
     conn: sqlite3.Connection,
@@ -166,15 +175,18 @@ def _select_skipped_unsent_candidates(
 
     for row in rows:
         email = roa._norm_email(str(row["email"] or ""))
-        original_skip_reason = roa._skip_reason(
+        current_skip_reason = roa._skip_reason(
             row,
             suppressed_emails=suppressed_emails,
             sent_ids=sent_ids,
             allow_repeat=False,
-            skip_role_inboxes=True,
-            include_adjacent_contractors=False,
+            skip_role_inboxes=False,
+            include_adjacent_contractors=True,
         )
-        if original_skip_reason not in EXTRA_SELECTION_REASONS and original_skip_reason != "suppressed":
+        original_skip_reason = _legacy_extra_selection_reason(row)
+        if current_skip_reason and current_skip_reason != "suppressed":
+            continue
+        if not original_skip_reason and current_skip_reason != "suppressed":
             continue
 
         candidate = roa._candidate_from_row(row)
@@ -183,7 +195,7 @@ def _select_skipped_unsent_candidates(
         candidate["batch"] = _extra_batch_id(state, run_date) if state else ""
 
         pool_total += 1
-        if email in suppressed_emails or original_skip_reason == "suppressed":
+        if email in suppressed_emails or current_skip_reason == "suppressed":
             skip_counts["suppressed_compliance"] += 1
             manifest_rows.append(
                 _candidate_manifest_row(

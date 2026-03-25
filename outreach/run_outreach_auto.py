@@ -677,6 +677,10 @@ def _role_inbox_penalty(email: str) -> int:
     return 1 if _is_role_inbox_email(email) else 0
 
 
+def _default_send_penalty(default_send_eligible: int) -> int:
+    return 0 if int(default_send_eligible) == 1 else 1
+
+
 def _segment_penalty(segment: str) -> tuple[int, str]:
     text = (segment or "").strip().lower()
     if not text:
@@ -691,6 +695,7 @@ def _rank_tuple_for_candidate(
     prospect_id: str,
     email: str,
     role_priority: int,
+    default_send_penalty: int,
     role_inbox_penalty: int,
     score: int,
     segment_penalty: int,
@@ -699,6 +704,7 @@ def _rank_tuple_for_candidate(
     created_ts = _parse_sort_ts(created_at)
     return (
         int(role_priority),
+        int(default_send_penalty),
         int(role_inbox_penalty),
         _score_tier_rank(int(score)),
         int(segment_penalty),
@@ -713,6 +719,8 @@ def _rank_tuple_for_candidate(
 def _rank_reason_text(
     role_bucket_label: str,
     role_priority: int,
+    default_send_eligible: int,
+    default_send_penalty: int,
     role_inbox_penalty: int,
     score: int,
     segment_fit: str,
@@ -720,6 +728,7 @@ def _rank_reason_text(
 ) -> str:
     return (
         f"role_bucket={role_bucket_label};role_priority={role_priority};"
+        f"default_send_eligible={int(default_send_eligible)};default_send_penalty={int(default_send_penalty)};"
         f"role_inbox_penalty={role_inbox_penalty};score_tier={_score_tier(score)};"
         f"score={score};segment_fit={segment_fit};created_at={_safe_text(created_at) or 'none'}"
     )
@@ -738,16 +747,12 @@ def _skip_reason(
         if status == "do_not_contact":
             return "status_do_not_contact"
         return f"status_{status}"
-    if not _is_send_eligible_for_default(row, include_adjacent_contractors=include_adjacent_contractors):
-        return "not_default_send_eligible"
 
     email = _norm_email(str(row["email"] or ""))
     if not email or "@" not in email:
         return "invalid_email"
     if email in suppressed_emails:
         return "suppressed"
-    if skip_role_inboxes and _is_role_inbox_email(email):
-        return "role_inbox_email"
 
     if not allow_repeat:
         if str(row["prospect_id"]) in sent_ids:
@@ -779,12 +784,14 @@ def _candidate_from_row(row: sqlite3.Row) -> dict:
         score = 0
 
     role_rank, role_bucket_label = _role_priority(role_or_title)
+    default_send_rank_penalty = _default_send_penalty(default_send_eligible)
     inbox_penalty = _role_inbox_penalty(email)
     segment_rank_penalty, segment_fit = _segment_penalty(segment)
     rank_tuple = _rank_tuple_for_candidate(
         prospect_id=prospect_id,
         email=email,
         role_priority=role_rank,
+        default_send_penalty=default_send_rank_penalty,
         role_inbox_penalty=inbox_penalty,
         score=score,
         segment_penalty=segment_rank_penalty,
@@ -793,6 +800,8 @@ def _candidate_from_row(row: sqlite3.Row) -> dict:
     rank_reason = _rank_reason_text(
         role_bucket_label=role_bucket_label,
         role_priority=role_rank,
+        default_send_eligible=default_send_eligible,
+        default_send_penalty=default_send_rank_penalty,
         role_inbox_penalty=inbox_penalty,
         score=score,
         segment_fit=segment_fit,
