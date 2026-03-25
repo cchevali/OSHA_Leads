@@ -334,9 +334,7 @@ def _row_is_effectively_sendable(row: dict[str, object], *, skip_role_inboxes: b
         return False
     if not _email_domain_allowed(email):
         return False
-    if bool(skip_role_inboxes) and _is_role_inbox_email(email):
-        return False
-    return _effective_default_send_eligible(str(row.get("source") or ""), row.get("default_send_eligible")) == 1
+    return True
 
 
 def _row_has_nonfree_work_email(row: dict[str, object]) -> bool:
@@ -1013,10 +1011,6 @@ def _compute_input_cohort(
         if email in suppressed_emails:
             filtered["suppressed"] += 1
             continue
-        if _effective_default_send_eligible(str(row["source"] or ""), row["default_send_eligible"]) != 1:
-            filtered["already_sent_or_ineligible"] += 1
-            continue
-
         status = _normalize_text(str(row["status"] or "")).lower()
         prospect_id = _normalize_text(str(row["prospect_id"] or ""))
         if status in EXCLUDED_STATUSES:

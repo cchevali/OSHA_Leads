@@ -75,7 +75,7 @@ class TestProspectGenerationBacklog(unittest.TestCase):
                     suppressed_emails=suppressed,
                     skip_role_inboxes=True,
                 )
-                self.assertEqual(count, 1)
+                self.assertEqual(count, 2)
                 count_with_role = generator.compute_uncontacted_backlog(
                     conn=conn,
                     state="TX",

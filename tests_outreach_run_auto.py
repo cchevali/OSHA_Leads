@@ -670,7 +670,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("would_contact_prospect_ids=p_new", out)
             self.assertNotIn("would_contact_prospect_ids=p_sent", out)
 
-    def test_role_inbox_skip_toggle_excludes_when_on_includes_when_off(self):
+    def test_role_inbox_rows_remain_sendable_even_when_legacy_toggle_is_on(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             data_dir = tmp / "data"
@@ -714,14 +714,15 @@ class TestOutreachRunAuto(unittest.TestCase):
 
             p_on = self._run(["--dry-run", "--for-date", "2026-02-24"], env_base)
             self.assertEqual(p_on.returncode, 0, msg=p_on.stderr + "\n" + p_on.stdout)
-            self.assertIn("would_contact_prospect_ids=p_person", p_on.stdout or "")
+            self.assertIn("would_contact_prospect_ids=p_person,p_role", p_on.stdout or "")
             manifest_line = next((ln for ln in (p_on.stdout or "").splitlines() if "manifest_path=" in ln), "")
             manifest_path = Path(manifest_line.split("manifest_path=", 1)[1].strip())
             with open(manifest_path, "r", newline="", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
             role_rows = [r for r in rows if (r.get("prospect_id") or "") == "p_role"]
             self.assertEqual(len(role_rows), 1)
-            self.assertEqual((role_rows[0].get("reason") or ""), "role_inbox_email")
+            self.assertEqual((role_rows[0].get("status") or ""), "selected")
+            self.assertEqual((role_rows[0].get("reason") or ""), "")
 
             p_off = self._run(["--dry-run", "--for-date", "2026-02-24"], {**env_base, "OUTREACH_SKIP_ROLE_INBOXES": "0"})
             self.assertEqual(p_off.returncode, 0, msg=p_off.stderr + "\n" + p_off.stdout)
@@ -1829,7 +1830,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_summary_excludes_not_default_send_eligible_rows_from_sendable_and_raw_counts(self):
+    def test_summary_counts_legacy_blocked_rows_as_sendable_inventory(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             crm_db = tmp / "crm.sqlite"
@@ -1912,9 +1913,9 @@ class TestOutreachRunAuto(unittest.TestCase):
                 )
 
                 self.assertEqual(int((funnel.get("pool_total_by_state") or {}).get("TX", 0)), 4)
-                self.assertEqual(int((funnel.get("uncontacted_sendable_by_state") or {}).get("TX", 0)), 1)
-                self.assertEqual(int((funnel.get("uncontacted_raw_by_state") or {}).get("TX", 0)), 3)
-                self.assertEqual(int(uncontacted.get("TX", 0)), 1)
+                self.assertEqual(int((funnel.get("uncontacted_sendable_by_state") or {}).get("TX", 0)), 2)
+                self.assertEqual(int((funnel.get("uncontacted_raw_by_state") or {}).get("TX", 0)), 4)
+                self.assertEqual(int(uncontacted.get("TX", 0)), 2)
                 self.assertEqual(int(funnel.get("invalid_email_count") or 0), 1)
                 self.assertEqual(int(funnel.get("suppressed_count") or 0), 1)
             finally:
@@ -2651,7 +2652,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 rows = list(csv.DictReader(f))
             dropped_role = [r for r in rows if (r.get("prospect_id") or "") == "p_domain_role"]
             self.assertEqual(len(dropped_role), 1)
-            self.assertEqual((dropped_role[0].get("reason") or ""), "role_inbox_email")
+            self.assertEqual((dropped_role[0].get("reason") or ""), "domain_dedup")
             for field in ["domain", "segment", "role_or_title", "state_pref", "rank_reason"]:
                 self.assertIn(field, rows[0], msg=f"missing manifest field {field}")
 

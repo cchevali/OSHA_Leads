@@ -403,7 +403,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_FILTERED_FREE_DOMAIN=0", out)
             self.assertIn("GENERATOR_INPUT_COHORT crm_total=1 eligible=1 excluded=0", out)
 
-    def test_backlog_and_input_cohort_ignore_legacy_state_lic_sendable_flags(self):
+    def test_backlog_and_input_cohort_count_legacy_state_lic_rows_as_sendable(self):
         from outreach import crm_store
         from outreach import run_prospect_generation as generator
 
@@ -453,7 +453,7 @@ class TestProspectGeneration(unittest.TestCase):
                     suppressed_emails=set(),
                     skip_role_inboxes=True,
                 )
-                self.assertEqual(backlog, 1)
+                self.assertEqual(backlog, 2)
 
                 cohort = generator._compute_input_cohort(
                     conn=conn,
@@ -461,10 +461,10 @@ class TestProspectGeneration(unittest.TestCase):
                     suppressed_emails=set(),
                 )
                 self.assertEqual(int(cohort.get("crm_total", -1)), 2)
-                self.assertEqual(int(cohort.get("eligible", -1)), 1)
-                self.assertEqual(int(cohort.get("excluded", -1)), 1)
+                self.assertEqual(int(cohort.get("eligible", -1)), 2)
+                self.assertEqual(int(cohort.get("excluded", -1)), 0)
                 breakdown = dict(cohort.get("filtered") or {})
-                self.assertEqual(int(breakdown.get("already_sent_or_ineligible", 0)), 1)
+                self.assertEqual(int(breakdown.get("already_sent_or_ineligible", 0)), 0)
             finally:
                 conn.close()
 
@@ -883,9 +883,9 @@ class TestProspectGeneration(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             out = buf.getvalue()
-            self.assertIn("GENERATOR_AUTOGROW_BACKLOG_CURRENT=0", out)
-            self.assertIn("GENERATOR_AUTOGROW_SAFETY_NET_FORCED=1 reason=SENDABLE_BELOW_FLOOR states=TX:0", out)
-            self.assertIn("GENERATOR_AUTOGROW_STATE=TX backlog_current=0 backlog_sendable_current=0", out)
+            self.assertIn("GENERATOR_AUTOGROW_BACKLOG_CURRENT=27", out)
+            self.assertIn("GENERATOR_AUTOGROW_SAFETY_NET_FORCED=0", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATE=TX backlog_current=27 backlog_sendable_current=27", out)
 
     def test_autogrow_enabled_with_empty_sources_emits_explicit_skip_token(self):
         from outreach import run_prospect_generation as generator
@@ -1883,7 +1883,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_STATE_LIC_REJECTED_FIT_MISMATCH=1", out)
             self.assertIn("backlog_credit=0", out)
 
-    def test_state_lic_role_inbox_rows_do_not_get_same_run_backlog_credit(self):
+    def test_state_lic_role_inbox_rows_get_same_run_backlog_credit_once_sendable(self):
         from outreach import run_prospect_generation as generator
 
         with tempfile.TemporaryDirectory() as d:
@@ -1939,7 +1939,7 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_STATE_LIC_ROWS_ACCEPTED=1", out)
             self.assertIn("GENERATOR_DEFAULT_SEND_ELIGIBLE_TOTAL=14", out)
             self.assertIn("GENERATOR_AUTOGROW_SOURCE_STATE source=STATE_LIC state=TX", out)
-            self.assertIn("backlog_credit=0", out)
+            self.assertIn("backlog_credit=1", out)
 
     def test_generator_passes_enrich_cap_and_sleep_config(self):
         from outreach import run_prospect_generation as generator

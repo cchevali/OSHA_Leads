@@ -119,7 +119,7 @@ class TestOutreachSendabilityGate(unittest.TestCase):
             )
         conn.commit()
 
-    def test_default_selection_excludes_adjacent_contractors(self):
+    def test_default_selection_includes_legacy_blocked_rows(self):
         with tempfile.TemporaryDirectory() as d:
             db_path = Path(d) / "crm.sqlite"
             crm_store.ensure_database(path=db_path)
@@ -139,16 +139,16 @@ class TestOutreachSendabilityGate(unittest.TestCase):
                 conn.close()
 
             selected_ids = {str(item.get("prospect_id") or "") for item in selected}
-            self.assertEqual(selected_ids, {"p_core", "p_recover"})
-            self.assertEqual(int(skipped.get("not_default_send_eligible", 0)), 3)
-            self.assertEqual(int(stats.get("eligible", 0)), 2)
+            self.assertEqual(selected_ids, {"p_core", "p_recover", "p_adj", "p_adj_legacy_sendable", "p_not_sendable_recover"})
+            self.assertEqual(int(skipped.get("not_default_send_eligible", 0)), 0)
+            self.assertEqual(int(stats.get("eligible", 0)), 5)
             eligible_by_tier = dict(stats.get("eligible_by_tier") or {})
             self.assertEqual(int(eligible_by_tier.get("core_consultant", 0)), 1)
-            self.assertEqual(int(eligible_by_tier.get("recoverable_consultant", 0)), 1)
-            self.assertEqual(int(eligible_by_tier.get("adjacent_contractor", 0)), 0)
-            self.assertEqual(int(stats.get("excluded_adjacent_contractor_total", 0)), 2)
+            self.assertEqual(int(eligible_by_tier.get("recoverable_consultant", 0)), 2)
+            self.assertEqual(int(eligible_by_tier.get("adjacent_contractor", 0)), 2)
+            self.assertEqual(int(stats.get("excluded_adjacent_contractor_total", 0)), 0)
 
-    def test_override_includes_adjacent_contractors(self):
+    def test_override_matches_default_once_legacy_skips_are_removed(self):
         with tempfile.TemporaryDirectory() as d:
             db_path = Path(d) / "crm.sqlite"
             crm_store.ensure_database(path=db_path)
@@ -168,9 +168,9 @@ class TestOutreachSendabilityGate(unittest.TestCase):
                 conn.close()
 
             selected_ids = {str(item.get("prospect_id") or "") for item in selected}
-            self.assertEqual(selected_ids, {"p_core", "p_recover", "p_adj", "p_adj_legacy_sendable"})
-            self.assertEqual(int(skipped.get("not_default_send_eligible", 0)), 1)
-            self.assertEqual(int(stats.get("eligible", 0)), 4)
+            self.assertEqual(selected_ids, {"p_core", "p_recover", "p_adj", "p_adj_legacy_sendable", "p_not_sendable_recover"})
+            self.assertEqual(int(skipped.get("not_default_send_eligible", 0)), 0)
+            self.assertEqual(int(stats.get("eligible", 0)), 5)
             eligible_by_tier = dict(stats.get("eligible_by_tier") or {})
             self.assertEqual(int(eligible_by_tier.get("adjacent_contractor", 0)), 2)
             self.assertEqual(int(stats.get("excluded_adjacent_contractor_total", 0)), 0)
