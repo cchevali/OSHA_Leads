@@ -610,12 +610,15 @@ class OpsConsoleService:
         base_today = self._now_provider().astimezone(zone).date() if zone is not None else self._now_provider().date()
         previews: list[dict[str, Any]] = []
         for offset in range(7):
-            previews.append(
-                self.outreach_plan_preview(
-                    for_date=(base_today + timedelta(days=offset)).isoformat(),
-                    env_values=env_values,
-                )
+            preview_date = base_today + timedelta(days=offset)
+            plan = self.outreach_plan_preview(
+                for_date=preview_date.isoformat(),
+                env_values=env_values,
             )
+            if preview_date.weekday() >= 5:
+                plan["will_send"] = "0"
+                plan["fallback_reason"] = "SKIP_WEEKEND"
+            previews.append(plan)
         return previews
 
     def trials_data(self) -> dict[str, Any]:

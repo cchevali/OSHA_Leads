@@ -4,6 +4,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -210,6 +211,31 @@ class TestOpsConsole(unittest.TestCase):
         self.assertIn(str((self.repo_root / "out" / "inbox_triage_log.csv").resolve(strict=False)), inbox)
         self.assertIn("No local trial-request artifact", inbox)
         self.assertIn("color: #123", css)
+
+    def test_next_week_outreach_preview_marks_weekends_as_skip_weekend(self):
+        service = ops_app.OpsConsoleService(
+            repo_root=self.repo_root,
+            data_dir=self.data_dir,
+            command_runner=self.runner,
+            now_provider=lambda: datetime(2026, 3, 24, 16, 0, tzinfo=timezone.utc),
+        )
+
+        preview = service.next_week_outreach_preview(
+            {
+                "outreach_states": "TX,CA",
+                "outreach_daily_limit": "10",
+                "outreach_fallback_on_empty_state": "0",
+                "outreach_skip_role_inboxes": "1",
+                "outreach_allow_free_domains": "0",
+            }
+        )
+
+        by_date = {str(row.get("date")): row for row in preview}
+        self.assertEqual(str(by_date["2026-03-28"].get("will_send")), "0")
+        self.assertEqual(str(by_date["2026-03-28"].get("fallback_reason")), "SKIP_WEEKEND")
+        self.assertEqual(str(by_date["2026-03-29"].get("will_send")), "0")
+        self.assertEqual(str(by_date["2026-03-29"].get("fallback_reason")), "SKIP_WEEKEND")
+        self.assertEqual(str(by_date["2026-03-27"].get("will_send")), "4")
 
     def test_inbox_gmail_status_shows_oauth_bootstrap_when_credentials_exist_without_token(self):
         (self.repo_root / "secrets" / "gmail_credentials.json").write_text('{"installed":{}}\n', encoding="utf-8")
