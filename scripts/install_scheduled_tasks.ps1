@@ -648,6 +648,12 @@ function Get-KnownLegacyTaskNames() {
   )
 }
 
+function Get-KnownDriftTaskNamePatterns() {
+  return @(
+    '^(?i)\\?OSHA_Outreach_Skipped_Unsent_Extra(?:_|$)'
+  )
+}
+
 function Convert-LastResultToHex([string]$Raw) {
   $text = ([string]$Raw).Trim()
   if (-not $text -or $text -eq 'N/A') {
@@ -852,9 +858,33 @@ function Invoke-Verify([array]$Tasks, [string]$RepoRoot) {
   foreach ($task in @($Tasks)) {
     $managedLookup[('\'+$task.Name).ToLowerInvariant()] = $true
   }
+  $alreadyFlaggedUnmanaged = @{}
   foreach ($rawTaskName in @($registeredOshaTasks)) {
     $normalized = Normalize-TaskQueryName -TaskName ([string]$rawTaskName)
     if (-not $normalized) {
+      continue
+    }
+    $isKnownDrift = $false
+    foreach ($pattern in @(Get-KnownDriftTaskNamePatterns)) {
+      if ($normalized -match $pattern) {
+        $isKnownDrift = $true
+        break
+      }
+    }
+    if (-not $isKnownDrift) {
+      continue
+    }
+    $displayName = Normalize-TaskDisplayName -TaskName $normalized
+    Write-Output ('ERR_SCHEDTASK_UNMANAGED_OSHA_TASK=1 task=' + $displayName + ' drift_pattern=skipped_unsent_extra')
+    $failures += ('task=' + $displayName + ' unmanaged_osha_task=true drift_pattern=skipped_unsent_extra')
+    $alreadyFlaggedUnmanaged[$normalized.ToLowerInvariant()] = $true
+  }
+  foreach ($rawTaskName in @($registeredOshaTasks)) {
+    $normalized = Normalize-TaskQueryName -TaskName ([string]$rawTaskName)
+    if (-not $normalized) {
+      continue
+    }
+    if ($alreadyFlaggedUnmanaged.ContainsKey($normalized.ToLowerInvariant())) {
       continue
     }
     if ($managedLookup.ContainsKey($normalized.ToLowerInvariant())) {

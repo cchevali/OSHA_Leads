@@ -23,7 +23,9 @@ class TestRunOutreachSkippedUnsentWrapper(unittest.TestCase):
         self.assertIn("--dry-run", out)
         self.assertIn("--print-config", out)
         self.assertIn("--for-date", out)
-        self.assertIn("--allow-second-live-run-same-day", out)
+        self.assertIn("--manifest", out)
+        self.assertIn("--states", out)
+        self.assertIn("--limit", out)
         self.assertIn("--confirm-live-send", out)
         self.assertIn("--to", out)
 
@@ -36,10 +38,11 @@ class TestRunOutreachSkippedUnsentWrapper(unittest.TestCase):
     def test_scheduled_wrapper_contract_tokens(self):
         self.assertTrue(SCHEDULED_WRAPPER.exists(), msg=f"missing wrapper: {SCHEDULED_WRAPPER}")
         text = SCHEDULED_WRAPPER.read_text(encoding="utf-8")
+        self.assertIn("OSHA_Outreach_Skipped_Unsent_Extra", text)
         self.assertIn("run_outreach_skipped_unsent.py", text)
         self.assertIn("runtime_guard.ps1", text)
         self.assertIn("runtime_run_summary.ps1", text)
-        self.assertIn("OSHA_Outreach_Skipped_Unsent_Extra", text)
+        self.assertIn("OUTREACH_SKIPPED_UNSENT_SCHEDULED_DISABLED=1", text)
         self.assertIn("TASK_LOG_PATH=", text)
         self.assertIn("OUTREACH_EXIT_CODE=", text)
         self.assertIn("RUN_SUMMARY_JSON_PATH=", text)

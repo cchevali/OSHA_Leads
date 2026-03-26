@@ -21,6 +21,11 @@ PASS_SKIPPED_EXTRA_DRY_RUN = "PASS_SKIPPED_EXTRA_DRY_RUN"
 PASS_SKIPPED_EXTRA_EXPORT = "PASS_SKIPPED_EXTRA_EXPORT"
 PASS_SKIPPED_EXTRA_SUMMARY = "PASS_SKIPPED_EXTRA_SUMMARY"
 ERR_SKIPPED_EXTRA_CRM_REQUIRED = "ERR_SKIPPED_EXTRA_CRM_REQUIRED"
+ERR_SKIPPED_EXTRA_MANIFEST_REQUIRED = "ERR_SKIPPED_EXTRA_MANIFEST_REQUIRED"
+ERR_SKIPPED_EXTRA_STATES_REQUIRED = "ERR_SKIPPED_EXTRA_STATES_REQUIRED"
+ERR_SKIPPED_EXTRA_LIMIT_REQUIRED = "ERR_SKIPPED_EXTRA_LIMIT_REQUIRED"
+ERR_SKIPPED_EXTRA_MANIFEST_UNREADABLE = "ERR_SKIPPED_EXTRA_MANIFEST_UNREADABLE"
+ERR_SKIPPED_EXTRA_CONFIRM_REQUIRED = "ERR_SKIPPED_EXTRA_CONFIRM_REQUIRED"
 ERR_SKIPPED_EXTRA_FOR_DATE_LIVE_SEND_BLOCKED = "ERR_SKIPPED_EXTRA_FOR_DATE_LIVE_SEND_BLOCKED"
 ERR_SKIPPED_EXTRA_ONE_CLICK_REQUIRED = "ERR_SKIPPED_EXTRA_ONE_CLICK_REQUIRED"
 ERR_SKIPPED_EXTRA_SUMMARY_SEND = "ERR_SKIPPED_EXTRA_SUMMARY_SEND"
@@ -30,19 +35,22 @@ OUTREACH_SKIPPED_EXTRA_SKIP_NO_SIGNALS = "OUTREACH_SKIPPED_EXTRA_SKIP_NO_SIGNALS
 OUTREACH_SKIPPED_EXTRA_DUPLICATE_GUARD_DROPPED = "OUTREACH_SKIPPED_EXTRA_DUPLICATE_GUARD_DROPPED"
 
 EXTRA_BATCH_LABEL = "SKIPPED_UNSENT_EXTRA"
-EXTRA_SELECTION_REASONS = {"role_inbox_email", "not_default_send_eligible"}
+EXTRA_APPROVED_DROPPED_REASONS = {"role_inbox_email", "not_default_send_eligible"}
 
 
 @dataclass
 class ExtraSelection:
     selected: list[dict]
     manifest_rows: list[dict]
+    manifest_row_total: int
+    approved_manifest_total: int
     pool_total: int
     skip_counts: Counter
     selected_by_state: Counter
     selected_by_reason: Counter
     no_signal_states: list[str]
     state_signal_counts: dict[str, int]
+    state_signal_contexts: dict[str, dict[str, object]]
 
 
 def _safe_text(value: object) -> str:
@@ -100,9 +108,11 @@ def _id_preview(values: list[str], limit: int = 50) -> str:
     return f"{head},...(+{len(cleaned) - limit} more)"
 
 
-def _candidate_sort_key(candidate: dict) -> tuple[str, tuple, str]:
+def _candidate_sort_key(candidate: dict, *, state_order: dict[str, int] | None = None) -> tuple[int, tuple, str]:
+    state = _safe_text(candidate.get("state") or "")
+    order = dict(state_order or {})
     return (
-        _safe_text(candidate.get("state") or ""),
+        int(order.get(state, len(order))),
         tuple(candidate.get("rank_tuple") or ()),
         _safe_text(candidate.get("prospect_id") or ""),
     )
@@ -132,49 +142,153 @@ def _candidate_manifest_row(candidate: dict, *, status: str, reason: str, origin
     return row
 
 
-def _legacy_extra_selection_reason(row: sqlite3.Row) -> str:
-    email = roa._norm_email(str(row["email"] or ""))
-    if not roa._is_send_eligible_for_default(row, include_adjacent_contractors=False):
-        return "not_default_send_eligible"
-    if roa._is_role_inbox_email(email):
-        return "role_inbox_email"
-    return ""
+def _manifest_source_row(
+    source_row: dict,
+    *,
+    run_date: date,
+    status: str,
+    reason: str,
+    original_skip_reason: str,
+    state_override: str = "",
+) -> dict:
+    email = roa._norm_email(str(source_row.get("email") or ""))
+    state = roa._normalize_us_state(state_override or str(source_row.get("state") or ""))
+    return {
+        "prospect_id": _safe_text(source_row.get("prospect_id") or ""),
+        "email": email,
+        "domain": roa._norm_domain(email),
+        "segment": _safe_text(source_row.get("segment") or ""),
+        "role_or_title": _safe_text(source_row.get("role_or_title") or source_row.get("title") or ""),
+        "state_pref": _safe_text(source_row.get("state_pref") or state),
+        "rank_reason": _safe_text(source_row.get("rank_reason") or ""),
+        "rank_tuple": _safe_text(source_row.get("rank_tuple") or ""),
+        "status": status,
+        "reason": reason,
+        "original_skip_reason": original_skip_reason,
+        "batch": _extra_batch_id(state, run_date) if state else "",
+        "state": state,
+    }
+
+
+def _load_manifest_rows(path: Path) -> list[dict]:
+    with open(path, "r", newline="", encoding="utf-8-sig") as f:
+        return [dict(row) for row in csv.DictReader(f)]
+
+
+def _prospect_lookup_maps(conn: sqlite3.Connection) -> tuple[dict[str, sqlite3.Row], dict[str, sqlite3.Row]]:
+    cols = roa._prospect_select_columns(conn)
+    rows = conn.execute("SELECT " + ", ".join(cols) + " FROM prospects").fetchall()
+    rows_by_prospect_id: dict[str, sqlite3.Row] = {}
+    rows_by_email: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        prospect_id = _safe_text(row["prospect_id"] if "prospect_id" in row.keys() else "")
+        email = roa._norm_email(str(row["email"] or ""))
+        if prospect_id and prospect_id not in rows_by_prospect_id:
+            rows_by_prospect_id[prospect_id] = row
+        if email and email not in rows_by_email:
+            rows_by_email[email] = row
+    return rows_by_prospect_id, rows_by_email
 
 
 def _select_skipped_unsent_candidates(
     *,
     conn: sqlite3.Connection,
+    manifest_path: Path,
+    requested_states: list[str],
+    limit: int,
     run_date: date,
     osha_db: str,
     suppressed_emails: set[str],
 ) -> ExtraSelection:
-    cols = roa._prospect_select_columns(conn)
-    rows = conn.execute("SELECT " + ", ".join(cols) + " FROM prospects").fetchall()
+    manifest_input_rows = _load_manifest_rows(manifest_path)
+    rows_by_prospect_id, rows_by_email = _prospect_lookup_maps(conn)
     sent_ids = roa._fetch_prior_sent_ids(conn)
     signal_window_days = roa._signal_window_days()
-    signal_count_cache: dict[str, int] = {}
-    no_signal_states: set[str] = set()
+    state_order = {state: idx for idx, state in enumerate(requested_states)}
     selected: list[dict] = []
     manifest_rows: list[dict] = []
     skip_counts: Counter = Counter()
     selected_by_state: Counter = Counter()
     selected_by_reason: Counter = Counter()
-    pool_total = 0
+    provisional_candidates: list[dict] = []
+    state_signal_contexts: dict[str, dict[str, object]] = {}
+    state_signal_counts: dict[str, int] = {}
+    blocked_states: set[str] = set()
+    seen_manifest_keys: set[str] = set()
+    approved_manifest_total = 0
 
-    def signal_count_for_state(state: str) -> int:
-        if state not in signal_count_cache:
-            signal_count_cache[state] = int(
-                roa._count_real_signals_for_state_window(
-                    db_path=osha_db,
-                    state=state,
+    for source_row in manifest_input_rows:
+        status = _safe_text(source_row.get("status") or "").lower()
+        original_skip_reason = _safe_text(source_row.get("reason") or "")
+        if status != "dropped" or original_skip_reason not in EXTRA_APPROVED_DROPPED_REASONS:
+            continue
+        approved_manifest_total += 1
+
+        manifest_state = roa._normalize_us_state(str(source_row.get("state") or ""))
+        prospect_id = _safe_text(source_row.get("prospect_id") or "")
+        email = roa._norm_email(str(source_row.get("email") or ""))
+
+        if manifest_state not in state_order:
+            skip_counts["state_scope_excluded"] += 1
+            manifest_rows.append(
+                _manifest_source_row(
+                    source_row,
                     run_date=run_date,
-                    window_days=signal_window_days,
+                    status="dropped",
+                    reason="state_scope_excluded",
+                    original_skip_reason=original_skip_reason,
+                    state_override=manifest_state,
                 )
             )
-        return int(signal_count_cache[state])
+            continue
 
-    for row in rows:
-        email = roa._norm_email(str(row["email"] or ""))
+        if not prospect_id and not email:
+            skip_counts["manifest_identity_missing"] += 1
+            manifest_rows.append(
+                _manifest_source_row(
+                    source_row,
+                    run_date=run_date,
+                    status="dropped",
+                    reason="manifest_identity_missing",
+                    original_skip_reason=original_skip_reason,
+                    state_override=manifest_state,
+                )
+            )
+            continue
+
+        manifest_key = prospect_id or email
+        if manifest_key in seen_manifest_keys:
+            skip_counts["manifest_duplicate"] += 1
+            manifest_rows.append(
+                _manifest_source_row(
+                    source_row,
+                    run_date=run_date,
+                    status="dropped",
+                    reason="manifest_duplicate",
+                    original_skip_reason=original_skip_reason,
+                    state_override=manifest_state,
+                )
+            )
+            continue
+        seen_manifest_keys.add(manifest_key)
+
+        row = rows_by_prospect_id.get(prospect_id) if prospect_id else None
+        if row is None and email:
+            row = rows_by_email.get(email)
+        if row is None:
+            skip_counts["crm_missing"] += 1
+            manifest_rows.append(
+                _manifest_source_row(
+                    source_row,
+                    run_date=run_date,
+                    status="dropped",
+                    reason="crm_missing",
+                    original_skip_reason=original_skip_reason,
+                    state_override=manifest_state,
+                )
+            )
+            continue
+
         current_skip_reason = roa._skip_reason(
             row,
             suppressed_emails=suppressed_emails,
@@ -183,65 +297,85 @@ def _select_skipped_unsent_candidates(
             skip_role_inboxes=False,
             include_adjacent_contractors=True,
         )
-        original_skip_reason = _legacy_extra_selection_reason(row)
-        if current_skip_reason and current_skip_reason != "suppressed":
-            continue
-        if not original_skip_reason and current_skip_reason != "suppressed":
-            continue
-
         candidate = roa._candidate_from_row(row)
         state = roa._normalize_us_state(str(row["state"] or ""))
         candidate["state"] = state
         candidate["batch"] = _extra_batch_id(state, run_date) if state else ""
-
-        pool_total += 1
-        if email in suppressed_emails or current_skip_reason == "suppressed":
-            skip_counts["suppressed_compliance"] += 1
-            manifest_rows.append(
-                _candidate_manifest_row(
-                    candidate,
-                    status="dropped",
-                    reason="suppressed_compliance",
-                    original_skip_reason="suppressed",
-                )
-            )
-            continue
-
-        if original_skip_reason not in EXTRA_SELECTION_REASONS:
-            continue
-
-        if not state:
-            skip_counts["missing_state"] += 1
-            manifest_rows.append(
-                _candidate_manifest_row(
-                    candidate,
-                    status="dropped",
-                    reason="missing_state",
-                    original_skip_reason=original_skip_reason,
-                )
-            )
-            continue
-
-        state_signal_count = signal_count_for_state(state)
-        if state_signal_count <= 0:
-            no_signal_states.add(state)
-            skip_counts["no_signals"] += 1
-            manifest_rows.append(
-                _candidate_manifest_row(
-                    candidate,
-                    status="dropped",
-                    reason="no_signals",
-                    original_skip_reason=original_skip_reason,
-                )
-            )
-            continue
-
         candidate["original_skip_reason"] = original_skip_reason
+        if current_skip_reason:
+            drop_reason = "suppressed_compliance" if current_skip_reason == "suppressed" else current_skip_reason
+            skip_counts[drop_reason] += 1
+            manifest_rows.append(
+                _candidate_manifest_row(
+                    candidate,
+                    status="dropped",
+                    reason=drop_reason,
+                    original_skip_reason=original_skip_reason,
+                )
+            )
+            continue
+
+        if state not in state_order:
+            skip_counts["state_scope_excluded"] += 1
+            manifest_rows.append(
+                _candidate_manifest_row(
+                    candidate,
+                    status="dropped",
+                    reason="state_scope_excluded",
+                    original_skip_reason=original_skip_reason,
+                )
+            )
+            continue
+
+        provisional_candidates.append(candidate)
+
+    pool_total = int(len(provisional_candidates))
+    provisional_candidates.sort(key=lambda candidate: _candidate_sort_key(candidate, state_order=state_order))
+
+    for state in sorted({str(candidate.get("state") or "") for candidate in provisional_candidates}, key=lambda item: state_order.get(item, len(state_order))):
+        signal_ctx = roa._prepare_signal_content_with_triage(
+            batch=_extra_batch_id(state, run_date),
+            state=state,
+            osha_db=osha_db,
+            dry_run_suffix="manual_extra",
+            run_date=run_date,
+            signal_window_days=signal_window_days,
+        )
+        state_signal_contexts[state] = signal_ctx
+        state_signal_counts[state] = int(signal_ctx.get("raw_signal_count") or 0)
+        if roa._signal_guard_blocks_send(signal_ctx):
+            blocked_states.add(state)
+
+    for candidate in provisional_candidates:
+        state = _safe_text(candidate.get("state") or "")
+        signal_ctx = dict(state_signal_contexts.get(state) or {})
+        if roa._signal_guard_blocks_send(signal_ctx):
+            drop_reason = "signal_fetch_failed" if _safe_text(signal_ctx.get("signal_fetch_error_token") or "") else "no_signals"
+            skip_counts[drop_reason] += 1
+            manifest_rows.append(
+                _candidate_manifest_row(
+                    candidate,
+                    status="dropped",
+                    reason=drop_reason,
+                    original_skip_reason=_safe_text(candidate.get("original_skip_reason") or ""),
+                )
+            )
+            continue
+        if len(selected) >= int(limit):
+            skip_counts["limit_guard"] += 1
+            manifest_rows.append(
+                _candidate_manifest_row(
+                    candidate,
+                    status="dropped",
+                    reason="limit_guard",
+                    original_skip_reason=_safe_text(candidate.get("original_skip_reason") or ""),
+                )
+            )
+            continue
         selected.append(candidate)
         selected_by_state[state] += 1
-        selected_by_reason[original_skip_reason] += 1
+        selected_by_reason[_safe_text(candidate.get("original_skip_reason") or "")] += 1
 
-    selected.sort(key=_candidate_sort_key)
     selected_manifest_rows = [
         _candidate_manifest_row(
             candidate,
@@ -256,12 +390,15 @@ def _select_skipped_unsent_candidates(
     return ExtraSelection(
         selected=selected,
         manifest_rows=manifest_rows,
+        manifest_row_total=int(len(manifest_input_rows)),
+        approved_manifest_total=int(approved_manifest_total),
         pool_total=int(pool_total),
         skip_counts=skip_counts,
         selected_by_state=selected_by_state,
         selected_by_reason=selected_by_reason,
-        no_signal_states=sorted(no_signal_states),
-        state_signal_counts={key: int(value) for key, value in sorted(signal_count_cache.items())},
+        no_signal_states=sorted(blocked_states),
+        state_signal_counts={key: int(value) for key, value in sorted(state_signal_counts.items())},
+        state_signal_contexts={key: dict(value) for key, value in state_signal_contexts.items()},
     )
 
 
@@ -327,6 +464,8 @@ def _write_dry_run_artifacts(batch_group: str, selection: ExtraSelection) -> tup
 
     diagnostics = {
         "batch_group": batch_group,
+        "manifest_row_total": int(selection.manifest_row_total),
+        "approved_manifest_total": int(selection.approved_manifest_total),
         "pool_total": int(selection.pool_total),
         "selected_count": int(len(selection.selected)),
         "selected_by_state": {key: int(value) for key, value in sorted(selection.selected_by_state.items())},
@@ -363,6 +502,8 @@ def _send_summary_email(
         "Outreach skipped-unsent extra run summary\n"
         f"- run_date: {run_date.isoformat()}\n"
         f"- configured_states: {','.join(configured_states) if configured_states else '(none)'}\n"
+        f"- manifest_row_total: {int(selection.manifest_row_total)}\n"
+        f"- approved_manifest_total: {int(selection.approved_manifest_total)}\n"
         f"- skipped_unsent_pool_total: {int(selection.pool_total)}\n"
         f"- selected_count: {int(len(selection.selected))}\n"
         f"- selected_by_state: {_format_count_map(selection.selected_by_state)}\n"
@@ -380,6 +521,8 @@ def _send_summary_email(
         "<h3>Outreach Skipped-Unsent Extra Run Summary</h3>"
         f"<p><strong>run_date:</strong> {run_date.isoformat()}<br>"
         f"<strong>configured_states:</strong> {','.join(configured_states) if configured_states else '(none)'}<br>"
+        f"<strong>manifest_row_total:</strong> {int(selection.manifest_row_total)}<br>"
+        f"<strong>approved_manifest_total:</strong> {int(selection.approved_manifest_total)}<br>"
         f"<strong>skipped_unsent_pool_total:</strong> {int(selection.pool_total)}<br>"
         f"<strong>selected_count:</strong> {int(len(selection.selected))}<br>"
         f"<strong>selected_by_state:</strong> {_format_count_map(selection.selected_by_state)}<br>"
@@ -396,18 +539,26 @@ def _send_summary_email(
     return roa._send_summary_email(summary_to, subject, text_body, html_body)
 
 
+def _emit_blocked_signal_tokens(selection: ExtraSelection) -> None:
+    for state in selection.no_signal_states:
+        signal_ctx = dict(selection.state_signal_contexts.get(state) or {})
+        roa._emit_signal_guard_tokens(
+            token=OUTREACH_SKIPPED_EXTRA_SKIP_NO_SIGNALS,
+            state=state,
+            signal_ctx=signal_ctx,
+        )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Send the skipped, never-sent outreach pool as a one-off extra batch while preserving suppression."
+        description="Send a manually scoped skipped-unsent outreach batch from a dropped-manifest while preserving suppression."
     )
     ap.add_argument("--dry-run", action="store_true", help="Select and print actions only. No DB writes, no email.")
     ap.add_argument("--print-config", action="store_true", help="Print resolved config paths and target counts, then exit.")
     ap.add_argument("--for-date", default="", help="Override run date (YYYY-MM-DD) for print-config and dry-run.")
-    ap.add_argument(
-        "--allow-second-live-run-same-day",
-        action="store_true",
-        help="Allow this extra live batch to run even when another outreach batch already sent today.",
-    )
+    ap.add_argument("--manifest", default="", help="Path to a prior outreach manifest CSV containing dropped rows to recover.")
+    ap.add_argument("--states", default="", help="Comma-separated state scope for this manual run.")
+    ap.add_argument("--limit", type=int, default=0, help="Maximum total contacts to send from the supplied manifest.")
     ap.add_argument(
         "--allow-weekend-send",
         action="store_true",
@@ -416,7 +567,7 @@ def main() -> int:
     ap.add_argument(
         "--confirm-live-send",
         action="store_true",
-        help="Manual live-send confirmation flag (not required for trusted scheduled runtime).",
+        help="Manual live-send confirmation flag required for live sends.",
     )
     ap.add_argument("--to", default="", help="Optional summary recipient override; must equal OSHA_SMOKE_TO.")
     args = ap.parse_args()
@@ -424,6 +575,32 @@ def main() -> int:
     ok_date, run_date, date_msg = roa._parse_for_date(str(args.for_date or ""))
     if not ok_date:
         print(date_msg, file=sys.stderr)
+        return 2
+
+    manifest_raw = str(args.manifest or "").strip()
+    if not manifest_raw:
+        print(ERR_SKIPPED_EXTRA_MANIFEST_REQUIRED, file=sys.stderr)
+        return 2
+    manifest_path = Path(manifest_raw).expanduser()
+    if not manifest_path.is_absolute():
+        manifest_path = (REPO_ROOT / manifest_path).resolve()
+    else:
+        manifest_path = manifest_path.resolve()
+    if not manifest_path.exists() or not manifest_path.is_file():
+        print(f"{ERR_SKIPPED_EXTRA_MANIFEST_UNREADABLE} path={manifest_path}", file=sys.stderr)
+        return 2
+
+    requested_states = roa._parse_states(str(args.states or ""))
+    if not requested_states:
+        print(ERR_SKIPPED_EXTRA_STATES_REQUIRED, file=sys.stderr)
+        return 2
+    if int(args.limit or 0) <= 0:
+        print(ERR_SKIPPED_EXTRA_LIMIT_REQUIRED, file=sys.stderr)
+        return 2
+
+    is_live_send = not bool(args.dry_run or args.print_config)
+    if is_live_send and not bool(args.confirm_live_send):
+        print(ERR_SKIPPED_EXTRA_CONFIRM_REQUIRED, file=sys.stderr)
         return 2
 
     local_now = roa._outreach_local_now()
@@ -436,10 +613,9 @@ def main() -> int:
     osha_db_resolution = roa.resolve_osha_db_path(REPO_ROOT)
     osha_db = str(osha_db_resolution.effective_path)
     runtime_mode = str(os.getenv("MFO_RUNTIME_MODE") or "manual").strip().lower() or "manual"
-    runtime_ctx = roa.runtime_context_dict(mode=runtime_mode, intent="send", dry_run=bool(args.dry_run))
+    runtime_ctx = roa.runtime_context_dict(mode=runtime_mode, intent="send", dry_run=bool(args.dry_run or args.print_config))
     batch_group = _extra_batch_group(run_date)
 
-    is_live_send = not bool(args.dry_run or args.print_config)
     if is_live_send:
         runtime_preflight = roa.run_runtime_preflight(
             mode=runtime_mode,
@@ -448,7 +624,7 @@ def main() -> int:
             task_log_root=str(os.getenv("TASK_LOG_ROOT") or ""),
             run_summary_root=str(os.getenv("RUN_SUMMARY_ROOT") or ""),
             require_confirm_live_send=True,
-            confirm_live_send=bool(args.confirm_live_send),
+            confirm_live_send=True,
         )
         for line in roa.render_runtime_lines(runtime_preflight):
             print(line)
@@ -520,7 +696,7 @@ def main() -> int:
             print(str(exc), file=sys.stderr)
             return 3
 
-        if is_live_send and (not bool(args.allow_second_live_run_same_day)):
+        if is_live_send:
             existing_batches = roa._sent_batches_for_day(conn, run_date)
             if existing_batches:
                 existing_batches_text = ",".join(existing_batches) if existing_batches else "none"
@@ -530,12 +706,19 @@ def main() -> int:
                 )
                 return 0
 
-        selection = _select_skipped_unsent_candidates(
-            conn=conn,
-            run_date=run_date,
-            osha_db=osha_db,
-            suppressed_emails=suppressed_emails,
-        )
+        try:
+            selection = _select_skipped_unsent_candidates(
+                conn=conn,
+                manifest_path=manifest_path,
+                requested_states=requested_states,
+                limit=int(args.limit),
+                run_date=run_date,
+                osha_db=osha_db,
+                suppressed_emails=suppressed_emails,
+            )
+        except Exception as exc:
+            print(f"{ERR_SKIPPED_EXTRA_MANIFEST_UNREADABLE} path={manifest_path} err={type(exc).__name__}", file=sys.stderr)
+            return 2
         selected_ids = [str(candidate.get("prospect_id") or "") for candidate in selection.selected]
         skipped_count = int(sum(selection.skip_counts.values()))
 
@@ -549,12 +732,17 @@ def main() -> int:
                 print(osha_db_resolution.warning_token)
             print(f"{PASS_SKIPPED_EXTRA_PRINT_CONFIG} batch_group={batch_group}")
             print(f"{PASS_SKIPPED_EXTRA_PRINT_CONFIG} run_date={run_date.isoformat()}")
+            print(f"{PASS_SKIPPED_EXTRA_PRINT_CONFIG} manifest_path={manifest_path}")
+            print(f"{PASS_SKIPPED_EXTRA_PRINT_CONFIG} requested_states={','.join(requested_states)}")
+            print(f"{PASS_SKIPPED_EXTRA_PRINT_CONFIG} requested_limit={int(args.limit)}")
             print(f"outreach_signal_window_days={signal_window_days}")
             print(f"outreach_effective_timezone={local_now['timezone']}")
             print(f"outreach_effective_local_date={local_now['date_text']}")
             print(f"outreach_effective_weekday={local_now['weekday_name']}")
             print(f"outreach_allow_weekend_send={'YES' if args.allow_weekend_send else 'NO'}")
             print(f"outreach_states_config={','.join(configured_states) if configured_states else '(none)'}")
+            print(f"manifest_row_total={int(selection.manifest_row_total)}")
+            print(f"approved_manifest_total={int(selection.approved_manifest_total)}")
             print(f"skipped_unsent_pool_total={int(selection.pool_total)}")
             print(f"sendable_extra_count={int(len(selection.selected))}")
             print(f"selected_by_state={_format_count_map(selection.selected_by_state)}")
@@ -569,8 +757,7 @@ def main() -> int:
 
         if args.dry_run:
             outbox_path, manifest_path, diagnostics_path = _write_dry_run_artifacts(batch_group, selection)
-            for state in selection.no_signal_states:
-                print(f"{OUTREACH_SKIPPED_EXTRA_SKIP_NO_SIGNALS} state={state} window_days={signal_window_days}")
+            _emit_blocked_signal_tokens(selection)
             print(
                 f"{PASS_SKIPPED_EXTRA_DRY_RUN} run_date={run_date.isoformat()} batch_group={batch_group} "
                 f"crm_db={crm_db} selected_count={int(len(selection.selected))}"
@@ -601,16 +788,12 @@ def main() -> int:
         contacted_by_state: Counter = Counter()
         failed_by_state: Counter = Counter()
         duplicate_guard_dropped = 0
-        for state in sorted({str(candidate.get("state") or "") for candidate in selection.selected}):
+        selected_state_set = {str(candidate.get("state") or "") for candidate in selection.selected}
+        for state in [state for state in requested_states if state in selected_state_set]:
             state_candidates = [candidate for candidate in selection.selected if str(candidate.get("state") or "") == state]
             if not state_candidates:
                 continue
-            signal_ctx = roa._prepare_signal_content_with_triage(
-                batch=_extra_batch_id(state, run_date),
-                state=state,
-                osha_db=osha_db,
-                dry_run_suffix="live",
-            )
+            signal_ctx = dict(selection.state_signal_contexts.get(state) or {})
             last_refresh_et = str(signal_ctx.get("last_refresh_et") or "")
             signal_tokens = dict(signal_ctx.get("signal_tokens") or {})
             recent_signals_lines = str(signal_tokens.get("RECENT_SIGNALS_LINES") or "")
@@ -662,8 +845,7 @@ def main() -> int:
             if item.get("ok")
         ]
 
-        for state in selection.no_signal_states:
-            print(f"{OUTREACH_SKIPPED_EXTRA_SKIP_NO_SIGNALS} state={state} window_days={signal_window_days}")
+        _emit_blocked_signal_tokens(selection)
         print(
             f"{PASS_SKIPPED_EXTRA_EXPORT} run_date={run_date.isoformat()} batch_group={batch_group} "
             f"contacted_count={contacted_count} skipped_count={skipped_count} failed_count={failed_count}"

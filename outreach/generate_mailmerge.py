@@ -48,6 +48,7 @@ DEFAULT_SAMPLE_FEED_URL = "https://microflowops.com/sample"
 DEFAULT_CONTACT_URL = "https://microflowops.com/contact"
 ERR_ONE_CLICK_REQUIRED = "ERR_ONE_CLICK_REQUIRED"
 ERR_SUPPRESSION_REQUIRED = "ERR_SUPPRESSION_REQUIRED"
+ERR_OUTREACH_SIGNAL_FETCH_FAILED = "ERR_OUTREACH_SIGNAL_FETCH_FAILED"
 ET_TZ = ZoneInfo("America/New_York")
 OUTREACH_SIGNAL_FETCH_LIMIT = 50
 OUTREACH_RECENT_OPENED_DAYS = 10
@@ -736,7 +737,7 @@ def _format_dt_et(dt_utc: datetime) -> str:
     return dt_utc.astimezone(ET_TZ).strftime("%Y-%m-%d %H:%M") + " ET"
 
 
-def _best_effort_recent_leads_and_refresh(db_path: str, state: str, limit: int = 5) -> tuple[list[dict], str]:
+def _best_effort_recent_leads_refresh_context(db_path: str, state: str, limit: int = 5) -> dict[str, object]:
     """
     Reuse the digest's underlying datastore (SQLite inspections table) to generate:
     - a short Recent signals lead list (top N)
@@ -747,11 +748,21 @@ def _best_effort_recent_leads_and_refresh(db_path: str, state: str, limit: int =
     """
     now_utc = datetime.now(timezone.utc)
     fallback_refresh = _format_dt_et(now_utc)
+    context: dict[str, object] = {
+        "recent_leads": [],
+        "last_refresh_et": fallback_refresh,
+        "signal_fetch_status": "ok",
+        "signal_fetch_error_token": "",
+        "signal_fetch_detail": "",
+    }
 
     try:
         p = Path(db_path)
         if not p.exists():
-            return [], fallback_refresh
+            context["signal_fetch_status"] = "db_missing"
+            context["signal_fetch_error_token"] = ERR_OUTREACH_SIGNAL_FETCH_FAILED
+            context["signal_fetch_detail"] = str(p)
+            return context
 
         import sqlite3
 
@@ -760,7 +771,9 @@ def _best_effort_recent_leads_and_refresh(db_path: str, state: str, limit: int =
             cur = conn.cursor()
             cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='inspections' LIMIT 1")
             if not cur.fetchone():
-                return [], fallback_refresh
+                context["signal_fetch_status"] = "inspections_table_missing"
+                context["signal_fetch_error_token"] = ERR_OUTREACH_SIGNAL_FETCH_FAILED
+                return context
 
             # Recent signals: use the same selector logic as the digest (get_leads_for_period).
             recent: list[dict] = []
@@ -782,8 +795,11 @@ def _best_effort_recent_leads_and_refresh(db_path: str, state: str, limit: int =
                     use_opened_window=False,
                 )
                 recent = list((leads or [])[: max(0, int(limit))])
-            except Exception:
-                recent = []
+            except Exception as exc:
+                context["signal_fetch_status"] = "recent_leads_query_failed"
+                context["signal_fetch_error_token"] = ERR_OUTREACH_SIGNAL_FETCH_FAILED
+                context["signal_fetch_detail"] = type(exc).__name__
+                return context
 
             # Last refresh: prefer changed_at/last_seen_at/first_seen_at max for the state.
             cols = set()
@@ -823,11 +839,21 @@ def _best_effort_recent_leads_and_refresh(db_path: str, state: str, limit: int =
                     refresh_dt = None
 
             last_refresh = _format_dt_et(refresh_dt or now_utc)
-            return recent, last_refresh
+            context["recent_leads"] = recent
+            context["last_refresh_et"] = last_refresh
+            return context
         finally:
             conn.close()
-    except Exception:
-        return [], fallback_refresh
+    except Exception as exc:
+        context["signal_fetch_status"] = "signal_fetch_unexpected_error"
+        context["signal_fetch_error_token"] = ERR_OUTREACH_SIGNAL_FETCH_FAILED
+        context["signal_fetch_detail"] = type(exc).__name__
+        return context
+
+
+def _best_effort_recent_leads_and_refresh(db_path: str, state: str, limit: int = 5) -> tuple[list[dict], str]:
+    ctx = _best_effort_recent_leads_refresh_context(db_path=db_path, state=state, limit=limit)
+    return list(ctx.get("recent_leads") or []), str(ctx.get("last_refresh_et") or "")
 
 
 def _recent_signals_text_lines_from_leads(leads: list[dict]) -> str:
