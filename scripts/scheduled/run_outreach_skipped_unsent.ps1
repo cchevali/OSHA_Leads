@@ -8,24 +8,8 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
 $startLocal = Get-Date
 $startUtc = [datetime]::UtcNow
-$outreachExitCode = 1
-$preflight = $null
-$commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_outreach_skipped_unsent.py --allow-second-live-run-same-day"
-$bootstrapLines = New-Object System.Collections.Generic.List[string]
-
-function Add-BootstrapLine([string]$Line) {
-  $text = [string]$Line
-  if ($text) {
-    [void]$bootstrapLines.Add($text)
-  }
-}
-
-$preflight = Invoke-RuntimePreflight `
-  -RepoRoot $repoRoot `
-  -Mode 'scheduled' `
-  -Intent 'send' `
-  -DryRun:$false `
-  -EmitLine ${function:Add-BootstrapLine}
+$outreachExitCode = 0
+$commandInvoked = ".\run_with_secrets.ps1 -- py -3 run_outreach_skipped_unsent.py --print-config (disabled)"
 
 $taskLogDir = Resolve-DefaultTaskLogRoot -RepoRoot $repoRoot
 $runSummaryRoot = Resolve-DefaultRunSummaryRoot -RepoRoot $repoRoot
@@ -40,49 +24,22 @@ function Write-TaskLine([string]$Line) {
   if ([string]::IsNullOrWhiteSpace($text)) {
     return
   }
+  Write-Output $text
   Write-RuntimeTaskLogLine -TaskLogPath $taskLogPath -Line $text
 }
 
-foreach ($line in @($bootstrapLines)) {
-  Write-TaskLine ([string]$line)
-}
-
-function Invoke-And-Log([scriptblock]$Invocation) {
-  $lines = & $Invocation 2>&1
-  foreach ($line in @($lines)) {
-    Write-TaskLine ([string]$line)
-  }
-}
-
-try {
-  Push-Location $repoRoot
-  try {
-    if (-not [bool]$preflight.Ok) {
-      throw "runtime preflight failed"
-    }
-    Invoke-And-Log {
-      & (Join-Path $repoRoot "run_with_secrets.ps1") -- py -3 "run_outreach_skipped_unsent.py" "--allow-second-live-run-same-day"
-    }
-    $outreachExitCode = [int]$LASTEXITCODE
-  }
-  catch {
-    $outreachExitCode = 1
-    Write-TaskLine ('OUTREACH_EXCEPTION=' + ([string]$_.Exception.Message))
-  }
-}
-finally {
-  try { Pop-Location } catch {}
-}
-
+Write-TaskLine 'OUTREACH_SKIPPED_UNSENT_SCHEDULED_DISABLED=1 mode=diagnostic_only remediation=remove_unmanaged_task'
+Write-TaskLine ('WRAPPER_COMMAND=' + $commandInvoked)
 Write-TaskLine ("TASK_LOG_PATH=" + $taskLogPath)
 Write-TaskLine ("OUTREACH_EXIT_CODE=" + $outreachExitCode)
+
 $summaryResult = Write-RuntimeRunSummary `
   -RepoRoot $repoRoot `
   -WrapperName 'OSHA_Outreach_Skipped_Unsent_Extra' `
   -CommandLine $commandInvoked `
   -Mode 'scheduled' `
-  -Intent 'send' `
-  -DryRun:$false `
+  -Intent 'diagnostic' `
+  -DryRun:$true `
   -ExitCode $outreachExitCode `
   -StartLocal $startLocal `
   -StartUtc $startUtc `
@@ -90,11 +47,8 @@ $summaryResult = Write-RuntimeRunSummary `
   -TaskLogPath $taskLogPath `
   -TaskLogRoot $taskLogDir `
   -RunSummaryRoot $runSummaryRoot `
-  -Fingerprint $(if ($preflight) { [hashtable]$preflight.Values } else { @{} }) `
+  -Fingerprint @{} `
   -EmitLine ${function:Write-TaskLine}
 # RUN_SUMMARY_JSON_PATH= / RUN_SUMMARY_TEXT_PATH= emitted above via Write-RuntimeRunSummary.
 
-if ($outreachExitCode -ne 0) {
-  exit 1
-}
 exit 0

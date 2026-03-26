@@ -63,6 +63,7 @@ PASS_AUTO_SUMMARY = "PASS_AUTO_SUMMARY"
 OUTREACH_SKIP_NON_WEEKDAY = "OUTREACH_SKIP_NON_WEEKDAY"
 OUTREACH_WEEKDAYS_ONLY = True
 DEFAULT_OUTREACH_TIMEZONE = "America/New_York"
+ERR_OUTREACH_SIGNAL_FETCH_FAILED = gm.ERR_OUTREACH_SIGNAL_FETCH_FAILED
 
 ERR_DOCTOR_SECRETS_DECRYPT = "ERR_DOCTOR_SECRETS_DECRYPT"
 ERR_DOCTOR_ENV_MISSING = "ERR_DOCTOR_ENV_MISSING"
@@ -97,6 +98,7 @@ DOCTOR_TIMEOUT_DRY_RUN_SECONDS = 120
 DOCTOR_HTTP_TIMEOUT_SECONDS = 5.0
 PROJECT_CONTEXT_SOFT_CHECK_CMD = ["--check", "--soft"]
 DOCTOR_SIGNALS_LOOKBACK_DAYS = 14
+DOCTOR_SCHEDULER_DRIFT_PREFIXES = ("\\OSHA_Outreach_Skipped_Unsent_Extra", "OSHA_Outreach_Skipped_Unsent_Extra")
 
 EXCLUDED_STATUSES = {"do_not_contact", "unsubscribed", "bounced", "converted"}
 ROLE_PRIORITY_RULES: list[tuple[int, tuple[str, ...], str]] = [
@@ -1043,6 +1045,48 @@ def _count_real_signals_for_state_window(
                 pass
 
 
+def _renderable_signal_count(signal_tokens: dict[str, object], recent_leads: list[dict]) -> int:
+    if not list(recent_leads or []):
+        return 0
+    recent_lines = str(signal_tokens.get("RECENT_SIGNALS_LINES") or "").strip()
+    recent_html = str(signal_tokens.get("RECENT_SIGNALS_HTML") or "").strip()
+    if not recent_lines and not recent_html:
+        return 0
+    return max(0, int(len(list(recent_leads or []))))
+
+
+def _signal_guard_blocks_send(signal_ctx: dict[str, object]) -> bool:
+    try:
+        renderable_signal_count = int(signal_ctx.get("renderable_signal_count") or 0)
+    except Exception:
+        renderable_signal_count = 0
+    return renderable_signal_count <= 0
+
+
+def _signal_guard_status_line(*, token: str, state: str, signal_ctx: dict[str, object]) -> str:
+    return (
+        f"{token} state={state} "
+        f"window_days={int(signal_ctx.get('signal_window_days') or 0)} "
+        f"raw_signal_count={int(signal_ctx.get('raw_signal_count') or 0)} "
+        f"recent_signal_source_count={int(signal_ctx.get('recent_signal_source_count') or 0)} "
+        f"renderable_signal_count={int(signal_ctx.get('renderable_signal_count') or 0)} "
+        f"signal_fetch_status={_safe_text(signal_ctx.get('signal_fetch_status') or '') or 'unknown'}"
+    )
+
+
+def _emit_signal_guard_tokens(*, token: str, state: str, signal_ctx: dict[str, object]) -> None:
+    print(_signal_guard_status_line(token=token, state=state, signal_ctx=signal_ctx))
+    error_token = _safe_text(signal_ctx.get("signal_fetch_error_token") or "")
+    if not error_token:
+        return
+    detail = _safe_text(signal_ctx.get("signal_fetch_detail") or "")
+    detail_suffix = f" detail={detail}" if detail else ""
+    print(
+        f"{error_token} state={state} "
+        f"status={_safe_text(signal_ctx.get('signal_fetch_status') or '') or 'unknown'}{detail_suffix}"
+    )
+
+
 def _mini_reason(reason: str, max_len: int = 120) -> str:
     text = _safe_text(reason).replace(";", "; ")
     if not text:
@@ -1404,25 +1448,41 @@ def _prepare_signal_content_with_triage(
     state: str,
     osha_db: str,
     dry_run_suffix: str,
+    run_date: date,
+    signal_window_days: int | None = None,
 ) -> dict[str, object]:
+    effective_signal_window_days = max(1, int(signal_window_days or _signal_window_days()))
     signal_fetch_limit = gm.OUTREACH_SIGNAL_FETCH_LIMIT
-    recent_leads, last_refresh_et = gm._best_effort_recent_leads_and_refresh(
+    signal_fetch_ctx = gm._best_effort_recent_leads_refresh_context(
         db_path=osha_db,
         state=state,
         limit=signal_fetch_limit,
     )
+    recent_leads = list(signal_fetch_ctx.get("recent_leads") or [])
+    last_refresh_et = str(signal_fetch_ctx.get("last_refresh_et") or "")
     recent_leads_original = list(recent_leads or [])
     recent_leads, triage_ctx = gm._triage_recent_signals_for_outreach(
         batch=batch,
         recent_leads=recent_leads,
         dry_run_suffix=dry_run_suffix,
     )
-    recent_leads = gm._select_outreach_card_examples(list(recent_leads or []), limit=5)
+    recent_leads = gm._select_outreach_card_examples(
+        list(recent_leads or []),
+        limit=5,
+        reference_date=run_date,
+    )
     signal_tokens = gm._build_signal_template_tokens(
         db_path=osha_db,
         state=state,
         recent_leads=recent_leads,
         lookback_days=14,
+    )
+    renderable_signal_count = _renderable_signal_count(signal_tokens, recent_leads)
+    raw_signal_count = _count_real_signals_for_state_window(
+        db_path=osha_db,
+        state=state,
+        run_date=run_date,
+        window_days=effective_signal_window_days,
     )
     return {
         "recent_leads_original": recent_leads_original,
@@ -1430,6 +1490,13 @@ def _prepare_signal_content_with_triage(
         "last_refresh_et": last_refresh_et,
         "signal_tokens": signal_tokens,
         "triage_ctx": triage_ctx,
+        "raw_signal_count": int(raw_signal_count),
+        "recent_signal_source_count": int(len(recent_leads_original)),
+        "renderable_signal_count": int(renderable_signal_count),
+        "signal_fetch_status": _safe_text(signal_fetch_ctx.get("signal_fetch_status") or "") or "unknown",
+        "signal_fetch_error_token": _safe_text(signal_fetch_ctx.get("signal_fetch_error_token") or ""),
+        "signal_fetch_detail": _safe_text(signal_fetch_ctx.get("signal_fetch_detail") or ""),
+        "signal_window_days": int(effective_signal_window_days),
     }
 
 
@@ -2221,6 +2288,35 @@ def _doctor_check_scheduler_alignment(run_date: date) -> tuple[bool, str]:
             if slot_key and slot_key not in recent_slots:
                 continue
             detected_jobs.append(str(payload.get("job_name") or path.stem))
+    if os.name == "nt":
+        try:
+            proc = subprocess.run(
+                ["schtasks", "/Query", "/FO", "LIST"],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            seen_task_names: set[str] = set()
+            for raw_line in (proc.stdout or "").splitlines():
+                line = str(raw_line or "").strip()
+                if not line.lower().startswith("taskname:"):
+                    continue
+                task_name = line.split(":", 1)[1].strip()
+                if not task_name:
+                    continue
+                normalized = task_name.lstrip("\\")
+                if not normalized:
+                    continue
+                if not any(task_name.startswith(prefix) or normalized.startswith(prefix.lstrip("\\")) for prefix in DOCTOR_SCHEDULER_DRIFT_PREFIXES):
+                    continue
+                if normalized in seen_task_names:
+                    continue
+                seen_task_names.add(normalized)
+                detected_jobs.append(f"scheduler_drift:{normalized}")
     if detected_jobs:
         print("WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE jobs=" + ",".join(detected_jobs))
         return True, ""
@@ -2797,16 +2893,21 @@ def main() -> int:
             0,
             int((crm_funnel_for_fallback.get("uncontacted_sendable_by_state") or {}).get(state, 0)),
         )
-        real_signal_count = _count_real_signals_for_state_window(
-            db_path=osha_db,
-            state=state,
-            run_date=run_date,
-            window_days=signal_window_days,
-        )
+        signal_ctx: dict[str, object] | None = None
         no_signal_guard_enabled = bool(args.dry_run or is_live_send)
-        no_signal_skip = bool(no_signal_guard_enabled and real_signal_count <= 0)
+        no_signal_skip = False
+        if no_signal_guard_enabled:
+            signal_ctx = _prepare_signal_content_with_triage(
+                batch=batch,
+                state=state,
+                osha_db=osha_db,
+                dry_run_suffix="dry_run" if args.dry_run else "live",
+                run_date=run_date,
+                signal_window_days=signal_window_days,
+            )
+            no_signal_skip = _signal_guard_blocks_send(signal_ctx)
         if no_signal_skip:
-            print(f"OUTREACH_SKIP_NO_SIGNALS state={state} window_days={signal_window_days}")
+            _emit_signal_guard_tokens(token="OUTREACH_SKIP_NO_SIGNALS", state=state, signal_ctx=signal_ctx or {})
             selected_before_guard = list(selected)
             for candidate in selected_before_guard:
                 skipped["no_signals"] += 1
@@ -2881,13 +2982,16 @@ def main() -> int:
             return 0
 
         if args.dry_run:
-            osha_db = str(resolve_osha_db_path(REPO_ROOT).effective_path)
-            signal_ctx = _prepare_signal_content_with_triage(
-                batch=batch,
-                state=state,
-                osha_db=osha_db,
-                dry_run_suffix="dry_run",
-            )
+            if signal_ctx is None:
+                osha_db = str(resolve_osha_db_path(REPO_ROOT).effective_path)
+                signal_ctx = _prepare_signal_content_with_triage(
+                    batch=batch,
+                    state=state,
+                    osha_db=osha_db,
+                    dry_run_suffix="dry_run",
+                    run_date=run_date,
+                    signal_window_days=signal_window_days,
+                )
             triage_ctx = dict(signal_ctx.get("triage_ctx") or {})
             triage_artifact_path = _write_outreach_signal_triage_details_if_enabled(
                 batch=batch,
@@ -2931,13 +3035,16 @@ def main() -> int:
         except Exception:
             html_template_text = ""
 
-        osha_db = str(resolve_osha_db_path(REPO_ROOT).effective_path)
-        signal_ctx = _prepare_signal_content_with_triage(
-            batch=batch,
-            state=state,
-            osha_db=osha_db,
-            dry_run_suffix="live",
-        )
+        if signal_ctx is None:
+            osha_db = str(resolve_osha_db_path(REPO_ROOT).effective_path)
+            signal_ctx = _prepare_signal_content_with_triage(
+                batch=batch,
+                state=state,
+                osha_db=osha_db,
+                dry_run_suffix="live",
+                run_date=run_date,
+                signal_window_days=signal_window_days,
+            )
         _live_triage_artifact_path = _write_outreach_signal_triage_details_if_enabled(
             batch=batch,
             selected=selected,
