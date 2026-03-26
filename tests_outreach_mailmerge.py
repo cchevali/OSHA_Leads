@@ -663,19 +663,20 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertTrue(text_body.strip())
             self.assertEqual(body, text_body)
             self.assertTrue(html_body.strip())
-            self.assertIn("I spotted a few recent OSHA inspections in Texas", html_body)
-            self.assertIn("may be relevant to your team.", html_body)
+            self.assertIn("advises employers on OSHA and safety matters in Texas", html_body)
+            self.assertIn("Opened = inspection opened date; Observed = first day it appeared in public OSHA data.", html_body)
 
             # Wally-style markers.
-            self.assertIn("Chase", html_body)
+            self.assertIn("Chase Chevalier, Founder", html_body)
+            self.assertIn("support@microflowops.com", html_body)
             self.assertIn("11539 Links Dr, Reston, VA 20190", html_body)
             self.assertIn('href="https://microflowops.com"', html_body)
 
             # Single opt-out block in the footer (not duplicated elsewhere).
             self.assertEqual(html_body.count(">Unsubscribe</a>"), 1)
-            self.assertEqual(html_body.count(">Manage preferences</a>"), 0)
+            self.assertEqual(html_body.count(">Manage preferences</a>"), 1)
             self.assertEqual(html_body.count("unsub.example.internal/unsubscribe?token="), 1)
-            self.assertEqual(html_body.count("unsub.example.internal/prefs?token="), 0)
+            self.assertEqual(html_body.count("unsub.example.internal/prefs?token="), 1)
 
             # Ensure one-click links are only in the footer area (after the address line).
             addr_idx = html_body.find("11539 Links Dr, Reston, VA 20190")
@@ -953,7 +954,7 @@ class TestOutreachMailmerge(unittest.TestCase):
         )
         self.assertEqual(
             tokens_single["GREETING_LINE_TEXT"],
-            "Hi - saw a recent OSHA inspection in California that may be relevant to your team:",
+            "Hi,",
         )
         self.assertNotIn("new OSHA", tokens_single["GREETING_LINE_TEXT"])
 
@@ -968,12 +969,12 @@ class TestOutreachMailmerge(unittest.TestCase):
         )
         self.assertEqual(
             tokens_plural["GREETING_LINE_TEXT"],
-            "Hi - saw a few recent OSHA inspections in California that may be relevant to your team:",
+            "Hi,",
         )
         self.assertNotIn("new OSHA", tokens_plural["GREETING_LINE_TEXT"])
-        self.assertIn("reply with the metros you care about", tokens_plural["TRIAL_LINE_TEXT"])
-        self.assertIn("https://microflowops.com/contact", tokens_plural["TRIAL_LINE_TEXT"])
-        self.assertIn("<a href=\"https://microflowops.com/contact\"", tokens_plural["TRIAL_LINE_HTML"])
+        self.assertIn("California metros or other states you care about", tokens_plural["TRIAL_LINE_TEXT"])
+        self.assertNotIn("https://microflowops.com/contact", tokens_plural["TRIAL_LINE_TEXT"])
+        self.assertIn("California metros or other states you care about", tokens_plural["TRIAL_LINE_HTML"])
 
     def test_select_outreach_card_examples_uses_only_recent_opened_rows(self):
         from outreach import generate_mailmerge as gm
@@ -1480,22 +1481,17 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertIn("COMPLIANCE_CHECKS ", stdout)
             self.assertIn("Hi Casey,", stdout)
             self.assertIn("Hi Riley,", stdout)
-            self.assertIn("Hi - saw a few things Acme Industrial should probably have on their radar:", stdout)
             self.assertIn(
-                "Hi - saw a few recent OSHA inspections in California that may be relevant to your team:",
+                "You're getting this because your firm advises employers on OSHA and safety matters in California.",
                 stdout,
             )
             self.assertIn(
-                "I spotted a few recent OSHA inspections in California that may be relevant to your team at Northwind Safety",
+                "Recent public OSHA inspection activity in California you may want on your radar:",
                 stdout,
             )
-            self.assertIn(
-                "I spotted a few recent OSHA inspections in California that may be relevant to your team",
-                stdout,
-            )
-            self.assertNotIn("that may be relevant to your team at Inc.", stdout)
-            self.assertNotIn("You're getting this because", stdout)
-            self.assertNotIn("Opened = inspection opened date; Observed =", stdout)
+            self.assertIn("Opened = inspection opened date; Observed = first day it appeared in public OSHA data.", stdout)
+            self.assertIn("support@microflowops.com", stdout)
+            self.assertIn("Opt out anytime: Unsubscribe | Manage preferences", stdout)
             self.assertNotIn("no commitment, no login required", stdout)
             self.assertNotIn("Every item links to the public OSHA record", stdout)
             self.assertIn("unsubscribe_link_count_exactly_one=true", stdout)
@@ -1512,7 +1508,11 @@ class TestOutreachMailmerge(unittest.TestCase):
             )
             self.assertEqual(p_missing.returncode, 0, msg=p_missing.stderr + "\n" + p_missing.stdout)
             self.assertIn(
-                "Hi - saw a few recent OSHA inspections in California that may be relevant to your team:",
+                "Hi,",
+                p_missing.stdout or "",
+            )
+            self.assertIn(
+                "You're getting this because your firm advises employers on OSHA and safety matters in California.",
                 p_missing.stdout or "",
             )
 
