@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -42,6 +42,29 @@ def _write_suppression(path: Path, emails: list[str] | None = None) -> None:
         writer.writeheader()
         for email in emails or []:
             writer.writerow({"email": email})
+
+
+def _write_manifest(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "batch",
+        "state",
+        "prospect_id",
+        "email",
+        "domain",
+        "segment",
+        "role_or_title",
+        "state_pref",
+        "status",
+        "reason",
+        "rank_reason",
+        "rank_tuple",
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
 def _seed_crm(path: Path, rows: list[dict]) -> None:
@@ -85,19 +108,79 @@ def _seed_signal_db(path: Path, rows: list[dict]) -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS inspections (
+                activity_nr TEXT,
                 site_state TEXT,
                 date_opened TEXT,
+                inspection_type TEXT,
+                scope TEXT,
+                case_status TEXT,
+                establishment_name TEXT,
+                site_city TEXT,
+                site_zip TEXT,
+                naics TEXT,
+                naics_desc TEXT,
+                violations_count INTEGER,
+                emphasis TEXT,
+                lead_score INTEGER,
+                first_seen_at TEXT,
+                last_seen_at TEXT,
+                changed_at TEXT,
+                source_url TEXT,
                 parse_invalid INTEGER
             )
             """
         )
         conn.execute("DELETE FROM inspections")
-        for row in rows:
+        for idx, row in enumerate(rows, start=1):
+            activity_nr = str(row.get("activity_nr", 1000000 + idx))
+            date_opened = str(row.get("date_opened", "2026-03-25"))
+            recent_iso = f"{datetime.now(timezone.utc).date().isoformat()}T12:00:00+00:00"
+            first_seen_at = str(row.get("first_seen_at", recent_iso))
+            last_seen_at = str(row.get("last_seen_at", first_seen_at))
+            changed_at = str(row.get("changed_at", first_seen_at))
             conn.execute(
-                "INSERT INTO inspections(site_state, date_opened, parse_invalid) VALUES(?, ?, ?)",
+                """
+                INSERT INTO inspections(
+                    activity_nr,
+                    site_state,
+                    date_opened,
+                    inspection_type,
+                    scope,
+                    case_status,
+                    establishment_name,
+                    site_city,
+                    site_zip,
+                    naics,
+                    naics_desc,
+                    violations_count,
+                    emphasis,
+                    lead_score,
+                    first_seen_at,
+                    last_seen_at,
+                    changed_at,
+                    source_url,
+                    parse_invalid
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
+                    activity_nr,
                     str(row.get("site_state", "")),
-                    str(row.get("date_opened", "")),
+                    date_opened,
+                    str(row.get("inspection_type", "Complaint")),
+                    str(row.get("scope", "Partial")),
+                    str(row.get("case_status", "Open")),
+                    str(row.get("establishment_name", f"Test Site {idx}")),
+                    str(row.get("site_city", "Austin")),
+                    str(row.get("site_zip", "73301")),
+                    str(row.get("naics", "541620")),
+                    str(row.get("naics_desc", "Environmental Consulting Services")),
+                    int(row.get("violations_count", 0)),
+                    str(row.get("emphasis", "")),
+                    int(row.get("lead_score", 11)),
+                    first_seen_at,
+                    last_seen_at,
+                    changed_at,
+                    str(row.get("source_url", f"https://example.com/inspection?id={activity_nr}")),
                     int(row.get("parse_invalid", 0)),
                 ),
             )
@@ -169,12 +252,12 @@ class TestOutreachSkippedUnsent(unittest.TestCase):
             text=True,
         )
 
-    def test_dry_run_targets_skipped_unsent_and_excludes_suppressed_and_no_signal_states(self):
+    def test_dry_run_uses_manifest_only_and_ignores_non_manifest_crm_rows(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             data_dir = tmp / "data"
             crm_db = data_dir / "crm.sqlite"
-            signal_db = tmp / "signals.sqlite"
+            manifest_path = tmp / "skipped_manifest.csv"
             _seed_crm(
                 crm_db,
                 [
@@ -211,6 +294,14 @@ class TestOutreachSkippedUnsent(unittest.TestCase):
                         "title": "Owner",
                         "state": "NY",
                     },
+                    {
+                        "prospect_id": "p_not_in_manifest",
+                        "contact_name": "Role OH",
+                        "firm": "F",
+                        "email": "info@role-oh.com",
+                        "title": "Owner",
+                        "state": "OH",
+                    },
                 ],
             )
             conn = crm_store.connect(crm_db)
@@ -229,11 +320,41 @@ class TestOutreachSkippedUnsent(unittest.TestCase):
             finally:
                 conn.close()
 
-            _seed_signal_db(
-                signal_db,
+            _write_manifest(
+                manifest_path,
                 [
-                    {"site_state": "TX", "date_opened": "2026-03-20", "parse_invalid": 0},
-                    {"site_state": "CA", "date_opened": "2026-03-21", "parse_invalid": 0},
+                    {
+                        "batch": "2026-03-24_TX",
+                        "state": "TX",
+                        "prospect_id": "p_role_tx",
+                        "email": "info@role-tx.com",
+                        "status": "dropped",
+                        "reason": "role_inbox_email",
+                    },
+                    {
+                        "batch": "2026-03-24_CA",
+                        "state": "CA",
+                        "prospect_id": "p_blocked_ca",
+                        "email": "blocked.ca@example.com",
+                        "status": "dropped",
+                        "reason": "not_default_send_eligible",
+                    },
+                    {
+                        "batch": "2026-03-24_TX",
+                        "state": "TX",
+                        "prospect_id": "p_suppressed_tx",
+                        "email": "suppressed@example.com",
+                        "status": "dropped",
+                        "reason": "role_inbox_email",
+                    },
+                    {
+                        "batch": "2026-03-24_NY",
+                        "state": "NY",
+                        "prospect_id": "p_role_ny",
+                        "email": "info@role-ny.com",
+                        "status": "dropped",
+                        "reason": "role_inbox_email",
+                    },
                 ],
             )
             _write_suppression(data_dir / "suppression.csv", emails=["suppressed@example.com"])
@@ -242,29 +363,41 @@ class TestOutreachSkippedUnsent(unittest.TestCase):
                 "DATA_DIR": str(data_dir),
                 "OUTREACH_STATES": "TX,CA,FL,PA,OH",
                 "OSHA_SMOKE_TO": "allow@example.com",
-                "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
-            proc = self._run(["--dry-run", "--for-date", "2026-03-25"], env)
+            proc = self._run(
+                [
+                    "--dry-run",
+                    "--for-date",
+                    "2026-03-25",
+                    "--manifest",
+                    str(manifest_path),
+                    "--states",
+                    "TX,CA",
+                    "--limit",
+                    "10",
+                ],
+                env,
+            )
             self.assertEqual(proc.returncode, 0, msg=(proc.stderr or "") + "\n" + (proc.stdout or ""))
             out = proc.stdout or ""
             self.assertIn("PASS_SKIPPED_EXTRA_DRY_RUN", out)
-            self.assertIn("would_contact_prospect_ids=p_blocked_ca,p_role_tx", out)
+            self.assertIn("would_contact_prospect_ids=p_role_tx,p_blocked_ca", out)
             self.assertIn("selected_by_state=CA:1,TX:1", out)
             self.assertIn("selected_by_reason=not_default_send_eligible:1,role_inbox_email:1", out)
-            self.assertIn("skipped_by_reason=no_signals:1,suppressed_compliance:1", out)
-            self.assertIn("OUTREACH_SKIPPED_EXTRA_SKIP_NO_SIGNALS state=NY", out)
+            self.assertIn("skipped_by_reason=state_scope_excluded:1,suppressed_compliance:1", out)
 
             manifest_line = next((line for line in out.splitlines() if "manifest_path=" in line), "")
             self.assertTrue(manifest_line, msg=out)
-            manifest_path = Path(manifest_line.split("manifest_path=", 1)[1].strip())
-            self.assertTrue(manifest_path.exists(), msg=f"missing manifest: {manifest_path}")
-            with open(manifest_path, "r", newline="", encoding="utf-8") as f:
+            output_manifest_path = Path(manifest_line.split("manifest_path=", 1)[1].strip())
+            self.assertTrue(output_manifest_path.exists(), msg=f"missing manifest: {output_manifest_path}")
+            with open(output_manifest_path, "r", newline="", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
             selected_rows = [row for row in rows if (row.get("status") or "") == "selected"]
-            self.assertEqual([row.get("prospect_id") for row in selected_rows], ["p_blocked_ca", "p_role_tx"])
+            self.assertEqual([row.get("prospect_id") for row in selected_rows], ["p_role_tx", "p_blocked_ca"])
             dropped = {(row.get("prospect_id") or ""): (row.get("reason") or "") for row in rows if (row.get("status") or "") == "dropped"}
             self.assertEqual(dropped.get("p_suppressed_tx"), "suppressed_compliance")
-            self.assertEqual(dropped.get("p_role_ny"), "no_signals")
+            self.assertEqual(dropped.get("p_role_ny"), "state_scope_excluded")
+            self.assertNotIn("p_not_in_manifest", {row.get("prospect_id") for row in rows})
 
             conn = sqlite3.connect(str(crm_db))
             try:
@@ -278,7 +411,7 @@ class TestOutreachSkippedUnsent(unittest.TestCase):
             tmp = Path(d)
             data_dir = tmp / "data"
             crm_db = data_dir / "crm.sqlite"
-            signal_db = tmp / "signals.sqlite"
+            manifest_path = tmp / "skipped_manifest.csv"
             _seed_crm(
                 crm_db,
                 [
@@ -292,19 +425,46 @@ class TestOutreachSkippedUnsent(unittest.TestCase):
                     }
                 ],
             )
-            _seed_signal_db(signal_db, [{"site_state": "TX", "date_opened": "2026-03-20", "parse_invalid": 0}])
+            _write_manifest(
+                manifest_path,
+                [
+                    {
+                        "batch": "2026-03-24_TX",
+                        "state": "TX",
+                        "prospect_id": "p_role",
+                        "email": "info@role.com",
+                        "status": "dropped",
+                        "reason": "role_inbox_email",
+                    }
+                ],
+            )
             _write_suppression(data_dir / "suppression.csv")
 
             env = {
                 "DATA_DIR": str(data_dir),
                 "OUTREACH_STATES": "TX",
                 "OSHA_SMOKE_TO": "allow@example.com",
-                "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
-            proc = self._run(["--print-config", "--for-date", "2026-03-25"], env)
+            proc = self._run(
+                [
+                    "--print-config",
+                    "--for-date",
+                    "2026-03-25",
+                    "--manifest",
+                    str(manifest_path),
+                    "--states",
+                    "TX",
+                    "--limit",
+                    "5",
+                ],
+                env,
+            )
             self.assertEqual(proc.returncode, 0, msg=(proc.stderr or "") + "\n" + (proc.stdout or ""))
             out = proc.stdout or ""
             self.assertIn("PASS_SKIPPED_EXTRA_PRINT_CONFIG", out)
+            self.assertIn(f"manifest_path={manifest_path.resolve()}", out)
+            self.assertIn("requested_states=TX", out)
+            self.assertIn("requested_limit=5", out)
             self.assertIn("sendable_extra_count=1", out)
             self.assertIn("selected_by_state=TX:1", out)
             self.assertIn("selected_by_reason=role_inbox_email:1", out)
@@ -315,7 +475,7 @@ class TestOutreachSkippedUnsent(unittest.TestCase):
             tmp = Path(d)
             data_dir = tmp / "data"
             crm_db = data_dir / "crm.sqlite"
-            signal_db = tmp / "signals.sqlite"
+            manifest_path = tmp / "skipped_manifest.csv"
             _seed_crm(
                 crm_db,
                 [
@@ -329,13 +489,24 @@ class TestOutreachSkippedUnsent(unittest.TestCase):
                     }
                 ],
             )
-            _seed_signal_db(signal_db, [{"site_state": "TX", "date_opened": "2026-03-20", "parse_invalid": 0}])
+            _write_manifest(
+                manifest_path,
+                [
+                    {
+                        "batch": "2026-03-24_TX",
+                        "state": "TX",
+                        "prospect_id": "p_role",
+                        "email": "info@role.com",
+                        "status": "dropped",
+                        "reason": "role_inbox_email",
+                    }
+                ],
+            )
             _write_suppression(data_dir / "suppression.csv")
             env = {
                 "DATA_DIR": str(data_dir),
                 "OUTREACH_STATES": "TX",
                 "OSHA_SMOKE_TO": "allow@example.com",
-                "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
             weekday_now = {
                 "timezone": "America/New_York",
@@ -354,13 +525,163 @@ class TestOutreachSkippedUnsent(unittest.TestCase):
                 ), mock.patch.object(
                     extra.roa, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]
                 ):
-                    with mock.patch.object(sys, "argv", ["run_outreach_skipped_unsent.py", "--confirm-live-send"]):
+                    with mock.patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "run_outreach_skipped_unsent.py",
+                            "--manifest",
+                            str(manifest_path),
+                            "--states",
+                            "TX",
+                            "--limit",
+                            "5",
+                            "--confirm-live-send",
+                        ],
+                    ):
                         out = io.StringIO()
                         err = io.StringIO()
                         with redirect_stdout(out), redirect_stderr(err):
                             rc = extra.main()
             self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
             self.assertIn("OUTREACH_SKIPPED_EXTRA_SKIP_ALREADY_SENT_TODAY=1", out.getvalue())
+
+    def test_dry_run_blocks_when_renderable_signals_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            manifest_path = tmp / "skipped_manifest.csv"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p_role",
+                        "contact_name": "Role",
+                        "firm": "F",
+                        "email": "info@role.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    }
+                ],
+            )
+            _write_manifest(
+                manifest_path,
+                [
+                    {
+                        "batch": "2026-03-24_TX",
+                        "state": "TX",
+                        "prospect_id": "p_role",
+                        "email": "info@role.com",
+                        "status": "dropped",
+                        "reason": "role_inbox_email",
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+            signal_ctx = {
+                "recent_leads_original": [],
+                "recent_leads": [],
+                "last_refresh_et": "2026-03-25 08:00 ET",
+                "signal_tokens": {"RECENT_SIGNALS_LINES": "", "RECENT_SIGNALS_HTML": ""},
+                "triage_ctx": {},
+                "raw_signal_count": 1,
+                "recent_signal_source_count": 0,
+                "renderable_signal_count": 0,
+                "signal_fetch_status": "recent_leads_query_failed",
+                "signal_fetch_error_token": "ERR_OUTREACH_SIGNAL_FETCH_FAILED",
+                "signal_fetch_detail": "OperationalError",
+                "signal_window_days": 14,
+            }
+
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch.object(extra.roa, "_prepare_signal_content_with_triage", return_value=dict(signal_ctx)):
+                    with mock.patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "run_outreach_skipped_unsent.py",
+                            "--dry-run",
+                            "--for-date",
+                            "2026-03-25",
+                            "--manifest",
+                            str(manifest_path),
+                            "--states",
+                            "TX",
+                            "--limit",
+                            "5",
+                        ],
+                    ):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = extra.main()
+
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            text = out.getvalue()
+            self.assertIn(
+                "OUTREACH_SKIPPED_EXTRA_SKIP_NO_SIGNALS state=TX window_days=14 raw_signal_count=1 recent_signal_source_count=0 renderable_signal_count=0 signal_fetch_status=recent_leads_query_failed",
+                text,
+            )
+            self.assertIn(
+                "ERR_OUTREACH_SIGNAL_FETCH_FAILED state=TX status=recent_leads_query_failed detail=OperationalError",
+                text,
+            )
+            self.assertIn("would_contact_prospect_ids=(none)", text)
+
+    def test_live_requires_manifest_states_limit_and_confirm(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            manifest_path = tmp / "skipped_manifest.csv"
+            _write_manifest(
+                manifest_path,
+                [
+                    {
+                        "batch": "2026-03-24_TX",
+                        "state": "TX",
+                        "prospect_id": "p_role",
+                        "email": "info@role.com",
+                        "status": "dropped",
+                        "reason": "role_inbox_email",
+                    }
+                ],
+            )
+
+            cases = [
+                (["run_outreach_skipped_unsent.py"], extra.ERR_SKIPPED_EXTRA_MANIFEST_REQUIRED),
+                (["run_outreach_skipped_unsent.py", "--manifest", str(manifest_path)], extra.ERR_SKIPPED_EXTRA_STATES_REQUIRED),
+                (
+                    ["run_outreach_skipped_unsent.py", "--manifest", str(manifest_path), "--states", "TX"],
+                    extra.ERR_SKIPPED_EXTRA_LIMIT_REQUIRED,
+                ),
+                (
+                    [
+                        "run_outreach_skipped_unsent.py",
+                        "--manifest",
+                        str(manifest_path),
+                        "--states",
+                        "TX",
+                        "--limit",
+                        "5",
+                    ],
+                    extra.ERR_SKIPPED_EXTRA_CONFIRM_REQUIRED,
+                ),
+            ]
+
+            for argv, expected_token in cases:
+                with self.subTest(expected_token=expected_token):
+                    with mock.patch.object(sys, "argv", argv):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = extra.main()
+                    self.assertEqual(rc, 2, msg=err.getvalue() + "\n" + out.getvalue())
+                    self.assertIn(expected_token, err.getvalue())
 
 
 if __name__ == "__main__":

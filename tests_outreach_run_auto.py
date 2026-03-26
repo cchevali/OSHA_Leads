@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -95,19 +95,79 @@ def _seed_signal_db(path: Path, rows: list[dict]) -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS inspections (
+                activity_nr TEXT,
                 site_state TEXT,
                 date_opened TEXT,
+                inspection_type TEXT,
+                scope TEXT,
+                case_status TEXT,
+                establishment_name TEXT,
+                site_city TEXT,
+                site_zip TEXT,
+                naics TEXT,
+                naics_desc TEXT,
+                violations_count INTEGER,
+                emphasis TEXT,
+                lead_score INTEGER,
+                first_seen_at TEXT,
+                last_seen_at TEXT,
+                changed_at TEXT,
+                source_url TEXT,
                 parse_invalid INTEGER
             )
             """
         )
         conn.execute("DELETE FROM inspections")
-        for row in rows:
+        for idx, row in enumerate(rows, start=1):
+            activity_nr = str(row.get("activity_nr", 1000000 + idx))
+            date_opened = str(row.get("date_opened", "2026-02-24"))
+            recent_iso = f"{datetime.now(timezone.utc).date().isoformat()}T12:00:00+00:00"
+            first_seen_at = str(row.get("first_seen_at", recent_iso))
+            last_seen_at = str(row.get("last_seen_at", first_seen_at))
+            changed_at = str(row.get("changed_at", first_seen_at))
             conn.execute(
-                "INSERT INTO inspections(site_state, date_opened, parse_invalid) VALUES(?, ?, ?)",
+                """
+                INSERT INTO inspections(
+                    activity_nr,
+                    site_state,
+                    date_opened,
+                    inspection_type,
+                    scope,
+                    case_status,
+                    establishment_name,
+                    site_city,
+                    site_zip,
+                    naics,
+                    naics_desc,
+                    violations_count,
+                    emphasis,
+                    lead_score,
+                    first_seen_at,
+                    last_seen_at,
+                    changed_at,
+                    source_url,
+                    parse_invalid
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
+                    activity_nr,
                     str(row.get("site_state", "")),
-                    str(row.get("date_opened", "")),
+                    date_opened,
+                    str(row.get("inspection_type", "Complaint")),
+                    str(row.get("scope", "Partial")),
+                    str(row.get("case_status", "Open")),
+                    str(row.get("establishment_name", f"Test Site {idx}")),
+                    str(row.get("site_city", "Austin")),
+                    str(row.get("site_zip", "73301")),
+                    str(row.get("naics", "541620")),
+                    str(row.get("naics_desc", "Environmental Consulting Services")),
+                    int(row.get("violations_count", 0)),
+                    str(row.get("emphasis", "")),
+                    int(row.get("lead_score", 11)),
+                    first_seen_at,
+                    last_seen_at,
+                    changed_at,
+                    str(row.get("source_url", f"https://example.com/inspection?id={activity_nr}")),
                     int(row.get("parse_invalid", 0)),
                 ),
             )
@@ -416,6 +476,13 @@ class TestOutreachRunAuto(unittest.TestCase):
                     ],
                     "artifact_path": str(artifact_path),
                 },
+                "raw_signal_count": 2,
+                "recent_signal_source_count": 2,
+                "renderable_signal_count": 1,
+                "signal_fetch_status": "ok",
+                "signal_fetch_error_token": "",
+                "signal_fetch_detail": "",
+                "signal_window_days": 14,
             }
             with mock.patch.dict(os.environ, self._test_env({**env_base, "OUTREACH_TRIAGE_OVERLAY_ENABLED": "1"}), clear=True):
                 with mock.patch.object(roa.gm, "_load_local_suppression_set", return_value=set()), mock.patch.object(
@@ -454,8 +521,14 @@ class TestOutreachRunAuto(unittest.TestCase):
 
         with mock.patch.object(
             roa.gm,
-            "_best_effort_recent_leads_and_refresh",
-            return_value=(list(source_recent), "2026-03-05 08:00 ET"),
+            "_best_effort_recent_leads_refresh_context",
+            return_value={
+                "recent_leads": list(source_recent),
+                "last_refresh_et": "2026-03-05 08:00 ET",
+                "signal_fetch_status": "ok",
+                "signal_fetch_error_token": "",
+                "signal_fetch_detail": "",
+            },
         ) as m_recent, mock.patch.object(
             roa.gm,
             "_triage_recent_signals_for_outreach",
@@ -468,12 +541,18 @@ class TestOutreachRunAuto(unittest.TestCase):
             roa.gm,
             "_build_signal_template_tokens",
             return_value=dict(built_tokens),
-        ) as m_tokens:
+        ) as m_tokens, mock.patch.object(
+            roa,
+            "_count_real_signals_for_state_window",
+            return_value=7,
+        ) as m_raw_signal_count:
             signal_ctx = roa._prepare_signal_content_with_triage(
                 batch="2026-03-05_TX",
                 state="TX",
                 osha_db=":memory:",
                 dry_run_suffix="_dry_run",
+                run_date=date(2026, 3, 5),
+                signal_window_days=14,
             )
 
         m_recent.assert_called_once_with(db_path=":memory:", state="TX", limit=50)
@@ -482,17 +561,27 @@ class TestOutreachRunAuto(unittest.TestCase):
             recent_leads=list(source_recent),
             dry_run_suffix="_dry_run",
         )
-        m_select.assert_called_once_with(list(triaged_recent), limit=5)
+        m_select.assert_called_once_with(list(triaged_recent), limit=5, reference_date=date(2026, 3, 5))
         m_tokens.assert_called_once_with(
             db_path=":memory:",
             state="TX",
             recent_leads=list(selected_recent),
             lookback_days=14,
         )
+        m_raw_signal_count.assert_called_once_with(
+            db_path=":memory:",
+            state="TX",
+            run_date=date(2026, 3, 5),
+            window_days=14,
+        )
         self.assertEqual(signal_ctx["recent_leads_original"], source_recent)
         self.assertEqual(signal_ctx["recent_leads"], selected_recent)
         self.assertEqual(signal_ctx["signal_tokens"], built_tokens)
         self.assertEqual(signal_ctx["triage_ctx"], triage_ctx)
+        self.assertEqual(signal_ctx["raw_signal_count"], 7)
+        self.assertEqual(signal_ctx["recent_signal_source_count"], len(source_recent))
+        self.assertEqual(signal_ctx["renderable_signal_count"], len(selected_recent))
+        self.assertEqual(signal_ctx["signal_fetch_status"], "ok")
 
     def test_no_repeat_gate_and_allow_repeat_override(self):
         with tempfile.TemporaryDirectory() as d:
@@ -570,6 +659,66 @@ class TestOutreachRunAuto(unittest.TestCase):
             out = p.stdout or ""
             self.assertIn("OUTREACH_SKIP_NO_SIGNALS state=TX window_days=14", out)
             self.assertIn("would_contact_prospect_ids=(none)", out)
+
+    def test_dry_run_raw_signals_but_empty_renderable_examples_skips_send(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "p1",
+                        "contact_name": "A",
+                        "firm": "F",
+                        "email": "a@example.com",
+                        "title": "Owner",
+                        "state": "TX",
+                    }
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX",
+                "OUTREACH_DAILY_LIMIT": "10",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+            signal_ctx = {
+                "recent_leads_original": [],
+                "recent_leads": [],
+                "last_refresh_et": "2026-02-24 08:00 ET",
+                "signal_tokens": {"RECENT_SIGNALS_LINES": "", "RECENT_SIGNALS_HTML": ""},
+                "triage_ctx": {},
+                "raw_signal_count": 1,
+                "recent_signal_source_count": 0,
+                "renderable_signal_count": 0,
+                "signal_fetch_status": "recent_leads_query_failed",
+                "signal_fetch_error_token": "ERR_OUTREACH_SIGNAL_FETCH_FAILED",
+                "signal_fetch_detail": "OperationalError",
+                "signal_window_days": 14,
+            }
+
+            with mock.patch.dict(os.environ, self._test_env(env), clear=True):
+                with mock.patch.object(roa, "_prepare_signal_content_with_triage", return_value=dict(signal_ctx)):
+                    with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--dry-run", "--for-date", "2026-02-24"]):
+                        out = io.StringIO()
+                        err = io.StringIO()
+                        with redirect_stdout(out), redirect_stderr(err):
+                            rc = roa.main()
+
+            self.assertEqual(rc, 0, msg=err.getvalue() + "\n" + out.getvalue())
+            text = out.getvalue()
+            self.assertIn(
+                "OUTREACH_SKIP_NO_SIGNALS state=TX window_days=14 raw_signal_count=1 recent_signal_source_count=0 renderable_signal_count=0 signal_fetch_status=recent_leads_query_failed",
+                text,
+            )
+            self.assertIn(
+                "ERR_OUTREACH_SIGNAL_FETCH_FAILED state=TX status=recent_leads_query_failed detail=OperationalError",
+                text,
+            )
+            self.assertIn("would_contact_prospect_ids=(none)", text)
 
     def test_dry_run_sendable_zero_with_nonzero_pool_emits_empty_state_no_send(self):
         with tempfile.TemporaryDirectory() as d:
@@ -828,12 +977,30 @@ class TestOutreachRunAuto(unittest.TestCase):
                 ), mock.patch.object(
                     roa, "_prepare_signal_content_with_triage",
                     return_value={
-                        "recent_leads_original": [],
-                        "recent_leads": [],
+                        "recent_leads_original": [
+                            {
+                                "activity_nr": "111",
+                                "establishment_name": "Keep Co",
+                                "site_state": "TX",
+                                "site_city": "Austin",
+                                "inspection_type": "Complaint",
+                                "date_opened": "2026-02-24",
+                            }
+                        ],
+                        "recent_leads": [
+                            {
+                                "activity_nr": "111",
+                                "establishment_name": "Keep Co",
+                                "site_state": "TX",
+                                "site_city": "Austin",
+                                "inspection_type": "Complaint",
+                                "date_opened": "2026-02-24",
+                            }
+                        ],
                         "last_refresh_et": "2026-02-24 09:00 ET",
                         "signal_tokens": {
-                            "RECENT_SIGNALS_LINES": "",
-                            "RECENT_SIGNALS_HTML": "",
+                            "RECENT_SIGNALS_LINES": "Keep Co (Austin, TX) | Complaint | Opened 2026-02-24",
+                            "RECENT_SIGNALS_HTML": "<div>Keep Co</div>",
                             "STATE_FULL_NAME": "Texas",
                             "STATE_METRO_EXAMPLES": "Austin",
                             "SIGNALS_WINDOW_NOTE_TEXT": "",
@@ -841,6 +1008,14 @@ class TestOutreachRunAuto(unittest.TestCase):
                             "SIGNALS_FALLBACK_TEXT": "",
                             "SIGNALS_FALLBACK_HTML": "",
                         },
+                        "triage_ctx": {},
+                        "raw_signal_count": 1,
+                        "recent_signal_source_count": 1,
+                        "renderable_signal_count": 1,
+                        "signal_fetch_status": "ok",
+                        "signal_fetch_error_token": "",
+                        "signal_fetch_detail": "",
+                        "signal_window_days": 14,
                     },
                 ), mock.patch.object(
                     roa, "_send_outreach_email", side_effect=_fake_send_outreach
@@ -2922,9 +3097,14 @@ class TestOutreachRunAuto(unittest.TestCase):
                 encoding="utf-8",
             )
             with mock.patch.dict(os.environ, self._test_env({"DATA_DIR": str(data_dir)}), clear=True):
-                out = io.StringIO()
-                with redirect_stdout(out):
-                    ok, msg = roa._doctor_check_scheduler_alignment(date(2026, 3, 9))
+                with mock.patch.object(
+                    roa.subprocess,
+                    "run",
+                    return_value=mock.Mock(returncode=0, stdout="", stderr=""),
+                ):
+                    out = io.StringIO()
+                    with redirect_stdout(out):
+                        ok, msg = roa._doctor_check_scheduler_alignment(date(2026, 3, 9))
             self.assertTrue(ok, msg=msg)
             self.assertEqual(msg, "")
             self.assertIn("WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE jobs=outreach_auto", out.getvalue())
@@ -2946,12 +3126,42 @@ class TestOutreachRunAuto(unittest.TestCase):
                 encoding="utf-8",
             )
             with mock.patch.dict(os.environ, self._test_env({"DATA_DIR": str(data_dir)}), clear=True):
-                out = io.StringIO()
-                with redirect_stdout(out):
-                    ok, msg = roa._doctor_check_scheduler_alignment(date(2026, 3, 9))
+                with mock.patch.object(
+                    roa.subprocess,
+                    "run",
+                    return_value=mock.Mock(returncode=0, stdout="", stderr=""),
+                ):
+                    out = io.StringIO()
+                    with redirect_stdout(out):
+                        ok, msg = roa._doctor_check_scheduler_alignment(date(2026, 3, 9))
             self.assertTrue(ok, msg=msg)
             self.assertEqual(msg, "")
             self.assertIn("PASS_DOCTOR_SCHEDULER_ALIGNMENT parallel_scheduler_active=0", out.getvalue())
+
+    def test_doctor_scheduler_alignment_warns_when_skipped_unsent_task_drift_exists(self):
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "data"
+
+            def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+                if [str(part) for part in cmd] == ["schtasks", "/Query", "/FO", "LIST"]:
+                    return mock.Mock(
+                        returncode=0,
+                        stdout="TaskName: \\OSHA_Outreach_Skipped_Unsent_Extra_20260325\n",
+                        stderr="",
+                    )
+                raise AssertionError(f"unexpected command: {cmd}")
+
+            with mock.patch.dict(os.environ, self._test_env({"DATA_DIR": str(data_dir)}), clear=True):
+                with mock.patch.object(roa.subprocess, "run", side_effect=_run):
+                    out = io.StringIO()
+                    with redirect_stdout(out):
+                        ok, msg = roa._doctor_check_scheduler_alignment(date(2026, 3, 25))
+            self.assertTrue(ok, msg=msg)
+            self.assertEqual(msg, "")
+            self.assertIn(
+                "WARN_DOCTOR_PARALLEL_SCHEDULER_ACTIVE jobs=scheduler_drift:OSHA_Outreach_Skipped_Unsent_Extra_20260325",
+                out.getvalue(),
+            )
 
     def test_doctor_success_pass_tokens_only_and_no_db_mutation(self):
         with tempfile.TemporaryDirectory() as d:
@@ -3232,7 +3442,14 @@ class TestOutreachRunAuto(unittest.TestCase):
             _seed_signal_db(
                 signal_db,
                 [
-                    {"site_state": "TX", "date_opened": "2001-01-02", "parse_invalid": 0},
+                    {
+                        "site_state": "TX",
+                        "date_opened": "2001-01-02",
+                        "first_seen_at": "2001-01-02T12:00:00+00:00",
+                        "last_seen_at": "2001-01-02T12:00:00+00:00",
+                        "changed_at": "2001-01-02T12:00:00+00:00",
+                        "parse_invalid": 0,
+                    },
                 ],
             )
             _write_suppression(data_dir / "suppression.csv")
@@ -3249,7 +3466,9 @@ class TestOutreachRunAuto(unittest.TestCase):
                     roa, "_doctor_check_secrets_decrypt", return_value=(True, "")
                 ), mock.patch.object(roa, "_doctor_check_unsub", return_value=(True, "")), mock.patch.object(
                     roa, "_doctor_check_provider", return_value=(True, "")
-                ), mock.patch.object(roa, "_doctor_check_dry_run_artifact", return_value=(True, "")):
+                ), mock.patch.object(roa, "_doctor_check_dry_run_artifact", return_value=(True, "")), mock.patch.object(
+                    roa.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="", stderr="")
+                ):
                     with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor", "--for-date", "2001-01-10"]):
                         out_1 = io.StringIO()
                         err_1 = io.StringIO()
