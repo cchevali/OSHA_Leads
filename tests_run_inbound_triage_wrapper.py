@@ -14,6 +14,7 @@ class TestRunInboundTriageWrapper(unittest.TestCase):
         self.assertIn("runtime_run_summary.ps1", text)
         self.assertIn("set_outreach_env.ps1", text)
         self.assertIn("Get-InboundConfigSnapshot", text)
+        self.assertIn("Write-TaskLine $text | Out-Null", text)
         self.assertIn("Test-RuntimeTickIntervalSlotAlreadyHandled", text)
         self.assertIn("gmail_credentials_missing", text)
         self.assertIn("imap_credentials_missing", text)
