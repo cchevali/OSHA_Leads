@@ -6,9 +6,6 @@ import SectionHeading from "@/components/SectionHeading";
 import site from "@/config/site.json";
 import sampleSignals from "./sample/sample_signals.json";
 
-const COVERAGE_HELPER =
-  "Send counties, cities, metros, or OSHA areas.";
-
 type SampleSignalRow = {
   activity_nr: string;
   inspection_type: string;
@@ -28,9 +25,9 @@ type SampleTerritory = {
 };
 
 export const metadata: Metadata = {
-  title: "OSHA Activity Signals for Safety and Defense Teams",
+  title: "Outreach-Ready OSHA Leads for Safety Consulting Firms",
   description:
-    "MicroFlowOps surfaces public OSHA inspection activity with timestamps and territory routing so teams can act before citation timelines compress.",
+    "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by territory.",
   alternates: { canonical: "/" }
 };
 
@@ -78,7 +75,7 @@ function formatOpenedDate(value: string | null | undefined): string {
 
 export default function HomePage() {
   const founderBlurb =
-    "Built by a data engineer for earlier visibility into public OSHA activity.";
+    "Built to help safety consulting firms follow up on public OSHA activity while timing still matters.";
   const [snapshot] = sampleSignals as SampleTerritory[];
   const snapshotRows = (snapshot?.rows || []).slice(0, 3);
   const leadProofRow = snapshot?.rows?.[0] ?? null;
@@ -89,34 +86,33 @@ export default function HomePage() {
         <div className="grid gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
           <div className="space-y-6">
             <p className="inline-flex items-center rounded-full border border-cardBorder bg-card px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
-              Nationwide OSHA enforcement alerts mapped to your footprint
+              Outreach-ready OSHA leads for safety consulting firms
             </p>
             <h1 className="font-display text-4xl text-ink md:text-5xl lg:text-6xl">
-              Daily OSHA inspection signals before citations post.
+              See newly observed public OSHA activity before citations post.
             </h1>
             <p className="text-lg text-inkMuted md:text-xl">
-              {site.brandName} surfaces public OSHA inspection activity with timestamps and routing for
-              safety-facing teams.
+              {site.brandName} packages territory-specific public OSHA activity into usable daily leads for
+              firms doing outbound or business development with employers.
             </p>
             <p className="text-sm font-semibold text-inkMuted">
-              Core starts at $299/mo for up to 4 billed metros. {COVERAGE_HELPER}
+              Request a sample first. Founding Pilot: $149 for 30 days in one state. Standard plans remain
+              available for ongoing coverage.
             </p>
             <CTAButtons />
             <div className="grid gap-3 text-sm font-semibold text-ink md:grid-cols-3">
-              <Link href="/sample" className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
-                Frozen public sample
-              </Link>
-              <Link href="/sample" className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
-                Verify in 30 seconds
-              </Link>
-              <Link href="/pricing" className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
-                We confirm mapping before billing
-              </Link>
+              <div className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
+                Best for outbound teams already selling safety services
+              </div>
+              <div className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
+                Territory-specific leads packaged for fast follow-up
+              </div>
+              <div className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
+                Public-source verification included on every sample
+              </div>
             </div>
             <div className="rounded-2xl border border-cardBorder bg-card p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
-                Founder
-              </p>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">Founder note</p>
               <p className="mt-2 text-sm text-inkMuted">{founderBlurb} Not legal advice.</p>
             </div>
           </div>
@@ -128,7 +124,7 @@ export default function HomePage() {
               </div>
               <div className="space-y-3 rounded-2xl bg-card p-4">
                 <p className="text-sm font-semibold text-ink">
-                  Proof rows from {snapshot?.territory_name || "the latest snapshot"}
+                  Sample rows from {snapshot?.territory_name || "the latest snapshot"}
                 </p>
                 {snapshotRows.length > 0 ? (
                   <div className="space-y-3 text-sm text-inkMuted">
@@ -156,7 +152,7 @@ export default function HomePage() {
                 )}
                 <div className="flex items-center justify-between gap-4 pt-2">
                   <p className="text-xs text-inkMuted">
-                    Opened and observed timestamps link back to the public OSHA record.
+                    Every sample item links back to the public OSHA record so a buyer can verify it quickly.
                   </p>
                   <Link
                     href="/sample"
@@ -173,23 +169,22 @@ export default function HomePage() {
 
       <section className="mx-auto w-full max-w-6xl px-6">
         <SectionHeading
-          eyebrow="Who it is for"
-          title="Built for teams who live inside OSHA timelines."
-          description="Employer-side defense and safety teams use early awareness to act while the need is still fresh."
+          eyebrow="Who It Is For"
+          title="Built for safety consulting and training firms that already do outbound."
+          description="The goal is simple: identify employers in your territory that may need help now, then follow up while the signal is still fresh."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-2">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h3 className="font-display text-2xl text-ink">OSHA defense attorneys</h3>
+            <h3 className="font-display text-2xl text-ink">Best fit</h3>
             <p className="mt-3 text-inkMuted">
-              Know about new inspections early, route them by risk, and get in touch before
-              citation timelines compress.
+              Best for safety consulting and training firms that already do outbound or business
+              development.
             </p>
           </div>
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h3 className="font-display text-2xl text-ink">Safety consultants</h3>
+            <h3 className="font-display text-2xl text-ink">Not ideal for</h3>
             <p className="mt-3 text-inkMuted">
-              Spot new activity in your patch, prioritize the highest intent signals, and win
-              work while the need is urgent.
+              Less useful for teams looking for a full compliance workflow or teams not doing outreach.
             </p>
           </div>
         </div>
@@ -197,23 +192,23 @@ export default function HomePage() {
 
       <section className="mx-auto w-full max-w-6xl px-6">
         <SectionHeading
-          eyebrow="Why pay"
-          title="Timing and relevance are the whole game."
-          description="We filter the feed so your team gets timely signals that still deserve attention."
+          eyebrow="Why Timing Matters"
+          title="The value is timing, territory fit, and less research after receipt."
+          description="These signals are meant to help firms spot employers that may need support before citation details are posted publicly."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-3">
           {[
             {
-              title: "Early visibility",
-              body: "Inspections appear before citations. We surface activity as soon as it becomes observable."
+              title: "Before citations post",
+              body: "We focus on newly observed public OSHA activity so your team can see potential outreach windows earlier."
             },
             {
-              title: "Signal over noise",
-              body: "Every alert is scored for urgency, scope, and commercial intent."
+              title: "Territory-specific",
+              body: "Leads are filtered to the state, metro, county, or OSHA area your team actually works."
             },
             {
-              title: "Footprint fit",
-              body: "Signals are filtered to the footprint your team actually covers, not a national firehose."
+              title: "Usable on arrival",
+              body: "The digest is built to reduce follow-up research so your team can decide faster who to contact."
             }
           ].map((item, index) => (
             <div
@@ -230,55 +225,46 @@ export default function HomePage() {
 
       <section className="mx-auto w-full max-w-6xl px-6">
         <SectionHeading
-          eyebrow="How it works"
-          title="A daily pipeline that never misses the window."
-          description="Public OSHA activity becomes a short, ranked brief your team can act on the same morning."
+          eyebrow="What Is Included"
+          title="A daily lead digest built for outreach, not a generic monitoring dashboard."
+          description="Each daily brief is meant to help your team decide quickly whether an employer is worth a follow-up now."
         />
-        <div className="mt-10 grid gap-6 lg:grid-cols-4">
-          {[
-            {
-              step: "01",
-              title: "Signals",
-              body: "Track new inspections and activity updates the moment they appear."
-            },
-            {
-              step: "02",
-              title: "Enrich",
-              body: "Add industry, location, severity, and history context."
-            },
-            {
-              step: "03",
-              title: "Score",
-              body: "Rank by urgency and commercial intent."
-            },
-            {
-              step: "04",
-              title: "Deliver",
-              body: "Send a concise, ranked alert to your team each morning by email."
-            }
-          ].map((item) => (
-            <div key={item.step} className="rounded-3xl border border-cardBorder bg-card p-6">
-              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">
-                {item.step}
-              </p>
-              <h3 className="mt-3 font-display text-xl text-ink">{item.title}</h3>
-              <p className="mt-3 text-inkMuted">{item.body}</p>
-            </div>
-          ))}
+        <div className="mt-10 grid gap-6 lg:grid-cols-2">
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+            <h3 className="font-display text-2xl text-ink">Daily lead digest</h3>
+            <ul className="mt-4 space-y-3 text-sm text-inkMuted">
+              <li>Company name</li>
+              <li>City and state</li>
+              <li>Inspection or signal type</li>
+              <li>Observed date</li>
+              <li>Public source verification</li>
+              <li>When available: website, phone, and public contact details</li>
+              <li>Brief reason why this may matter now</li>
+            </ul>
+          </div>
+          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
+            <h3 className="font-display text-2xl text-ink">What "usable" means</h3>
+            <p className="mt-3 text-inkMuted">
+              The lead should be clear enough that a business development team can review it, verify the public
+              source, and decide whether to reach out without building a long research memo first.
+            </p>
+            <p className="mt-3 text-inkMuted">
+              That is why the sample emphasizes territory, timing, verification, and a short explanation of why
+              the signal may matter now.
+            </p>
+          </div>
         </div>
       </section>
 
       <section className="mx-auto w-full max-w-6xl px-6">
         <SectionHeading
           eyebrow="Proof"
-          title="See the alert, then check the public record."
-          description="The value is simple: a ranked alert, a source record, and a concrete reason to move."
+          title="See the lead, then verify the public record."
+          description="The promise is narrow: earlier visibility into public OSHA activity, packaged in a way a consulting firm can use for outreach."
         />
         <div className="mt-10 grid gap-6 lg:grid-cols-2">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
-              Real alert screenshot
-            </p>
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">Real alert screenshot</p>
             <Image
               src="/assets/alert-proof-snapshot.svg"
               alt="Frozen MicroFlowOps alert snapshot"
@@ -312,8 +298,8 @@ export default function HomePage() {
               </>
             ) : (
               <>
-                A buyer can see the alert, click through to the public OSHA record, and confirm the opened
-                {" "}date and location in about 30 seconds.
+                A buyer can see the lead, click through to the public OSHA record, and confirm the opened date
+                and location in about 30 seconds.
               </>
             )}
           </p>
@@ -322,39 +308,54 @@ export default function HomePage() {
 
       <section className="mx-auto w-full max-w-6xl px-6">
         <SectionHeading
-          eyebrow="Territories"
-          title="Coverage mapped to your footprint."
-          description="Plans bill by metro count, but onboarding maps the footprint you already use."
+          eyebrow="How It Works"
+          title="A small daily workflow built for business development."
+          description="We keep the product and pipeline simple: watch public activity, package it by territory, and deliver a short daily brief."
         />
-        <div className="mt-10 grid gap-6 md:grid-cols-2">
-          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h3 className="font-display text-xl text-ink">Metro-based billing</h3>
-            <p className="mt-3 text-inkMuted">
-              Core covers up to 4 billed metros. Multi-Territory covers up to 10, with daily morning
-              delivery.
-            </p>
-          </div>
-          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h3 className="font-display text-xl text-ink">Coverage inputs</h3>
-            <p className="mt-3 text-inkMuted">
-              Share the footprint labels your team already uses and we map them during onboarding.
-            </p>
-          </div>
+        <div className="mt-10 grid gap-6 lg:grid-cols-4">
+          {[
+            {
+              step: "01",
+              title: "Observe",
+              body: "Track newly observed public OSHA inspection activity."
+            },
+            {
+              step: "02",
+              title: "Package",
+              body: "Group the signal into a territory-specific lead your team can review fast."
+            },
+            {
+              step: "03",
+              title: "Verify",
+              body: "Link back to the public source so the signal can be checked quickly."
+            },
+            {
+              step: "04",
+              title: "Act",
+              body: "Send a short daily digest your team can use for outreach or follow-up."
+            }
+          ].map((item) => (
+            <div key={item.step} className="rounded-3xl border border-cardBorder bg-card p-6">
+              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-inkMuted">{item.step}</p>
+              <h3 className="mt-3 font-display text-xl text-ink">{item.title}</h3>
+              <p className="mt-3 text-inkMuted">{item.body}</p>
+            </div>
+          ))}
         </div>
       </section>
 
       <section className="mx-auto w-full max-w-6xl px-6">
         <SectionHeading
-          eyebrow="Compliance"
-          title="Clear boundaries, clean data handling."
-          description="Useful operational signals, with clear limits."
+          eyebrow="Boundaries"
+          title="Clear boundaries, clean expectations."
+          description="Useful outreach signals, with clear limits."
         />
         <div className="mt-8 rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <ul className="space-y-3 text-sm text-inkMuted">
             <li>Not affiliated with OSHA.</li>
-            <li>Uses public enforcement data; freshness varies.</li>
+            <li>Uses public OSHA activity data; freshness varies by source visibility.</li>
+            <li>Built for outreach-ready lead review, not a full compliance workflow.</li>
             <li>Business contact only; opt-out honored.</li>
-            <li>Deadlines appear only when the public record supports them.</li>
           </ul>
         </div>
       </section>
@@ -364,12 +365,12 @@ export default function HomePage() {
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.3em] text-white/70">
-                Ready to see signals
+                Start with a sample
               </p>
-              <h2 className="mt-3 font-display text-3xl">Request a trial feed for your footprint.</h2>
+              <h2 className="mt-3 font-display text-3xl">Request a sample for your territory.</h2>
               <p className="mt-3 text-white/70">
-                We will send a sample alert, map your footprint, and start a short trial feed so you can
-                judge signal quality for yourself.
+                We will send a sample first, then qualify whether a 30-day founding pilot makes sense for your
+                state or metro.
               </p>
             </div>
             <CTAButtons variant="dark" />

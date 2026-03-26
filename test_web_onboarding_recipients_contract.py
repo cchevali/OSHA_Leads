@@ -28,9 +28,10 @@ class TestWebOnboardingRecipientsContract(unittest.TestCase):
         onboarding_page = Path("web/app/onboarding/page.tsx").read_text(encoding="utf-8")
         pricing = Path("web/app/pricing/page.tsx").read_text(encoding="utf-8")
         phrase = "No calls required; onboarding is handled via a short form + email confirmation."
-        self.assertIn("No calls are required; onboarding is handled via a short form plus email confirmation", faq)
+        self.assertIn("No calls are required; we can qualify sample requests, founding pilots, and territory fit over email.", faq)
         self.assertIn(phrase, onboarding_page)
-        self.assertIn(phrase, pricing)
+        self.assertIn("Request a sample", pricing)
+        self.assertIn("We qualify fit manually.", pricing)
 
 
 if __name__ == "__main__":

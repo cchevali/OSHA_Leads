@@ -663,7 +663,10 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertTrue(text_body.strip())
             self.assertEqual(body, text_body)
             self.assertTrue(html_body.strip())
-            self.assertIn("advises employers on OSHA and safety matters in Texas", html_body)
+            self.assertIn(
+                "territory-specific leads for safety consulting firms doing outbound in Texas",
+                html_body,
+            )
             self.assertIn("Opened = inspection opened date; Observed = first day it appeared in public OSHA data.", html_body)
 
             # Wally-style markers.
@@ -972,9 +975,11 @@ class TestOutreachMailmerge(unittest.TestCase):
             "Hi,",
         )
         self.assertNotIn("new OSHA", tokens_plural["GREETING_LINE_TEXT"])
-        self.assertIn("California metros or other states you care about", tokens_plural["TRIAL_LINE_TEXT"])
+        self.assertIn("reply with your state or metro", tokens_plural["TRIAL_LINE_TEXT"])
+        self.assertIn("short California sample", tokens_plural["TRIAL_LINE_TEXT"])
         self.assertNotIn("https://microflowops.com/contact", tokens_plural["TRIAL_LINE_TEXT"])
-        self.assertIn("California metros or other states you care about", tokens_plural["TRIAL_LINE_HTML"])
+        self.assertIn("territory-specific leads for safety consulting firms doing outbound in California", tokens_plural["INTRO_LINE_TEXT"])
+        self.assertIn("reply with your state or metro", tokens_plural["TRIAL_LINE_HTML"])
 
     def test_select_outreach_card_examples_uses_only_recent_opened_rows(self):
         from outreach import generate_mailmerge as gm
@@ -1482,11 +1487,11 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertIn("Hi Casey,", stdout)
             self.assertIn("Hi Riley,", stdout)
             self.assertIn(
-                "You're getting this because your firm advises employers on OSHA and safety matters in California.",
+                "I run MicroFlowOps. It packages newly observed public OSHA activity into territory-specific leads for safety consulting firms doing outbound in California.",
                 stdout,
             )
             self.assertIn(
-                "Recent public OSHA inspection activity in California you may want on your radar:",
+                "Newly observed public OSHA activity in California that may be useful for employer outreach:",
                 stdout,
             )
             self.assertIn("Opened = inspection opened date; Observed = first day it appeared in public OSHA data.", stdout)
@@ -1512,9 +1517,17 @@ class TestOutreachMailmerge(unittest.TestCase):
                 p_missing.stdout or "",
             )
             self.assertIn(
-                "You're getting this because your firm advises employers on OSHA and safety matters in California.",
+                "I run MicroFlowOps. It packages newly observed public OSHA activity into territory-specific leads for safety consulting firms doing outbound in California.",
                 p_missing.stdout or "",
             )
+
+            followup_2 = (REPO_ROOT / "outreach" / "outreach_followup_2.txt").read_text(encoding="utf-8")
+            followup_3 = (REPO_ROOT / "outreach" / "outreach_followup_3.txt").read_text(encoding="utf-8")
+            self.assertIn("reply with your state or metro", followup_2)
+            self.assertIn("short sample for your territory", followup_2)
+            self.assertIn("Founding Pilot", followup_3)
+            self.assertIn("$149", followup_3)
+            self.assertIn("manual qualification before activation", followup_3)
 
             snapshot_after = sorted(
                 str(path.relative_to(tmp)) for path in tmp.rglob("*") if path.is_file()

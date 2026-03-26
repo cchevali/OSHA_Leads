@@ -19,7 +19,7 @@ export default function Footer() {
           <div className="space-y-3">
             <p className="font-display text-lg text-ink">{site.brandName}</p>
             <p className="max-w-xs text-sm text-inkMuted">
-              Daily OSHA activity signals for employer-side defense teams and safety consultants.
+              Outreach-ready OSHA leads for safety consulting and training firms doing business development.
             </p>
             <p className="text-xs text-inkMuted">{site.mailingAddress}</p>
           </div>

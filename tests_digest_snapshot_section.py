@@ -629,6 +629,86 @@ class TestDigestSnapshotSection(unittest.TestCase):
         self.assertGreater(html.index("Low signals:"), html.index("<h2>Signals</h2>"))
         self.assertGreater(text.index("Low signals:"), text.index("Signals:"))
 
+    def test_trial_digest_copy_adds_outreach_labels_and_optional_contact_details(self) -> None:
+        leads = [
+            {
+                "establishment_name": "Example Priority Co",
+                "site_city": "Austin",
+                "site_state": "TX",
+                "inspection_type": "Complaint",
+                "date_opened": "2026-02-01",
+                "lead_score": 8,
+                "source_url": "https://example.com/x",
+                "first_seen_at": "2026-02-02T12:00:00+00:00",
+                "presentation_reason_sentence": "Public complaint signal observed recently.",
+                "website": "https://examplepriorityco.test",
+                "phone": "(512) 555-0100",
+                "contact_name": "Jordan Safety",
+                "contact_email": "jordan@examplepriorityco.test",
+            }
+        ]
+
+        html = generate_digest_html(
+            leads=leads,
+            low_fallback=[],
+            config=self.config,
+            gen_date="2026-02-08",
+            mode="daily",
+            territory_code="TX_TRIANGLE_V1",
+            content_filter="high_medium",
+            include_low_fallback=False,
+            branding=self.branding,
+            tier_counts={"high": 0, "medium": 1, "low": 0},
+            include_lows=False,
+            low_priority=[],
+            footer_html=self.footer_html,
+            summary_label="Newly observed today: 1 signal",
+            top_pick_rows=leads,
+            top_pick_heading="Best 3 outreach targets today",
+            digest_title="Outreach-ready OSHA leads",
+            summary_note="Meant to help business development teams spot employers who may need help now and verify the public record quickly.",
+            bottom_cta="Reply with your state or metro if you want a tighter territory sample. If the fit looks right, ask about the 30-day Founding Pilot.",
+            trial_copy=True,
+        )
+        text = generate_digest_text(
+            leads=leads,
+            low_fallback=[],
+            config=self.config,
+            gen_date="2026-02-08",
+            mode="daily",
+            territory_code="TX_TRIANGLE_V1",
+            content_filter="high_medium",
+            include_low_fallback=False,
+            branding=self.branding,
+            tier_counts={"high": 0, "medium": 1, "low": 0},
+            include_lows=False,
+            low_priority=[],
+            footer_text=self.footer_text,
+            summary_label="Newly observed today: 1 signal",
+            top_pick_rows=leads,
+            top_pick_heading="Best 3 outreach targets today",
+            digest_title="Outreach-ready OSHA leads",
+            summary_note="Meant to help business development teams spot employers who may need help now and verify the public record quickly.",
+            bottom_cta="Reply with your state or metro if you want a tighter territory sample. If the fit looks right, ask about the 30-day Founding Pilot.",
+            trial_copy=True,
+        )
+
+        self.assertIn("Outreach-ready OSHA leads", html)
+        self.assertIn("Best 3 outreach targets today", html)
+        self.assertIn("Why this may matter now", html)
+        self.assertIn("Website:</strong> https://examplepriorityco.test", html)
+        self.assertIn("Phone:</strong> (512) 555-0100", html)
+        self.assertIn("Public contact:</strong> Jordan Safety &lt;jordan@examplepriorityco.test&gt;", html)
+        self.assertIn("Reply with your state or metro", html)
+
+        self.assertIn("Outreach-ready OSHA leads - 2026-02-08", text)
+        self.assertIn("Best 3 outreach targets today:", text)
+        self.assertIn("Why this may matter now", text)
+        self.assertIn("Website: https://examplepriorityco.test", text)
+        self.assertIn("Phone: (512) 555-0100", text)
+        self.assertIn("Public contact: Jordan Safety <jordan@examplepriorityco.test>", text)
+        self.assertIn("Reply with your state or metro", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import CTAButtons from "@/components/CTAButtons";
 import ThemeToggle from "@/components/ThemeToggle";
 import site from "@/config/site.json";
 
@@ -32,9 +31,12 @@ export default function Nav() {
         </nav>
         <div className="flex items-center gap-2">
           <ThemeToggle />
-          <div className="hidden md:flex">
-            <CTAButtons />
-          </div>
+          <Link
+            href="/contact?source=nav&intent=sample"
+            className="hidden items-center justify-center rounded-full bg-ocean px-4 py-2 text-sm font-semibold text-white shadow-glow transition hover:bg-oceanDark md:inline-flex"
+          >
+            Request a sample
+          </Link>
           <button
             aria-label="Toggle menu"
             onClick={() => setOpen(!open)}
@@ -61,7 +63,13 @@ export default function Nav() {
             ))}
           </nav>
           <div className="mt-4">
-            <CTAButtons />
+            <Link
+              href="/contact?source=nav_mobile&intent=sample"
+              onClick={() => setOpen(false)}
+              className="inline-flex items-center justify-center rounded-full bg-ocean px-4 py-2 text-sm font-semibold text-white shadow-glow transition hover:bg-oceanDark"
+            >
+              Request a sample
+            </Link>
           </div>
         </div>
       )}

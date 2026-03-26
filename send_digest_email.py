@@ -880,6 +880,64 @@ def _top_picks_text(rows: list[dict[str, Any]], heading: str) -> list[str]:
     return lines
 
 
+def _lead_detail_value(lead: dict[str, Any], keys: list[str]) -> str:
+    for key in keys:
+        value = str(lead.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _trial_lead_detail_pairs(lead: dict[str, Any]) -> list[tuple[str, str]]:
+    website = _lead_detail_value(
+        lead,
+        ["website", "website_url", "company_website", "company_website_url", "public_website"],
+    )
+    phone = _lead_detail_value(
+        lead,
+        ["phone", "phone_number", "business_phone", "business_telephone", "public_phone"],
+    )
+    contact_name = _lead_detail_value(
+        lead,
+        ["public_contact", "public_contact_name", "contact_name"],
+    )
+    contact_email = _lead_detail_value(
+        lead,
+        ["public_contact_email", "contact_email"],
+    )
+    contact_value = ""
+    if contact_name and contact_email:
+        contact_value = f"{contact_name} <{contact_email}>"
+    else:
+        contact_value = contact_name or contact_email
+
+    pairs: list[tuple[str, str]] = []
+    if website:
+        pairs.append(("Website", website))
+    if phone:
+        pairs.append(("Phone", phone))
+    if contact_value:
+        pairs.append(("Public contact", contact_value))
+    return pairs
+
+
+def _trial_lead_details_html(lead: dict[str, Any]) -> str:
+    details = _trial_lead_detail_pairs(lead)
+    if not details:
+        return ""
+    parts = ['<div style="margin-top:6px; font-size:12px; color:#6b7280; line-height:1.5;">']
+    for label, value in details:
+        parts.append(
+            f"<div><strong>{html_lib.escape(label)}:</strong> {html_lib.escape(value)}</div>"
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _trial_lead_details_text(lead: dict[str, Any]) -> list[str]:
+    return [f"{label}: {value}" for label, value in _trial_lead_detail_pairs(lead)]
+
+
 def _tier_counts(leads: list[dict]) -> dict[str, int]:
     counts = {"high": 0, "medium": 0, "low": 0}
     for lead in leads:
@@ -3096,53 +3154,70 @@ def _apply_trial_triage_overlay_if_enabled(
         print(f"TRIAL_TRIAGE_ARTIFACT_TXT path={txt_path}")
     return adjusted_leads, overlay_stats, promoted_rows, decisions, removed_rows
 
-def _lead_rows_html(rows: list[dict], max_rows: int, include_area_office: bool, tz: ZoneInfo) -> str:
+def _lead_rows_html(
+    rows: list[dict],
+    max_rows: int,
+    include_area_office: bool,
+    tz: ZoneInfo,
+    *,
+    trial_copy: bool = False,
+) -> str:
     if not rows:
         return "<p><em>No leads match this section.</em></p>"
 
     parts = ['<table class="signals-table" border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%;">']
     parts.append("<thead>")
+    why_label = "Why this may matter now" if trial_copy else "Why"
     if include_area_office:
-        parts.append("<tr><th>Priority</th><th>Why</th><th>Company</th><th>City</th><th>Area Office</th><th>Signal</th><th>Observed</th><th>Event date</th></tr>")
+        parts.append(
+            f"<tr><th>Priority</th><th>{why_label}</th><th>Company</th><th>City</th><th>Area Office</th><th>Signal</th><th>Observed</th><th>Event date</th></tr>"
+        )
     else:
-        parts.append("<tr><th>Priority</th><th>Why</th><th>Company</th><th>City</th><th>Signal</th><th>Observed</th><th>Event date</th></tr>")
+        parts.append(
+            f"<tr><th>Priority</th><th>{why_label}</th><th>Company</th><th>City</th><th>Signal</th><th>Observed</th><th>Event date</th></tr>"
+        )
     parts.append("</thead>")
     parts.append("<tbody>")
     for lead in rows[:max_rows]:
-        company = (lead.get("establishment_name") or "Unknown")[:48]
-        city = lead.get("site_city") or "-"
-        state = lead.get("site_state") or "-"
-        itype = lead.get("inspection_type") or "-"
-        event_date = lead.get("date_opened") or "-"
+        company = str(lead.get("establishment_name") or "Unknown")[:48]
+        city = str(lead.get("site_city") or "-")
+        state = str(lead.get("site_state") or "-")
+        itype = str(lead.get("inspection_type") or "-")
+        event_date = str(lead.get("date_opened") or "-")
         observed = _observed_timestamp(lead, tz)
         priority = _priority_label_from_value(_lead_effective_priority(lead))
-        reason_chip = _presentation_reason_label(lead, include_collapse_cue=True)
-        url = lead.get("source_url") or "#"
-        company_html = f'<a href="{url}">{company}</a>' if url and url != "#" else company
+        reason_chip = html_lib.escape(_presentation_reason_label(lead, include_collapse_cue=True))
+        url = str(lead.get("source_url") or "#").strip()
+        safe_url = html_lib.escape(url, quote=True)
+        company_html = (
+            f'<a href="{safe_url}">{html_lib.escape(company)}</a>' if url and url != "#" else html_lib.escape(company)
+        )
+        if trial_copy:
+            company_html += _trial_lead_details_html(lead)
         if include_area_office:
-            area_office = lead.get("area_office") or ""
+            area_office = html_lib.escape(str(lead.get("area_office") or ""))
             parts.append(
                 "<tr>"
                 f"<td data-label=\"Priority\">{priority}</td>"
-                f"<td data-label=\"Why\">{reason_chip}</td>"
+                f"<td data-label=\"{why_label}\">{reason_chip}</td>"
                 f"<td data-label=\"Company\">{company_html}</td>"
-                f"<td data-label=\"City\">{city}, {state}</td>"
+                f"<td data-label=\"City\">{html_lib.escape(city)}, {html_lib.escape(state)}</td>"
                 f"<td data-label=\"Area office\">{area_office}</td>"
-                f"<td data-label=\"Signal\">{itype}</td>"
-                f"<td data-label=\"Observed\">{observed}</td>"
-                f"<td data-label=\"Event date\">{event_date}</td>"
+                f"<td data-label=\"Signal\">{html_lib.escape(itype)}</td>"
+                f"<td data-label=\"Observed\">{html_lib.escape(observed)}</td>"
+                f"<td data-label=\"Event date\">{html_lib.escape(event_date)}</td>"
                 "</tr>"
             )
         else:
             parts.append(
                 "<tr>"
                 f"<td data-label=\"Priority\">{priority}</td>"
-                f"<td data-label=\"Why\">{reason_chip}</td>"
+                f"<td data-label=\"{why_label}\">{reason_chip}</td>"
                 f"<td data-label=\"Company\">{company_html}</td>"
-                f"<td data-label=\"City\">{city}, {state}</td>"
-                f"<td data-label=\"Signal\">{itype}</td>"
-                f"<td data-label=\"Observed\">{observed}</td>"
-                f"<td data-label=\"Event date\">{event_date}</td>"
+                f"<td data-label=\"City\">{html_lib.escape(city)}, {html_lib.escape(state)}</td>"
+                f"<td data-label=\"Signal\">{html_lib.escape(itype)}</td>"
+                f"<td data-label=\"Observed\">{html_lib.escape(observed)}</td>"
+                f"<td data-label=\"Event date\">{html_lib.escape(event_date)}</td>"
                 "</tr>"
             )
     parts.append("</tbody>")
@@ -3195,6 +3270,10 @@ def generate_digest_html(
     top_pick_rows: list[dict] | None = None,
     top_pick_heading: str | None = None,
     tz: ZoneInfo | None = None,
+    digest_title: str | None = None,
+    summary_note: str | None = None,
+    bottom_cta: str | None = None,
+    trial_copy: bool = False,
 ) -> str:
     states = config["states"]
     top_k_overall = config.get("top_k_overall", _default_top_k_overall(config))
@@ -3269,7 +3348,9 @@ def generate_digest_html(
     )
     html.append('<div class="digest-card" style="background-color: #ffffff; padding: 24px; border-radius: 8px;">')
 
-    html.append(f"<h1 style=\"margin-top: 0; color: #1a1a2e;\">OSHA Lead Digest ({mode_label})</h1>")
+    html.append(
+        f"<h1 style=\"margin-top: 0; color: #1a1a2e;\">{html_lib.escape(digest_title or f'OSHA Lead Digest ({mode_label})')}</h1>"
+    )
     if report_label:
         html.append(f"<p style=\"color: #1a1a2e;\"><strong>{report_label}</strong></p>")
     html.append(f"<p style=\"color: #555;\">{gen_date} | {tz_label}</p>")
@@ -3284,6 +3365,10 @@ def generate_digest_html(
         low = int(tier_counts.get("low", 0))
         html.append(
             f"<p style=\"margin: 6px 0 0 0; color: #555; font-size: 12px;\">Tier summary: High {high}, Medium {medium}, Low {low}</p>"
+        )
+    if summary_note:
+        html.append(
+            f"<p style=\"margin: 6px 0 0 0; color: #555; font-size: 12px;\">{html_lib.escape(summary_note)}</p>"
         )
     html.append("</div>")
     if mode == "daily" and show_state_breakdown:
@@ -3329,14 +3414,38 @@ def generate_digest_html(
                 )
         if include_low_fallback and low_fallback:
             html.append(f"<h2>Low Signals (Fallback) - Top {len(low_fallback)}</h2>")
-            html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all, tz))
+            html.append(
+                _lead_rows_html(
+                    low_fallback,
+                    LOW_FALLBACK_LIMIT,
+                    include_area_office_all,
+                    tz,
+                    trial_copy=trial_copy,
+                )
+            )
         if include_lows and low_priority:
             include_area_office_low = any((lead.get("area_office") or "").strip() for lead in low_priority)
             html.append(f"<h2>Low priority ({len(low_priority)})</h2>")
-            html.append(_lead_rows_html(low_priority, len(low_priority), include_area_office_low, tz))
+            html.append(
+                _lead_rows_html(
+                    low_priority,
+                    len(low_priority),
+                    include_area_office_low,
+                    tz,
+                    trial_copy=trial_copy,
+                )
+            )
     else:
         html.append("<h2>Signals</h2>")
-        html.append(_lead_rows_html(shown_rows, len(shown_rows), include_area_office_main, tz))
+        html.append(
+            _lead_rows_html(
+                shown_rows,
+                len(shown_rows),
+                include_area_office_main,
+                tz,
+                trial_copy=trial_copy,
+            )
+        )
         if len(shown_rows) < len(display_rows):
             html.append(
                 "<p style=\"margin: 14px 0 0 0; color: #555; font-size: 12px;\">"
@@ -3348,11 +3457,27 @@ def generate_digest_html(
         if include_lows and low_priority:
             include_area_office_low = any((lead.get("area_office") or "").strip() for lead in low_priority)
             html.append(f"<h2>Low priority ({len(low_priority)})</h2>")
-            html.append(_lead_rows_html(low_priority, len(low_priority), include_area_office_low, tz))
+            html.append(
+                _lead_rows_html(
+                    low_priority,
+                    len(low_priority),
+                    include_area_office_low,
+                    tz,
+                    trial_copy=trial_copy,
+                )
+            )
 
         if include_low_fallback and low_fallback:
             html.append(f"<h2>Low Signals (Fallback) - Top {len(low_fallback)}</h2>")
-            html.append(_lead_rows_html(low_fallback, LOW_FALLBACK_LIMIT, include_area_office_all, tz))
+            html.append(
+                _lead_rows_html(
+                    low_fallback,
+                    LOW_FALLBACK_LIMIT,
+                    include_area_office_all,
+                    tz,
+                    trial_copy=trial_copy,
+                )
+            )
 
     html.append(
         "<p style=\"color: #555; font-size: 12px;\">Accident, Complaint, and Referral describe OSHA activity signals (not citations).</p>"
@@ -3391,7 +3516,15 @@ def generate_digest_html(
             include_area_office_snapshot = any((lead.get("area_office") or "").strip() for lead in snapshot_rows)
             label = "Most recent signals (not new):" if include_lows else "Most recent priority signals (not new):"
             html.append(f"<p style=\"margin: 10px 0 8px 0; color: #555;\">{label}</p>")
-            html.append(_lead_rows_html(snapshot_rows, len(snapshot_rows), include_area_office_snapshot, tz))
+            html.append(
+                _lead_rows_html(
+                    snapshot_rows,
+                    len(snapshot_rows),
+                    include_area_office_snapshot,
+                    tz,
+                    trial_copy=trial_copy,
+                )
+            )
         else:
             empty_msg = (
                 "No signals in the last 14 days." if include_lows else "No priority signals in the last 14 days."
@@ -3413,6 +3546,13 @@ def generate_digest_html(
     )
     if daily_low_html:
         html.append(daily_low_html)
+
+    if bottom_cta:
+        html.append(
+            "<div style=\"background-color:#eef5ff; padding:12px; border-radius:6px; margin:18px 0 0 0;\">"
+            f"<p style=\"margin:0; color:#1f2937;\">{html_lib.escape(bottom_cta)}</p>"
+            "</div>"
+        )
 
     if footer_html:
         html.append(footer_html)
@@ -3458,6 +3598,10 @@ def generate_digest_text(
     top_pick_rows: list[dict] | None = None,
     top_pick_heading: str | None = None,
     tz: ZoneInfo | None = None,
+    digest_title: str | None = None,
+    summary_note: str | None = None,
+    bottom_cta: str | None = None,
+    trial_copy: bool = False,
 ) -> str:
     states = config["states"]
     mode_label = "BASELINE" if mode == "baseline" else "DAILY"
@@ -3493,7 +3637,7 @@ def generate_digest_text(
         snapshot_disable_lows_url = None
 
     lines = [
-        f"OSHA Lead Digest ({mode_label}) - {gen_date}",
+        f"{digest_title or f'OSHA Lead Digest ({mode_label})'} - {gen_date}",
     ]
     if report_label:
         lines.append(report_label)
@@ -3507,6 +3651,8 @@ def generate_digest_text(
         medium = int(tier_counts.get("medium", 0))
         low_summary = int(tier_counts.get("low", 0))
         lines.append(f"Tier summary: High {high}, Medium {medium}, Low {low_summary}")
+    if summary_note:
+        lines.append(summary_note)
     if mode == "daily" and show_state_breakdown:
         state_summary_label = "Signals in this snapshot" if snapshot_report_mode else "New signals today by state"
         lines.append(f"{state_summary_label}: {by_state_line}")
@@ -3599,12 +3745,15 @@ def generate_digest_text(
                 location_line += f" | Area Office: {(lead.get('area_office') or '-')}"
             lines.append(location_line)
             lines.append(
-                f"  Priority: {priority} | Why: {_presentation_reason_label(lead, include_collapse_cue=True)} | Signal: {(lead.get('inspection_type') or '-')}"
+                f"  Priority: {priority} | {'Why this may matter now' if trial_copy else 'Why'}: {_presentation_reason_label(lead, include_collapse_cue=True)} | Signal: {(lead.get('inspection_type') or '-')}"
             )
             lines.append(
                 f"  Observed: {_observed_timestamp(lead, tz)} | Event date: {(lead.get('date_opened') or '-')}"
             )
             lines.append(f"  {(lead.get('source_url') or '#')}")
+            if trial_copy:
+                for detail_line in _trial_lead_details_text(lead):
+                    lines.append(f"  {detail_line}")
 
         if show_limit < len(display_rows):
             lines.append("")
@@ -3657,6 +3806,10 @@ def generate_digest_text(
     if daily_low_text:
         lines.append("")
         lines.extend(daily_low_text)
+
+    if bottom_cta:
+        lines.append("")
+        lines.append(bottom_cta)
 
     if footer_text:
         lines.append("")
@@ -4541,6 +4694,21 @@ def main() -> None:
     intro_summary_html = str(chosen_intro.get("intro_html") or "").strip() or None
     top_pick_rows = list(chosen_intro.get("top_picks") or [])
     top_pick_heading = str(chosen_intro.get("top_pick_heading") or "").strip() or None
+    trial_digest_copy = bool(args.mode == "daily" and (trial_subscriber or _is_trial_config(config)))
+    trial_digest_title = None
+    trial_digest_summary_note = None
+    trial_digest_bottom_cta = None
+    if trial_digest_copy:
+        top_pick_rows = list(top_pick_rows[:3])
+        top_pick_heading = "Best 3 outreach targets today" if top_pick_rows else None
+        trial_digest_title = "Outreach-ready OSHA leads"
+        trial_digest_summary_note = (
+            "Meant to help business development teams spot employers who may need help now and verify the public record quickly."
+        )
+        trial_digest_bottom_cta = (
+            "Reply with your state or metro if you want a tighter territory sample. "
+            "If the fit looks right, ask about the 30-day Founding Pilot."
+        )
     top_pick_limit = len(top_pick_rows)
 
     render_sections_for_hash: dict[str, list[dict[str, Any]]] = {"main": main_render_rows}
@@ -4906,6 +5074,10 @@ def main() -> None:
             top_pick_rows=current_top_pick_rows,
             top_pick_heading=top_pick_heading,
             tz=tz,
+            digest_title=trial_digest_title,
+            summary_note=trial_digest_summary_note,
+            bottom_cta=trial_digest_bottom_cta,
+            trial_copy=trial_digest_copy,
         )
 
         # Measure and guardrail HTML size to avoid Gmail clipping (~102KB).
@@ -4956,6 +5128,10 @@ def main() -> None:
                     top_pick_rows=current_top_pick_rows,
                     top_pick_heading=top_pick_heading,
                     tz=tz,
+                    digest_title=trial_digest_title,
+                    summary_note=trial_digest_summary_note,
+                    bottom_cta=trial_digest_bottom_cta,
+                    trial_copy=trial_digest_copy,
                 )
                 b = _html_bytes(candidate)
                 if b <= EMAIL_HTML_TARGET_BYTES:
@@ -5005,6 +5181,10 @@ def main() -> None:
                     top_pick_rows=current_top_pick_rows,
                     top_pick_heading=top_pick_heading,
                     tz=tz,
+                    digest_title=trial_digest_title,
+                    summary_note=trial_digest_summary_note,
+                    bottom_cta=trial_digest_bottom_cta,
+                    trial_copy=trial_digest_copy,
                 )
                 best_bytes = _html_bytes(best_html)
 
@@ -5058,6 +5238,10 @@ def main() -> None:
                     top_pick_rows=current_top_pick_rows,
                     top_pick_heading=top_pick_heading,
                     tz=tz,
+                    digest_title=trial_digest_title,
+                    summary_note=trial_digest_summary_note,
+                    bottom_cta=trial_digest_bottom_cta,
+                    trial_copy=trial_digest_copy,
                 )
                 html_bytes = _html_bytes(html_body)
 
@@ -5103,6 +5287,10 @@ def main() -> None:
                     top_pick_rows=current_top_pick_rows,
                     top_pick_heading=top_pick_heading,
                     tz=tz,
+                    digest_title=trial_digest_title,
+                    summary_note=trial_digest_summary_note,
+                    bottom_cta=trial_digest_bottom_cta,
+                    trial_copy=trial_digest_copy,
                 )
                 html_bytes = _html_bytes(html_body)
             signals_limit = int(limit)
@@ -5149,6 +5337,10 @@ def main() -> None:
             top_pick_rows=current_top_pick_rows,
             top_pick_heading=top_pick_heading,
             tz=tz,
+            digest_title=trial_digest_title,
+            summary_note=trial_digest_summary_note,
+            bottom_cta=trial_digest_bottom_cta,
+            trial_copy=trial_digest_copy,
         )
 
         if args.mode == "daily":
