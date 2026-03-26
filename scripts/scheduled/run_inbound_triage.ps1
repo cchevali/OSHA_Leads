@@ -63,7 +63,7 @@ function Get-InboundConfigSnapshot {
   foreach ($line in @($lines)) {
     $text = [string]$line
     if (-not [string]::IsNullOrWhiteSpace($text)) {
-      Write-TaskLine $text
+      Write-TaskLine $text | Out-Null
     }
     $equalsIndex = $text.IndexOf('=')
     if ($equalsIndex -le 0) {

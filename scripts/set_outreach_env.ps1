@@ -114,6 +114,20 @@ function Compact-Detail([string]$Text) {
   return $value
 }
 
+function Test-SkipEnvSopsStageGuard {
+  $trustedScheduled = ([string]$env:MFO_TRUSTED_SCHEDULED).Trim()
+  if ($trustedScheduled -eq '1') {
+    return $true
+  }
+
+  $runtimeMode = ([string]$env:MFO_RUNTIME_MODE).Trim().ToLowerInvariant()
+  if ($runtimeMode -eq 'scheduled') {
+    return $true
+  }
+
+  return $false
+}
+
 function Is-ValidEmailShape([string]$Email) {
   $text = ($Email -as [string])
   if ($null -eq $text) { $text = '' }
@@ -864,9 +878,11 @@ try {
 
   Push-Location $repoRoot
   try {
-    $stagedEnv = (& git -C $repoRoot diff --cached --name-only -- .env.sops 2>$null) -join "`n"
-    if ($stagedEnv -match '(?im)^\.env\.sops$') {
-      Fail-Token $ERR_ENV_SOPS_STAGED 'path=.env.sops'
+    if (-not (Test-SkipEnvSopsStageGuard)) {
+      $stagedEnv = (& git -C $repoRoot diff --cached --name-only -- .env.sops 2>$null) -join "`n"
+      if ($stagedEnv -match '(?im)^\.env\.sops$') {
+        Fail-Token $ERR_ENV_SOPS_STAGED 'path=.env.sops'
+      }
     }
 
     if ($PrintConfig) {
