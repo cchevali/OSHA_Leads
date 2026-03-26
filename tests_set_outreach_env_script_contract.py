@@ -107,6 +107,9 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
             self.assertIn(token, text)
 
         self.assertIn("git -C $repoRoot diff --cached --name-only -- .env.sops", text)
+        self.assertIn("Test-SkipEnvSopsStageGuard", text)
+        self.assertIn("MFO_TRUSTED_SCHEDULED", text)
+        self.assertIn("MFO_RUNTIME_MODE", text)
         self.assertIn("ERR_ENV_SOPS_STAGED", text)
         self.assertIn("PROSPECT_AUTOGROW_ENABLED", text)
         self.assertIn("PROSPECT_AUTOGROW_SAFETY_NET_ENABLED", text)
