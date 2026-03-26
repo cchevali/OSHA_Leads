@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -121,7 +121,7 @@ def _seed_signal_db(path: Path, rows: list[dict]) -> None:
         for idx, row in enumerate(rows, start=1):
             activity_nr = str(row.get("activity_nr", 1000000 + idx))
             date_opened = str(row.get("date_opened", "2026-02-24"))
-            recent_iso = f"{datetime.utcnow().date().isoformat()}T12:00:00+00:00"
+            recent_iso = f"{datetime.now(timezone.utc).date().isoformat()}T12:00:00+00:00"
             first_seen_at = str(row.get("first_seen_at", recent_iso))
             last_seen_at = str(row.get("last_seen_at", first_seen_at))
             changed_at = str(row.get("changed_at", first_seen_at))
@@ -476,6 +476,13 @@ class TestOutreachRunAuto(unittest.TestCase):
                     ],
                     "artifact_path": str(artifact_path),
                 },
+                "raw_signal_count": 2,
+                "recent_signal_source_count": 2,
+                "renderable_signal_count": 1,
+                "signal_fetch_status": "ok",
+                "signal_fetch_error_token": "",
+                "signal_fetch_detail": "",
+                "signal_window_days": 14,
             }
             with mock.patch.dict(os.environ, self._test_env({**env_base, "OUTREACH_TRIAGE_OVERLAY_ENABLED": "1"}), clear=True):
                 with mock.patch.object(roa.gm, "_load_local_suppression_set", return_value=set()), mock.patch.object(
@@ -554,7 +561,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             recent_leads=list(source_recent),
             dry_run_suffix="_dry_run",
         )
-        m_select.assert_called_once_with(list(triaged_recent), limit=5)
+        m_select.assert_called_once_with(list(triaged_recent), limit=5, reference_date=date(2026, 3, 5))
         m_tokens.assert_called_once_with(
             db_path=":memory:",
             state="TX",
@@ -970,12 +977,30 @@ class TestOutreachRunAuto(unittest.TestCase):
                 ), mock.patch.object(
                     roa, "_prepare_signal_content_with_triage",
                     return_value={
-                        "recent_leads_original": [],
-                        "recent_leads": [],
+                        "recent_leads_original": [
+                            {
+                                "activity_nr": "111",
+                                "establishment_name": "Keep Co",
+                                "site_state": "TX",
+                                "site_city": "Austin",
+                                "inspection_type": "Complaint",
+                                "date_opened": "2026-02-24",
+                            }
+                        ],
+                        "recent_leads": [
+                            {
+                                "activity_nr": "111",
+                                "establishment_name": "Keep Co",
+                                "site_state": "TX",
+                                "site_city": "Austin",
+                                "inspection_type": "Complaint",
+                                "date_opened": "2026-02-24",
+                            }
+                        ],
                         "last_refresh_et": "2026-02-24 09:00 ET",
                         "signal_tokens": {
-                            "RECENT_SIGNALS_LINES": "",
-                            "RECENT_SIGNALS_HTML": "",
+                            "RECENT_SIGNALS_LINES": "Keep Co (Austin, TX) | Complaint | Opened 2026-02-24",
+                            "RECENT_SIGNALS_HTML": "<div>Keep Co</div>",
                             "STATE_FULL_NAME": "Texas",
                             "STATE_METRO_EXAMPLES": "Austin",
                             "SIGNALS_WINDOW_NOTE_TEXT": "",
@@ -983,6 +1008,14 @@ class TestOutreachRunAuto(unittest.TestCase):
                             "SIGNALS_FALLBACK_TEXT": "",
                             "SIGNALS_FALLBACK_HTML": "",
                         },
+                        "triage_ctx": {},
+                        "raw_signal_count": 1,
+                        "recent_signal_source_count": 1,
+                        "renderable_signal_count": 1,
+                        "signal_fetch_status": "ok",
+                        "signal_fetch_error_token": "",
+                        "signal_fetch_detail": "",
+                        "signal_window_days": 14,
                     },
                 ), mock.patch.object(
                     roa, "_send_outreach_email", side_effect=_fake_send_outreach
@@ -3409,7 +3442,14 @@ class TestOutreachRunAuto(unittest.TestCase):
             _seed_signal_db(
                 signal_db,
                 [
-                    {"site_state": "TX", "date_opened": "2001-01-02", "parse_invalid": 0},
+                    {
+                        "site_state": "TX",
+                        "date_opened": "2001-01-02",
+                        "first_seen_at": "2001-01-02T12:00:00+00:00",
+                        "last_seen_at": "2001-01-02T12:00:00+00:00",
+                        "changed_at": "2001-01-02T12:00:00+00:00",
+                        "parse_invalid": 0,
+                    },
                 ],
             )
             _write_suppression(data_dir / "suppression.csv")
@@ -3426,7 +3466,9 @@ class TestOutreachRunAuto(unittest.TestCase):
                     roa, "_doctor_check_secrets_decrypt", return_value=(True, "")
                 ), mock.patch.object(roa, "_doctor_check_unsub", return_value=(True, "")), mock.patch.object(
                     roa, "_doctor_check_provider", return_value=(True, "")
-                ), mock.patch.object(roa, "_doctor_check_dry_run_artifact", return_value=(True, "")):
+                ), mock.patch.object(roa, "_doctor_check_dry_run_artifact", return_value=(True, "")), mock.patch.object(
+                    roa.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="", stderr="")
+                ):
                     with mock.patch.object(sys, "argv", ["run_outreach_auto.py", "--doctor", "--for-date", "2001-01-10"]):
                         out_1 = io.StringIO()
                         err_1 = io.StringIO()

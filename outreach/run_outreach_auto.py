@@ -1466,7 +1466,11 @@ def _prepare_signal_content_with_triage(
         recent_leads=recent_leads,
         dry_run_suffix=dry_run_suffix,
     )
-    recent_leads = gm._select_outreach_card_examples(list(recent_leads or []), limit=5)
+    recent_leads = gm._select_outreach_card_examples(
+        list(recent_leads or []),
+        limit=5,
+        reference_date=run_date,
+    )
     signal_tokens = gm._build_signal_template_tokens(
         db_path=osha_db,
         state=state,

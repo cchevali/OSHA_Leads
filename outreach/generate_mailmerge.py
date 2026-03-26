@@ -7,7 +7,7 @@ import os
 import re
 import sys
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
@@ -672,7 +672,11 @@ def _priority_rank_for_outreach(lead: dict) -> int:
     return _priority_rank_from_label(_resolve_outreach_priority_label(lead))
 
 
-def _select_outreach_card_examples(rows: list[dict], limit: int = 5) -> list[dict]:
+def _select_outreach_card_examples(
+    rows: list[dict],
+    limit: int = 5,
+    reference_date: date | None = None,
+) -> list[dict]:
     try:
         max_items = max(0, int(limit))
     except Exception:
@@ -683,7 +687,9 @@ def _select_outreach_card_examples(rows: list[dict], limit: int = 5) -> list[dic
     if not candidates:
         return []
 
-    today_utc = datetime.now(timezone.utc).date()
+    # Keep historical dry-runs deterministic by anchoring "recently opened"
+    # to the requested run date when one is provided.
+    today_utc = reference_date if isinstance(reference_date, date) else datetime.now(timezone.utc).date()
     opened_cutoff = today_utc - timedelta(days=OUTREACH_RECENT_OPENED_DAYS)
 
     def _sort_key(lead: dict) -> tuple:

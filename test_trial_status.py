@@ -1329,6 +1329,8 @@ class TestTrialStatus(unittest.TestCase):
                 orig_deliver = run_trial_daily._run_deliver_daily
                 orig_mode = run_trial_daily._try_extract_latest_send_start_mode
                 orig_send_conversion = run_trial_daily._send_conversion_email_from_artifact
+                orig_preflight = run_trial_daily.run_runtime_preflight
+                orig_render_runtime_lines = run_trial_daily.render_runtime_lines
                 orig_datetime = run_trial_daily.datetime
                 orig_crm_datetime = crm_light.datetime
 
@@ -1357,6 +1359,8 @@ class TestTrialStatus(unittest.TestCase):
                 run_trial_daily._run_deliver_daily = _fake_deliver  # type: ignore[assignment]
                 run_trial_daily._try_extract_latest_send_start_mode = _fake_mode  # type: ignore[assignment]
                 run_trial_daily._send_conversion_email_from_artifact = _fake_send_conversion  # type: ignore[assignment]
+                run_trial_daily.run_runtime_preflight = lambda **_kwargs: type("Preflight", (), {"ok": True})()  # type: ignore[assignment]
+                run_trial_daily.render_runtime_lines = lambda _preflight: ["PASS_RUNTIME_PREFLIGHT"]  # type: ignore[assignment]
                 run_trial_daily.datetime = _FixedDateTime  # type: ignore[assignment]
                 crm_light.datetime = _FixedDateTime  # type: ignore[assignment]
                 try:
@@ -1397,6 +1401,8 @@ class TestTrialStatus(unittest.TestCase):
                     run_trial_daily._run_deliver_daily = orig_deliver  # type: ignore[assignment]
                     run_trial_daily._try_extract_latest_send_start_mode = orig_mode  # type: ignore[assignment]
                     run_trial_daily._send_conversion_email_from_artifact = orig_send_conversion  # type: ignore[assignment]
+                    run_trial_daily.run_runtime_preflight = orig_preflight  # type: ignore[assignment]
+                    run_trial_daily.render_runtime_lines = orig_render_runtime_lines  # type: ignore[assignment]
                     run_trial_daily.datetime = orig_datetime  # type: ignore[assignment]
                     crm_light.datetime = orig_crm_datetime  # type: ignore[assignment]
 
@@ -1640,6 +1646,8 @@ class TestTrialStatus(unittest.TestCase):
 
                 seen = {"calls": 0, "text": ""}
                 orig_send_conversion = run_trial_daily._send_conversion_email_from_artifact
+                orig_preflight = run_trial_daily.run_runtime_preflight
+                orig_render_runtime_lines = run_trial_daily.render_runtime_lines
 
                 def _fake_send_conversion(*, artifact_path, subscriber_key, territory_code):  # type: ignore[no-untyped-def]
                     seen["calls"] += 1
@@ -1649,6 +1657,8 @@ class TestTrialStatus(unittest.TestCase):
                     return True, "<msg-custom>", ""
 
                 run_trial_daily._send_conversion_email_from_artifact = _fake_send_conversion  # type: ignore[assignment]
+                run_trial_daily.run_runtime_preflight = lambda **_kwargs: type("Preflight", (), {"ok": True})()  # type: ignore[assignment]
+                run_trial_daily.render_runtime_lines = lambda _preflight: ["PASS_RUNTIME_PREFLIGHT"]  # type: ignore[assignment]
                 try:
                     code = run_trial_daily.run_trial_daily(
                         subscriber_key="wally_trial",
@@ -1664,6 +1674,8 @@ class TestTrialStatus(unittest.TestCase):
                     )
                 finally:
                     run_trial_daily._send_conversion_email_from_artifact = orig_send_conversion  # type: ignore[assignment]
+                    run_trial_daily.run_runtime_preflight = orig_preflight  # type: ignore[assignment]
+                    run_trial_daily.render_runtime_lines = orig_render_runtime_lines  # type: ignore[assignment]
 
                 self.assertEqual(code, 0)
                 self.assertEqual(seen["calls"], 1)

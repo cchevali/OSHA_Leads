@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -134,7 +134,7 @@ def _seed_signal_db(path: Path, rows: list[dict]) -> None:
         for idx, row in enumerate(rows, start=1):
             activity_nr = str(row.get("activity_nr", 1000000 + idx))
             date_opened = str(row.get("date_opened", "2026-03-25"))
-            recent_iso = f"{datetime.utcnow().date().isoformat()}T12:00:00+00:00"
+            recent_iso = f"{datetime.now(timezone.utc).date().isoformat()}T12:00:00+00:00"
             first_seen_at = str(row.get("first_seen_at", recent_iso))
             last_seen_at = str(row.get("last_seen_at", first_seen_at))
             changed_at = str(row.get("changed_at", first_seen_at))
