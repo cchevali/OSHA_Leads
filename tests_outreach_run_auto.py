@@ -2245,22 +2245,23 @@ class TestOutreachRunAuto(unittest.TestCase):
                                 else "Quick heads up — FL inspection opened Feb 18"
                             )
                             self.assertEqual(subject, expected_subject)
-                            self.assertIn("I spotted a recent OSHA inspection", text_body)
+                            expected_state_name = "California" if expected_state == "CA" else "Florida"
                             self.assertIn(
-                                "Recently observed in public OSHA data; opened dates are listed below and none have citations yet",
+                                f"You're getting this because your firm advises employers on OSHA and safety matters in {expected_state_name}.",
                                 text_body,
                             )
                             self.assertIn(
-                                "If useful, you can reply with the metros you care about",
+                                "Opened = inspection opened date; Observed = first day it appeared in public OSHA data.",
                                 text_body,
                             )
                             self.assertIn(
-                                "https://microflowops.com/contact",
+                                f"If useful, reply with the {expected_state_name} metros or other states you care about",
                                 text_body,
                             )
                             self.assertEqual(html_body.count(">Unsubscribe</a>"), 1)
-                            self.assertEqual(html_body.count(">Manage preferences</a>"), 0)
+                            self.assertEqual(html_body.count(">Manage preferences</a>"), 1)
                             self.assertEqual(html_body.count("unsubscribe.example/u"), 1)
+                            self.assertEqual(html_body.count("unsubscribe.example/prefs"), 1)
                             addr_idx = html_body.find("11539 Links Dr, Reston, VA 20190")
                             self.assertGreater(addr_idx, 0)
                             pre_footer = html_body[:addr_idx]
@@ -2331,11 +2332,15 @@ class TestOutreachRunAuto(unittest.TestCase):
                 )
             self.assertEqual(subject, "Quick heads up — CA inspection opened Feb 18")
             self.assertIn(
-                "Hi - saw a recent OSHA inspection in California that may be relevant to your team:",
+                "Hi,",
                 text_body,
             )
             self.assertIn(
-                "Recently observed in public OSHA data. Opened dates are listed above and none have citations yet.",
+                "You're getting this because your firm advises employers on OSHA and safety matters in California.",
+                text_body,
+            )
+            self.assertIn(
+                "These items were recently observed in public OSHA data. Opened dates are listed above, and citations are not yet posted in the public record.",
                 text_body,
             )
         finally:
@@ -2396,8 +2401,9 @@ class TestOutreachRunAuto(unittest.TestCase):
                 )
             self.assertIn("Hi Alonso,", text_body)
             self.assertNotIn("Hi Alonso,,", text_body)
-            self.assertIn("your team at Temperature Pro West Austin", text_body)
-            self.assertIn("may be relevant to your team at Temperature Pro West Austin", text_body)
+            self.assertIn("Recent public OSHA inspection activity in Texas you may want on your radar:", text_body)
+            self.assertIn("If useful, reply with the Texas metros or other states you care about", text_body)
+            self.assertNotIn("TEMPERATURE PRO WEST AUSTIN", text_body)
         finally:
             conn.close()
 
