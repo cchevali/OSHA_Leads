@@ -2,15 +2,20 @@ GREETING_LINE_TEXT
 
 INTRO_LINE_TEXT
 
+Recent public OSHA inspection activity in STATE_FULL_NAME you may want on your radar:
+Opened = inspection opened date; Observed = first day it appeared in public OSHA data.
+
 RECENT_SIGNALS_LINES
 
 POST_CARDS_LINE_TEXT
 
 TRIAL_LINE_TEXT
 
-Chase Chevalier
-MicroFlowOps · microflowops.com
+Thanks,
+Chase Chevalier, Founder
+MicroFlowOps · MICROFLOWOPS_URL
+SUPPORT_EMAIL
+MAILING_ADDRESS
 
 Informational only; not legal advice.
-Opt out anytime: Unsubscribe
-UNSUBSCRIBE_URL
+FOOTER_OPT_OUT_TEXT_BLOCK

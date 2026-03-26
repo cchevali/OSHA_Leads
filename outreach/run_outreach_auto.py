@@ -1743,6 +1743,9 @@ def _render_outreach_payload(
         state_full_name=state_full_name,
         signal_count=int(copy_tokens.get("SIGNAL_COUNT") or "0"),
     )
+    mailing_address = gm._resolve_outreach_mailing_address()
+    microflowops_url = gm._microflowops_url()
+    support_email = gm._support_email()
 
     text_body = (
         gm._render_template(
@@ -1760,6 +1763,10 @@ def _render_outreach_payload(
                 "LAST_REFRESH_ET": last_refresh_et,
                 "UNSUBSCRIBE_URL": unsub_url,
                 "PREFS_URL": prefs_link,
+                "MAILING_ADDRESS": mailing_address,
+                "MICROFLOWOPS_URL": microflowops_url,
+                "SUPPORT_EMAIL": support_email,
+                "FOOTER_OPT_OUT_TEXT_BLOCK": gm._footer_opt_out_text_block(unsub_url, prefs_link),
                 "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
                 "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
                 "GREETING_LINE_TEXT": copy_tokens["GREETING_LINE_TEXT"],
@@ -1791,10 +1798,10 @@ def _render_outreach_payload(
                 "{{LAST_REFRESH_ET}}": gm._html_escape(last_refresh_et),
                 "{{UNSUBSCRIBE_URL}}": gm._html_escape(unsub_url),
                 "{{PREFS_URL}}": gm._html_escape(prefs_link),
-                "{{MAILING_ADDRESS}}": gm._html_escape(gm._resolve_outreach_mailing_address()),
-                "{{MICROFLOWOPS_URL}}": gm._html_escape(
-                    (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
-                ),
+                "{{MAILING_ADDRESS}}": gm._html_escape(mailing_address),
+                "{{MICROFLOWOPS_URL}}": gm._html_escape(microflowops_url),
+                "{{SUPPORT_EMAIL}}": gm._html_escape(support_email),
+                "{{FOOTER_OPT_OUT_HTML}}": gm._footer_opt_out_html(unsub_url, prefs_link),
                 "{{GREETING_LINE_HTML}}": copy_tokens["GREETING_LINE_HTML"],
                 "{{INTRO_LINE_HTML}}": copy_tokens["INTRO_LINE_HTML"],
                 "{{POST_CARDS_LINE_HTML}}": copy_tokens["POST_CARDS_LINE_HTML"],

@@ -427,18 +427,49 @@ def _contact_url() -> str:
     return DEFAULT_CONTACT_URL
 
 
-def _trial_cta_lines() -> tuple[str, str]:
-    url = _contact_url()
+def _microflowops_url() -> str:
+    return (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
+
+
+def _support_email() -> str:
+    return (os.getenv("REPLY_TO_EMAIL") or DEFAULT_REPLY_TO_EMAIL).strip() or DEFAULT_REPLY_TO_EMAIL
+
+
+def _footer_opt_out_text_block(unsub_url: str, prefs_url: str) -> str:
+    unsub = (unsub_url or "").strip()
+    prefs = (prefs_url or "").strip()
+    if unsub and prefs and prefs != unsub:
+        return f"Opt out anytime: Unsubscribe | Manage preferences\n{unsub}\n{prefs}"
+    if unsub:
+        return f"Opt out anytime: Unsubscribe\n{unsub}"
+    return "Opt out anytime."
+
+
+def _footer_opt_out_html(unsub_url: str, prefs_url: str) -> str:
+    unsub = (unsub_url or "").strip()
+    prefs = (prefs_url or "").strip()
+    if unsub and prefs and prefs != unsub:
+        return (
+            "<p style=\"font-size: 12px; color: rgb(136, 136, 136); margin: 0;\">"
+            f"Opt out anytime: <a href=\"{_html_escape(unsub)}\" style=\"color: rgb(136, 136, 136); text-decoration: underline;\" target=\"_blank\" rel=\"noopener noreferrer\">Unsubscribe</a> | "
+            f"<a href=\"{_html_escape(prefs)}\" style=\"color: rgb(136, 136, 136); text-decoration: underline;\" target=\"_blank\" rel=\"noopener noreferrer\">Manage preferences</a>"
+            "</p>"
+        )
+    if unsub:
+        return (
+            "<p style=\"font-size: 12px; color: rgb(136, 136, 136); margin: 0;\">"
+            f"Opt out anytime: <a href=\"{_html_escape(unsub)}\" style=\"color: rgb(136, 136, 136); text-decoration: underline;\" target=\"_blank\" rel=\"noopener noreferrer\">Unsubscribe</a>"
+            "</p>"
+        )
+    return "<p style=\"font-size: 12px; color: rgb(136, 136, 136); margin: 0;\">Opt out anytime.</p>"
+
+
+def _trial_cta_lines(state_full_name: str) -> tuple[str, str]:
     text_line = (
-        "I track these daily across every state using public OSHA data. "
-        f"If useful, you can reply with the metros you care about, or request a short trial feed here: {url}"
+        f"If useful, reply with the {state_full_name} metros or other states you care about, "
+        "or request a short trial feed."
     )
-    safe_url = _html_escape(url)
-    html_line = (
-        "I track these daily across every state using public OSHA data. "
-        "If useful, you can reply with the metros you care about, or request a short trial feed here: "
-        f"<a href=\"{safe_url}\" target=\"_blank\" rel=\"noopener noreferrer\">{safe_url}</a>"
-    )
+    html_line = _html_escape(text_line)
     return text_line, html_line
 
 
@@ -455,34 +486,16 @@ def _build_copy_tokens(
     signal_count = len(list(recent_leads or []))
     segment_desc = _segment_descriptor(segment=segment, role_or_title=role_or_title)
     clean_first = _clean_first_name(first_name)
-    clean_firm = _clean_company_name(firm_name)
-    low_signal = signal_count == 1
-    trial_text, trial_html = _trial_cta_lines()
-
-    if clean_first:
-        greeting_text = f"Hi {clean_first},"
-        count_phrase = "a recent OSHA inspection" if low_signal else "a few recent OSHA inspections"
-        team_phrase = f"your team at {clean_firm}" if clean_firm else "your team"
-        intro_text = (
-            f"I spotted {count_phrase} in {state_full_name} that may be relevant to {team_phrase}. "
-            "Recently observed in public OSHA data; opened dates are listed below and none have citations yet:"
-        )
-        post_cards_text = ""
-    elif clean_firm:
-        greeting_text = f"Hi - saw a few things {clean_firm} should probably have on their radar:"
-        intro_text = ""
-        post_cards_text = (
-            f"Recently observed in public OSHA data across {state_full_name}; "
-            "opened dates are listed above and none have citations yet."
-        )
-    else:
-        greeting_text = (
-            f"Hi - saw a recent OSHA inspection in {state_full_name} that may be relevant to your team:"
-            if low_signal
-            else f"Hi - saw a few recent OSHA inspections in {state_full_name} that may be relevant to your team:"
-        )
-        intro_text = ""
-        post_cards_text = "Recently observed in public OSHA data. Opened dates are listed above and none have citations yet."
+    greeting_text = f"Hi {clean_first}," if clean_first else "Hi,"
+    intro_text = (
+        f"You're getting this because your firm advises employers on OSHA and safety matters in {state_full_name}. "
+        "I'm Chase Chevalier, founder of MicroFlowOps. I monitor newly posted public OSHA inspection activity daily."
+    )
+    post_cards_text = (
+        "These items were recently observed in public OSHA data. "
+        "Opened dates are listed above, and citations are not yet posted in the public record."
+    )
+    trial_text, trial_html = _trial_cta_lines(state_full_name)
 
     return {
         "SIGNAL_COUNT": str(max(0, signal_count)),
@@ -1409,7 +1422,8 @@ def _render_preview(args: argparse.Namespace) -> int:
     prefs_url = "https://unsubscribe.example.internal/prefs?token=preview"
     prefs_link = prefs_url
     mailing_address = _resolve_outreach_mailing_address()
-    microflowops_url = (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
+    microflowops_url = _microflowops_url()
+    support_email = _support_email()
 
     for idx, row in enumerate(rows, start=1):
         first_name_raw = _row_text_value(row, ["first_name", "contact_name"])
@@ -1450,6 +1464,10 @@ def _render_preview(args: argparse.Namespace) -> int:
                 "LAST_REFRESH_ET": last_refresh_et,
                 "UNSUBSCRIBE_URL": unsub_url,
                 "PREFS_URL": prefs_link,
+                "MAILING_ADDRESS": mailing_address,
+                "MICROFLOWOPS_URL": microflowops_url,
+                "SUPPORT_EMAIL": support_email,
+                "FOOTER_OPT_OUT_TEXT_BLOCK": _footer_opt_out_text_block(unsub_url, prefs_link),
                 "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
                 "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
                 "GREETING_LINE_TEXT": copy_tokens["GREETING_LINE_TEXT"],
@@ -1481,6 +1499,8 @@ def _render_preview(args: argparse.Namespace) -> int:
                     "{{PREFS_URL}}": _html_escape(prefs_link),
                     "{{MAILING_ADDRESS}}": _html_escape(mailing_address),
                     "{{MICROFLOWOPS_URL}}": _html_escape(microflowops_url),
+                    "{{SUPPORT_EMAIL}}": _html_escape(support_email),
+                    "{{FOOTER_OPT_OUT_HTML}}": _footer_opt_out_html(unsub_url, prefs_link),
                     "{{GREETING_LINE_HTML}}": copy_tokens["GREETING_LINE_HTML"],
                     "{{INTRO_LINE_HTML}}": copy_tokens["INTRO_LINE_HTML"],
                     "{{POST_CARDS_LINE_HTML}}": copy_tokens["POST_CARDS_LINE_HTML"],
@@ -1768,6 +1788,10 @@ def main() -> int:
             state_full_name=signal_tokens["STATE_FULL_NAME"],
             signal_count=int(copy_tokens.get("SIGNAL_COUNT") or "0"),
         )
+        mailing_address = _resolve_outreach_mailing_address()
+        microflowops_url = _microflowops_url()
+        support_email = _support_email()
+
         text_body = _render_template(
             template_text,
             {
@@ -1783,6 +1807,10 @@ def main() -> int:
                 "LAST_REFRESH_ET": last_refresh_et,
                 "UNSUBSCRIBE_URL": unsub_url or "",
                 "PREFS_URL": prefs_url or prefs_link,
+                "MAILING_ADDRESS": mailing_address,
+                "MICROFLOWOPS_URL": microflowops_url,
+                "SUPPORT_EMAIL": support_email,
+                "FOOTER_OPT_OUT_TEXT_BLOCK": _footer_opt_out_text_block(unsub_url or "", prefs_url or ""),
                 "SIGNAL_COUNT": copy_tokens["SIGNAL_COUNT"],
                 "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
                 "GREETING_LINE_TEXT": copy_tokens["GREETING_LINE_TEXT"],
@@ -1798,10 +1826,8 @@ def main() -> int:
         ).strip() + "\n"
 
         # Default to a simple HTML rendering if the template is missing.
-        mailing_address = _resolve_outreach_mailing_address()
         html_body = ""
         if html_template_text.strip():
-            microflowops_url = (os.getenv("MICROFLOWOPS_URL") or "https://microflowops.com").strip() or "https://microflowops.com"
             html_body = _render_template(
                 html_template_text,
                 {
@@ -1818,6 +1844,8 @@ def main() -> int:
                     "{{PREFS_URL}}": _html_escape(prefs_url or prefs_link),
                     "{{MAILING_ADDRESS}}": _html_escape(mailing_address),
                     "{{MICROFLOWOPS_URL}}": _html_escape(microflowops_url),
+                    "{{SUPPORT_EMAIL}}": _html_escape(support_email),
+                    "{{FOOTER_OPT_OUT_HTML}}": _footer_opt_out_html(unsub_url or "", prefs_url or ""),
                     "{{GREETING_LINE_HTML}}": copy_tokens["GREETING_LINE_HTML"],
                     "{{INTRO_LINE_HTML}}": copy_tokens["INTRO_LINE_HTML"],
                     "{{POST_CARDS_LINE_HTML}}": copy_tokens["POST_CARDS_LINE_HTML"],
