@@ -6,7 +6,6 @@ import json
 import os
 import re
 import sys
-from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -466,12 +465,35 @@ def _footer_opt_out_html(unsub_url: str, prefs_url: str) -> str:
 
 
 def _trial_cta_lines(state_full_name: str) -> tuple[str, str]:
+    del state_full_name
     text_line = (
-        f"If helpful, reply with your state or metro and I can send a short {state_full_name} sample "
-        "for your territory."
+        "If useful, reply with the state or metro you care about and I'll send a short sample."
     )
     html_line = _html_escape(text_line)
     return text_line, html_line
+
+
+def _copy_inspection_type_label(leads: list[dict] | None) -> str:
+    labels = {_normalized_inspection_type((lead or {}).get("inspection_type")) for lead in (leads or [])}
+    labels.discard("")
+    if len(labels) != 1:
+        return ""
+    label = next(iter(labels))
+    if label in {"complaint", "referral"}:
+        return label
+    return ""
+
+
+def _list_intro_line(*, state_full_name: str, recent_leads: list[dict] | None = None) -> str:
+    signal_count = max(0, len(list(recent_leads or [])))
+    verb = "is" if signal_count == 1 else "are"
+    item_label = "item" if signal_count == 1 else "items"
+    inspection_type = _copy_inspection_type_label(recent_leads)
+    type_part = f" {inspection_type}" if inspection_type else ""
+    return (
+        f"Here {verb} {signal_count} recent public OSHA{type_part} {item_label} in {state_full_name} "
+        "that may be useful for outreach:"
+    )
 
 
 def _build_copy_tokens(
@@ -489,12 +511,13 @@ def _build_copy_tokens(
     clean_first = _clean_first_name(first_name)
     greeting_text = f"Hi {clean_first}," if clean_first else "Hi,"
     intro_text = (
-        "I run MicroFlowOps. It packages newly observed public OSHA activity into territory-specific "
-        f"leads for safety consulting firms doing outbound in {state_full_name}."
+        f"I run MicroFlowOps. We send short emails with newly observed public OSHA activity in {state_full_name} "
+        "before citations post."
     )
+    list_intro_text = _list_intro_line(state_full_name=state_full_name, recent_leads=recent_leads)
     post_cards_text = (
-        "These items were recently observed in public OSHA data before citations posted publicly. "
-        "The goal is to reduce follow-up research so your team can decide faster who may need help now."
+        "These were recently observed in public OSHA data before citations posted publicly, so you can decide "
+        "faster who may need help now."
     )
     trial_text, trial_html = _trial_cta_lines(state_full_name)
 
@@ -505,6 +528,8 @@ def _build_copy_tokens(
         "GREETING_LINE_HTML": _html_escape(greeting_text),
         "INTRO_LINE_TEXT": intro_text,
         "INTRO_LINE_HTML": _html_escape(intro_text),
+        "SIGNAL_LIST_LEDE_TEXT": list_intro_text,
+        "SIGNAL_LIST_LEDE_HTML": _html_escape(list_intro_text),
         "POST_CARDS_LINE_TEXT": post_cards_text,
         "POST_CARDS_LINE_HTML": _html_escape(post_cards_text),
         "TRIAL_LINE_TEXT": trial_text,
@@ -994,19 +1019,11 @@ def _normalized_inspection_type(value: object) -> str:
     return text
 
 
-def _subject_primary_inspection_type(leads: list[dict] | None) -> str:
-    labels = [_normalized_inspection_type((lead or {}).get("inspection_type")) for lead in (leads or [])]
-    labels = [label for label in labels if label]
-    if not labels:
-        return ""
-    counts = Counter(labels)
-    if len(counts) == 1:
-        return next(iter(counts))
-    top_count = max(counts.values())
-    winners = [label for label, count in counts.items() if count == top_count]
-    if len(winners) != 1:
-        return ""
-    return winners[0]
+def _subject_inspection_type_label(leads: list[dict] | None) -> str:
+    label = _copy_inspection_type_label(leads)
+    if label:
+        return label
+    return "OSHA"
 
 
 def _truncate_subject(subject: str, max_len: int = 64) -> str:
@@ -1017,18 +1034,10 @@ def _truncate_subject(subject: str, max_len: int = 64) -> str:
 
 
 def _subject_for_multi_signal(*, signal_count: int, state_abbrev: str, primary_type: str) -> str:
-    type_part = f" {primary_type}" if primary_type else ""
+    type_part = f" {primary_type}".rstrip()
     candidates = [
         f"Quick heads up — {signal_count} recent {state_abbrev}{type_part} inspections",
-        f"Quick heads up — {signal_count} new {state_abbrev}{type_part} inspections",
     ]
-    if primary_type:
-        candidates.extend(
-            [
-                f"Quick heads up — {signal_count} recent {state_abbrev} inspections",
-                f"Quick heads up — {signal_count} new {state_abbrev} inspections",
-            ]
-        )
     candidates.append(f"Heads up — {signal_count} recent {state_abbrev} inspections")
     for candidate in candidates:
         if len(candidate) <= 64:
@@ -1067,7 +1076,7 @@ def build_outreach_subject(
     source_rows = _subject_source_rows(db_path=db_path, state=label, recent_leads=recent_leads)
     subject_rows = list(recent_leads or []) or source_rows
     if subject_signal_count >= 2:
-        primary_type = _subject_primary_inspection_type(subject_rows)
+        primary_type = _subject_inspection_type_label(subject_rows)
         return _subject_for_multi_signal(
             signal_count=subject_signal_count,
             state_abbrev=label,
@@ -1504,6 +1513,7 @@ def _render_preview(args: argparse.Namespace) -> int:
                 "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
                 "GREETING_LINE_TEXT": copy_tokens["GREETING_LINE_TEXT"],
                 "INTRO_LINE_TEXT": copy_tokens["INTRO_LINE_TEXT"],
+                "SIGNAL_LIST_LEDE_TEXT": copy_tokens["SIGNAL_LIST_LEDE_TEXT"],
                 "POST_CARDS_LINE_TEXT": copy_tokens["POST_CARDS_LINE_TEXT"],
                 "TRIAL_LINE_TEXT": copy_tokens["TRIAL_LINE_TEXT"],
                 "OPENING_LINE_TEXT": copy_tokens["OPENING_LINE_TEXT"],
@@ -1535,6 +1545,7 @@ def _render_preview(args: argparse.Namespace) -> int:
                     "{{FOOTER_OPT_OUT_HTML}}": _footer_opt_out_html(unsub_url, prefs_link),
                     "{{GREETING_LINE_HTML}}": copy_tokens["GREETING_LINE_HTML"],
                     "{{INTRO_LINE_HTML}}": copy_tokens["INTRO_LINE_HTML"],
+                    "{{SIGNAL_LIST_LEDE_HTML}}": copy_tokens["SIGNAL_LIST_LEDE_HTML"],
                     "{{POST_CARDS_LINE_HTML}}": copy_tokens["POST_CARDS_LINE_HTML"],
                     "{{TRIAL_LINE_HTML}}": copy_tokens["TRIAL_LINE_HTML"],
                     "{{OPENING_LINE_HTML}}": copy_tokens["OPENING_LINE_HTML"],
@@ -1847,6 +1858,7 @@ def main() -> int:
                 "SEGMENT_DESCRIPTOR": copy_tokens["SEGMENT_DESCRIPTOR"],
                 "GREETING_LINE_TEXT": copy_tokens["GREETING_LINE_TEXT"],
                 "INTRO_LINE_TEXT": copy_tokens["INTRO_LINE_TEXT"],
+                "SIGNAL_LIST_LEDE_TEXT": copy_tokens["SIGNAL_LIST_LEDE_TEXT"],
                 "POST_CARDS_LINE_TEXT": copy_tokens["POST_CARDS_LINE_TEXT"],
                 "TRIAL_LINE_TEXT": copy_tokens["TRIAL_LINE_TEXT"],
                 "OPENING_LINE_TEXT": copy_tokens["OPENING_LINE_TEXT"],
@@ -1880,6 +1892,7 @@ def main() -> int:
                     "{{FOOTER_OPT_OUT_HTML}}": _footer_opt_out_html(unsub_url or "", prefs_url or ""),
                     "{{GREETING_LINE_HTML}}": copy_tokens["GREETING_LINE_HTML"],
                     "{{INTRO_LINE_HTML}}": copy_tokens["INTRO_LINE_HTML"],
+                    "{{SIGNAL_LIST_LEDE_HTML}}": copy_tokens["SIGNAL_LIST_LEDE_HTML"],
                     "{{POST_CARDS_LINE_HTML}}": copy_tokens["POST_CARDS_LINE_HTML"],
                     "{{TRIAL_LINE_HTML}}": copy_tokens["TRIAL_LINE_HTML"],
                     "{{OPENING_LINE_HTML}}": copy_tokens["OPENING_LINE_HTML"],

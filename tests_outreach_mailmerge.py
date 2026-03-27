@@ -332,7 +332,7 @@ class TestOutreachMailmerge(unittest.TestCase):
         self.assertLessEqual(len(k1), 80)
         self.assertRegex(k1, r"^[A-Za-z0-9_.-]{1,80}$")
 
-    def test_build_outreach_subject_prefers_primary_type_when_not_mixed(self):
+    def test_build_outreach_subject_uses_type_only_when_all_rows_match(self):
         from outreach import generate_mailmerge as gm
 
         subject = gm.build_outreach_subject(
@@ -340,7 +340,7 @@ class TestOutreachMailmerge(unittest.TestCase):
             recent_leads=[
                 {"date_opened": "2026-02-19", "inspection_type": "Complaint"},
                 {"date_opened": "2026-02-18", "inspection_type": "Complaint"},
-                {"date_opened": "2026-02-17", "inspection_type": "Accident"},
+                {"date_opened": "2026-02-17", "inspection_type": "Complaint"},
             ],
             segment_descriptor="defense team",
             state_full_name="California",
@@ -356,15 +356,15 @@ class TestOutreachMailmerge(unittest.TestCase):
             "CA",
             recent_leads=[
                 {"date_opened": "2026-02-19", "inspection_type": "Complaint"},
-                {"date_opened": "2026-02-18", "inspection_type": "Accident"},
+                {"date_opened": "2026-02-18", "inspection_type": "Referral"},
             ],
             segment_descriptor="",
             state_full_name="California",
             signal_count=2,
         )
-        self.assertIn("Quick heads up — 2 recent CA inspections", subject)
+        self.assertEqual(subject, "Quick heads up — 2 recent CA OSHA inspections")
         self.assertNotIn("complaint", subject.lower())
-        self.assertNotIn("accident", subject.lower())
+        self.assertNotIn("referral", subject.lower())
         self.assertLess(len(subject), 65)
 
     def test_build_outreach_subject_single_signal_uses_opened_date(self):
@@ -664,14 +664,18 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertEqual(body, text_body)
             self.assertTrue(html_body.strip())
             self.assertIn(
-                "territory-specific leads for safety consulting firms doing outbound in Texas",
+                "We send short emails with newly observed public OSHA activity in Texas before citations post.",
                 html_body,
             )
-            self.assertIn("Opened = inspection opened date; Observed = first day it appeared in public OSHA data.", html_body)
+            self.assertIn(
+                "Here are 0 recent public OSHA items in Texas that may be useful for outreach:",
+                html_body,
+            )
+            self.assertIn("Opened = OSHA opening date. Observed = first day it appeared in public data.", html_body)
 
             # Wally-style markers.
-            self.assertIn("Chase Chevalier, Founder", html_body)
-            self.assertIn("support@microflowops.com", html_body)
+            self.assertIn("Chase Chevalier", html_body)
+            self.assertIn("Founder, MicroFlowOps", html_body)
             self.assertIn("11539 Links Dr, Reston, VA 20190", html_body)
             self.assertIn('href="https://microflowops.com"', html_body)
 
@@ -975,11 +979,20 @@ class TestOutreachMailmerge(unittest.TestCase):
             "Hi,",
         )
         self.assertNotIn("new OSHA", tokens_plural["GREETING_LINE_TEXT"])
-        self.assertIn("reply with your state or metro", tokens_plural["TRIAL_LINE_TEXT"])
-        self.assertIn("short California sample", tokens_plural["TRIAL_LINE_TEXT"])
+        self.assertEqual(
+            tokens_plural["TRIAL_LINE_TEXT"],
+            "If useful, reply with the state or metro you care about and I'll send a short sample.",
+        )
         self.assertNotIn("https://microflowops.com/contact", tokens_plural["TRIAL_LINE_TEXT"])
-        self.assertIn("territory-specific leads for safety consulting firms doing outbound in California", tokens_plural["INTRO_LINE_TEXT"])
-        self.assertIn("reply with your state or metro", tokens_plural["TRIAL_LINE_HTML"])
+        self.assertIn(
+            "We send short emails with newly observed public OSHA activity in California before citations post.",
+            tokens_plural["INTRO_LINE_TEXT"],
+        )
+        self.assertEqual(
+            tokens_plural["SIGNAL_LIST_LEDE_TEXT"],
+            "Here are 2 recent public OSHA items in California that may be useful for outreach:",
+        )
+        self.assertIn("reply with the state or metro you care about", tokens_plural["TRIAL_LINE_HTML"])
 
     def test_select_outreach_card_examples_uses_only_recent_opened_rows(self):
         from outreach import generate_mailmerge as gm
@@ -1487,15 +1500,15 @@ class TestOutreachMailmerge(unittest.TestCase):
             self.assertIn("Hi Casey,", stdout)
             self.assertIn("Hi Riley,", stdout)
             self.assertIn(
-                "I run MicroFlowOps. It packages newly observed public OSHA activity into territory-specific leads for safety consulting firms doing outbound in California.",
+                "I run MicroFlowOps. We send short emails with newly observed public OSHA activity in California before citations post.",
                 stdout,
             )
             self.assertIn(
-                "Newly observed public OSHA activity in California that may be useful for employer outreach:",
+                "Here are 0 recent public OSHA items in California that may be useful for outreach:",
                 stdout,
             )
-            self.assertIn("Opened = inspection opened date; Observed = first day it appeared in public OSHA data.", stdout)
-            self.assertIn("support@microflowops.com", stdout)
+            self.assertIn("Opened = OSHA opening date. Observed = first day it appeared in public data.", stdout)
+            self.assertIn("Founder, MicroFlowOps", stdout)
             self.assertIn("Opt out anytime: Unsubscribe | Manage preferences", stdout)
             self.assertNotIn("no commitment, no login required", stdout)
             self.assertNotIn("Every item links to the public OSHA record", stdout)
@@ -1517,7 +1530,7 @@ class TestOutreachMailmerge(unittest.TestCase):
                 p_missing.stdout or "",
             )
             self.assertIn(
-                "I run MicroFlowOps. It packages newly observed public OSHA activity into territory-specific leads for safety consulting firms doing outbound in California.",
+                "I run MicroFlowOps. We send short emails with newly observed public OSHA activity in California before citations post.",
                 p_missing.stdout or "",
             )
 

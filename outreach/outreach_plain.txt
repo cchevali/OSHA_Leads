@@ -2,8 +2,8 @@ GREETING_LINE_TEXT
 
 INTRO_LINE_TEXT
 
-Newly observed public OSHA activity in STATE_FULL_NAME that may be useful for employer outreach:
-Opened = inspection opened date; Observed = first day it appeared in public OSHA data.
+SIGNAL_LIST_LEDE_TEXT
+Opened = OSHA opening date. Observed = first day it appeared in public data.
 
 RECENT_SIGNALS_LINES
 
@@ -12,9 +12,9 @@ POST_CARDS_LINE_TEXT
 TRIAL_LINE_TEXT
 
 Thanks,
-Chase Chevalier, Founder
-MicroFlowOps · MICROFLOWOPS_URL
-SUPPORT_EMAIL
+Chase Chevalier
+Founder, MicroFlowOps
+MICROFLOWOPS_URL
 MAILING_ADDRESS
 
 Informational only; not legal advice.

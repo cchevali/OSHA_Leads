@@ -29,8 +29,12 @@ from outreach import crm_store
 from outreach import run_outreach_auto as roa
 
 
-def _recent_test_date(days_ago: int = 0) -> str:
-    return (date.today() - timedelta(days=days_ago)).isoformat()
+def _recent_test_date(days_ago: int = 0, weekday_idx: int | None = None) -> str:
+    target = date.today() - timedelta(days=days_ago)
+    if weekday_idx is not None:
+        delta = (target.weekday() - int(weekday_idx)) % 7
+        target = target - timedelta(days=delta)
+    return target.isoformat()
 
 
 def _default_signal_db_source() -> Path:
@@ -726,7 +730,7 @@ class TestOutreachRunAuto(unittest.TestCase):
 
     def test_dry_run_sendable_zero_with_nonzero_pool_emits_empty_state_no_send(self):
         with tempfile.TemporaryDirectory() as d:
-            recent_date = _recent_test_date()
+            recent_date = _recent_test_date(weekday_idx=1)
             tmp = Path(d)
             data_dir = tmp / "data"
             crm_db = data_dir / "crm.sqlite"
@@ -767,7 +771,7 @@ class TestOutreachRunAuto(unittest.TestCase):
 
     def test_prior_sent_event_prospect_is_not_reselected(self):
         with tempfile.TemporaryDirectory() as d:
-            recent_date = _recent_test_date()
+            recent_date = _recent_test_date(weekday_idx=1)
             previous_date = _recent_test_date(1)
             tmp = Path(d)
             data_dir = tmp / "data"
@@ -2107,7 +2111,7 @@ class TestOutreachRunAuto(unittest.TestCase):
 
     def test_dry_run_hidden_ca_name_rows_no_longer_trigger_fallback(self):
         with tempfile.TemporaryDirectory() as d:
-            recent_date = _recent_test_date()
+            recent_date = _recent_test_date(weekday_idx=1)
             tmp = Path(d)
             data_dir = tmp / "data"
             crm_db = data_dir / "crm.sqlite"
@@ -2432,15 +2436,19 @@ class TestOutreachRunAuto(unittest.TestCase):
                             self.assertEqual(subject, expected_subject)
                             expected_state_name = "California" if expected_state == "CA" else "Florida"
                             self.assertIn(
-                                f"I run MicroFlowOps. It packages newly observed public OSHA activity into territory-specific leads for safety consulting firms doing outbound in {expected_state_name}.",
+                                f"I run MicroFlowOps. We send short emails with newly observed public OSHA activity in {expected_state_name} before citations post.",
                                 text_body,
                             )
                             self.assertIn(
-                                "Opened = inspection opened date; Observed = first day it appeared in public OSHA data.",
+                                f"Here is 1 recent public OSHA item in {expected_state_name} that may be useful for outreach:",
                                 text_body,
                             )
                             self.assertIn(
-                                f"If helpful, reply with your state or metro and I can send a short {expected_state_name} sample",
+                                "Opened = OSHA opening date. Observed = first day it appeared in public data.",
+                                text_body,
+                            )
+                            self.assertIn(
+                                "If useful, reply with the state or metro you care about and I'll send a short sample.",
                                 text_body,
                             )
                             self.assertEqual(html_body.count(">Unsubscribe</a>"), 1)
@@ -2521,11 +2529,11 @@ class TestOutreachRunAuto(unittest.TestCase):
                 text_body,
             )
             self.assertIn(
-                "I run MicroFlowOps. It packages newly observed public OSHA activity into territory-specific leads for safety consulting firms doing outbound in California.",
+                "I run MicroFlowOps. We send short emails with newly observed public OSHA activity in California before citations post.",
                 text_body,
             )
             self.assertIn(
-                "These items were recently observed in public OSHA data before citations posted publicly.",
+                "These were recently observed in public OSHA data before citations posted publicly, so you can decide faster who may need help now.",
                 text_body,
             )
         finally:
@@ -2586,8 +2594,8 @@ class TestOutreachRunAuto(unittest.TestCase):
                 )
             self.assertIn("Hi Alonso,", text_body)
             self.assertNotIn("Hi Alonso,,", text_body)
-            self.assertIn("Newly observed public OSHA activity in Texas that may be useful for employer outreach:", text_body)
-            self.assertIn("If helpful, reply with your state or metro and I can send a short Texas sample", text_body)
+            self.assertIn("Here is 1 recent public OSHA item in Texas that may be useful for outreach:", text_body)
+            self.assertIn("If useful, reply with the state or metro you care about and I'll send a short sample.", text_body)
             self.assertNotIn("TEMPERATURE PRO WEST AUSTIN", text_body)
         finally:
             conn.close()
