@@ -243,7 +243,7 @@ export default function HomePage() {
             </ul>
           </div>
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h3 className="font-display text-2xl text-ink">What "usable" means</h3>
+            <h3 className="font-display text-2xl text-ink">What &quot;usable&quot; means</h3>
             <p className="mt-3 text-inkMuted">
               The lead should be clear enough that a business development team can review it, verify the public
               source, and decide whether to reach out without building a long research memo first.
