@@ -29,7 +29,7 @@ export const metadata: Metadata = {
     template: `%s | ${site.brandName}`
   },
   description:
-    "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by territory and linked to the public record.",
+    "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by state or region and linked to the public record.",
   robots:
     process.env.VERCEL_ENV === "production" && process.env.NODE_ENV === "production"
       ? { index: true, follow: true }
@@ -38,7 +38,7 @@ export const metadata: Metadata = {
     type: "website",
     title: `${site.brandName} | Outreach-Ready OSHA Leads`,
     description:
-      "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by territory and linked to the public record.",
+      "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by state or region and linked to the public record.",
     url: site.siteUrl,
     siteName: site.brandName,
     images: [
@@ -54,7 +54,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: `${site.brandName} | Outreach-Ready OSHA Leads`,
     description:
-      "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by territory and linked to the public record.",
+      "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by state or region and linked to the public record.",
     images: ["/og.svg"]
   }
 };

@@ -19,7 +19,8 @@ class TestWebSamplePagePreview(unittest.TestCase):
     def test_sample_page_uses_outreach_ready_trust_language(self):
         page_text = SAMPLE_PAGE.read_text(encoding="utf-8")
         self.assertIn("Sample OSHA Lead Digest", page_text)
-        self.assertIn("Frozen territory sample", page_text)
+        self.assertIn("Frozen sample digest", page_text)
+        self.assertIn("Sample = one example digest for your state or region.", page_text)
         self.assertIn("Public example using OSHA data.", page_text)
         self.assertIn("Not affiliated with OSHA. Not legal advice.", page_text)
         self.assertIn("Verify in 30 seconds", page_text)

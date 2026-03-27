@@ -15,7 +15,7 @@ export const metadata: Metadata = {
 export default function ContactPage() {
   const coreFallbackMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
     subject: "Standard plan inquiry",
-    body: "Hi MicroFlowOps,\n\nI want to discuss an ongoing standard plan.\n\nOrganization:\nState, metro, counties, or OSHA area:\nRecipients:\n\nThanks"
+    body: "Hi MicroFlowOps,\n\nI want to discuss an ongoing standard plan.\n\nOrganization:\nState or region:\nRecipients:\n\nThanks"
   }).toString()}`;
   const stripeCheckout = resolveCheckoutCta(site.stripePaymentLinkCore, coreFallbackMailto);
 
@@ -25,7 +25,7 @@ export default function ContactPage() {
         <SectionHeading
           eyebrow="Contact"
           title="Request a sample or start a founding pilot."
-          description="Share your territory and recipients. We send a sample first, then confirm whether Founding Pilot or a standard plan fits."
+          description="Share your state or region and recipients. We send a sample first, then confirm whether Founding Pilot or a standard plan fits."
           align="center"
         />
         <p className="mt-4 text-center text-sm text-inkMuted">
@@ -34,6 +34,9 @@ export default function ContactPage() {
         <p className="mt-3 text-center text-sm text-inkMuted">
           Founding Pilot is $149 for 30 days in one state. Manual qualification required before activation.
         </p>
+        <p className="mt-3 text-center text-sm text-inkMuted">
+          Need live proof? Ask about a 14-day trial.
+        </p>
       </section>
 
       <section id="trial" className="mx-auto w-full max-w-5xl px-6">
@@ -41,8 +44,11 @@ export default function ContactPage() {
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-2xl text-ink">Request a sample</h3>
             <p className="mb-5 mt-2 text-sm text-inkMuted">
-              Tell us your state, metro, counties, or OSHA area, add the recipients who should see the sample,
-              and we will respond same business day.
+              Tell us your state or region, add the recipients who should see the sample, and we will
+              respond same business day.
+            </p>
+            <p className="mb-5 text-sm text-inkMuted">
+              Sample = one example digest for your state or region.
             </p>
             <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
               Verify in 30 seconds
@@ -62,10 +68,10 @@ export default function ContactPage() {
               </p>
             </div>
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-              <h3 className="font-display text-2xl text-ink">Tell us your territory</h3>
+              <h3 className="font-display text-2xl text-ink">Tell us your state or region</h3>
               <p className="mt-3 text-inkMuted">
-                Tell us your state, metro, counties, or OSHA area. We confirm fit before activation and reply
-                same business day.
+                Tell us your state or region. State, metro, counties, or OSHA area all work. We
+                confirm fit before activation and reply same business day.
               </p>
               <div className="mt-4 flex flex-wrap items-center gap-4">
                 <p className="text-sm font-semibold text-ink">{site.ctaEmail}</p>
@@ -84,7 +90,8 @@ export default function ContactPage() {
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">Already decided on a standard plan?</h3>
               <p className="mt-3 text-inkMuted">
-                Standard and Multi-Territory remain available once you know the territory and lead quality are a fit.
+                Standard and Multi-Territory remain available once you know the state or region and
+                lead quality are a fit.
               </p>
               <div className="mt-4">
                 <a
