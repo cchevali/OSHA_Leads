@@ -2,19 +2,18 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import SectionHeading from "@/components/SectionHeading";
 import CTAButtons from "@/components/CTAButtons";
-import CoverageEstimator from "@/components/CoverageEstimator";
 import site from "@/config/site.json";
 import { resolveCheckoutCta } from "@/lib/checkout";
 
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "Request a sample first, then choose the MicroFlowOps plan that fits your territory. Founding Pilot is $149 for 30 days in one state, with Core and Multi-Territory available for ongoing coverage.",
+    "Sample first, then choose Founding Pilot, Standard, or Multi-Territory. Tell us your state, metro, counties, or OSHA area and we confirm fit before activation.",
   alternates: { canonical: "/pricing" }
 };
 
 export default function PricingPage() {
-  const coreCheckout = resolveCheckoutCta(site.stripePaymentLinkCore, "/contact?source=pricing&intent=sample");
+  const standardCheckout = resolveCheckoutCta(site.stripePaymentLinkCore, "/contact?source=pricing&intent=sample");
   const multiCheckout = resolveCheckoutCta(site.stripePaymentLinkMulti, "/contact?source=pricing&intent=territory_reply");
   const foundingPilotPath = "/contact?source=pricing&intent=founding_pilot";
   const samplePath = "/contact?source=pricing&intent=sample";
@@ -24,7 +23,7 @@ export default function PricingPage() {
   }).toString()}`;
   const confirmFirstMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
     subject: "Replying with my territory",
-    body: "Hi MicroFlowOps,\n\nI would like to confirm fit for my territory.\n\nOrganization:\nState or metro:\nRecipients:\nCurrent outbound motion:\n\nThanks"
+    body: "Hi MicroFlowOps,\n\nI would like to confirm fit for my territory.\n\nOrganization:\nState, metro, counties, or OSHA area:\nRecipients:\nCurrent outbound motion:\n\nThanks"
   }).toString()}`;
 
   const plans = [
@@ -36,8 +35,8 @@ export default function PricingPage() {
       features: [
         "One state",
         "Daily lead digest",
-        "Manual fit review before activation",
-        "Built for firms already doing outbound"
+        "Manual fit confirmation before activation",
+        "Best first paid step after a sample"
       ],
       ctaLabel: "Start founding pilot",
       ctaHref: foundingPilotPath,
@@ -45,20 +44,19 @@ export default function PricingPage() {
       ctaStyle: "primary" as const
     },
     {
-      name: "Core",
+      name: "Standard",
       price: "$299",
       note: "per month",
       highlight: false,
       features: [
-        "Up to 4 metros",
-        "Daily email delivery",
-        "Coverage filters tuned to your footprint",
+        "Ongoing daily delivery",
+        "One primary territory",
         "Up to 6 recipients",
         "Weekly summary included"
       ],
       ctaLabel: "Subscribe - $299/mo",
-      ctaHref: coreCheckout.href,
-      ctaExternal: coreCheckout.isExternal,
+      ctaHref: standardCheckout.href,
+      ctaExternal: standardCheckout.isExternal,
       ctaStyle: "outline" as const
     },
     {
@@ -67,8 +65,8 @@ export default function PricingPage() {
       note: "per month",
       highlight: false,
       features: [
-        "Up to 10 metros",
-        "Everything in Core",
+        "Broader ongoing coverage",
+        "Everything in Standard",
         "Up to 15 recipients",
         "Priority support"
       ],
@@ -84,8 +82,8 @@ export default function PricingPage() {
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="Pricing"
-          title="Start with a sample, then choose the plan that fits your territory."
-          description="Founding Pilot is the lowest-friction paid offer. Core and Multi-Territory remain available for ongoing coverage."
+          title="Sample first. Then choose the plan that fits."
+          description="Founding Pilot is $149. Standard is $299. Multi-Territory is $499."
           align="center"
         />
         <p className="mx-auto mt-4 max-w-2xl text-center text-sm text-inkMuted">
@@ -129,13 +127,12 @@ export default function PricingPage() {
                 </a>
                 {plan.name === "Founding Pilot" ? (
                   <p className="mt-2 text-xs text-inkMuted">
-                    We qualify fit manually. Request a sample first if you want to see the territory before we
-                    activate the pilot.
+                    Request a sample first if you want to see the lead quality before we activate the pilot.
                   </p>
                 ) : (
                   <>
                     <p className="mt-2 text-xs text-inkMuted">
-                      Standard plans stay available for ongoing coverage once you know the territory fit.
+                      Best once you already know the territory and lead quality are a fit.
                     </p>
                     <a
                       href={confirmFirstMailto}
@@ -155,8 +152,8 @@ export default function PricingPage() {
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <h3 className="font-display text-2xl text-ink">What most buyers do first</h3>
           <p className="mt-3 text-inkMuted">
-            Request a sample for your territory, confirm the lead quality, then decide whether the Founding
-            Pilot or a standard plan is the right next step.
+            Request a sample, confirm the lead quality, then decide whether Founding Pilot, Standard, or
+            Multi-Territory is the right next step.
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-4">
             <Link
@@ -169,59 +166,25 @@ export default function PricingPage() {
               href={territoryMailto}
               className="text-sm font-semibold text-inkMuted underline-offset-4 transition hover:text-ink hover:underline"
             >
-              Reply with your state or metro
+              Tell us your territory
             </a>
           </div>
         </div>
       </section>
 
       <section className="mx-auto w-full max-w-5xl px-6">
-        <SectionHeading
-          eyebrow="How Territory Fit Works"
-          title="Territory-specific delivery without a long setup process."
-          description="Send the footprint labels you already use. States, metros, counties, and OSHA areas all work."
-        />
-        <p className="mt-3 text-sm text-inkMuted">
-          Founding Pilot is one state. Standard plans continue to use the current coverage model for ongoing
-          delivery.
-        </p>
-
-        <div className="mt-8 space-y-4">
-          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h4 className="font-display text-lg text-ink">Founding Pilot</h4>
-            <p className="mt-3 text-sm text-inkMuted">
-              1) Request a sample - 2) Send your state - 3) We confirm fit manually before activation.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h4 className="font-display text-lg text-ink">Standard ongoing plans</h4>
-            <p className="mt-3 text-sm text-inkMuted">
-              Core and Multi-Territory keep the current coverage model and remain available once you know the
-              lead quality is a fit.
-            </p>
-          </div>
-
-          <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h4 className="font-display text-lg text-ink">Reply with territory</h4>
-            <p className="mt-3 text-sm text-inkMuted">
-              Send your state or metro, and we will tell you whether the sample, founding pilot, or standard
-              plan is the best next step.
-            </p>
-          </div>
+        <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft text-center">
+          <p className="text-sm text-inkMuted">
+            Tell us your state, metro, counties, or OSHA area. We confirm fit before activation.
+          </p>
         </div>
-      </section>
-
-      <section className="mx-auto w-full max-w-5xl px-6">
-        <CoverageEstimator />
       </section>
 
       <section className="mx-auto w-full max-w-5xl px-6">
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <h3 className="font-display text-2xl text-ink">Questions before you decide?</h3>
           <p className="mt-3 text-inkMuted">
-            See sample, territory fit, manual pilot qualification, and standard plan details before you move
-            forward.
+            See quick answers on samples, territory fit, pricing, and what happens next.
           </p>
           <div className="mt-4">
             <Link
@@ -240,7 +203,7 @@ export default function PricingPage() {
             <div>
               <h2 className="font-display text-3xl">See a sample for your territory first.</h2>
               <p className="mt-3 text-white/70">
-                Then decide whether the Founding Pilot or a standard plan is the right fit.
+                Then decide whether Founding Pilot, Standard, or Multi-Territory is the right fit.
               </p>
             </div>
             <CTAButtons variant="dark" />

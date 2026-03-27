@@ -240,7 +240,7 @@ export async function POST(request: Request) {
       "",
       normalizedIntent === "founding_pilot"
         ? "Offer context: Founding Pilot is $149 for 30 days in one state. Manual qualification required before activation."
-        : "Offer context: Request a sample first, then qualify territory fit for a founding pilot or standard plan.",
+        : "Offer context: Request a sample first, then confirm whether Founding Pilot, Standard, or Multi-Territory is the right next step.",
       "",
       `Mailing address: ${site.mailingAddress}`
     ].join("\n");
@@ -265,11 +265,11 @@ export async function POST(request: Request) {
         "",
         `We captured this coverage: ${metros}`,
         `Recipients: ${recipients.length}`,
-        "Counties, cities, metros, or OSHA areas all work.",
+        "State, metro, counties, or OSHA area all work.",
         "Best for safety consulting and training firms already doing outbound or business development.",
         normalizedIntent === "founding_pilot"
           ? "Founding Pilot is $149 for 30 days in one state. Activation happens only after manual qualification."
-          : "If the fit looks right, we can talk through a 30-day Founding Pilot or an ongoing standard plan.",
+          : "If the fit looks right, the next step can be Founding Pilot at $149, Standard at $299, or Multi-Territory at $499.",
         "",
         "Request received. We'll respond same business day.",
         "If you don't hear back, email support@microflowops.com",

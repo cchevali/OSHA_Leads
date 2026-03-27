@@ -66,7 +66,7 @@ function normalizeRecipients(rows: RecipientRow[]): { recipients: TrialRecipient
     return { recipients: [], error: "At least one recipient is required." };
   }
   if (recipients.length > MAX_TRIAL_RECIPIENTS) {
-    return { recipients: [], error: `Trial supports up to ${MAX_TRIAL_RECIPIENTS} recipients.` };
+    return { recipients: [], error: `Requests support up to ${MAX_TRIAL_RECIPIENTS} recipients.` };
   }
   return { recipients, error: "" };
 }
@@ -108,7 +108,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
     displayIntent === "founding_pilot"
       ? "Founding Pilot is $149 for 30 days in one state. We manually confirm fit before activation."
       : displayIntent === "territory_reply"
-        ? "Reply with your state or metro and we will tell you whether a sample, founding pilot, or standard plan is the best next step."
+        ? "Tell us your state, metro, counties, or OSHA area. We confirm fit before activation and recommend the best next step."
         : "We will use this to prepare a territory-specific sample and show how the lead digest would look for your outbound team.";
 
   function updateRecipientRow(index: number, key: keyof RecipientRow, value: string): void {
@@ -352,7 +352,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
         />
         {metrosError ? <p className="text-xs font-semibold text-red-700">{metrosError}</p> : null}
         <p className="text-xs text-inkMuted">
-          Reply with your state or metro. Counties, cities, metros, or OSHA areas all work.
+          Tell us your state, metro, counties, or OSHA area. We confirm fit before activation.
         </p>
       </label>
       <label className="grid gap-1.5 text-sm text-inkMuted">

@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -27,6 +27,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from outreach import crm_store
 from outreach import run_outreach_auto as roa
+
+
+def _recent_test_date(days_ago: int = 0) -> str:
+    return (date.today() - timedelta(days=days_ago)).isoformat()
 
 
 def _default_signal_db_source() -> Path:
@@ -722,6 +726,7 @@ class TestOutreachRunAuto(unittest.TestCase):
 
     def test_dry_run_sendable_zero_with_nonzero_pool_emits_empty_state_no_send(self):
         with tempfile.TemporaryDirectory() as d:
+            recent_date = _recent_test_date()
             tmp = Path(d)
             data_dir = tmp / "data"
             crm_db = data_dir / "crm.sqlite"
@@ -742,7 +747,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             _seed_signal_db(
                 signal_db,
                 [
-                    {"site_state": "CA", "date_opened": "2026-02-24", "parse_invalid": 0},
+                    {"site_state": "CA", "date_opened": recent_date, "parse_invalid": 0},
                 ],
             )
             _write_suppression(data_dir / "suppression.csv")
@@ -754,7 +759,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
 
-            p = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
+            p = self._run(["--dry-run", "--for-date", recent_date], env)
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             out = p.stdout or ""
             self.assertIn("OUTREACH_EMPTY_STATE_NO_SEND=1 state=CA", out)
@@ -762,6 +767,8 @@ class TestOutreachRunAuto(unittest.TestCase):
 
     def test_prior_sent_event_prospect_is_not_reselected(self):
         with tempfile.TemporaryDirectory() as d:
+            recent_date = _recent_test_date()
+            previous_date = _recent_test_date(1)
             tmp = Path(d)
             data_dir = tmp / "data"
             crm_db = data_dir / "crm.sqlite"
@@ -793,7 +800,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             try:
                 conn.execute(
                     "INSERT INTO outreach_events(prospect_id, ts, event_type, batch_id, metadata_json) VALUES (?, ?, 'sent', ?, '{}')",
-                    ("p_sent", "2026-02-23T00:00:00+00:00", "2026-02-23_TX"),
+                    ("p_sent", f"{previous_date}T00:00:00+00:00", f"{previous_date}_TX"),
                 )
                 conn.commit()
             finally:
@@ -801,7 +808,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             _seed_signal_db(
                 signal_db,
                 [
-                    {"site_state": "TX", "date_opened": "2026-02-24", "parse_invalid": 0},
+                    {"site_state": "TX", "date_opened": recent_date, "parse_invalid": 0},
                 ],
             )
             _write_suppression(data_dir / "suppression.csv")
@@ -813,7 +820,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
 
-            p = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
+            p = self._run(["--dry-run", "--for-date", recent_date], env)
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             out = p.stdout or ""
             self.assertIn("would_contact_prospect_ids=p_new", out)
@@ -821,6 +828,7 @@ class TestOutreachRunAuto(unittest.TestCase):
 
     def test_role_inbox_rows_remain_sendable_even_when_legacy_toggle_is_on(self):
         with tempfile.TemporaryDirectory() as d:
+            recent_date = _recent_test_date()
             tmp = Path(d)
             data_dir = tmp / "data"
             crm_db = data_dir / "crm.sqlite"
@@ -849,7 +857,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             _seed_signal_db(
                 signal_db,
                 [
-                    {"site_state": "TX", "date_opened": "2026-02-24", "parse_invalid": 0},
+                    {"site_state": "TX", "date_opened": recent_date, "parse_invalid": 0},
                 ],
             )
             _write_suppression(data_dir / "suppression.csv")
@@ -861,7 +869,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
 
-            p_on = self._run(["--dry-run", "--for-date", "2026-02-24"], env_base)
+            p_on = self._run(["--dry-run", "--for-date", recent_date], env_base)
             self.assertEqual(p_on.returncode, 0, msg=p_on.stderr + "\n" + p_on.stdout)
             self.assertIn("would_contact_prospect_ids=p_person,p_role", p_on.stdout or "")
             manifest_line = next((ln for ln in (p_on.stdout or "").splitlines() if "manifest_path=" in ln), "")
@@ -873,7 +881,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertEqual((role_rows[0].get("status") or ""), "selected")
             self.assertEqual((role_rows[0].get("reason") or ""), "")
 
-            p_off = self._run(["--dry-run", "--for-date", "2026-02-24"], {**env_base, "OUTREACH_SKIP_ROLE_INBOXES": "0"})
+            p_off = self._run(["--dry-run", "--for-date", recent_date], {**env_base, "OUTREACH_SKIP_ROLE_INBOXES": "0"})
             self.assertEqual(p_off.returncode, 0, msg=p_off.stderr + "\n" + p_off.stdout)
             selected_line = self._stdout_value(p_off.stdout or "", "PASS_AUTO_DRY_RUN would_contact_prospect_ids")
             self.assertIn("p_person", selected_line)
@@ -881,6 +889,7 @@ class TestOutreachRunAuto(unittest.TestCase):
 
     def test_plan_and_dry_run_emit_selection_debug_rows(self):
         with tempfile.TemporaryDirectory() as d:
+            recent_date = _recent_test_date()
             tmp = Path(d)
             data_dir = tmp / "data"
             crm_db = data_dir / "crm.sqlite"
@@ -901,7 +910,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             _seed_signal_db(
                 signal_db,
                 [
-                    {"site_state": "TX", "date_opened": "2026-02-24", "parse_invalid": 0},
+                    {"site_state": "TX", "date_opened": recent_date, "parse_invalid": 0},
                 ],
             )
             _write_suppression(data_dir / "suppression.csv")
@@ -913,12 +922,12 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "TEST_SIGNAL_DB_PATH": str(signal_db),
             }
 
-            plan = self._run(["--plan", "--for-date", "2026-02-24"], env)
+            plan = self._run(["--plan", "--for-date", recent_date], env)
             self.assertEqual(plan.returncode, 0, msg=plan.stderr + "\n" + plan.stdout)
             self.assertIn("OUTREACH_SELECTION_DEBUG mode=plan", plan.stdout or "")
             self.assertIn("OUTREACH_SELECTION_DEBUG_ROW idx=1 prospect_id=p1", plan.stdout or "")
 
-            dry_run = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
+            dry_run = self._run(["--dry-run", "--for-date", recent_date], env)
             self.assertEqual(dry_run.returncode, 0, msg=dry_run.stderr + "\n" + dry_run.stdout)
             self.assertIn("OUTREACH_SELECTION_DEBUG mode=dry_run", dry_run.stdout or "")
             self.assertIn("OUTREACH_SELECTION_DEBUG_ROW idx=1 prospect_id=p1", dry_run.stdout or "")
@@ -2098,6 +2107,7 @@ class TestOutreachRunAuto(unittest.TestCase):
 
     def test_dry_run_hidden_ca_name_rows_no_longer_trigger_fallback(self):
         with tempfile.TemporaryDirectory() as d:
+            recent_date = _recent_test_date()
             tmp = Path(d)
             data_dir = tmp / "data"
             crm_db = data_dir / "crm.sqlite"
@@ -2140,7 +2150,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             _seed_signal_db(
                 signal_db,
                 [
-                    {"site_state": "CA", "date_opened": "2026-02-24", "parse_invalid": 0},
+                    {"site_state": "CA", "date_opened": recent_date, "parse_invalid": 0},
                 ],
             )
             _write_suppression(data_dir / "suppression.csv")
@@ -2153,7 +2163,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 "TEST_SIGNAL_DB_PATH": str(signal_db),
                 "OSHA_SMOKE_TO": "allow@example.com",
             }
-            p = self._run(["--dry-run", "--for-date", "2026-02-24"], env)
+            p = self._run(["--dry-run", "--for-date", recent_date], env)
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             out = p.stdout or ""
             self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", out)

@@ -8,14 +8,14 @@ import { resolveCheckoutCta } from "@/lib/checkout";
 export const metadata: Metadata = {
   title: "Contact",
   description:
-    "Request a sample, start a manually qualified founding pilot, or reply with your state or metro for MicroFlowOps territory fit.",
+    "Request a sample, start a manually qualified founding pilot, or tell MicroFlowOps your state, metro, counties, or OSHA area for fit confirmation.",
   alternates: { canonical: "/contact" }
 };
 
 export default function ContactPage() {
   const coreFallbackMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
-    subject: "Core plan inquiry",
-    body: "Hi MicroFlowOps,\n\nI want to discuss an ongoing standard plan.\n\nOrganization:\nState or metro:\nRecipients:\n\nThanks"
+    subject: "Standard plan inquiry",
+    body: "Hi MicroFlowOps,\n\nI want to discuss an ongoing standard plan.\n\nOrganization:\nState, metro, counties, or OSHA area:\nRecipients:\n\nThanks"
   }).toString()}`;
   const stripeCheckout = resolveCheckoutCta(site.stripePaymentLinkCore, coreFallbackMailto);
 
@@ -25,7 +25,7 @@ export default function ContactPage() {
         <SectionHeading
           eyebrow="Contact"
           title="Request a sample or start a founding pilot."
-          description="Share your territory and recipients. We will send a sample first and manually confirm founding-pilot fit when requested."
+          description="Share your territory and recipients. We send a sample first, then confirm whether Founding Pilot or a standard plan fits."
           align="center"
         />
         <p className="mt-4 text-center text-sm text-inkMuted">
@@ -41,8 +41,8 @@ export default function ContactPage() {
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <h3 className="font-display text-2xl text-ink">Request a sample</h3>
             <p className="mb-5 mt-2 text-sm text-inkMuted">
-              Send your state or metro, add the recipients who should see the sample, and we will respond same
-              business day.
+              Tell us your state, metro, counties, or OSHA area, add the recipients who should see the sample,
+              and we will respond same business day.
             </p>
             <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
               Verify in 30 seconds
@@ -57,18 +57,15 @@ export default function ContactPage() {
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">Founding Pilot</h3>
               <p className="mt-3 text-inkMuted">
-                30 days, one state, $149. We use the same request flow, then manually qualify buyer fit before
+                30 days, one state, $149. Start with a sample if you want, then we manually confirm fit before
                 activation.
-              </p>
-              <p className="mt-3 text-sm font-semibold text-inkMuted">
-                Start with a sample if you want to see the lead quality before we approve the pilot.
               </p>
             </div>
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-              <h3 className="font-display text-2xl text-ink">Reply with your state or metro</h3>
+              <h3 className="font-display text-2xl text-ink">Tell us your territory</h3>
               <p className="mt-3 text-inkMuted">
-                We respond same business day. Send the territory you want covered, the recipients to include,
-                and whether you want a sample or founding pilot review.
+                Tell us your state, metro, counties, or OSHA area. We confirm fit before activation and reply
+                same business day.
               </p>
               <div className="mt-4 flex flex-wrap items-center gap-4">
                 <p className="text-sm font-semibold text-ink">{site.ctaEmail}</p>
@@ -87,7 +84,7 @@ export default function ContactPage() {
             <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">Already decided on a standard plan?</h3>
               <p className="mt-3 text-inkMuted">
-                Standard plans remain available for ongoing coverage after you confirm the territory is a fit.
+                Standard and Multi-Territory remain available once you know the territory and lead quality are a fit.
               </p>
               <div className="mt-4">
                 <a
