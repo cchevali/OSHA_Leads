@@ -78,9 +78,13 @@ class TestMetroEntitlements(unittest.TestCase):
     def test_pricing_copy_contract(self) -> None:
         pricing_path = Path("web/app/pricing/page.tsx")
         text = pricing_path.read_text(encoding="utf-8")
-        self.assertIn("A metro area is a Census CBSA/MSA (city + suburbs).", text)
-        self.assertIn("DFW metro includes Dallas, Fort Worth, Frisco, Plano, Arlington", text)
-        self.assertIn("No per-metro billing, no surprises.", text)
+        self.assertIn("Founding Pilot", text)
+        self.assertIn("$149", text)
+        self.assertIn("One state", text)
+        self.assertIn("We qualify fit manually.", text)
+        self.assertIn("Up to 4 metros", text)
+        self.assertIn("Up to 10 metros", text)
+        self.assertIn("Reply with your state or metro", text)
 
     def test_onboarding_enforces_max_metros(self) -> None:
         crm_light.ensure_database(self.crm_db)

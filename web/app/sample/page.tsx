@@ -5,9 +5,9 @@ import CTAButtons from "@/components/CTAButtons";
 import sampleSignals from "./sample_signals.json";
 
 export const metadata: Metadata = {
-  title: "Sample OSHA Alert Snapshot",
+  title: "Sample OSHA Lead Digest",
   description:
-    "Frozen public sample showing MicroFlowOps alert proof, public OSHA record verification, and recent committed rows.",
+    "Frozen sample showing how MicroFlowOps packages newly observed public OSHA activity into outreach-ready leads for safety consulting firms.",
   alternates: { canonical: "/sample" }
 };
 
@@ -86,9 +86,7 @@ function SignalRowCard({ row }: { row: SampleSignalRow }) {
       <p className="mt-2 text-sm text-inkMuted">
         {row.city || "Unknown city"}, {row.state || "US"}
       </p>
-      <p className="mt-2 text-sm font-semibold text-ink">
-        Opened: {formatOpenedDate(row.opened_date)}
-      </p>
+      <p className="mt-2 text-sm font-semibold text-ink">Opened: {formatOpenedDate(row.opened_date)}</p>
       <div className="mt-3">
         <a
           href={row.source_url}
@@ -96,7 +94,7 @@ function SignalRowCard({ row }: { row: SampleSignalRow }) {
           rel="noopener noreferrer"
           className="text-sm font-semibold text-ocean underline-offset-4 transition hover:text-oceanDark hover:underline"
         >
-          View OSHA record
+          View public OSHA record
         </a>
       </div>
     </article>
@@ -111,15 +109,17 @@ export default function SamplePage() {
     <div className="space-y-12 pb-24 pt-12">
       <section className="mx-auto w-full max-w-4xl px-6">
         <div className="space-y-4 text-center">
-          <h1 className="font-display text-4xl text-ink md:text-5xl">
-            Sample: alert and OSHA record
-          </h1>
+          <p className="inline-flex rounded-full border border-cardBorder bg-card px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-inkMuted">
+            Frozen territory sample
+          </p>
+          <h1 className="font-display text-4xl text-ink md:text-5xl">Sample OSHA lead digest</h1>
           <p className="text-base text-inkMuted md:text-lg">
-            A fixed public example showing the alert format, the opened date, the observed timestamp,
-            and the matching OSHA record.
+            A fixed public example showing how MicroFlowOps packages newly observed public OSHA
+            activity into outreach-ready leads for safety consulting and training firms.
           </p>
           <p className="mx-auto max-w-3xl text-sm text-inkMuted">
-            Public example using OSHA data. Not affiliated with OSHA. Not legal advice.
+            Best for firms doing outbound or business development. Public example using OSHA data.
+            Not affiliated with OSHA. Not legal advice.
           </p>
         </div>
       </section>
@@ -127,20 +127,21 @@ export default function SamplePage() {
       <section className="mx-auto w-full max-w-6xl px-6">
         <div className="rounded-3xl border border-cardBorder bg-paper p-6 shadow-soft">
           <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-semibold text-inkMuted">
-            <span>Sample alert and OSHA record</span>
-            <span>Public example</span>
+            <span>Outreach-ready sample digest</span>
+            <span>Public record verification</span>
           </div>
           <div className="mt-4 grid gap-6 lg:grid-cols-2">
             <div className="rounded-2xl border border-cardBorder bg-surface p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
-                Alert screenshot
+                Sample lead digest
               </p>
               <p className="mt-2 text-sm text-inkMuted">
-                Recent MicroFlowOps alert format with ranked rows and timestamps.
+                A recognizable daily digest layout with company name, location, signal type,
+                observed timing, and the public source.
               </p>
               <Image
                 src="/assets/alert-proof-snapshot.svg"
-                alt="Frozen MicroFlowOps alert snapshot"
+                alt="Frozen MicroFlowOps lead digest snapshot"
                 width={1200}
                 height={780}
                 className="mt-4 w-full rounded-2xl border border-cardBorder bg-white"
@@ -151,7 +152,8 @@ export default function SamplePage() {
                 Verify in 30 seconds
               </p>
               <p className="mt-2 text-sm text-inkMuted">
-                Open the source record and confirm the signal quickly.
+                Open the public OSHA record and confirm the underlying signal before your team
+                decides whether to follow up.
               </p>
               <Image
                 src="/assets/osha-record-verification.svg"
@@ -162,14 +164,36 @@ export default function SamplePage() {
               />
             </div>
           </div>
+          <div className="mt-6 grid gap-4 lg:grid-cols-2">
+            <div className="rounded-2xl border border-cardBorder bg-surface p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
+                What is included
+              </p>
+              <p className="mt-2 text-sm text-inkMuted">
+                Company name, city and state, signal type, observed date, and public source
+                verification. When available, website, phone, and public contact details can be
+                appended as well.
+              </p>
+            </div>
+            <div className="rounded-2xl border border-cardBorder bg-surface p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
+                What usable means
+              </p>
+              <p className="mt-2 text-sm text-inkMuted">
+                A business development team should be able to review the lead, understand why timing
+                may matter now, and verify the public source without building a long research memo
+                first.
+              </p>
+            </div>
+          </div>
           <div className="mt-6 rounded-2xl border border-cardBorder bg-surface p-5">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">
               What a buyer can confirm
             </p>
             <p className="mt-2 text-sm text-inkMuted">
-              In this example, Rhino Specialty Services in Midland, Texas opened on March 3, 2026 and
-              was observed on March 6, 2026. A buyer can confirm both details on the public OSHA
-              record before deciding whether to route the alert for outreach.
+              In this example, Rhino Specialty Services in Midland, Texas opened on March 3, 2026
+              and was observed on March 6, 2026. A buyer can confirm both details on the public
+              OSHA record before deciding whether the lead is worth outbound attention now.
             </p>
           </div>
         </div>
@@ -180,9 +204,7 @@ export default function SamplePage() {
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="font-display text-2xl text-ink">
-                  {snapshot.territory_name} sample rows
-                </h2>
+                <h2 className="font-display text-2xl text-ink">{snapshot.territory_name} sample rows</h2>
                 <p className="mt-2 text-sm text-inkMuted">
                   Captured {formatUtcStamp(snapshot.updated_at_utc)} UTC from public OSHA records.
                 </p>
@@ -191,6 +213,10 @@ export default function SamplePage() {
                 {rows.length} populated item{rows.length === 1 ? "" : "s"}
               </p>
             </div>
+            <p className="mt-4 text-sm text-inkMuted">
+              This frozen sample shows what the lead rows look like before citations post publicly.
+              Timing matters because the goal is to help identify employers who may need help now.
+            </p>
             <div className="mt-6 grid gap-4 md:grid-cols-2">
               {rows.map((row) => (
                 <SignalRowCard key={`${snapshot.territory_id}-${row.activity_nr}`} row={row} />
@@ -202,9 +228,10 @@ export default function SamplePage() {
 
       <section className="mx-auto w-full max-w-5xl px-6">
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-          <p className="text-sm font-semibold text-ink">Need your footprint instead?</p>
+          <p className="text-sm font-semibold text-ink">Want a sample for your territory instead?</p>
           <p className="mt-2 text-sm text-inkMuted">
-            Send the coverage and recipients you want watched. We confirm mapping before billing.
+            Request a sample first. If the fit looks right, we can manually qualify a 30-day
+            Founding Pilot for one state.
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-4">
             <CTAButtons />

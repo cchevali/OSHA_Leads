@@ -8,56 +8,52 @@ export const metadata: Metadata = {
 
 const faqs = [
   {
-    q: "How does coverage mapping work?",
-    a: "Send counties, cities, metros, or OSHA areas. We confirm mapping before billing. For example, LA + Orange + Riverside/San Bernardino + Ventura + Santa Barbara + Kern typically maps to Multi-Territory."
+    q: "Who is this best for?",
+    a: "MicroFlowOps is best for safety consulting and training firms that already do outbound or business development with employers."
+  },
+  {
+    q: "Who is this not ideal for?",
+    a: "It is less useful for teams looking for a full compliance workflow or teams not doing outreach."
   },
   {
     q: "Why is the public sample frozen instead of live?",
-    a: "The Frozen public sample stays populated with real rows so buyers can inspect an actual alert set any time, while customer feeds continue to refresh on schedule."
+    a: "The frozen sample stays populated with real rows so buyers can inspect the lead format, proof, and verification flow at any time."
   },
   {
-    q: "How do I choose a plan?",
-    a: "Start with Core if you need up to 4 billed metros. If the mapped footprint is larger, we can move you to Multi-Territory or Enterprise only with your approval."
+    q: "What does a usable lead include?",
+    a: "At minimum: company name, city/state, signal type, observed timing, and a public source link. When available, we also include website, phone, public contact details, and a short reason the signal may matter now."
   },
   {
-    q: "How do I verify a signal?",
-    a: "Verify in 30 seconds. Each sample item shows opened and observed timestamps plus a direct link to the public OSHA record."
+    q: "How do I verify a lead?",
+    a: "Verify in 30 seconds. Each sample item links back to the public OSHA record so you can confirm the location and timing quickly."
   },
   {
-    q: "Can I change my coverage later?",
-    a: "Yes. You can swap mapped coverage once per billing cycle at no charge. Email us with the change and we will confirm the new fit."
+    q: "How does the Founding Pilot work?",
+    a: "Founding Pilot is $149 for 30 days in one state. It uses the current request flow, and every pilot is manually qualified before activation."
   },
   {
-    q: "Do you support OSHA Area Office alignment?",
-    a: "Yes. If you prefer OSHA Area Office alignment, we support that on Enterprise or can confirm the mapping during onboarding. Self-serve plans are metro-based."
+    q: "Do standard plans still exist?",
+    a: "Yes. Core and Multi-Territory remain available as the standard ongoing plans after you confirm territory fit."
   },
   {
-    q: "Will my price change?",
-    a: "Founding customer rate is locked for 12 months while your subscription remains active."
+    q: "How do territories work?",
+    a: "Send states, metros, counties, or OSHA areas. We confirm fit from the labels you already use."
   },
   {
     q: "Is onboarding handled over email only?",
-    a: "Yes. No calls are required; onboarding is handled via a short form plus email confirmation, which keeps everything documented."
+    a: "Yes. No calls are required; we can qualify sample requests, founding pilots, and territory fit over email."
   },
   {
     q: "Where does the data come from?",
     a: "We use public OSHA inspection activity and related public records. We do not purchase private datasets."
   },
   {
-    q: "How quickly are new inspections visible?",
-    a: "Signals show up as soon as the inspection is observable in public sources. We refresh daily."
-  },
-  {
     q: "Do you provide legal advice or citation deadlines?",
-    a: "No. Alerts are informational only. We include deadlines only when the public record explicitly supports them."
+    a: "No. This is an informational lead product, not legal advice, and not a full compliance workflow."
   },
   {
     q: "How do unsubscribe requests work?",
     a: "Every alert includes opt-out instructions. Requests are honored immediately and applied to future sends."
-  },
-  {
-    q: "Can you integrate with our CRM?",
-    a: "We can deliver alerts as CSV, email, or webhook for teams that need CRM ingestion."
   }
 ];
 
@@ -68,7 +64,7 @@ export default function FaqPage() {
         <SectionHeading
           eyebrow="FAQ"
           title="Answers to common questions."
-          description="Short answers on coverage, proof, onboarding, and delivery."
+          description="Short answers on fit, proof, territory setup, and the Founding Pilot."
           align="center"
         />
       </section>
@@ -88,9 +84,10 @@ export default function FaqPage() {
         <div className="rounded-3xl bg-inkFixed px-8 py-10 text-white shadow-soft">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="font-display text-3xl">Still have questions?</h2>
+              <h2 className="font-display text-3xl">Need a sample for your territory?</h2>
               <p className="mt-3 text-white/70">
-                Email us for a same-day response, or request a trial feed to see the signals firsthand.
+                Request a sample first, then decide whether the Founding Pilot or a standard plan is the right
+                next step.
               </p>
             </div>
             <CTAButtons variant="dark" />

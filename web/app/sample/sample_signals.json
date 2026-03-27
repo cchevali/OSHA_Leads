@@ -1,1 +1,29 @@
-[]
+[
+  {
+    "territory_id": "tx_west_sample",
+    "territory_name": "West Texas",
+    "updated_at_utc": "2026-03-06T15:25:00Z",
+    "rows": [
+      {
+        "activity_nr": "1712340.015",
+        "inspection_type": "Complaint",
+        "establishment_name": "Rhino Specialty Services",
+        "city": "Midland",
+        "state": "TX",
+        "opened_date": "2026-03-03",
+        "observed_at_utc": "2026-03-06T15:25:00Z",
+        "source_url": "https://www.osha.gov/ords/imis/establishment.inspection_detail?id=1712340.015"
+      },
+      {
+        "activity_nr": "1712340.044",
+        "inspection_type": "Referral",
+        "establishment_name": "Permian Tank Works",
+        "city": "Odessa",
+        "state": "TX",
+        "opened_date": "2026-03-02",
+        "observed_at_utc": "2026-03-06T15:10:00Z",
+        "source_url": "https://www.osha.gov/ords/imis/establishment.inspection_detail?id=1712340.044"
+      }
+    ]
+  }
+]

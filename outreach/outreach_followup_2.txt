@@ -1,0 +1,24 @@
+GREETING_LINE_TEXT
+
+Following up because timing is the whole point here.
+
+MicroFlowOps is meant for safety consulting and training firms that already do outbound or business development with employers in STATE_FULL_NAME.
+
+The useful part is getting territory-specific public OSHA activity in a format your team can work with quickly:
+- company name
+- city/state
+- signal type
+- observed date
+- public OSHA source
+- when available, website, phone, or public contact details
+
+If you want to see a short sample for your territory, reply with your state or metro.
+
+Thanks,
+Chase Chevalier, Founder
+MicroFlowOps · MICROFLOWOPS_URL
+SUPPORT_EMAIL
+MAILING_ADDRESS
+
+Informational only; not legal advice.
+FOOTER_OPT_OUT_TEXT_BLOCK

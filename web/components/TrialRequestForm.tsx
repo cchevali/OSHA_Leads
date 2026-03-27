@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { trackEvent } from "@/lib/analytics";
 import site from "@/config/site.json";
 
@@ -30,8 +30,21 @@ type TrialRequestFormProps = {
   intent?: string;
 };
 
+type RequestIntent = "sample" | "founding_pilot" | "territory_reply";
+
 function collapseWhitespace(value: string): string {
   return value.trim().replace(/\s+/g, " ");
+}
+
+function normalizeIntent(value: string): RequestIntent {
+  const normalized = (value || "").trim().toLowerCase();
+  if (normalized === "founding_pilot") {
+    return "founding_pilot";
+  }
+  if (normalized === "territory_reply") {
+    return "territory_reply";
+  }
+  return "sample";
 }
 
 function normalizeRecipients(rows: RecipientRow[]): { recipients: TrialRecipient[]; error: string } {
@@ -71,6 +84,32 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
   const [submitError, setSubmitError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [displayIntent, setDisplayIntent] = useState<RequestIntent>(normalizeIntent(intent));
+
+  useEffect(() => {
+    const queryIntent =
+      typeof window === "undefined" ? intent : new URLSearchParams(window.location.search).get("intent") || intent;
+    setDisplayIntent(normalizeIntent(queryIntent || ""));
+  }, [intent]);
+
+  const submitLabel =
+    displayIntent === "founding_pilot"
+      ? "Start founding pilot"
+      : displayIntent === "territory_reply"
+        ? "Reply with territory"
+        : "Request a sample";
+  const intentTitle =
+    displayIntent === "founding_pilot"
+      ? "Founding Pilot request"
+      : displayIntent === "territory_reply"
+        ? "Territory reply"
+        : "Sample request";
+  const intentBody =
+    displayIntent === "founding_pilot"
+      ? "Founding Pilot is $149 for 30 days in one state. We manually confirm fit before activation."
+      : displayIntent === "territory_reply"
+        ? "Reply with your state or metro and we will tell you whether a sample, founding pilot, or standard plan is the best next step."
+        : "We will use this to prepare a territory-specific sample and show how the lead digest would look for your outbound team.";
 
   function updateRecipientRow(index: number, key: keyof RecipientRow, value: string): void {
     setRecipientRows((prev) => prev.map((row, i) => (i === index ? { ...row, [key]: value } : row)));
@@ -174,8 +213,17 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
   if (submitted) {
     return (
       <div className="rounded-2xl border border-ocean/30 bg-ocean/10 p-6 text-center">
-        <p className="font-display text-xl text-ink">Request received. We’ll respond same business day.</p>
-        <p className="mt-2 text-sm text-inkMuted">If you don’t hear back, email {site.ctaEmail}</p>
+        <p className="font-display text-xl text-ink">
+          {displayIntent === "founding_pilot"
+            ? "Founding pilot request received. We'll review fit and respond same business day."
+            : "Request received. We'll respond same business day."}
+        </p>
+        <p className="mt-2 text-sm text-inkMuted">
+          {displayIntent === "sample"
+            ? "If you don't hear back, email"
+            : "If you need to add territory details, email"}{" "}
+          {site.ctaEmail}
+        </p>
         <button
           type="button"
           onClick={() => {
@@ -192,6 +240,10 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
 
   return (
     <form onSubmit={handleSubmit} className="grid gap-4">
+      <div className="rounded-xl border border-cardBorder bg-card p-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-inkMuted">{intentTitle}</p>
+        <p className="mt-2 text-sm text-inkMuted">{intentBody}</p>
+      </div>
       <label className="grid gap-1.5 text-sm text-inkMuted">
         Company
         <input
@@ -289,7 +341,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
       </div>
 
       <label className="grid gap-1.5 text-sm text-inkMuted">
-        Coverage to monitor (counties, cities, metros, or OSHA areas)
+        Territory (state, metro, counties, or OSHA area)
         <input
           required
           type="text"
@@ -300,7 +352,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
         />
         {metrosError ? <p className="text-xs font-semibold text-red-700">{metrosError}</p> : null}
         <p className="text-xs text-inkMuted">
-          Counties, cities, metros, or OSHA areas work — we translate coverage for you.
+          Reply with your state or metro. Counties, cities, metros, or OSHA areas all work.
         </p>
       </label>
       <label className="grid gap-1.5 text-sm text-inkMuted">
@@ -333,7 +385,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
           disabled={isSubmitting}
           className="inline-flex w-full items-center justify-center rounded-full bg-ocean px-5 py-2.5 text-sm font-semibold text-white shadow-glow transition enabled:hover:bg-oceanDark disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isSubmitting ? "Submitting..." : "Request trial feed"}
+          {isSubmitting ? "Submitting..." : submitLabel}
         </button>
       </div>
     </form>

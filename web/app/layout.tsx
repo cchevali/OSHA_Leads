@@ -25,20 +25,20 @@ export const metadata: Metadata = {
     canonical: "/"
   },
   title: {
-    default: `${site.brandName} | OSHA Activity Signals`,
+    default: `${site.brandName} | Outreach-Ready OSHA Leads`,
     template: `%s | ${site.brandName}`
   },
   description:
-    "Daily public OSHA activity signals for employer-side defense and safety teams. Counties, cities, metros, or OSHA areas work, and every sample item links back to the public record.",
+    "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by territory and linked to the public record.",
   robots:
     process.env.VERCEL_ENV === "production" && process.env.NODE_ENV === "production"
       ? { index: true, follow: true }
       : { index: false, follow: false, nocache: true },
   openGraph: {
     type: "website",
-    title: `${site.brandName} | OSHA Activity Signals`,
+    title: `${site.brandName} | Outreach-Ready OSHA Leads`,
     description:
-      "Daily public OSHA activity signals for employer-side defense and safety teams. Counties, cities, metros, or OSHA areas work, and every sample item links back to the public record.",
+      "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by territory and linked to the public record.",
     url: site.siteUrl,
     siteName: site.brandName,
     images: [
@@ -46,15 +46,15 @@ export const metadata: Metadata = {
         url: "/og.svg",
         width: 1200,
         height: 630,
-        alt: `${site.brandName} - OSHA Activity Signals`
+        alt: `${site.brandName} - Outreach-Ready OSHA Leads`
       }
     ]
   },
   twitter: {
     card: "summary_large_image",
-    title: `${site.brandName} | OSHA Activity Signals`,
+    title: `${site.brandName} | Outreach-Ready OSHA Leads`,
     description:
-      "Daily public OSHA activity signals for employer-side defense and safety teams. Counties, cities, metros, or OSHA areas work, and every sample item links back to the public record.",
+      "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by territory and linked to the public record.",
     images: ["/og.svg"]
   }
 };

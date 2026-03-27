@@ -8,28 +8,28 @@ export const metadata: Metadata = {
 
 const steps = [
   {
-    title: "Signal capture",
-    body: "We monitor new public OSHA inspection activity."
+    title: "Observe public activity",
+    body: "We watch newly observed public OSHA inspection activity before citation details are posted publicly."
   },
   {
-    title: "Enrichment",
-    body: "We attach location, industry, and enforcement context."
+    title: "Package it by territory",
+    body: "Signals are grouped into the state, metro, county, or OSHA area your team actually works."
   },
   {
-    title: "Scoring",
-    body: "Signals are ranked by severity, recency, and likely urgency."
+    title: "Keep it usable",
+    body: "Each digest is built to reduce research burden with verification-ready lead context."
   },
   {
-    title: "Delivery",
-    body: "Your team gets a short brief by email each morning."
+    title: "Send a short daily brief",
+    body: "Your team gets a concise list of outreach-ready leads it can review and act on quickly."
   }
 ];
 
 const safeguards = [
   "Suppression and unsubscribe enforcement on every send.",
   "Audit logs for each delivery attempt.",
-  "Footprint filtering against plan limits.",
-  "Pilot mode before live delivery."
+  "Territory filtering against the coverage you request.",
+  "Manual qualification before a Founding Pilot is activated."
 ];
 
 export default function HowItWorksPage() {
@@ -37,9 +37,9 @@ export default function HowItWorksPage() {
     <div className="space-y-16 pb-24 pt-12">
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
-          eyebrow="How it works"
-          title="From public activity to a short, ranked morning brief."
-          description="A simple daily pipeline from public OSHA activity to the signals your team reviews each morning."
+          eyebrow="How It Works"
+          title="From public OSHA activity to a short, outreach-ready morning brief."
+          description="This is a narrow workflow for safety consulting firms doing business development, not a broad compliance platform."
           align="center"
         />
       </section>
@@ -58,8 +58,8 @@ export default function HowItWorksPage() {
       <section className="mx-auto w-full max-w-5xl px-6">
         <SectionHeading
           eyebrow="Safeguards"
-          title="Operational guardrails are built in."
-          description="A few controls keep delivery clean and documented."
+          title="Operational guardrails stay in place."
+          description="The product stays simple, compliant, and easy to ship."
         />
         <div className="mt-8 grid gap-4 md:grid-cols-2">
           {safeguards.map((item) => (
@@ -74,9 +74,9 @@ export default function HowItWorksPage() {
         <div className="rounded-3xl bg-inkFixed px-8 py-10 text-white shadow-soft">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="font-display text-3xl">Ready to pilot your coverage?</h2>
+              <h2 className="font-display text-3xl">See a sample for your territory.</h2>
               <p className="mt-3 text-white/70">
-                Send your footprint and recipients. We confirm mapping before billing.
+                Then decide whether a 30-day Founding Pilot or an ongoing standard plan is the right fit.
               </p>
             </div>
             <CTAButtons variant="dark" />

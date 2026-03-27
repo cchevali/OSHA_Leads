@@ -2,7 +2,7 @@ GREETING_LINE_TEXT
 
 INTRO_LINE_TEXT
 
-Recent public OSHA inspection activity in STATE_FULL_NAME you may want on your radar:
+Newly observed public OSHA activity in STATE_FULL_NAME that may be useful for employer outreach:
 Opened = inspection opened date; Observed = first day it appeared in public OSHA data.
 
 RECENT_SIGNALS_LINES

@@ -2422,7 +2422,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                             self.assertEqual(subject, expected_subject)
                             expected_state_name = "California" if expected_state == "CA" else "Florida"
                             self.assertIn(
-                                f"You're getting this because your firm advises employers on OSHA and safety matters in {expected_state_name}.",
+                                f"I run MicroFlowOps. It packages newly observed public OSHA activity into territory-specific leads for safety consulting firms doing outbound in {expected_state_name}.",
                                 text_body,
                             )
                             self.assertIn(
@@ -2430,7 +2430,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                                 text_body,
                             )
                             self.assertIn(
-                                f"If useful, reply with the {expected_state_name} metros or other states you care about",
+                                f"If helpful, reply with your state or metro and I can send a short {expected_state_name} sample",
                                 text_body,
                             )
                             self.assertEqual(html_body.count(">Unsubscribe</a>"), 1)
@@ -2511,11 +2511,11 @@ class TestOutreachRunAuto(unittest.TestCase):
                 text_body,
             )
             self.assertIn(
-                "You're getting this because your firm advises employers on OSHA and safety matters in California.",
+                "I run MicroFlowOps. It packages newly observed public OSHA activity into territory-specific leads for safety consulting firms doing outbound in California.",
                 text_body,
             )
             self.assertIn(
-                "These items were recently observed in public OSHA data. Opened dates are listed above, and citations are not yet posted in the public record.",
+                "These items were recently observed in public OSHA data before citations posted publicly.",
                 text_body,
             )
         finally:
@@ -2576,8 +2576,8 @@ class TestOutreachRunAuto(unittest.TestCase):
                 )
             self.assertIn("Hi Alonso,", text_body)
             self.assertNotIn("Hi Alonso,,", text_body)
-            self.assertIn("Recent public OSHA inspection activity in Texas you may want on your radar:", text_body)
-            self.assertIn("If useful, reply with the Texas metros or other states you care about", text_body)
+            self.assertIn("Newly observed public OSHA activity in Texas that may be useful for employer outreach:", text_body)
+            self.assertIn("If helpful, reply with your state or metro and I can send a short Texas sample", text_body)
             self.assertNotIn("TEMPERATURE PRO WEST AUSTIN", text_body)
         finally:
             conn.close()

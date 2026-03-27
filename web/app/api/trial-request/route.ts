@@ -5,12 +5,14 @@ import site from "@/config/site.json";
 export const runtime = "nodejs";
 
 const DEFAULT_TRIAL_TO = "support@microflowops.com";
-const EMAIL_SUBJECT_CONFIRMATION = "We received your MicroFlowOps trial request";
+const EMAIL_SUBJECT_CONFIRMATION = "We received your MicroFlowOps request";
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const RATE_LIMIT_MAX = 5;
 const rateLimitByIp = new Map<string, number[]>();
 const EMAIL_SEND_ERROR = "EMAIL_SEND_ERROR";
+
+type RequestIntent = "sample" | "founding_pilot" | "territory_reply";
 
 type TrialRequestPayload = {
   company?: unknown;
@@ -105,6 +107,13 @@ function getSmtpPort(): number {
   return Number.parseInt(process.env.WEB_SMTP_PORT || "", 10);
 }
 
+function normalizeIntent(value: string): RequestIntent {
+  const normalized = (value || "").trim().toLowerCase();
+  if (normalized === "founding_pilot") return "founding_pilot";
+  if (normalized === "territory_reply") return "territory_reply";
+  return "sample";
+}
+
 export async function POST(request: Request) {
   const ip = getClientIp(request);
   const userAgent = request.headers.get("user-agent") || "unknown";
@@ -142,6 +151,13 @@ export async function POST(request: Request) {
     const honeypot = sanitizeText(payload.honeypot, 120);
     const source = sanitizeText(payload.source, 80);
     const intent = sanitizeText(payload.intent, 80);
+    const normalizedIntent = normalizeIntent(intent);
+    const requestTypeLabel =
+      normalizedIntent === "founding_pilot"
+        ? "Founding Pilot"
+        : normalizedIntent === "territory_reply"
+          ? "Territory reply"
+          : "Sample request";
 
     if (honeypot) {
       console.warn(`WARN_HONEYPOT_TRIGGERED ip=${ip} ua=${userAgent}`);
@@ -201,10 +217,11 @@ export async function POST(request: Request) {
 
     const submittedAt = new Date(nowMs).toISOString();
     const supportTo = process.env.WEB_TRIAL_TO || DEFAULT_TRIAL_TO;
-    const supportSubject = `Trial feed request: ${company} (${email})`;
+    const supportSubject = `${requestTypeLabel}: ${company} (${email})`;
     const supportText = [
-      "New trial feed request",
+      "New MicroFlowOps request",
       "",
+      `Request type: ${requestTypeLabel}`,
       `Company: ${company}`,
       `Email: ${email}`,
       `Coverage requested: ${metros}`,
@@ -215,12 +232,15 @@ export async function POST(request: Request) {
       `Notes: ${notes || "(none)"}`,
       "",
       `Source: ${source || "(unspecified)"}`,
-      `Intent: ${intent || "(unspecified)"}`,
+      `Intent: ${normalizedIntent}`,
+      `Manual qualification required: ${normalizedIntent === "founding_pilot" ? "yes" : "no"}`,
       `Submitted at (UTC): ${submittedAt}`,
       `IP: ${ip}`,
       `User-Agent: ${userAgent}`,
       "",
-      "Offer context: 14-day trial, up to 4 metros in billed coverage, no credit card.",
+      normalizedIntent === "founding_pilot"
+        ? "Offer context: Founding Pilot is $149 for 30 days in one state. Manual qualification required before activation."
+        : "Offer context: Request a sample first, then qualify territory fit for a founding pilot or standard plan.",
       "",
       `Mailing address: ${site.mailingAddress}`
     ].join("\n");
@@ -236,12 +256,20 @@ export async function POST(request: Request) {
       const confirmationText = [
         `Hi ${company},`,
         "",
-        "We received your MicroFlowOps trial request.",
-        "14-day trial, up to 4 metros in billed coverage, no credit card.",
+        "We received your MicroFlowOps request.",
+        normalizedIntent === "founding_pilot"
+          ? "We will review founding pilot fit manually and reply same business day."
+          : normalizedIntent === "territory_reply"
+            ? "We will review your territory and reply with the best next step."
+            : "We will review your territory and send the best next step for a sample.",
         "",
         `We captured this coverage: ${metros}`,
         `Recipients: ${recipients.length}`,
-        "Counties, cities, metros, or OSHA areas all work. We will confirm the mapping before any billing changes.",
+        "Counties, cities, metros, or OSHA areas all work.",
+        "Best for safety consulting and training firms already doing outbound or business development.",
+        normalizedIntent === "founding_pilot"
+          ? "Founding Pilot is $149 for 30 days in one state. Activation happens only after manual qualification."
+          : "If the fit looks right, we can talk through a 30-day Founding Pilot or an ongoing standard plan.",
         "",
         "Request received. We'll respond same business day.",
         "If you don't hear back, email support@microflowops.com",

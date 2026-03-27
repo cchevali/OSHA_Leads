@@ -467,8 +467,8 @@ def _footer_opt_out_html(unsub_url: str, prefs_url: str) -> str:
 
 def _trial_cta_lines(state_full_name: str) -> tuple[str, str]:
     text_line = (
-        f"If useful, reply with the {state_full_name} metros or other states you care about, "
-        "or request a short trial feed."
+        f"If helpful, reply with your state or metro and I can send a short {state_full_name} sample "
+        "for your territory."
     )
     html_line = _html_escape(text_line)
     return text_line, html_line
@@ -489,12 +489,12 @@ def _build_copy_tokens(
     clean_first = _clean_first_name(first_name)
     greeting_text = f"Hi {clean_first}," if clean_first else "Hi,"
     intro_text = (
-        f"You're getting this because your firm advises employers on OSHA and safety matters in {state_full_name}. "
-        "I'm Chase Chevalier, founder of MicroFlowOps. I monitor newly posted public OSHA inspection activity daily."
+        "I run MicroFlowOps. It packages newly observed public OSHA activity into territory-specific "
+        f"leads for safety consulting firms doing outbound in {state_full_name}."
     )
     post_cards_text = (
-        "These items were recently observed in public OSHA data. "
-        "Opened dates are listed above, and citations are not yet posted in the public record."
+        "These items were recently observed in public OSHA data before citations posted publicly. "
+        "The goal is to reduce follow-up research so your team can decide faster who may need help now."
     )
     trial_text, trial_html = _trial_cta_lines(state_full_name)
 
