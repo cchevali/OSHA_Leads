@@ -45,7 +45,7 @@ export default function CTAButtons({ variant = "light" }: CTAButtonsProps) {
         onClick={() => trackEvent("cta_reply_with_territory")}
         className={tertiaryClass}
       >
-        Reply with your state or metro
+        Tell us your territory
       </a>
     </div>
   );

@@ -5,7 +5,7 @@ import site from "@/config/site.json";
 import { loadCbsaOptions } from "@/lib/cbsa";
 
 const COVERAGE_HELPER =
-  "Counties, cities, metros, or OSHA areas work — we translate coverage for you.";
+  "Tell us your state, metro, counties, or OSHA area. We confirm fit before activation.";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/onboarding" }
@@ -29,8 +29,8 @@ export default function OnboardingPage({ searchParams }: OnboardingPageProps) {
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="Onboarding"
-          title="Set your coverage"
-          description="Tell us your footprint and we translate it to Census CBSA/MSA boundaries before saving your coverage."
+          title="Set your territory"
+          description="Tell us the territory you want covered and we will save it for your ongoing plan."
           align="center"
         />
         <p className="mt-4 text-center text-sm font-semibold text-inkMuted">{COVERAGE_HELPER}</p>
@@ -40,11 +40,10 @@ export default function OnboardingPage({ searchParams }: OnboardingPageProps) {
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <h2 className="font-display text-2xl text-ink">Submit onboarding details</h2>
           <p className="mt-3 text-sm text-inkMuted">
-            A metro area is a Census CBSA/MSA (city + suburbs). We use that mapping so plan coverage stays deterministic.
+            We use metro mapping behind the scenes so ongoing coverage stays consistent.
           </p>
           <p className="mt-3 text-sm text-inkMuted">
-            Core supports up to 4 metros. Multi-Territory supports up to 10 metros. If you need expansion beyond your cap,
-            submission is blocked and routed to contact.
+            Standard supports one primary territory setup. Multi-Territory supports broader coverage. If you need more than your current plan allows, we will route you to contact.
           </p>
           <p className="mt-2 text-sm text-inkMuted">
             No calls required; onboarding is handled via a short form + email confirmation.

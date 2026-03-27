@@ -8,28 +8,23 @@ export const metadata: Metadata = {
 
 const steps = [
   {
-    title: "Observe public activity",
-    body: "We watch newly observed public OSHA inspection activity before citation details are posted publicly."
+    title: "We watch public OSHA activity",
+    body: "We track newly observed public OSHA activity so your team can see it early."
   },
   {
-    title: "Package it by territory",
-    body: "Signals are grouped into the state, metro, county, or OSHA area your team actually works."
+    title: "We package the best leads for your territory",
+    body: "You tell us the geography you care about, and we package the strongest leads for that footprint."
   },
   {
-    title: "Keep it usable",
-    body: "Each digest is built to reduce research burden with verification-ready lead context."
-  },
-  {
-    title: "Send a short daily brief",
-    body: "Your team gets a concise list of outreach-ready leads it can review and act on quickly."
+    title: "We email a short daily digest",
+    body: "Your team gets a concise daily digest it can review, verify, and use for outreach."
   }
 ];
 
-const safeguards = [
-  "Suppression and unsubscribe enforcement on every send.",
-  "Audit logs for each delivery attempt.",
-  "Territory filtering against the coverage you request.",
-  "Manual qualification before a Founding Pilot is activated."
+const buyerNotes = [
+  "Request a sample first so you can see the lead quality before you pay.",
+  "Each lead links back to the public OSHA record for quick verification.",
+  "Tell us your state, metro, counties, or OSHA area. We confirm fit before activation."
 ];
 
 export default function HowItWorksPage() {
@@ -38,14 +33,14 @@ export default function HowItWorksPage() {
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="How It Works"
-          title="From public OSHA activity to a short, outreach-ready morning brief."
-          description="This is a narrow workflow for safety consulting firms doing business development, not a broad compliance platform."
+          title="We watch public OSHA activity, package the best leads for your territory, and email a short daily digest."
+          description="Built for safety consulting and training firms already doing outbound, not for teams looking for a full compliance workflow."
           align="center"
         />
       </section>
 
       <section className="mx-auto w-full max-w-6xl px-6">
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid gap-6 md:grid-cols-3">
           {steps.map((step) => (
             <div key={step.title} className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
               <h3 className="font-display text-2xl text-ink">{step.title}</h3>
@@ -57,12 +52,12 @@ export default function HowItWorksPage() {
 
       <section className="mx-auto w-full max-w-5xl px-6">
         <SectionHeading
-          eyebrow="Safeguards"
-          title="Operational guardrails stay in place."
-          description="The product stays simple, compliant, and easy to ship."
+          eyebrow="What Buyers See"
+          title="Simple enough to understand in a minute."
+          description="A sample first, clear territory fit, and one quick verification path."
         />
-        <div className="mt-8 grid gap-4 md:grid-cols-2">
-          {safeguards.map((item) => (
+        <div className="mt-8 grid gap-4 md:grid-cols-3">
+          {buyerNotes.map((item) => (
             <div key={item} className="rounded-3xl border border-cardBorder bg-card p-5">
               <p className="text-sm text-inkMuted">{item}</p>
             </div>
@@ -76,7 +71,7 @@ export default function HowItWorksPage() {
             <div>
               <h2 className="font-display text-3xl">See a sample for your territory.</h2>
               <p className="mt-3 text-white/70">
-                Then decide whether a 30-day Founding Pilot or an ongoing standard plan is the right fit.
+                Then decide whether Founding Pilot, Standard, or Multi-Territory is the right fit.
               </p>
             </div>
             <CTAButtons variant="dark" />

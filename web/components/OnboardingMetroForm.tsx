@@ -38,7 +38,7 @@ const PLAN_RECIPIENT_CAPS: Record<string, number> = {
 
 const PLAN_LABELS: Record<string, string> = {
   pilot: "Pilot",
-  core: "Core",
+  core: "Standard",
   multi: "Multi-Territory"
 };
 
@@ -256,7 +256,7 @@ export default function OnboardingMetroForm({
           className="rounded-xl border border-cardBorder bg-surface px-3 py-2 text-ink outline-none focus:border-ocean"
         >
           <option value="pilot">Pilot (max 4 metros, 6 recipients)</option>
-          <option value="core">Core (max 4 metros, 6 recipients)</option>
+          <option value="core">Standard (max 4 metros, 6 recipients)</option>
           <option value="multi">Multi-Territory (max 10 metros, 15 recipients)</option>
         </select>
       </label>

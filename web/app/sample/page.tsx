@@ -230,8 +230,8 @@ export default function SamplePage() {
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <p className="text-sm font-semibold text-ink">Want a sample for your territory instead?</p>
           <p className="mt-2 text-sm text-inkMuted">
-            Request a sample first. If the fit looks right, we can manually qualify a 30-day
-            Founding Pilot for one state.
+            Request a sample first. If the fit looks right, we can confirm whether Founding Pilot,
+            Standard, or Multi-Territory is the right next step.
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-4">
             <CTAButtons />

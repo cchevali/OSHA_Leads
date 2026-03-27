@@ -16,12 +16,12 @@ const faqs = [
     a: "It is less useful for teams looking for a full compliance workflow or teams not doing outreach."
   },
   {
-    q: "Why is the public sample frozen instead of live?",
-    a: "The frozen sample stays populated with real rows so buyers can inspect the lead format, proof, and verification flow at any time."
+    q: "What happens first?",
+    a: "Request a sample first. If the territory and lead quality look right, the next step is Founding Pilot at $149, then Standard at $299 or Multi-Territory at $499."
   },
   {
     q: "What does a usable lead include?",
-    a: "At minimum: company name, city/state, signal type, observed timing, and a public source link. When available, we also include website, phone, public contact details, and a short reason the signal may matter now."
+    a: "At minimum: company name, location, signal type, observed timing, and a public source link your team can verify quickly."
   },
   {
     q: "How do I verify a lead?",
@@ -29,19 +29,19 @@ const faqs = [
   },
   {
     q: "How does the Founding Pilot work?",
-    a: "Founding Pilot is $149 for 30 days in one state. It uses the current request flow, and every pilot is manually qualified before activation."
+    a: "Founding Pilot is $149 for 30 days in one state. We review fit manually before activation."
   },
   {
     q: "Do standard plans still exist?",
-    a: "Yes. Core and Multi-Territory remain available as the standard ongoing plans after you confirm territory fit."
+    a: "Yes. Standard is $299 and Multi-Territory is $499 once you are ready for ongoing coverage."
   },
   {
     q: "How do territories work?",
-    a: "Send states, metros, counties, or OSHA areas. We confirm fit from the labels you already use."
+    a: "Tell us your state, metro, counties, or OSHA area. We confirm fit before activation."
   },
   {
     q: "Is onboarding handled over email only?",
-    a: "Yes. No calls are required; we can qualify sample requests, founding pilots, and territory fit over email."
+    a: "Yes. No calls are required. We can handle the sample, territory fit, and next-step planning over email."
   },
   {
     q: "Where does the data come from?",
@@ -64,7 +64,7 @@ export default function FaqPage() {
         <SectionHeading
           eyebrow="FAQ"
           title="Answers to common questions."
-          description="Short answers on fit, proof, territory setup, and the Founding Pilot."
+          description="Short answers on fit, verification, territory setup, and pricing."
           align="center"
         />
       </section>
@@ -86,8 +86,8 @@ export default function FaqPage() {
             <div>
               <h2 className="font-display text-3xl">Need a sample for your territory?</h2>
               <p className="mt-3 text-white/70">
-                Request a sample first, then decide whether the Founding Pilot or a standard plan is the right
-                next step.
+                Request a sample first, then decide whether Founding Pilot, Standard, or Multi-Territory is
+                the right next step.
               </p>
             </div>
             <CTAButtons variant="dark" />

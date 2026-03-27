@@ -96,8 +96,8 @@ export default function HomePage() {
               firms doing outbound or business development with employers.
             </p>
             <p className="text-sm font-semibold text-inkMuted">
-              Request a sample first. Founding Pilot: $149 for 30 days in one state. Standard plans remain
-              available for ongoing coverage.
+              Request a sample first. Founding Pilot: $149 for 30 days in one state. Standard and
+              Multi-Territory remain available for ongoing coverage.
             </p>
             <CTAButtons />
             <div className="grid gap-3 text-sm font-semibold text-ink md:grid-cols-3">
@@ -243,7 +243,7 @@ export default function HomePage() {
             </ul>
           </div>
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-            <h3 className="font-display text-2xl text-ink">What "usable" means</h3>
+            <h3 className="font-display text-2xl text-ink">What &quot;usable&quot; means</h3>
             <p className="mt-3 text-inkMuted">
               The lead should be clear enough that a business development team can review it, verify the public
               source, and decide whether to reach out without building a long research memo first.
@@ -369,8 +369,8 @@ export default function HomePage() {
               </p>
               <h2 className="mt-3 font-display text-3xl">Request a sample for your territory.</h2>
               <p className="mt-3 text-white/70">
-                We will send a sample first, then qualify whether a 30-day founding pilot makes sense for your
-                state or metro.
+                We will send a sample first, then confirm whether Founding Pilot, Standard, or
+                Multi-Territory is the right next step.
               </p>
             </div>
             <CTAButtons variant="dark" />
