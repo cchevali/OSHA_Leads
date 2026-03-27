@@ -32,6 +32,9 @@ class TestWebMarketingCopy(unittest.TestCase):
         self.assertIn("Less useful for teams looking for a full compliance workflow", home_text)
         self.assertIn("Request a sample for your territory.", home_text)
         self.assertNotIn("We confirm mapping before billing", home_text)
+        self.assertNotIn("Why Timing Matters", home_text)
+        self.assertNotIn("What Is Included", home_text)
+        self.assertNotIn("Founder note", home_text)
 
     def test_pricing_page_adds_founding_pilot_and_removes_public_free_trial_language(self):
         pricing_text = PRICING_PAGE.read_text(encoding="utf-8")
