@@ -83,9 +83,9 @@ class TestMetroEntitlements(unittest.TestCase):
         self.assertIn("$149", text)
         self.assertIn("One state", text)
         self.assertIn("Manual fit confirmation before activation", text)
-        self.assertIn("One primary territory", text)
+        self.assertIn("One primary state or region", text)
         self.assertIn("Broader ongoing coverage", text)
-        self.assertIn("Tell us your territory", text)
+        self.assertIn("Tell us your state or region", text)
 
     def test_onboarding_enforces_max_metros(self) -> None:
         crm_light.ensure_database(self.crm_db)

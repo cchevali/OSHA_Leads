@@ -45,7 +45,7 @@ export default function CTAButtons({ variant = "light" }: CTAButtonsProps) {
         onClick={() => trackEvent("cta_reply_with_territory")}
         className={tertiaryClass}
       >
-        Tell us your territory
+        Tell us your state or region
       </a>
     </div>
   );

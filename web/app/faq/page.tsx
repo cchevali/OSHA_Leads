@@ -17,7 +17,7 @@ const faqs = [
   },
   {
     q: "What happens first?",
-    a: "Request a sample first. If the territory and lead quality look right, the next step is Founding Pilot at $149, then Standard at $299 or Multi-Territory at $499."
+    a: "Start with a sample. Sample = one example digest for your state or region. If the state or region and lead quality look right, the next step is Founding Pilot at $149, then Standard at $299 or Multi-Territory at $499."
   },
   {
     q: "What does a usable lead include?",
@@ -36,12 +36,12 @@ const faqs = [
     a: "Yes. Standard is $299 and Multi-Territory is $499 once you are ready for ongoing coverage."
   },
   {
-    q: "How do territories work?",
-    a: "Tell us your state, metro, counties, or OSHA area. We confirm fit before activation."
+    q: "How does state or region setup work?",
+    a: "Tell us your state or region. State, metro, counties, or OSHA area all work. We confirm fit before activation."
   },
   {
     q: "Is onboarding handled over email only?",
-    a: "Yes. No calls are required. We can handle the sample, territory fit, and next-step planning over email."
+    a: "Yes. No calls are required. We can handle the sample, state or region fit, and next-step planning over email."
   },
   {
     q: "Where does the data come from?",
@@ -64,7 +64,7 @@ export default function FaqPage() {
         <SectionHeading
           eyebrow="FAQ"
           title="Answers to common questions."
-          description="Short answers on fit, verification, territory setup, and pricing."
+          description="Short answers on fit, verification, state or region setup, and pricing."
           align="center"
         />
       </section>
@@ -84,7 +84,7 @@ export default function FaqPage() {
         <div className="rounded-3xl bg-inkFixed px-8 py-10 text-white shadow-soft">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="font-display text-3xl">Need a sample for your territory?</h2>
+              <h2 className="font-display text-3xl">Need a sample for your state or region?</h2>
               <p className="mt-3 text-white/70">
                 Request a sample first, then decide whether Founding Pilot, Standard, or Multi-Territory is
                 the right next step.

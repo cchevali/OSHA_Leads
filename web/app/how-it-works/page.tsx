@@ -12,8 +12,8 @@ const steps = [
     body: "We track newly observed public OSHA activity so your team can see it early."
   },
   {
-    title: "We package the best leads for your territory",
-    body: "You tell us the geography you care about, and we package the strongest leads for that footprint."
+    title: "We package the best leads for your state or region",
+    body: "You tell us the state or region you care about, and we package the strongest leads for that footprint."
   },
   {
     title: "We email a short daily digest",
@@ -22,9 +22,9 @@ const steps = [
 ];
 
 const buyerNotes = [
-  "Request a sample first so you can see the lead quality before you pay.",
+  "Sample = one example digest for your state or region.",
   "Each lead links back to the public OSHA record for quick verification.",
-  "Tell us your state, metro, counties, or OSHA area. We confirm fit before activation."
+  "Need live proof? Ask about a 14-day trial."
 ];
 
 export default function HowItWorksPage() {
@@ -33,7 +33,7 @@ export default function HowItWorksPage() {
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="How It Works"
-          title="We watch public OSHA activity, package the best leads for your territory, and email a short daily digest."
+          title="We watch public OSHA activity, package the best leads for your state or region, and email a short daily digest."
           description="Built for safety consulting and training firms already doing outbound, not for teams looking for a full compliance workflow."
           align="center"
         />
@@ -54,7 +54,7 @@ export default function HowItWorksPage() {
         <SectionHeading
           eyebrow="What Buyers See"
           title="Simple enough to understand in a minute."
-          description="A sample first, clear territory fit, and one quick verification path."
+          description="A clear sample, clear state or region fit, and one quick verification path."
         />
         <div className="mt-8 grid gap-4 md:grid-cols-3">
           {buyerNotes.map((item) => (
@@ -69,7 +69,7 @@ export default function HowItWorksPage() {
         <div className="rounded-3xl bg-inkFixed px-8 py-10 text-white shadow-soft">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="font-display text-3xl">See a sample for your territory.</h2>
+              <h2 className="font-display text-3xl">See a sample for your state or region.</h2>
               <p className="mt-3 text-white/70">
                 Then decide whether Founding Pilot, Standard, or Multi-Territory is the right fit.
               </p>

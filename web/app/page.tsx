@@ -27,7 +27,7 @@ type SampleTerritory = {
 export const metadata: Metadata = {
   title: "Outreach-Ready OSHA Leads for Safety Consulting Firms",
   description:
-    "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by territory.",
+    "Outreach-ready OSHA leads for safety consulting firms. See newly observed public OSHA activity before citations post, packaged for business development by state or region.",
   alternates: { canonical: "/" }
 };
 
@@ -90,20 +90,24 @@ export default function HomePage() {
               See newly observed public OSHA activity before citations post.
             </h1>
             <p className="text-lg text-inkMuted md:text-xl">
-              {site.brandName} packages territory-specific public OSHA activity into usable daily leads for
-              firms doing outbound or business development with employers.
+              {site.brandName} packages public OSHA activity into usable daily leads for firms doing
+              outbound or business development with employers in a state or region.
             </p>
             <p className="text-sm font-semibold text-inkMuted">
-              Request a sample first. Founding Pilot: $149 for 30 days in one state. Standard and
-              Multi-Territory remain available for ongoing coverage.
+              Sample = one example digest for your state or region.
             </p>
+            <p className="text-sm font-semibold text-inkMuted">
+              Founding Pilot: $149 for 30 days in one state. Standard and Multi-Territory remain
+              available for ongoing coverage.
+            </p>
+            <p className="text-sm font-semibold text-inkMuted">Need live proof? Ask about a 14-day trial.</p>
             <CTAButtons />
             <div className="grid gap-3 text-sm font-semibold text-ink md:grid-cols-3">
               <div className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
                 Best for outbound teams already selling safety services
               </div>
               <div className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
-                Territory-specific leads packaged for fast follow-up
+                Leads packaged for fast follow-up in your state or region
               </div>
               <div className="rounded-2xl border border-cardBorder bg-card px-4 py-3">
                 Public-source verification included on every sample
@@ -165,7 +169,7 @@ export default function HomePage() {
         <SectionHeading
           eyebrow="Who It Is For"
           title="Built for safety consulting and training firms that already do outbound."
-          description="The goal is simple: identify employers in your territory that may need help now, then follow up while the signal is still fresh."
+          description="The goal is simple: identify employers in your state or region that may need help now, then follow up while the signal is still fresh."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-2">
           <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
@@ -243,7 +247,7 @@ export default function HomePage() {
               <p className="text-xs font-semibold uppercase tracking-[0.3em] text-white/70">
                 Start with a sample
               </p>
-              <h2 className="mt-3 font-display text-3xl">Request a sample for your territory.</h2>
+              <h2 className="mt-3 font-display text-3xl">Request a sample for your state or region.</h2>
               <p className="mt-3 text-white/70">
                 We will send a sample first, then confirm whether Founding Pilot, Standard, or
                 Multi-Territory is the right next step.

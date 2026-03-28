@@ -156,7 +156,7 @@ export async function POST(request: Request) {
       normalizedIntent === "founding_pilot"
         ? "Founding Pilot"
         : normalizedIntent === "territory_reply"
-          ? "Territory reply"
+          ? "State or region reply"
           : "Sample request";
 
     if (honeypot) {
@@ -260,8 +260,8 @@ export async function POST(request: Request) {
         normalizedIntent === "founding_pilot"
           ? "We will review founding pilot fit manually and reply same business day."
           : normalizedIntent === "territory_reply"
-            ? "We will review your territory and reply with the best next step."
-            : "We will review your territory and send the best next step for a sample.",
+            ? "We will review your state or region and reply with the best next step."
+            : "We will review your state or region and send the best next step for a sample.",
         "",
         `We captured this coverage: ${metros}`,
         `Recipients: ${recipients.length}`,
@@ -269,14 +269,20 @@ export async function POST(request: Request) {
         "Best for safety consulting and training firms already doing outbound or business development.",
         normalizedIntent === "founding_pilot"
           ? "Founding Pilot is $149 for 30 days in one state. Activation happens only after manual qualification."
+          : "Sample = one example digest for your state or region.",
+        normalizedIntent === "founding_pilot"
+          ? null
           : "If the fit looks right, the next step can be Founding Pilot at $149, Standard at $299, or Multi-Territory at $499.",
+        normalizedIntent === "founding_pilot" ? null : "Need live proof? Ask about a 14-day trial.",
         "",
         "Request received. We'll respond same business day.",
         "If you don't hear back, email support@microflowops.com",
         "",
         "Thanks,",
         "MicroFlowOps"
-      ].join("\n");
+      ]
+        .filter(Boolean)
+        .join("\n");
 
       await transporter.sendMail({
         from: process.env.WEB_SMTP_FROM,

@@ -96,20 +96,20 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
     displayIntent === "founding_pilot"
       ? "Start founding pilot"
       : displayIntent === "territory_reply"
-        ? "Reply with territory"
+        ? "Reply with state or region"
         : "Request a sample";
   const intentTitle =
     displayIntent === "founding_pilot"
       ? "Founding Pilot request"
       : displayIntent === "territory_reply"
-        ? "Territory reply"
+        ? "State or region reply"
         : "Sample request";
   const intentBody =
     displayIntent === "founding_pilot"
       ? "Founding Pilot is $149 for 30 days in one state. We manually confirm fit before activation."
       : displayIntent === "territory_reply"
-        ? "Tell us your state, metro, counties, or OSHA area. We confirm fit before activation and recommend the best next step."
-        : "We will use this to prepare a territory-specific sample and show how the lead digest would look for your outbound team.";
+        ? "Tell us your state or region. State, metro, counties, or OSHA area all work. We confirm fit before activation and recommend the best next step."
+        : "We will use this to prepare one example digest for your state or region and show how the lead digest would look for your outbound team.";
 
   function updateRecipientRow(index: number, key: keyof RecipientRow, value: string): void {
     setRecipientRows((prev) => prev.map((row, i) => (i === index ? { ...row, [key]: value } : row)));
@@ -221,7 +221,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
         <p className="mt-2 text-sm text-inkMuted">
           {displayIntent === "sample"
             ? "If you don't hear back, email"
-            : "If you need to add territory details, email"}{" "}
+            : "If you need to add state or region details, email"}{" "}
           {site.ctaEmail}
         </p>
         <button
@@ -341,7 +341,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
       </div>
 
       <label className="grid gap-1.5 text-sm text-inkMuted">
-        Territory (state, metro, counties, or OSHA area)
+        State or region
         <input
           required
           type="text"
@@ -352,7 +352,7 @@ export default function TrialRequestForm({ source = "", intent = "" }: TrialRequ
         />
         {metrosError ? <p className="text-xs font-semibold text-red-700">{metrosError}</p> : null}
         <p className="text-xs text-inkMuted">
-          Tell us your state, metro, counties, or OSHA area. We confirm fit before activation.
+          State, metro, counties, or OSHA area all work. We confirm fit before activation.
         </p>
       </label>
       <label className="grid gap-1.5 text-sm text-inkMuted">

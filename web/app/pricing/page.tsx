@@ -1,14 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import SectionHeading from "@/components/SectionHeading";
-import CTAButtons from "@/components/CTAButtons";
 import site from "@/config/site.json";
 import { resolveCheckoutCta } from "@/lib/checkout";
 
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "Sample first, then choose Founding Pilot, Standard, or Multi-Territory. Tell us your state, metro, counties, or OSHA area and we confirm fit before activation.",
+    "Simple pricing for Founding Pilot, Standard, and Multi-Territory. Want to preview lead quality first? Request a sample.",
   alternates: { canonical: "/pricing" }
 };
 
@@ -16,14 +15,9 @@ export default function PricingPage() {
   const standardCheckout = resolveCheckoutCta(site.stripePaymentLinkCore, "/contact?source=pricing&intent=sample");
   const multiCheckout = resolveCheckoutCta(site.stripePaymentLinkMulti, "/contact?source=pricing&intent=territory_reply");
   const foundingPilotPath = "/contact?source=pricing&intent=founding_pilot";
-  const samplePath = "/contact?source=pricing&intent=sample";
-  const territoryMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
-    subject: site.ctaTerritorySubject,
-    body: site.ctaTerritoryBody
-  }).toString()}`;
   const confirmFirstMailto = `mailto:${site.ctaEmail}?${new URLSearchParams({
-    subject: "Replying with my territory",
-    body: "Hi MicroFlowOps,\n\nI would like to confirm fit for my territory.\n\nOrganization:\nState, metro, counties, or OSHA area:\nRecipients:\nCurrent outbound motion:\n\nThanks"
+    subject: "Replying with my state or region",
+    body: "Hi MicroFlowOps,\n\nI would like to confirm fit for my state or region.\n\nOrganization:\nState, metro, counties, or OSHA area:\nRecipients:\nCurrent outbound motion:\n\nThanks"
   }).toString()}`;
 
   const plans = [
@@ -50,7 +44,7 @@ export default function PricingPage() {
       highlight: false,
       features: [
         "Ongoing daily delivery",
-        "One primary territory",
+        "One primary state or region",
         "Up to 6 recipients",
         "Weekly summary included"
       ],
@@ -82,7 +76,7 @@ export default function PricingPage() {
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="Pricing"
-          title="Sample first. Then choose the plan that fits."
+          title="Simple pricing."
           description="Founding Pilot is $149. Standard is $299. Multi-Territory is $499."
           align="center"
         />
@@ -90,7 +84,7 @@ export default function PricingPage() {
           Best for safety consulting and training firms that already do outbound or business development.
         </p>
         <p className="mx-auto mt-3 max-w-2xl text-center text-sm text-inkMuted">
-          Less useful for teams looking for a full compliance workflow or teams not doing outreach.
+          Want to preview lead quality first? Request a sample.
         </p>
       </section>
 
@@ -125,20 +119,16 @@ export default function PricingPage() {
                 >
                   {plan.ctaLabel}
                 </a>
-                {plan.name === "Founding Pilot" ? (
-                  <p className="mt-2 text-xs text-inkMuted">
-                    Request a sample first if you want to see the lead quality before we activate the pilot.
-                  </p>
-                ) : (
+                {plan.name === "Founding Pilot" ? null : (
                   <>
                     <p className="mt-2 text-xs text-inkMuted">
-                      Best once you already know the territory and lead quality are a fit.
+                      Best once you already know the state or region and lead quality are a fit.
                     </p>
                     <a
                       href={confirmFirstMailto}
                       className="mt-2 inline-flex text-xs font-semibold text-ocean underline transition hover:text-oceanDark"
                     >
-                      Reply with territory before subscribing
+                      Reply with state or region before subscribing
                     </a>
                   </>
                 )}
@@ -149,33 +139,10 @@ export default function PricingPage() {
       </section>
 
       <section className="mx-auto w-full max-w-5xl px-6">
-        <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-          <h3 className="font-display text-2xl text-ink">What most buyers do first</h3>
-          <p className="mt-3 text-inkMuted">
-            Request a sample, confirm the lead quality, then decide whether Founding Pilot, Standard, or
-            Multi-Territory is the right next step.
-          </p>
-          <div className="mt-4 flex flex-wrap items-center gap-4">
-            <Link
-              href={samplePath}
-              className="inline-flex items-center justify-center rounded-full bg-ocean px-4 py-2.5 text-sm font-semibold text-white shadow-glow transition hover:bg-oceanDark"
-            >
-              Request a sample
-            </Link>
-            <a
-              href={territoryMailto}
-              className="text-sm font-semibold text-inkMuted underline-offset-4 transition hover:text-ink hover:underline"
-            >
-              Tell us your territory
-            </a>
-          </div>
-        </div>
-      </section>
-
-      <section className="mx-auto w-full max-w-5xl px-6">
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft text-center">
           <p className="text-sm text-inkMuted">
-            Tell us your state, metro, counties, or OSHA area. We confirm fit before activation.
+            Tell us your state or region. State, metro, counties, or OSHA area all work. We confirm fit
+            before activation.
           </p>
         </div>
       </section>
@@ -184,7 +151,7 @@ export default function PricingPage() {
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
           <h3 className="font-display text-2xl text-ink">Questions before you decide?</h3>
           <p className="mt-3 text-inkMuted">
-            See quick answers on samples, territory fit, pricing, and what happens next.
+            See quick answers on samples, state or region fit, pricing, and what happens next.
           </p>
           <div className="mt-4">
             <Link
@@ -197,19 +164,6 @@ export default function PricingPage() {
         </div>
       </section>
 
-      <section className="mx-auto w-full max-w-5xl px-6">
-        <div className="rounded-3xl bg-inkFixed px-8 py-10 text-white shadow-soft">
-          <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h2 className="font-display text-3xl">See a sample for your territory first.</h2>
-              <p className="mt-3 text-white/70">
-                Then decide whether Founding Pilot, Standard, or Multi-Territory is the right fit.
-              </p>
-            </div>
-            <CTAButtons variant="dark" />
-          </div>
-        </div>
-      </section>
     </div>
   );
 }

@@ -110,12 +110,15 @@ export default function SamplePage() {
       <section className="mx-auto w-full max-w-4xl px-6">
         <div className="space-y-4 text-center">
           <p className="inline-flex rounded-full border border-cardBorder bg-card px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-inkMuted">
-            Frozen territory sample
+            Frozen sample digest
           </p>
           <h1 className="font-display text-4xl text-ink md:text-5xl">Sample OSHA lead digest</h1>
           <p className="text-base text-inkMuted md:text-lg">
             A fixed public example showing how MicroFlowOps packages newly observed public OSHA
             activity into outreach-ready leads for safety consulting and training firms.
+          </p>
+          <p className="text-sm font-semibold text-inkMuted">
+            Sample = one example digest for your state or region.
           </p>
           <p className="mx-auto max-w-3xl text-sm text-inkMuted">
             Best for firms doing outbound or business development. Public example using OSHA data.
@@ -228,7 +231,7 @@ export default function SamplePage() {
 
       <section className="mx-auto w-full max-w-5xl px-6">
         <div className="rounded-3xl border border-cardBorder bg-card p-6 shadow-soft">
-          <p className="text-sm font-semibold text-ink">Want a sample for your territory instead?</p>
+          <p className="text-sm font-semibold text-ink">Want a sample for your state or region instead?</p>
           <p className="mt-2 text-sm text-inkMuted">
             Request a sample first. If the fit looks right, we can confirm whether Founding Pilot,
             Standard, or Multi-Territory is the right next step.

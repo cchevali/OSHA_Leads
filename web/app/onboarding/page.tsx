@@ -29,8 +29,8 @@ export default function OnboardingPage({ searchParams }: OnboardingPageProps) {
       <section className="mx-auto w-full max-w-4xl px-6">
         <SectionHeading
           eyebrow="Onboarding"
-          title="Set your territory"
-          description="Tell us the territory you want covered and we will save it for your ongoing plan."
+          title="Set your state or region"
+          description="Tell us the state or region you want covered and we will save it for your ongoing plan."
           align="center"
         />
         <p className="mt-4 text-center text-sm font-semibold text-inkMuted">{COVERAGE_HELPER}</p>
@@ -43,7 +43,7 @@ export default function OnboardingPage({ searchParams }: OnboardingPageProps) {
             We use metro mapping behind the scenes so ongoing coverage stays consistent.
           </p>
           <p className="mt-3 text-sm text-inkMuted">
-            Standard supports one primary territory setup. Multi-Territory supports broader coverage. If you need more than your current plan allows, we will route you to contact.
+            Standard supports one primary state or region setup. Multi-Territory supports broader coverage. If you need more than your current plan allows, we will route you to contact.
           </p>
           <p className="mt-2 text-sm text-inkMuted">
             No calls required; onboarding is handled via a short form + email confirmation.
