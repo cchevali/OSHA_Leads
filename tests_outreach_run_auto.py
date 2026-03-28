@@ -204,6 +204,8 @@ class TestOutreachRunAuto(unittest.TestCase):
 
     def _test_env(self, env_overrides: dict[str, str | None], base_env: dict[str, str] | None = None) -> dict[str, str]:
         env = dict(base_env) if base_env is not None else os.environ.copy()
+        legacy_repo_crm = (REPO_ROOT / "out" / "crm.sqlite").resolve()
+        legacy_repo_crm.unlink(missing_ok=True)
         for key in list(env.keys()):
             if key in self._STRIP_ENV_KEYS or any(key.startswith(prefix) for prefix in self._STRIP_ENV_PREFIXES):
                 env.pop(key, None)
@@ -226,6 +228,7 @@ class TestOutreachRunAuto(unittest.TestCase):
                 shutil.copyfile(_default_signal_db_source(), default_signal_db)
         env.setdefault("CANONICAL_HOSTNAME", socket.gethostname().strip().lower())
         env.setdefault("RUNTIME_ROLE", "dev_client")
+        env.setdefault("OUTREACH_STATE_SPREAD_MODE", "single_state")
         return env
 
     def _stdout_value(self, stdout: str, key: str) -> str:
@@ -1693,7 +1696,7 @@ class TestOutreachRunAuto(unittest.TestCase):
             self.assertIn("OUTREACH_STATE_POOL_TOTAL state=TX total=", out)
             self.assertIn("OUTREACH_STATE_SENDABLE_ESTIMATE state=TX sendable=", out)
             self.assertIn("OUTREACH_STATE_BELOW_SEND_FLOOR state=TX floor=10 sendable=", out)
-            self.assertIn("prospect_id,email,domain,segment,role_or_title,state_pref,rank_reason", out)
+            self.assertIn("prospect_id,email,domain,state,segment,role_or_title,state_pref,rank_reason", out)
             breakdown_raw = self._stdout_value(out, "OUTREACH_PLAN_FILTER_BREAKDOWN")
             breakdown = json.loads(breakdown_raw)
             self.assertIn("pool_total_all_states", breakdown)
@@ -1730,6 +1733,66 @@ class TestOutreachRunAuto(unittest.TestCase):
                 self.assertEqual(last_contacted, "")
             finally:
                 conn.close()
+
+    def test_plan_round_robin_spreads_selection_across_states(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            data_dir = tmp / "data"
+            crm_db = data_dir / "crm.sqlite"
+            _seed_crm(
+                crm_db,
+                [
+                    {
+                        "prospect_id": "tx1",
+                        "contact_name": "Texas One",
+                        "firm": "Texas Safety",
+                        "email": "tx1@texas.example",
+                        "title": "Owner",
+                        "state": "TX",
+                        "score": 9,
+                    },
+                    {
+                        "prospect_id": "ca1",
+                        "contact_name": "California One",
+                        "firm": "California Safety",
+                        "email": "ca1@california.example",
+                        "title": "Owner",
+                        "state": "CA",
+                        "score": 8,
+                    },
+                    {
+                        "prospect_id": "fl1",
+                        "contact_name": "Florida One",
+                        "firm": "Florida Safety",
+                        "email": "fl1@florida.example",
+                        "title": "Owner",
+                        "state": "FL",
+                        "score": 7,
+                    },
+                ],
+            )
+            _write_suppression(data_dir / "suppression.csv")
+            env = {
+                "DATA_DIR": str(data_dir),
+                "OUTREACH_STATES": "TX,CA,FL",
+                "OUTREACH_DAILY_LIMIT": "3",
+                "OUTREACH_STATE_SPREAD_MODE": "round_robin",
+                "OSHA_SMOKE_TO": "allow@example.com",
+            }
+
+            plan = self._run(["--plan", "--for-date", "2001-01-02"], env)
+            self.assertEqual(plan.returncode, 0, msg=plan.stderr + "\n" + plan.stdout)
+            out = plan.stdout or ""
+            self.assertIn("OUTREACH_STATE_ROTATION_SELECTED=CA", out)
+            self.assertIn("OUTREACH_STATE_EFFECTIVE_SEND=MULTI", out)
+            self.assertIn("OUTREACH_PLAN_STATE=MULTI", out)
+            self.assertIn("OUTREACH_PLAN_BATCH=2001-01-02_MULTI", out)
+            self.assertIn("OUTREACH_SELECTED_BY_STATE=CA:1,FL:1,TX:1", out)
+            breakdown = json.loads(self._stdout_value(out, "OUTREACH_PLAN_FILTER_BREAKDOWN"))
+            gates = breakdown.get("gates") or {}
+            self.assertEqual(gates.get("selected_state"), "MULTI")
+            self.assertEqual(gates.get("rotation_selected_state"), "CA")
+            self.assertEqual(gates.get("selected_by_state"), {"CA": 1, "FL": 1, "TX": 1})
 
     def test_plan_will_send_zero_reports_pool_totals_and_state_mismatch(self):
         with tempfile.TemporaryDirectory() as d:

@@ -70,7 +70,7 @@ class TestRunOshaIngestDaily(unittest.TestCase):
     def test_missing_env_falls_back_to_default_live_scope(self):
         rc, out = self._run(["--print-config"], {"OUTREACH_STATES": None})
         self.assertEqual(rc, 0, msg=out)
-        self.assertIn("INGEST_STATES=TX,CA,FL,PA,OH", out)
+        self.assertIn("INGEST_STATES=TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN", out)
         self.assertIn("INGEST_STATES_SOURCE=fallback", out)
         self.assertIn("INGEST_STATES_FALLBACK_USED=YES", out)
 

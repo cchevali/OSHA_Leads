@@ -13,6 +13,9 @@ import send_digest_email as sde
 
 
 class TestDigestSameDayGuard(unittest.TestCase):
+    def setUp(self) -> None:
+        (Path(__file__).resolve().parent / "out" / "crm.sqlite").unlink(missing_ok=True)
+
     def _base_config(self) -> dict:
         return {
             "customer_id": "wally_trial_tx_triangle_v1",

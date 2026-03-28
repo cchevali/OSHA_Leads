@@ -133,6 +133,9 @@ def normalize_website(value: str) -> str:
     urls = extract_http_urls(text)
     if urls:
         return urls[0]
+    canonical = canonicalize_http_url(text)
+    if canonical:
+        return canonical
     if not has_markup_artifact(text):
         return text.strip("[]()<>\"' ")
     return text.strip()

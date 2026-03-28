@@ -231,6 +231,7 @@ class TestOutreachSkippedUnsent(unittest.TestCase):
                 shutil.copyfile(_default_signal_db_source(), default_signal_db)
         env.setdefault("CANONICAL_HOSTNAME", socket.gethostname().strip().lower())
         env.setdefault("RUNTIME_ROLE", "dev_client")
+        env.setdefault("OUTREACH_STATE_SPREAD_MODE", "single_state")
         return env
 
     def _run(self, args: list[str], env_overrides: dict[str, str | None]) -> subprocess.CompletedProcess:

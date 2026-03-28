@@ -18,7 +18,7 @@ The current growth engine is an "outbound concierge" motion with CRM auto-run as
 - Run daily outreach automation via `run_outreach_auto.py` (select -> prioritize -> send -> record).
 - Use mail-merge CSV generation as a debug/compatibility path, not the default send path.
 - Process replies manually and mark lifecycle events (`replied`, `trial_started`, `converted`, `do_not_contact`).
-- Current live outreach/prospect scope is `TX,CA,FL,PA,OH`.
+- Current live outreach/prospect scope is `TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN`.
 
 Weekly target (initial): **100-200 new prospects/week**.
 

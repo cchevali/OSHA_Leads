@@ -117,6 +117,8 @@ def _unique_source_tokens(tokens: Iterable[str]) -> tuple[str, ...]:
 
 def source_fit_defaults(source: str) -> tuple[str, int]:
     text = (source or "").strip().lower()
+    if text.startswith("manual_user_supplied"):
+        return "recoverable_consultant", 1
     if text.startswith("ai_assist_manual"):
         return "recoverable_consultant", 1
     if text.startswith("state_lic_work_email"):
@@ -138,6 +140,8 @@ def source_family(source: str) -> str:
     text = (source or "").strip().lower()
     if not text:
         return "UNKNOWN"
+    if text.startswith("manual_user_supplied"):
+        return "AI_ASSIST"
     if text.startswith("ai_assist_manual"):
         return "AI_ASSIST"
     if text.startswith("aiha_consultants_listing"):

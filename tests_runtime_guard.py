@@ -255,9 +255,12 @@ class TestRuntimeGuard(unittest.TestCase):
             data_dir = Path(d).resolve()
             (data_dir / "crm_light.sqlite").write_text("canonical", encoding="utf-8")
             legacy_db = (REPO_ROOT / "out" / "crm_light.sqlite").resolve()
+            legacy_crm = (REPO_ROOT / "out" / "crm.sqlite").resolve()
             original_bytes = legacy_db.read_bytes() if legacy_db.exists() else None
+            original_crm_bytes = legacy_crm.read_bytes() if legacy_crm.exists() else None
             legacy_db.parent.mkdir(parents=True, exist_ok=True)
             legacy_db.write_bytes(b"")
+            legacy_crm.unlink(missing_ok=True)
             hostname = socket.gethostname().strip().lower()
             try:
                 proc = self._run(
@@ -274,6 +277,10 @@ class TestRuntimeGuard(unittest.TestCase):
                     legacy_db.unlink(missing_ok=True)
                 else:
                     legacy_db.write_bytes(original_bytes)
+                if original_crm_bytes is None:
+                    legacy_crm.unlink(missing_ok=True)
+                else:
+                    legacy_crm.write_bytes(original_crm_bytes)
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         self.assertEqual(proc.returncode, 0, msg=out)
         self.assertNotIn("ERR_RUNTIME_DB_CRM_LIGHT_LEGACY_PRESENT", out)

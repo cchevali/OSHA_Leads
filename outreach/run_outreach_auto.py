@@ -360,6 +360,15 @@ def _print_state_selection_tokens(rotation_state: str, effective_state: str) -> 
     print(f"OUTREACH_STATE_EFFECTIVE_SEND={_safe_text(effective_state).upper()}")
 
 
+def _format_selected_by_state(selected_by_state: dict[str, int]) -> str:
+    ordered = [f"{state}:{int(count)}" for state, count in sorted(selected_by_state.items()) if int(count or 0) > 0]
+    return ",".join(ordered) if ordered else "none"
+
+
+def _print_selected_by_state_token(selected_by_state: dict[str, int]) -> None:
+    print(f"OUTREACH_SELECTED_BY_STATE={_format_selected_by_state(selected_by_state)}")
+
+
 def _ramp_readiness_decision(
     states: list[str],
     sendable_by_state: dict[str, int],
@@ -814,6 +823,7 @@ def _candidate_from_row(row: sqlite3.Row) -> dict:
         "prospect_id": prospect_id,
         "email": email,
         "domain": domain,
+        "state": _normalize_us_state(str(row["state"] or "")),
         "segment": segment,
         "role_or_title": role_or_title,
         "state_pref": state_pref,
@@ -836,6 +846,7 @@ def _candidate_csv_row(candidate: dict) -> dict:
         "prospect_id": candidate["prospect_id"],
         "email": candidate["email"],
         "domain": candidate["domain"],
+        "state": candidate["state"],
         "segment": candidate["segment"],
         "role_or_title": candidate["role_or_title"],
         "state_pref": candidate["state_pref"],
@@ -844,10 +855,25 @@ def _candidate_csv_row(candidate: dict) -> dict:
     }
 
 
-def _select_candidates(
+def _empty_selection_stats() -> dict[str, object]:
+    return {
+        "pool_total_selected_state": 0,
+        "eligible": 0,
+        "role_inbox_penalty": 0,
+        "missing_state_pref": 0,
+        "eligible_by_tier": {
+            "core_consultant": 0,
+            "recoverable_consultant": 0,
+            "adjacent_contractor": 0,
+        },
+        "excluded_adjacent_contractor_total": 0,
+        "selected_by_state": {},
+    }
+
+
+def _build_state_candidate_pool(
     conn: sqlite3.Connection,
     state: str,
-    limit: int,
     suppressed_emails: set[str],
     allow_repeat: bool,
     skip_role_inboxes: bool,
@@ -855,18 +881,7 @@ def _select_candidates(
 ) -> tuple[list[dict], Counter, list[dict], dict[str, object]]:
     selected_state = _normalize_us_state(state)
     if not selected_state:
-        return [], Counter(), [], {
-            "pool_total_selected_state": 0,
-            "eligible": 0,
-            "role_inbox_penalty": 0,
-            "missing_state_pref": 0,
-            "eligible_by_tier": {
-                "core_consultant": 0,
-                "recoverable_consultant": 0,
-                "adjacent_contractor": 0,
-            },
-            "excluded_adjacent_contractor_total": 0,
-        }
+        return [], Counter(), [], _empty_selection_stats()
     cols = _prospect_select_columns(conn)
     query = "SELECT " + ", ".join(cols) + " FROM prospects"
     raw_rows = conn.execute(query).fetchall()
@@ -924,6 +939,39 @@ def _select_candidates(
         seen_domains.add(domain_key)
         per_domain.append(candidate)
 
+    selection_stats = {
+        "pool_total_selected_state": int(len(rows)),
+        "eligible": int(len(ranked)),
+        "role_inbox_penalty": int(role_inbox_penalty_count),
+        "missing_state_pref": int(missing_state_pref_count),
+        "eligible_by_tier": {
+            "core_consultant": int(eligible_by_tier.get("core_consultant", 0)),
+            "recoverable_consultant": int(eligible_by_tier.get("recoverable_consultant", 0)),
+            "adjacent_contractor": int(eligible_by_tier.get("adjacent_contractor", 0)),
+        },
+        "excluded_adjacent_contractor_total": int(excluded_adjacent_contractor_total),
+        "selected_by_state": {},
+    }
+    return per_domain, skipped, manifest_rows, selection_stats
+
+
+def _select_candidates(
+    conn: sqlite3.Connection,
+    state: str,
+    limit: int,
+    suppressed_emails: set[str],
+    allow_repeat: bool,
+    skip_role_inboxes: bool,
+    include_adjacent_contractors: bool,
+) -> tuple[list[dict], Counter, list[dict], dict[str, object]]:
+    per_domain, skipped, manifest_rows, selection_stats = _build_state_candidate_pool(
+        conn=conn,
+        state=state,
+        suppressed_emails=suppressed_emails,
+        allow_repeat=allow_repeat,
+        skip_role_inboxes=skip_role_inboxes,
+        include_adjacent_contractors=include_adjacent_contractors,
+    )
     selected = per_domain[:limit]
     overflow = per_domain[limit:]
     for candidate in overflow:
@@ -936,19 +984,134 @@ def _select_candidates(
         selected_row = _candidate_csv_row(candidate)
         selected_row.update({"status": "selected", "reason": ""})
         manifest_rows.append(selected_row)
-    selection_stats = {
-        "pool_total_selected_state": int(len(rows)),
-        "eligible": int(len(ranked)),
-        "role_inbox_penalty": int(role_inbox_penalty_count),
-        "missing_state_pref": int(missing_state_pref_count),
-        "eligible_by_tier": {
-            "core_consultant": int(eligible_by_tier.get("core_consultant", 0)),
-            "recoverable_consultant": int(eligible_by_tier.get("recoverable_consultant", 0)),
-            "adjacent_contractor": int(eligible_by_tier.get("adjacent_contractor", 0)),
-        },
-        "excluded_adjacent_contractor_total": int(excluded_adjacent_contractor_total),
-    }
+    selection_stats["selected_by_state"] = {_normalize_us_state(state): len(selected)} if selected else {}
     return selected, skipped, manifest_rows, selection_stats
+
+
+def _state_spread_mode() -> str:
+    raw = _safe_text(os.getenv("OUTREACH_STATE_SPREAD_MODE") or "round_robin").lower()
+    return raw if raw in {"round_robin", "single_state"} else "round_robin"
+
+
+def _ordered_states_from_anchor(states: list[str], anchor_state: str) -> list[str]:
+    ordered: list[str] = []
+    for item in states:
+        state = _normalize_us_state(item)
+        if state and state not in ordered:
+            ordered.append(state)
+    if not ordered:
+        return []
+    anchor = _normalize_us_state(anchor_state)
+    if anchor not in ordered:
+        return ordered
+    idx = ordered.index(anchor)
+    return ordered[idx:] + ordered[:idx]
+
+
+def _merge_selection_stats(
+    stats_by_state: dict[str, dict[str, object]],
+    selected_by_state: Counter,
+) -> dict[str, object]:
+    merged = _empty_selection_stats()
+    eligible_by_tier: Counter = Counter()
+    for state_stats in stats_by_state.values():
+        merged["pool_total_selected_state"] = int(merged["pool_total_selected_state"]) + int(
+            state_stats.get("pool_total_selected_state", 0)
+        )
+        merged["eligible"] = int(merged["eligible"]) + int(state_stats.get("eligible", 0))
+        merged["role_inbox_penalty"] = int(merged["role_inbox_penalty"]) + int(state_stats.get("role_inbox_penalty", 0))
+        merged["missing_state_pref"] = int(merged["missing_state_pref"]) + int(state_stats.get("missing_state_pref", 0))
+        merged["excluded_adjacent_contractor_total"] = int(merged["excluded_adjacent_contractor_total"]) + int(
+            state_stats.get("excluded_adjacent_contractor_total", 0)
+        )
+        for tier, count in dict(state_stats.get("eligible_by_tier") or {}).items():
+            eligible_by_tier[str(tier)] += int(count or 0)
+    merged["eligible_by_tier"] = {
+        "core_consultant": int(eligible_by_tier.get("core_consultant", 0)),
+        "recoverable_consultant": int(eligible_by_tier.get("recoverable_consultant", 0)),
+        "adjacent_contractor": int(eligible_by_tier.get("adjacent_contractor", 0)),
+    }
+    merged["selected_by_state"] = {state: int(selected_by_state.get(state, 0)) for state in sorted(selected_by_state.keys())}
+    return merged
+
+
+def _select_candidates_spread(
+    conn: sqlite3.Connection,
+    states: list[str],
+    rotation_state: str,
+    limit: int,
+    suppressed_emails: set[str],
+    allow_repeat: bool,
+    skip_role_inboxes: bool,
+    include_adjacent_contractors: bool,
+) -> tuple[list[dict], Counter, list[dict], dict[str, object]]:
+    ordered_states = _ordered_states_from_anchor(states, rotation_state)
+    if not ordered_states:
+        return [], Counter(), [], _empty_selection_stats()
+
+    skipped = Counter()
+    manifest_rows: list[dict] = []
+    pools_by_state: dict[str, list[dict]] = {}
+    stats_by_state: dict[str, dict[str, object]] = {}
+    for state in ordered_states:
+        pool, state_skipped, state_manifest, state_stats = _build_state_candidate_pool(
+            conn=conn,
+            state=state,
+            suppressed_emails=suppressed_emails,
+            allow_repeat=allow_repeat,
+            skip_role_inboxes=skip_role_inboxes,
+            include_adjacent_contractors=include_adjacent_contractors,
+        )
+        pools_by_state[state] = pool
+        skipped.update(state_skipped)
+        manifest_rows.extend(state_manifest)
+        stats_by_state[state] = state_stats
+
+    selected: list[dict] = []
+    selected_by_state: Counter = Counter()
+    state_positions: dict[str, int] = {state: 0 for state in ordered_states}
+    seen_domains: set[str] = set()
+    while len(selected) < limit:
+        made_progress = False
+        for state in ordered_states:
+            pool = list(pools_by_state.get(state) or [])
+            idx = int(state_positions.get(state, 0))
+            while idx < len(pool):
+                candidate = pool[idx]
+                idx += 1
+                domain_key = candidate["domain"] or f"__nodomain__:{candidate['prospect_id']}"
+                if domain_key in seen_domains:
+                    skipped["domain_dedup"] += 1
+                    dropped = _candidate_csv_row(candidate)
+                    dropped.update({"status": "dropped", "reason": "domain_dedup"})
+                    manifest_rows.append(dropped)
+                    continue
+                seen_domains.add(domain_key)
+                selected.append(candidate)
+                selected_by_state[state] += 1
+                made_progress = True
+                break
+            state_positions[state] = idx
+            if len(selected) >= limit:
+                break
+        if not made_progress:
+            break
+
+    for state in ordered_states:
+        pool = list(pools_by_state.get(state) or [])
+        idx = int(state_positions.get(state, 0))
+        for candidate in pool[idx:]:
+            skipped["daily_limit"] += 1
+            dropped = _candidate_csv_row(candidate)
+            dropped.update({"status": "dropped", "reason": "daily_limit"})
+            manifest_rows.append(dropped)
+
+    for candidate in selected:
+        selected_row = _candidate_csv_row(candidate)
+        selected_row.update({"status": "selected", "reason": ""})
+        manifest_rows.append(selected_row)
+
+    return selected, skipped, manifest_rows, _merge_selection_stats(stats_by_state, selected_by_state)
 
 
 def _count_pool_total_all_states(conn: sqlite3.Connection) -> int:
@@ -1333,6 +1496,7 @@ def _build_filter_breakdown(
     state_rotation_source: str = "weekday_index",
     fallback_triggered: bool = False,
     fallback_reason: str = "",
+    selected_by_state: dict[str, int] | None = None,
 ) -> dict:
     filters: dict[str, int] = {}
     for key in FILTER_BREAKDOWN_FILTER_KEYS:
@@ -1348,7 +1512,7 @@ def _build_filter_breakdown(
         "selected": max(0, int(selected_count)),
         "filters": filters,
         "gates": {
-            "state_mismatch": max(0, int(pool_total_all_states) - int(pool_total_selected_state)),
+            "state_mismatch": 0 if _safe_text(state).upper() == "MULTI" else max(0, int(pool_total_all_states) - int(pool_total_selected_state)),
             "role_inbox_penalty": max(0, int(role_inbox_penalty)),
             "missing_state_pref": max(0, int(missing_state_pref)),
             "weekend_block": False,
@@ -1357,6 +1521,7 @@ def _build_filter_breakdown(
             "state_rotation_source": _safe_text(state_rotation_source) or "weekday_index",
             "fallback_triggered": bool(fallback_triggered),
             "fallback_reason": _safe_text(fallback_reason),
+            "selected_by_state": dict(selected_by_state or {}),
         },
     }
 
@@ -1388,6 +1553,7 @@ def _build_plan_diagnostics(
         state_rotation_source=state_rotation_source,
         fallback_triggered=fallback_triggered,
         fallback_reason=fallback_reason,
+        selected_by_state=dict(selection_stats.get("selected_by_state") or {}),
     )
     return {
         "plan_date": run_date.isoformat(),
@@ -1395,6 +1561,7 @@ def _build_plan_diagnostics(
         "batch_id": batch,
         "daily_limit": int(daily_limit),
         "will_send": int(len(selected)),
+        "selected_by_state": dict(selection_stats.get("selected_by_state") or {}),
         "pool_total_all_states": int(filter_breakdown["pool_total_all_states"]),
         "pool_total_selected_state": int(filter_breakdown["pool_total_selected_state"]),
         "eligible_total": max(0, int(selection_stats.get("eligible", 0))),
@@ -1531,6 +1698,36 @@ def _write_outreach_signal_triage_details_if_enabled(
     return artifact_path
 
 
+def _write_outreach_signal_triage_details_by_state(
+    *,
+    batch: str,
+    selected: list[dict],
+    signal_ctx_by_state: dict[str, dict[str, object]],
+) -> list[Path]:
+    paths: list[Path] = []
+    selected_by_state: dict[str, list[dict]] = {}
+    for candidate in list(selected or []):
+        candidate_state = _normalize_us_state(str(candidate.get("state") or ""))
+        if not candidate_state:
+            continue
+        selected_by_state.setdefault(candidate_state, []).append(candidate)
+
+    for state, state_selected in selected_by_state.items():
+        signal_ctx = dict(signal_ctx_by_state.get(state) or {})
+        if not signal_ctx:
+            continue
+        artifact_path = _write_outreach_signal_triage_details_if_enabled(
+            batch=batch,
+            selected=state_selected,
+            recent_leads_original=list(signal_ctx.get("recent_leads_original") or []),
+            recent_leads=list(signal_ctx.get("recent_leads") or []),
+            triage_ctx=dict(signal_ctx.get("triage_ctx") or {}),
+        )
+        if artifact_path is not None:
+            paths.append(artifact_path)
+    return paths
+
+
 def _write_plan_diagnostics(batch: str, payload: dict) -> Path:
     path = _plan_diagnostics_path(batch)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1545,26 +1742,24 @@ def _write_dry_run_artifacts(
     state: str,
     selected: list[dict],
     manifest_rows: list[dict],
-    triage_ctx: dict[str, object] | None = None,
+    triage_by_state: dict[str, dict[str, object]] | None = None,
 ) -> tuple[Path, Path]:
     outbox_path, manifest_path = _dry_run_paths(batch)
-    triage = dict(triage_ctx or {})
-    triage_enabled = bool(triage.get("enabled"))
-    triage_action = str(triage.get("ai_triage_action") or ("AI_DISABLED" if not triage_enabled else "KEEP_ALL"))
-    triage_conf = str(triage.get("ai_triage_conf") or "")
-    triage_reasons = str(triage.get("ai_triage_reasons") or "")
-    triage_relpath = str(triage.get("ai_triage_details_relpath") or "")
+    triage_map = {str(key): dict(value or {}) for key, value in dict(triage_by_state or {}).items()}
+    triage_enabled = any(bool(ctx.get("enabled")) for ctx in triage_map.values())
     outbox_rows: list[dict] = []
     for candidate in selected:
         row = _candidate_csv_row(candidate)
-        row.update({"batch": batch, "state": state})
-        if triage_enabled:
+        candidate_state = str(candidate.get("state") or state)
+        row.update({"batch": batch, "state": candidate_state})
+        triage = dict(triage_map.get(candidate_state) or triage_map.get(state) or {})
+        if bool(triage.get("enabled")):
             row.update(
                 {
-                    "ai_triage_action": triage_action,
-                    "ai_triage_conf": triage_conf,
-                    "ai_triage_reasons": triage_reasons,
-                    "ai_triage_details_relpath": triage_relpath,
+                    "ai_triage_action": str(triage.get("ai_triage_action") or "KEEP_ALL"),
+                    "ai_triage_conf": str(triage.get("ai_triage_conf") or ""),
+                    "ai_triage_reasons": str(triage.get("ai_triage_reasons") or ""),
+                    "ai_triage_details_relpath": str(triage.get("ai_triage_details_relpath") or ""),
                 }
             )
         outbox_rows.append(row)
@@ -1601,12 +1796,14 @@ def _write_dry_run_artifacts(
         row = dict(item)
         row["ts_utc"] = ts_utc
         row["batch"] = batch
-        row["state"] = state
-        if triage_enabled:
-            row["ai_triage_action"] = triage_action
-            row["ai_triage_conf"] = triage_conf
-            row["ai_triage_reasons"] = triage_reasons
-            row["ai_triage_details_relpath"] = triage_relpath
+        row_state = str(row.get("state") or state)
+        row["state"] = row_state
+        triage = dict(triage_map.get(row_state) or triage_map.get(state) or {})
+        if bool(triage.get("enabled")):
+            row["ai_triage_action"] = str(triage.get("ai_triage_action") or "KEEP_ALL")
+            row["ai_triage_conf"] = str(triage.get("ai_triage_conf") or "")
+            row["ai_triage_reasons"] = str(triage.get("ai_triage_reasons") or "")
+            row["ai_triage_details_relpath"] = str(triage.get("ai_triage_details_relpath") or "")
         manifest_out.append(row)
     manifest_fields = [
         "ts_utc",
@@ -1710,6 +1907,7 @@ def _print_plan_output(
     )
     print(f"OUTREACH_PLAN_FILTER_BREAKDOWN={filter_breakdown_json}")
     print(f"OUTREACH_PLAN_DIAGNOSTICS_PATH={diagnostics_path}")
+    _print_selected_by_state_token(dict(diagnostics.get("selected_by_state") or {}))
     for line in list(state_inventory_lines or []):
         print(line)
     gates = (filter_breakdown.get("gates") or {}) if isinstance(filter_breakdown, dict) else {}
@@ -1720,7 +1918,7 @@ def _print_plan_output(
             f"to={state} "
             f"reason={_safe_text(gates.get('fallback_reason')) or 'SENDABLE_BELOW_FLOOR'}"
         )
-    print("prospect_id,email,domain,segment,role_or_title,state_pref,rank_reason")
+    print("prospect_id,email,domain,state,segment,role_or_title,state_pref,rank_reason")
     for candidate in selected:
         print(
             ",".join(
@@ -1728,6 +1926,7 @@ def _print_plan_output(
                     _safe_csv_value(candidate["prospect_id"]),
                     _safe_csv_value(candidate["email"]),
                     _safe_csv_value(candidate["domain"]),
+                    _safe_csv_value(candidate["state"]),
                     _safe_csv_value(candidate["segment"]),
                     _safe_csv_value(candidate["role_or_title"]),
                     _safe_csv_value(candidate["state_pref"]),
@@ -2027,7 +2226,7 @@ def _write_events_and_status_updates(conn: sqlite3.Connection, batch: str, resul
     conn.commit()
 
 
-def _append_ledger_records(path: Path, batch: str, state: str, results: list[dict]) -> None:
+def _append_ledger_records(path: Path, batch: str, results: list[dict]) -> None:
     records = []
     ts = datetime.now(timezone.utc).isoformat()
     for item in results:
@@ -2037,7 +2236,7 @@ def _append_ledger_records(path: Path, batch: str, state: str, results: list[dic
             {
                 "prospect_id": item.get("prospect_id", ""),
                 "batch": batch,
-                "state": state,
+                "state": _normalize_us_state(str(item.get("state") or "")),
                 "exported_at_utc": ts,
             }
         )
@@ -2701,11 +2900,12 @@ def main() -> int:
             return 2
         return 0
 
-    states = _parse_states(os.getenv("OUTREACH_STATES", "TX,CA,FL,PA,OH"))
+    states = _parse_states(os.getenv("OUTREACH_STATES", us_state.DEFAULT_OUTREACH_STATE_CSV))
     if not states:
         print(f"{ERR_AUTO_ENV} OUTREACH_STATES missing", file=sys.stderr)
         return 2
 
+    spread_mode = _state_spread_mode()
     rotation_state = _choose_state(states, run_date)
     state = rotation_state
     batch = _batch_id(state, run_date)
@@ -2741,6 +2941,7 @@ def main() -> int:
         print(f"{PASS_AUTO_PRINT_CONFIG} export_ledger={export_ledger.resolve()}")
         print(f"{PASS_AUTO_PRINT_CONFIG} outreach_daily_limit={daily_limit} source={daily_limit_source}")
         print(f"{PASS_AUTO_PRINT_CONFIG} outreach_states={','.join(states)} selected_state={state}")
+        print(f"outreach_state_spread_mode={spread_mode}")
         print(f"{PASS_AUTO_PRINT_CONFIG} batch_id={batch}")
         print(f"{PASS_AUTO_PRINT_CONFIG} run_date={run_date.isoformat()}")
         print(f"outreach_fallback_on_empty_state={1 if fallback_on_empty_state else 0}")
@@ -2867,9 +3068,22 @@ def main() -> int:
             rotation_state=rotation_state,
             sendable_by_state=crm_funnel_for_fallback["uncontacted_sendable_by_state"],
             daily_limit=limit,
-            enabled=bool(fallback_on_empty_state),
+            enabled=bool(fallback_on_empty_state) and spread_mode == "single_state",
         )
         state = _normalize_us_state(str(fallback_decision.get("to_state") or rotation_state)) or rotation_state
+        if spread_mode != "single_state":
+            fallback_decision = {
+                "triggered": False,
+                "from_state": rotation_state,
+                "to_state": rotation_state,
+                "reason": "",
+                "state_rotation_source": "weekday_index",
+            }
+            state = rotation_state
+        candidate_states = [state] if spread_mode == "single_state" else _ordered_states_from_anchor(states, rotation_state)
+        provisional_signal_batch = (
+            f"{run_date.isoformat()}_MULTI" if spread_mode == "round_robin" else _batch_id(state, run_date)
+        )
         batch = _batch_id(state, run_date)
 
         if is_live_send and (not bool(args.allow_second_live_run_same_day)):
@@ -2882,41 +3096,112 @@ def main() -> int:
                 )
                 return 0
 
-        selected, skipped, manifest_rows, selection_stats = _select_candidates(
-            conn=conn,
-            state=state,
-            limit=limit,
-            suppressed_emails=suppressed_emails,
-            allow_repeat=bool(args.allow_repeat),
-            skip_role_inboxes=skip_role_inboxes,
-            include_adjacent_contractors=bool(args.include_adjacent_contractors),
-        )
-        effective_sendable_estimate = max(
-            0,
-            int((crm_funnel_for_fallback.get("uncontacted_sendable_by_state") or {}).get(state, 0)),
-        )
-        signal_ctx: dict[str, object] | None = None
         no_signal_guard_enabled = bool(args.dry_run or is_live_send)
-        no_signal_skip = False
+        signal_ctx_by_state: dict[str, dict[str, object]] = {}
+        blocked_signal_states: set[str] = set()
         if no_signal_guard_enabled:
-            signal_ctx = _prepare_signal_content_with_triage(
-                batch=batch,
+            dry_run_suffix = "dry_run" if args.dry_run else "live"
+            for guard_state in candidate_states:
+                sendable_estimate = max(
+                    0,
+                    int((crm_funnel_for_fallback.get("uncontacted_sendable_by_state") or {}).get(guard_state, 0)),
+                )
+                if spread_mode == "round_robin" and sendable_estimate <= 0:
+                    continue
+                signal_ctx = _prepare_signal_content_with_triage(
+                    batch=provisional_signal_batch,
+                    state=guard_state,
+                    osha_db=osha_db,
+                    dry_run_suffix=(f"{dry_run_suffix}_{guard_state.lower()}" if spread_mode == "round_robin" else dry_run_suffix),
+                    run_date=run_date,
+                    signal_window_days=signal_window_days,
+                )
+                signal_ctx_by_state[guard_state] = signal_ctx
+                if _signal_guard_blocks_send(signal_ctx):
+                    blocked_signal_states.add(guard_state)
+                    _emit_signal_guard_tokens(
+                        token="OUTREACH_SKIP_NO_SIGNALS",
+                        state=guard_state,
+                        signal_ctx=signal_ctx,
+                    )
+
+        if spread_mode == "single_state":
+            selected, skipped, manifest_rows, selection_stats = _select_candidates(
+                conn=conn,
                 state=state,
-                osha_db=osha_db,
-                dry_run_suffix="dry_run" if args.dry_run else "live",
-                run_date=run_date,
-                signal_window_days=signal_window_days,
+                limit=limit,
+                suppressed_emails=suppressed_emails,
+                allow_repeat=bool(args.allow_repeat),
+                skip_role_inboxes=skip_role_inboxes,
+                include_adjacent_contractors=bool(args.include_adjacent_contractors),
             )
-            no_signal_skip = _signal_guard_blocks_send(signal_ctx)
-        if no_signal_skip:
-            _emit_signal_guard_tokens(token="OUTREACH_SKIP_NO_SIGNALS", state=state, signal_ctx=signal_ctx or {})
-            selected_before_guard = list(selected)
-            for candidate in selected_before_guard:
-                skipped["no_signals"] += 1
-                dropped = _candidate_csv_row(candidate)
-                dropped.update({"status": "dropped", "reason": "no_signals"})
-                manifest_rows.append(dropped)
-            selected = []
+            effective_sendable_estimate = max(
+                0,
+                int((crm_funnel_for_fallback.get("uncontacted_sendable_by_state") or {}).get(state, 0)),
+            )
+            if state in blocked_signal_states:
+                selected_before_guard = list(selected)
+                for candidate in selected_before_guard:
+                    skipped["no_signals"] += 1
+                    dropped = _candidate_csv_row(candidate)
+                    dropped.update({"status": "dropped", "reason": "no_signals"})
+                    manifest_rows.append(dropped)
+                selected = []
+        else:
+            active_selection_states = [candidate_state for candidate_state in candidate_states if candidate_state not in blocked_signal_states]
+            selected, skipped, manifest_rows, selection_stats = _select_candidates_spread(
+                conn=conn,
+                states=active_selection_states,
+                rotation_state=rotation_state,
+                limit=limit,
+                suppressed_emails=suppressed_emails,
+                allow_repeat=bool(args.allow_repeat),
+                skip_role_inboxes=skip_role_inboxes,
+                include_adjacent_contractors=bool(args.include_adjacent_contractors),
+            )
+            effective_sendable_estimate = sum(
+                max(
+                    0,
+                    int((crm_funnel_for_fallback.get("uncontacted_sendable_by_state") or {}).get(candidate_state, 0)),
+                )
+                for candidate_state in active_selection_states
+            )
+
+        selected_by_state = dict(selection_stats.get("selected_by_state") or {})
+        ordered_selected_states = [
+            candidate_state
+            for candidate_state in _ordered_states_from_anchor(states, rotation_state)
+            if int(selected_by_state.get(candidate_state, 0)) > 0
+        ]
+        if len(ordered_selected_states) > 1:
+            state = "MULTI"
+            batch = f"{run_date.isoformat()}_MULTI"
+        elif ordered_selected_states:
+            state = ordered_selected_states[0]
+            batch = _batch_id(state, run_date)
+        else:
+            state = rotation_state if spread_mode == "round_robin" else state
+            batch = _batch_id(state, run_date)
+
+        if no_signal_guard_enabled:
+            dry_run_suffix = "dry_run" if args.dry_run else "live"
+            for selected_state in ordered_selected_states:
+                if batch == provisional_signal_batch and selected_state in signal_ctx_by_state:
+                    continue
+                signal_ctx_by_state[selected_state] = _prepare_signal_content_with_triage(
+                    batch=batch,
+                    state=selected_state,
+                    osha_db=osha_db,
+                    dry_run_suffix=(
+                        f"{dry_run_suffix}_{selected_state.lower()}"
+                        if len(ordered_selected_states) > 1
+                        else dry_run_suffix
+                    ),
+                    run_date=run_date,
+                    signal_window_days=signal_window_days,
+                )
+
+        no_signal_skip = bool(len(selected) == 0 and bool(blocked_signal_states))
         empty_state_no_send = bool(effective_sendable_estimate <= 0 and len(selected) == 0 and not no_signal_skip)
         if empty_state_no_send and bool(args.dry_run or is_live_send):
             print(f"OUTREACH_EMPTY_STATE_NO_SEND=1 state={state}")
@@ -2984,32 +3269,24 @@ def main() -> int:
             return 0
 
         if args.dry_run:
-            if signal_ctx is None:
-                osha_db = str(resolve_osha_db_path(REPO_ROOT).effective_path)
-                signal_ctx = _prepare_signal_content_with_triage(
-                    batch=batch,
-                    state=state,
-                    osha_db=osha_db,
-                    dry_run_suffix="dry_run",
-                    run_date=run_date,
-                    signal_window_days=signal_window_days,
-                )
-            triage_ctx = dict(signal_ctx.get("triage_ctx") or {})
-            triage_artifact_path = _write_outreach_signal_triage_details_if_enabled(
+            triage_by_state = {
+                state_key: dict(ctx.get("triage_ctx") or {})
+                for state_key, ctx in signal_ctx_by_state.items()
+            }
+            triage_artifact_paths = _write_outreach_signal_triage_details_by_state(
                 batch=batch,
                 selected=selected,
-                recent_leads_original=list(signal_ctx.get("recent_leads_original") or []),
-                recent_leads=list(signal_ctx.get("recent_leads") or []),
-                triage_ctx=triage_ctx,
+                signal_ctx_by_state=signal_ctx_by_state,
             )
             outbox_path, manifest_path = _write_dry_run_artifacts(
                 batch=batch,
                 state=state,
                 selected=selected,
                 manifest_rows=manifest_rows,
-                triage_ctx=triage_ctx,
+                triage_by_state=triage_by_state,
             )
             _print_state_selection_tokens(rotation_state=rotation_state, effective_state=state)
+            _print_selected_by_state_token(selected_by_state)
             _print_ramp_ready_token(ramp_ready_decision)
             _print_fallback_trigger_token(fallback_decision)
             print(
@@ -3021,7 +3298,7 @@ def main() -> int:
             print(f"{PASS_AUTO_DRY_RUN} summary_to={summary_to}")
             print(f"{PASS_AUTO_DRY_RUN} outbox_path={outbox_path}")
             print(f"{PASS_AUTO_DRY_RUN} manifest_path={manifest_path}")
-            if triage_artifact_path is not None:
+            for triage_artifact_path in triage_artifact_paths:
                 print(f"outreach_triage_details={triage_artifact_path}")
             print(f"OUTREACH_PLAN_DIAGNOSTICS_PATH={diagnostics_path or _plan_diagnostics_path(batch)}")
             return 0
@@ -3037,30 +3314,23 @@ def main() -> int:
         except Exception:
             html_template_text = ""
 
-        if signal_ctx is None:
-            osha_db = str(resolve_osha_db_path(REPO_ROOT).effective_path)
-            signal_ctx = _prepare_signal_content_with_triage(
+        for selected_state in ordered_selected_states:
+            if selected_state in signal_ctx_by_state:
+                continue
+            signal_ctx_by_state[selected_state] = _prepare_signal_content_with_triage(
                 batch=batch,
-                state=state,
+                state=selected_state,
                 osha_db=osha_db,
-                dry_run_suffix="live",
+                dry_run_suffix=("live" if len(ordered_selected_states) <= 1 else f"live_{selected_state.lower()}"),
                 run_date=run_date,
                 signal_window_days=signal_window_days,
             )
-        _live_triage_artifact_path = _write_outreach_signal_triage_details_if_enabled(
+        for live_triage_artifact_path in _write_outreach_signal_triage_details_by_state(
             batch=batch,
             selected=selected,
-            recent_leads_original=list(signal_ctx.get("recent_leads_original") or []),
-            recent_leads=list(signal_ctx.get("recent_leads") or []),
-            triage_ctx=dict(signal_ctx.get("triage_ctx") or {}),
-        )
-        if _live_triage_artifact_path is not None:
-            print(f"outreach_triage_details={_live_triage_artifact_path}")
-        last_refresh_et = str(signal_ctx.get("last_refresh_et") or "")
-        signal_tokens = dict(signal_ctx.get("signal_tokens") or {})
-        recent_signals_lines = signal_tokens["RECENT_SIGNALS_LINES"]
-        recent_signals_html = signal_tokens["RECENT_SIGNALS_HTML"]
-        recent_leads = list(signal_ctx.get("recent_leads") or [])
+            signal_ctx_by_state=signal_ctx_by_state,
+        ):
+            print(f"outreach_triage_details={live_triage_artifact_path}")
 
         send_results: list[dict] = []
         duplicate_guard_dropped = 0
@@ -3077,18 +3347,21 @@ def main() -> int:
             sendable_selected.append(selected_candidate)
         for selected_candidate in sendable_selected:
             row = selected_candidate["row"]
+            candidate_state = _normalize_us_state(str(selected_candidate.get("state") or "")) or rotation_state
+            signal_ctx = dict(signal_ctx_by_state.get(candidate_state) or {})
+            signal_tokens = dict(signal_ctx.get("signal_tokens") or {})
             send_results.append(
                 _send_outreach_email(
                     row=row,
-                    state=state,
+                    state=candidate_state,
                     batch=batch,
                     template_text=template_text,
                     html_template_text=html_template_text,
-                    recent_signals_lines=recent_signals_lines,
-                    recent_signals_html=recent_signals_html,
-                    last_refresh_et=last_refresh_et,
+                    recent_signals_lines=str(signal_tokens.get("RECENT_SIGNALS_LINES") or ""),
+                    recent_signals_html=str(signal_tokens.get("RECENT_SIGNALS_HTML") or ""),
+                    last_refresh_et=str(signal_ctx.get("last_refresh_et") or ""),
                     signal_tokens=signal_tokens,
-                    recent_leads=recent_leads,
+                    recent_leads=list(signal_ctx.get("recent_leads") or []),
                     candidate_ctx=selected_candidate,
                 )
             )
@@ -3096,7 +3369,7 @@ def main() -> int:
             print(f"OUTREACH_DUPLICATE_GUARD_DROPPED={duplicate_guard_dropped}")
 
         _write_events_and_status_updates(conn, batch=batch, results=send_results)
-        _append_ledger_records(path=export_ledger, batch=batch, state=state, results=send_results)
+        _append_ledger_records(path=export_ledger, batch=batch, results=send_results)
 
         skipped_count = int(sum(skipped.values()))
         top_skip = _format_top_reasons(skipped, limit=5)
@@ -3141,7 +3414,7 @@ def main() -> int:
             states=states,
             suppressed_emails=suppressed_emails,
         )
-        rotation_hint = _state_rotation_hint(state=state, states=states, counts=uncontacted_by_state)
+        rotation_hint = "" if state == "MULTI" else _state_rotation_hint(state=state, states=states, counts=uncontacted_by_state)
         new_replies = _event_count_for_day(conn, "replied", run_date)
         new_trials = _event_count_for_day(conn, "trial_started", run_date)
         new_conversions = _event_count_for_day(conn, "converted", run_date)
@@ -3154,6 +3427,7 @@ def main() -> int:
             next_actions = "Seed more prospects in crm.sqlite or use --allow-repeat for follow-up."
 
         _print_state_selection_tokens(rotation_state=rotation_state, effective_state=state)
+        _print_selected_by_state_token(selected_by_state)
         _print_ramp_ready_token(ramp_ready_decision)
         _print_fallback_trigger_token(fallback_decision)
         print(
@@ -3162,6 +3436,7 @@ def main() -> int:
         )
         print(f"{PASS_AUTO_EXPORT} contacted_prospect_ids={','.join([r['prospect_id'] for r in send_results if r.get('ok')]) or '(none)'}")
         print(f"{PASS_AUTO_EXPORT} skipped_top_reasons={top_skip}")
+        print(f"{PASS_AUTO_EXPORT} selected_by_state={_format_selected_by_state(selected_by_state)}")
         print(
             f"{PASS_AUTO_EXPORT} outreach_states_config={','.join(states)} "
             f"crm_uncontacted_by_state={uncontacted_by_state_text}"
@@ -3186,6 +3461,7 @@ def main() -> int:
             "Outreach auto-run summary\n"
             f"- state_rotation_selected: {rotation_state}\n"
             f"- state_effective_send: {state}\n"
+            f"- selected_by_state: {_format_selected_by_state(selected_by_state)}\n"
             f"- state: {state}\n"
             f"- batch: {batch}\n"
             f"- outreach_states_config: {','.join(states)}\n"
@@ -3214,6 +3490,7 @@ def main() -> int:
             "<h3>Outreach Auto-Run Summary</h3>"
             f"<p><strong>state_rotation_selected:</strong> {rotation_state}<br>"
             f"<strong>state_effective_send:</strong> {state}<br>"
+            f"<strong>selected_by_state:</strong> {_format_selected_by_state(selected_by_state)}<br>"
             f"<strong>state:</strong> {state}<br>"
             f"<strong>batch:</strong> {batch}<br>"
             f"<strong>outreach_states_config:</strong> {','.join(states)}<br>"
