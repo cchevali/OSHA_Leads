@@ -1477,7 +1477,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
             self.assertIn("AI_ASSIST_ACCEPTED_TOTAL=3", output)
             self.assertIn("AI_ASSIST_REJECTED_TOTAL=1", output)
             self.assertIn("AI_ASSIST_VERIFIED_TOTAL=1", output)
-            self.assertIn("DISCOVERY_SOURCE_COUNT_AI_ASSIST=1", output)
+            self.assertIn("AI_ASSIST_CREATED_NEW_TOTAL=1", output)
             self.assertIn("PASS_AI_ASSIST_IMPORT status=OK", output)
 
             conn = crm_store.connect(db_path)
@@ -1490,7 +1490,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
                     """
                 ).fetchone()
                 self.assertIsNotNone(prospect)
-                self.assertEqual(str(prospect[1] or ""), "ai_assist_manual")
+                self.assertEqual(str(prospect[1] or ""), "manual_user_supplied")
                 self.assertEqual(str(prospect[2] or ""), "ai_assist")
                 self.assertEqual(str(prospect[3] or ""), "recoverable_consultant")
 
@@ -1554,7 +1554,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
                     "SELECT email, source, enrichment_lane, default_send_eligible FROM prospects WHERE email = 'pat@gmail.com'"
                 ).fetchone()
                 self.assertIsNotNone(prospect)
-                self.assertEqual(str(prospect[1] or ""), "ai_assist_manual")
+                self.assertEqual(str(prospect[1] or ""), "manual_user_supplied")
                 self.assertEqual(str(prospect[2] or ""), "ai_assist")
                 self.assertEqual(int(prospect[3] or 0), 1)
 
@@ -1570,7 +1570,7 @@ class TestProspectAiAssistTools(unittest.TestCase):
 
             self.assertIsNotNone(audit_row)
             self.assertEqual(str(audit_row[0] or ""), "verified")
-            self.assertEqual(str(audit_row[1] or ""), "")
+            self.assertEqual(str(audit_row[1] or ""), "created_new_contact")
 
     def test_import_persists_seed_id_provenance_when_seed_index_is_available(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2185,46 +2185,15 @@ class TestProspectAiAssistTools(unittest.TestCase):
             env["DATA_DIR"] = str(data_dir)
             prospect_id = import_tool._prospect_id_for_email("taylor@safeco.example.com")
 
-            def _seed_then_fail(_input_path, archive_dir=None, no_archive=False):  # type: ignore[no-untyped-def]
-                conn = crm_store.connect(db_path)
-                try:
-                    crm_store.init_schema(conn)
-                    conn.execute(
-                        """
-                        INSERT INTO prospects(
-                            prospect_id, firm, contact_name, email, title, city, state, website, source,
-                            source_fit_tier, default_send_eligible, email_status, enrichment_lane,
-                            score, status, created_at
-                        ) VALUES (?, ?, ?, ?, ?, '', ?, ?, 'ai_assist_manual', 'recoverable_consultant', 1, '', 'ai_assist', 0, 'new', ?)
-                        ON CONFLICT(prospect_id) DO UPDATE SET email = excluded.email
-                        """,
-                        (
-                            prospect_id,
-                            "SafeCo",
-                            "Taylor Safe",
-                            "taylor@safeco.example.com",
-                            "Owner",
-                            "TX",
-                            "https://safeco.example.com",
-                            "2026-03-09T00:00:00+00:00",
-                        ),
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
-                return 1
-
             with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
-                import_tool.crm_admin, "_seed_from_csv", side_effect=_seed_then_fail
+                import_tool, "_upsert_audit_rows", side_effect=RuntimeError("simulated_audit_failure")
             ):
                 first_out = io.StringIO()
                 with redirect_stdout(first_out):
                     first_rc = import_tool.main(["--input", str(input_path)])
             self.assertEqual(first_rc, 1, msg=first_out.getvalue())
 
-            with mock.patch.dict(os.environ, env, clear=False), mock.patch.object(
-                import_tool.crm_admin, "_seed_from_csv", side_effect=AssertionError("should not reseed")
-            ):
+            with mock.patch.dict(os.environ, env, clear=False):
                 second_out = io.StringIO()
                 with redirect_stdout(second_out):
                     second_rc = import_tool.main(["--input", str(input_path)])

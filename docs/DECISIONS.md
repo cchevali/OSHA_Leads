@@ -448,8 +448,8 @@ The operator workflow shifted from reviewing repo-generated prospect packets to 
 - Keep `run_prospect_replenish_daily.py` active as an automated background safety net, not the primary workflow to optimize around.
 - Replace the evening prospect packet dump with nightly manual-research prep: refreshed `crm_skip_list_for_ai.csv` plus a repo-managed dated Deep Research prompt artifact.
 - Standardize Deep Research output on the canonical CSV header `state,decision,firm,website,contact_name,title,email,source_urls,confidence,evidence_snippet`.
-- Extend the existing AI-assist importer to accept `--stdin`/clipboard CSV in addition to file and pending-inbox imports, while reusing the same CRM/audit path.
-- Expand the live state scope to `TX,CA,FL,PA,OH` across ingest, prospect generation, CRM reporting, and outreach rotation.
+- Extend the existing AI-assist importer to accept `--stdin`/clipboard CSV plus loose manual operator input in addition to file and pending-inbox imports, while reusing the same CRM/audit path.
+- Expand the live state scope to `TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN` across ingest, prospect generation, CRM reporting, and outreach rotation.
 - Keep `STATE_LIC` explicitly TX-only and surface that as a documented diagnostic rather than silently implying PA/OH license coverage.
 
 ### Rationale
@@ -462,5 +462,5 @@ The operator workflow shifted from reviewing repo-generated prospect packets to 
 ### Consequences
 
 - Evening ops artifacts now prepare manual research instead of packet dumps.
-- Import validation now rejects accepted rows outside the active live scope and blocks CRM duplicates by root domain and normalized firm key in addition to existing email/suppression checks.
+- Import validation now rejects accepted rows outside the active live scope, stages incomplete manual rows, and merges/upserts conservatively against CRM by email, root domain, and normalized firm key instead of creating obvious duplicate companies/contacts.
 - Operator docs and context pack must describe manual Deep Research as the primary lane and autogrow as the safety net.

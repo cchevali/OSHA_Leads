@@ -24,6 +24,7 @@ import ai_assist_paths
 import crm_light
 import run_trial_admin
 from outreach import crm_store
+from outreach import us_state
 from runtime_data_dir import resolve_data_dir
 from runtime_schedule_config import (
     RuntimeSchedule,
@@ -92,6 +93,7 @@ OUTREACH_SAFE_FIELDS = {
     "outreach_daily_limit": ("OUTREACH_DAILY_LIMIT", "OutreachDailyLimit"),
     "outreach_states": ("OUTREACH_STATES", "OutreachStates"),
     "outreach_fallback_on_empty_state": ("OUTREACH_FALLBACK_ON_EMPTY_STATE", "OutreachFallbackOnEmptyState"),
+    "outreach_state_spread_mode": ("OUTREACH_STATE_SPREAD_MODE", "OutreachStateSpreadMode"),
     "prospect_autogrow_enabled": ("PROSPECT_AUTOGROW_ENABLED", "ProspectAutoGrowEnabled"),
     "prospect_autogrow_safety_net_enabled": (
         "PROSPECT_AUTOGROW_SAFETY_NET_ENABLED",
@@ -236,6 +238,20 @@ def _normalize_boolish_int(raw: str, *, field_name: str) -> str:
 
 def _parse_inline_key_values(text: str) -> dict[str, str]:
     return {match.group(1): match.group(2) for match in re.finditer(r"([A-Za-z0-9_]+)=([^\s]+)", text)}
+
+
+def _parse_selected_by_state_csv(text: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for part in [segment.strip() for segment in str(text or "").split(",") if segment.strip()]:
+        state, _sep, count_text = part.partition(":")
+        state_norm = str(state or "").strip().upper()
+        if not state_norm:
+            continue
+        try:
+            out[state_norm] = max(0, int(count_text or 0))
+        except Exception:
+            out[state_norm] = 0
+    return out
 
 
 def _project_weekday_end_date(start_date_text: str, sends_limit: int) -> str:
@@ -457,8 +473,9 @@ class OpsConsoleService:
     def _current_outreach_defaults(self) -> dict[str, str]:
         return {
             "outreach_daily_limit": "10",
-            "outreach_states": "TX,CA,FL,PA,OH",
+            "outreach_states": us_state.DEFAULT_OUTREACH_STATE_CSV,
             "outreach_fallback_on_empty_state": "0",
+            "outreach_state_spread_mode": "round_robin",
             "prospect_autogrow_enabled": "1",
             "prospect_autogrow_safety_net_enabled": "1",
             "prospect_ai_assist_review_enabled": "1",
@@ -502,6 +519,7 @@ class OpsConsoleService:
                 "OUTREACH_DAILY_LIMIT": "outreach_daily_limit",
                 "OUTREACH_STATES": "outreach_states",
                 "OUTREACH_FALLBACK_ON_EMPTY_STATE": "outreach_fallback_on_empty_state",
+                "OUTREACH_STATE_SPREAD_MODE": "outreach_state_spread_mode",
                 "PROSPECT_AUTOGROW_ENABLED": "prospect_autogrow_enabled",
                 "PROSPECT_AUTOGROW_SAFETY_NET_ENABLED": "prospect_autogrow_safety_net_enabled",
                 "PROSPECT_AI_ASSIST_REVIEW_ENABLED": "prospect_ai_assist_review_enabled",
@@ -556,6 +574,7 @@ class OpsConsoleService:
             "OUTREACH_STATES": str(env_values.get("outreach_states") or ""),
             "OUTREACH_DAILY_LIMIT": str(env_values.get("outreach_daily_limit") or ""),
             "OUTREACH_FALLBACK_ON_EMPTY_STATE": str(env_values.get("outreach_fallback_on_empty_state") or "0"),
+            "OUTREACH_STATE_SPREAD_MODE": str(env_values.get("outreach_state_spread_mode") or "round_robin"),
             "OUTREACH_SKIP_ROLE_INBOXES": str(env_values.get("outreach_skip_role_inboxes") or "1"),
             "OUTREACH_ALLOW_FREE_DOMAINS": str(env_values.get("outreach_allow_free_domains") or "0"),
         }
@@ -570,6 +589,7 @@ class OpsConsoleService:
             "stdout": result.stdout,
             "stderr": result.stderr,
             "sendable_by_state": {},
+            "selected_by_state": {},
             "below_floor_states": [],
         }
         for raw_line in result.stdout.splitlines():
@@ -588,6 +608,8 @@ class OpsConsoleService:
                 plan["rotation_selected_state"] = line.split("=", 1)[1].strip()
             elif line.startswith("OUTREACH_STATE_EFFECTIVE_SEND="):
                 plan["effective_send_state"] = line.split("=", 1)[1].strip()
+            elif line.startswith("OUTREACH_SELECTED_BY_STATE="):
+                plan["selected_by_state"] = _parse_selected_by_state_csv(line.split("=", 1)[1].strip())
             elif line.startswith("OUTREACH_STATE_SENDABLE_ESTIMATE "):
                 fields = _parse_inline_key_values(line)
                 state = str(fields.get("state") or "").strip().upper()
@@ -949,6 +971,9 @@ class OpsConsoleService:
                 str(form.get("outreach_fallback_on_empty_state") or current["outreach_fallback_on_empty_state"]),
                 field_name="outreach_fallback_on_empty_state",
             ),
+            "outreach_state_spread_mode": str(
+                form.get("outreach_state_spread_mode") or current.get("outreach_state_spread_mode") or "round_robin"
+            ).strip().lower(),
             "prospect_autogrow_enabled": _normalize_boolish_int(
                 str(form.get("prospect_autogrow_enabled") or current["prospect_autogrow_enabled"]),
                 field_name="prospect_autogrow_enabled",
@@ -974,6 +999,8 @@ class OpsConsoleService:
             desired["outreach_states"],
             "-OutreachFallbackOnEmptyState",
             desired["outreach_fallback_on_empty_state"],
+            "-OutreachStateSpreadMode",
+            desired["outreach_state_spread_mode"],
             "-ProspectAutoGrowEnabled",
             desired["prospect_autogrow_enabled"],
             "-ProspectAutoGrowSafetyNetEnabled",
@@ -1002,6 +1029,8 @@ class OpsConsoleService:
             str(payload["outreach_states"]),
             "-OutreachFallbackOnEmptyState",
             str(payload["outreach_fallback_on_empty_state"]),
+            "-OutreachStateSpreadMode",
+            str(payload["outreach_state_spread_mode"]),
             "-ProspectAutoGrowEnabled",
             str(payload["prospect_autogrow_enabled"]),
             "-ProspectAutoGrowSafetyNetEnabled",
@@ -1623,6 +1652,7 @@ class OpsConsoleApp:
             f'<label>Daily limit<input name="outreach_daily_limit" value="{_html(snapshot["outreach_daily_limit"])}"></label>',
             f'<label>States<input name="outreach_states" value="{_html(snapshot["outreach_states"])}"></label>',
             f'<label>Fallback on empty state (0/1)<input name="outreach_fallback_on_empty_state" value="{_html(snapshot["outreach_fallback_on_empty_state"])}"></label>',
+            f'<label>State spread mode<input name="outreach_state_spread_mode" value="{_html(snapshot["outreach_state_spread_mode"])}"></label>',
             f'<label>Autogrow enabled (0/1)<input name="prospect_autogrow_enabled" value="{_html(snapshot["prospect_autogrow_enabled"])}"></label>',
             f'<label>Autogrow safety net (0/1)<input name="prospect_autogrow_safety_net_enabled" value="{_html(snapshot["prospect_autogrow_safety_net_enabled"])}"></label>',
             f'<label>AI assist review (0/1)<input name="prospect_ai_assist_review_enabled" value="{_html(snapshot["prospect_ai_assist_review_enabled"])}"></label>',

@@ -33,6 +33,7 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         required_params = [
             "OutreachDailyLimit",
             "OutreachStates",
+            "OutreachStateSpreadMode",
             "OshaSmokeTo",
             "OutreachSuppressionMaxAgeHours",
             "OutreachFallbackOnEmptyState",
@@ -122,6 +123,8 @@ class TestSetOutreachEnvScriptContract(unittest.TestCase):
         self.assertIn("autogrow_source_registry.json", text)
         self.assertIn("Resolve-ImplementedAutogrowSources", text)
         self.assertIn("OUTREACH_FALLBACK_ON_EMPTY_STATE", text)
+        self.assertIn("OUTREACH_STATE_SPREAD_MODE", text)
+        self.assertIn("outreach_state_spread_mode=", text)
         self.assertIn("OUTREACH_SKIP_ROLE_INBOXES", text)
         self.assertIn("outreach_skip_role_inboxes=", text)
         self.assertIn("OUTREACH_ALLOW_FREE_DOMAINS", text)

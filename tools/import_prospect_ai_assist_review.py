@@ -9,7 +9,6 @@ import json
 import os
 import sqlite3
 import sys
-import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,7 +21,6 @@ if str(REPO_ROOT) not in sys.path:
 
 import seed_recipients_pools as pools
 import ai_assist_paths
-from outreach import crm_admin
 from outreach import contact_normalization
 from outreach import crm_store
 from outreach import run_prospect_generation as generation
@@ -74,6 +72,52 @@ COMMON_MULTI_LABEL_TLDS = {
 STDIN_CSV_FENCE_RE = re.compile(r"^\s*```(?:csv)?\s*\r?\n(?P<body>.*?)(?:\r?\n)?```\s*$", re.IGNORECASE | re.DOTALL)
 STDIN_REQUIRED_HEADER = ",".join(REQUIRED_COLUMNS)
 STDIN_OPTIONAL_HEADER = STDIN_REQUIRED_HEADER + ",seed_id"
+MANUAL_SOURCE = "manual_user_supplied"
+MANUAL_TITLE_ALIASES = {"title", "role", "job title", "position"}
+MANUAL_FIELD_ALIASES = {
+    "company": "firm",
+    "company name": "firm",
+    "firm": "firm",
+    "business": "firm",
+    "business name": "firm",
+    "contact": "contact_name",
+    "contact name": "contact_name",
+    "name": "contact_name",
+    "person": "contact_name",
+    "email": "email",
+    "contact email": "email",
+    "website": "website",
+    "url": "website",
+    "domain": "website",
+    "site": "website",
+    "web": "website",
+    "state": "state",
+    "title": "title",
+    "role": "title",
+    "job title": "title",
+    "position": "title",
+    "note": "notes",
+    "notes": "notes",
+    "comment": "notes",
+    "comments": "notes",
+}
+MANUAL_ALLOWED_ACTION_REASONS = (
+    "created_new_contact",
+    "created_second_contact_existing_company",
+    "updated_existing_contact",
+    "updated_existing_company",
+    "staged_missing_email",
+    "staged_missing_identity",
+    "invalid_state_value",
+    "state_out_of_scope",
+    "free_domain",
+    "suppressed_email",
+    "do_not_contact_email",
+    "do_not_contact_domain",
+    "duplicate_in_batch",
+)
+EMAIL_TOKEN_RE = re.compile(r"[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)+", flags=re.I)
+MANUAL_LABEL_RE = re.compile(r"^\s*(?P<label>[A-Za-z][A-Za-z0-9 /_-]{1,40})\s*[:=-]\s*(?P<value>.+?)\s*$")
 
 
 def _emit(key: str, value: str | int) -> None:
@@ -129,6 +173,64 @@ def _normalize_domain(value: str) -> str:
 
 def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split()).strip()
+
+
+def _manual_row_summary(row: dict[str, str]) -> str:
+    parts = [
+        _normalize_text(row.get("firm") or ""),
+        _normalize_text(row.get("contact_name") or ""),
+        _extract_email_token(str(row.get("email") or "")) or _normalize_email(str(row.get("email") or "")),
+        _normalize_manual_website(row.get("website") or ""),
+        _normalize_text(row.get("state") or ""),
+        _normalize_text(row.get("_notes") or ""),
+    ]
+    return " | ".join([part for part in parts if part]).strip()
+
+
+def _manual_label_key(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower())).strip()
+    return MANUAL_FIELD_ALIASES.get(normalized, "")
+
+
+def _extract_email_token(value: str) -> str:
+    match = EMAIL_TOKEN_RE.search(str(value or ""))
+    return str(match.group(0) or "").strip().lower() if match else ""
+
+
+def _normalize_manual_website(value: str) -> str:
+    canonical = contact_normalization.canonicalize_http_url(str(value or ""))
+    if canonical:
+        return canonical
+    return contact_normalization.normalize_website(str(value or ""))
+
+
+def _append_notes(existing: str, value: str) -> str:
+    left = _normalize_text(existing)
+    right = _normalize_text(value)
+    if not right:
+        return left
+    if not left:
+        return right
+    if right == left:
+        return left
+    return f"{left} | {right}"
+
+
+def _looks_like_person_name(value: str) -> bool:
+    text = _normalize_text(value)
+    if not text:
+        return False
+    if "@" in text or "." in text or len(text.split()) < 2 or len(text.split()) > 4:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z .'-]{3,80}", text))
+
+
+def _manual_field_segments(value: str) -> list[str]:
+    text = str(value or "").replace("\r", "\n")
+    if not text.strip():
+        return []
+    pieces = [part.strip() for part in re.split(r"[,\t|;]+", text) if part.strip()]
+    return pieces or [_normalize_text(text)]
 
 
 def _normalize_firm_key(value: str) -> str:
@@ -410,14 +512,16 @@ def _load_markdown_review_rows_from_text(raw_text: str) -> list[dict[str, str]]:
     return rows
 
 
-def _load_csv_rows(input_path: Path) -> list[dict[str, str]]:
-    with open(input_path, "r", newline="", encoding="utf-8-sig") as handle:
-        raw_text = handle.read()
-    try:
-        return _load_csv_rows_from_text(raw_text)
-    except ValueError:
-        extracted_text = _extract_stdin_csv_text(raw_text)
-        return _load_csv_rows_from_text(extracted_text)
+def _contains_embedded_csv_header(raw_text: str) -> bool:
+    saw_nonempty = False
+    for line in str(raw_text or "").splitlines():
+        candidate = str(line or "").strip().lstrip("\ufeff")
+        if not candidate:
+            continue
+        if candidate in {STDIN_REQUIRED_HEADER, STDIN_OPTIONAL_HEADER}:
+            return saw_nonempty
+        saw_nonempty = True
+    return False
 
 
 def _load_csv_rows_from_text(raw_text: str) -> list[dict[str, str]]:
@@ -443,6 +547,164 @@ def _load_csv_rows_from_text(raw_text: str) -> list[dict[str, str]]:
         return rows
 
 
+def _extract_csv_candidate_text(raw_text: str) -> str:
+    text = str(raw_text or "").lstrip("\ufeff").strip()
+    if not text:
+        raise ValueError("missing_input")
+    fence_match = STDIN_CSV_FENCE_RE.fullmatch(text)
+    if fence_match:
+        text = str(fence_match.group("body") or "").strip()
+    first_nonempty_line = ""
+    for line in text.splitlines():
+        candidate = str(line or "").strip().lstrip("\ufeff")
+        if candidate:
+            first_nonempty_line = candidate
+            break
+    if first_nonempty_line not in {STDIN_REQUIRED_HEADER, STDIN_OPTIONAL_HEADER}:
+        raise ValueError("stdin_commentary_detected")
+    return text
+
+
+def _split_manual_blocks(raw_text: str) -> list[str]:
+    text = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return []
+    blocks = [block.strip() for block in re.split(r"\n\s*\n+", text) if block.strip()]
+    if len(blocks) > 1:
+        return blocks
+    nonempty_lines = [str(line or "").strip() for line in text.splitlines() if str(line or "").strip()]
+    email_lines = [line for line in nonempty_lines if _extract_email_token(line)]
+    if len(email_lines) >= 2 and len(email_lines) == len(nonempty_lines):
+        return nonempty_lines
+    return [text]
+
+
+def _parse_manual_block(raw_block: str) -> dict[str, str]:
+    parsed: dict[str, str] = {
+        "state": "",
+        "decision": "accept",
+        "firm": "",
+        "website": "",
+        "contact_name": "",
+        "title": "",
+        "email": "",
+        "source_urls": "",
+        "confidence": "100",
+        "evidence_snippet": "",
+        "_notes": "",
+        "_invalid_state": "",
+    }
+    leftovers: list[str] = []
+    for raw_line in str(raw_block or "").splitlines():
+        line = _normalize_text(raw_line)
+        if not line:
+            continue
+        match = MANUAL_LABEL_RE.match(raw_line)
+        if match:
+            field = _manual_label_key(str(match.group("label") or ""))
+            value = _normalize_text(str(match.group("value") or ""))
+            if field == "state":
+                state = _normalize_state(value)
+                if state:
+                    parsed["state"] = state
+                elif value:
+                    parsed["_invalid_state"] = value
+                continue
+            if field == "email":
+                parsed["email"] = _extract_email_token(value) or parsed["email"]
+                continue
+            if field == "website":
+                parsed["website"] = _normalize_manual_website(value) or parsed["website"]
+                continue
+            if field in {"firm", "contact_name", "title"}:
+                parsed[field] = value or parsed[field]
+                continue
+            if field == "notes":
+                parsed["_notes"] = _append_notes(parsed["_notes"], value)
+                continue
+
+        for segment in _manual_field_segments(line):
+            email = _extract_email_token(segment)
+            if email and not parsed["email"]:
+                parsed["email"] = email
+                continue
+            website = _normalize_manual_website(segment)
+            if website and not parsed["website"]:
+                parsed["website"] = website
+                continue
+            state = _normalize_state(segment)
+            if state and not parsed["state"]:
+                parsed["state"] = state
+                continue
+            leftovers.append(_normalize_text(segment))
+
+    leftovers = [item for item in leftovers if item]
+    if not parsed["firm"] and leftovers:
+        parsed["firm"] = leftovers.pop(0)
+    if not parsed["contact_name"]:
+        contact_idx = next((idx for idx, value in enumerate(leftovers) if _looks_like_person_name(value)), -1)
+        if contact_idx >= 0:
+            parsed["contact_name"] = leftovers.pop(contact_idx)
+    if not parsed["title"] and leftovers:
+        parsed["title"] = leftovers.pop(0)
+    for leftover in leftovers:
+        parsed["_notes"] = _append_notes(parsed["_notes"], leftover)
+
+    parsed["evidence_snippet"] = parsed["_notes"] or _normalize_text(raw_block)
+    return parsed
+
+
+def _load_manual_rows_from_text(raw_text: str) -> list[dict[str, str]]:
+    if _contains_embedded_csv_header(raw_text):
+        raise ValueError("stdin_commentary_detected")
+    rows: list[dict[str, str]] = []
+    for block in _split_manual_blocks(raw_text):
+        row = _parse_manual_block(block)
+        if any(
+            str(row.get(field) or "").strip()
+            for field in ("firm", "website", "contact_name", "title", "email", "state", "evidence_snippet")
+        ):
+            rows.append(
+                {
+                    key: str(value or "")
+                    for key, value in row.items()
+                    if (not key.startswith("_")) or key == "_invalid_state"
+                }
+            )
+    if not rows:
+        raise ValueError("missing_manual_rows")
+    return rows
+
+
+def _load_input_rows_from_text(raw_text: str) -> tuple[list[dict[str, str]], str]:
+    last_error: Exception | None = None
+    candidates = [str(raw_text or "").lstrip("\ufeff")]
+    try:
+        extracted_text = _extract_csv_candidate_text(raw_text)
+        if extracted_text not in candidates:
+            candidates.append(extracted_text)
+    except Exception as exc:
+        last_error = exc
+    for candidate in candidates:
+        try:
+            return _load_csv_rows_from_text(candidate), "reviewed_csv"
+        except Exception as exc:
+            last_error = exc
+    return _load_manual_rows_from_text(raw_text), "manual_text"
+
+
+def _load_input_rows(input_path: Path) -> tuple[list[dict[str, str]], str]:
+    with open(input_path, "r", newline="", encoding="utf-8-sig") as handle:
+        return _load_input_rows_from_text(handle.read())
+
+
+def _load_csv_rows(input_path: Path) -> list[dict[str, str]]:
+    rows, parse_mode = _load_input_rows(input_path)
+    if parse_mode != "reviewed_csv":
+        raise ValueError(f"expected_reviewed_csv got={parse_mode}")
+    return rows
+
+
 def _sha256_file(path: Path) -> str:
     hasher = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -456,24 +718,6 @@ def _sha256_file(path: Path) -> str:
 
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
-
-
-def _extract_stdin_csv_text(raw_text: str) -> str:
-    text = str(raw_text or "").lstrip("\ufeff").strip()
-    if not text:
-        raise ValueError("missing_stdin")
-    fence_match = STDIN_CSV_FENCE_RE.fullmatch(text)
-    if fence_match:
-        text = str(fence_match.group("body") or "").strip()
-    first_nonempty_line = ""
-    for line in text.splitlines():
-        candidate = str(line or "").strip().lstrip("\ufeff")
-        if candidate:
-            first_nonempty_line = candidate
-            break
-    if first_nonempty_line not in {STDIN_REQUIRED_HEADER, STDIN_OPTIONAL_HEADER}:
-        raise ValueError("stdin_commentary_detected")
-    return text
 
 
 def _discover_pending_review_files(
@@ -633,49 +877,215 @@ def _load_do_not_contact_sets(conn: sqlite3.Connection | None) -> tuple[set[str]
     return email_matches, domain_matches
 
 
-def _write_seed_csv(path: Path, rows: list[dict[str, str]], created_at: str) -> None:
-    fieldnames = [
-        "prospect_id",
-        "firm",
-        "contact_name",
-        "email",
-        "title",
-        "city",
-        "state",
-        "website",
-        "source",
-        "source_fit_tier",
-        "default_send_eligible",
-        "email_status",
-        "enrichment_lane",
-        "score",
-        "status",
-        "created_at",
-    ]
-    with open(path, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(
-                {
-                    "prospect_id": row["prospect_id"],
-                    "firm": row["firm"],
-                    "contact_name": row["contact_name"],
-                    "email": row["email"],
-                    "title": row["title"],
-                    "city": "",
-                    "state": row["state"],
-                    "website": row["website"],
-                    "source": "ai_assist_manual",
-                    "source_fit_tier": "recoverable_consultant",
-                    "default_send_eligible": "1",
-                    "email_status": "",
-                    "enrichment_lane": "ai_assist",
-                    "score": "",
-                    "status": "new",
-                    "created_at": created_at,
-                }
-            )
+def _prospect_record_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    email = _normalize_email(str(row["email"] or ""))
+    website = _normalize_manual_website(str(row["website"] or ""))
+    return {
+        "prospect_id": str(row["prospect_id"] or "").strip(),
+        "firm": _normalize_text(str(row["firm"] or "")),
+        "contact_name": _normalize_text(str(row["contact_name"] or "")),
+        "email": email,
+        "title": _normalize_text(str(row["title"] or "")),
+        "city": _normalize_text(str(row["city"] or "")),
+        "state": _normalize_state(str(row["state"] or "")),
+        "website": website,
+        "source": _normalize_text(str(row["source"] or "")),
+        "source_fit_tier": _normalize_text(str(row["source_fit_tier"] or "")) or "recoverable_consultant",
+        "default_send_eligible": int(row["default_send_eligible"] or 1),
+        "email_status": _normalize_text(str(row["email_status"] or "")),
+        "enrichment_lane": _normalize_text(str(row["enrichment_lane"] or "")),
+        "score": int(row["score"] or 0),
+        "status": _normalize_text(str(row["status"] or "")) or "new",
+        "created_at": _normalize_text(str(row["created_at"] or "")),
+        "last_contacted_at": _normalize_text(str(row["last_contacted_at"] or "")),
+        "root_domain": _root_domain(generation._email_domain(email) or _normalize_domain(website)),
+        "firm_key": _normalize_firm_key(str(row["firm"] or "")),
+    }
+
+
+def _load_existing_company_maps(conn: sqlite3.Connection | None) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    root_domain_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    firm_key_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    if conn is None:
+        return root_domain_map, firm_key_map
+    rows = conn.execute(
+        """
+        SELECT prospect_id, firm, contact_name, email, title, city, state, website, source,
+               source_fit_tier, default_send_eligible, email_status, enrichment_lane,
+               score, status, created_at, last_contacted_at
+        FROM prospects
+        """
+    ).fetchall()
+    for row in rows:
+        record = _prospect_record_from_row(row)
+        if str(record.get("root_domain") or ""):
+            root_domain_map[str(record["root_domain"])].append(record)
+        if str(record.get("firm_key") or ""):
+            firm_key_map[str(record["firm_key"])].append(record)
+    return root_domain_map, firm_key_map
+
+
+def _best_company_match(candidates: list[dict[str, Any]], *, root_domain: str, firm_key: str) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    for candidate in candidates:
+        if root_domain and str(candidate.get("root_domain") or "") == root_domain:
+            return candidate
+    for candidate in candidates:
+        if firm_key and str(candidate.get("firm_key") or "") == firm_key:
+            return candidate
+    return candidates[0]
+
+
+def _prefer_company_value(existing: str, incoming: str) -> str:
+    current = _normalize_text(existing)
+    new_value = _normalize_text(incoming)
+    if not new_value:
+        return current
+    if not current:
+        return new_value
+    if _normalize_firm_key(current) and _normalize_firm_key(current) == _normalize_firm_key(new_value):
+        return current if len(current) >= len(new_value) else new_value
+    return current
+
+
+def _merge_existing_prospect(existing: dict[str, Any], incoming: dict[str, str], *, company_match: bool) -> tuple[dict[str, Any], bool]:
+    payload = dict(existing)
+    company_updated = False
+
+    incoming_firm = _normalize_text(incoming.get("firm") or "")
+    preferred_firm = _prefer_company_value(str(existing.get("firm") or ""), incoming_firm)
+    if preferred_firm != str(existing.get("firm") or ""):
+        payload["firm"] = preferred_firm
+        company_updated = True
+
+    incoming_website = _normalize_manual_website(incoming.get("website") or "")
+    if incoming_website and not str(existing.get("website") or "").strip():
+        payload["website"] = incoming_website
+        company_updated = True
+
+    incoming_state = _normalize_state(incoming.get("state") or "")
+    if incoming_state and not str(existing.get("state") or "").strip():
+        payload["state"] = incoming_state
+        company_updated = True
+
+    if not company_match:
+        if _normalize_text(incoming.get("contact_name") or ""):
+            payload["contact_name"] = _normalize_text(incoming.get("contact_name") or "")
+        if _normalize_text(incoming.get("title") or ""):
+            payload["title"] = _normalize_text(incoming.get("title") or "")
+        if incoming_website:
+            payload["website"] = incoming_website
+        if incoming_state:
+            payload["state"] = incoming_state
+    return payload, company_updated
+
+
+def _build_manual_prospect_payload(
+    *,
+    email: str,
+    firm: str,
+    website: str,
+    contact_name: str,
+    title: str,
+    state: str,
+    now_iso: str,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    existing_row = dict(existing or {})
+    status = str(existing_row.get("status") or "").strip().lower() or "new"
+    source = str(existing_row.get("source") or "").strip() or MANUAL_SOURCE
+    source_fit_tier = str(existing_row.get("source_fit_tier") or "").strip().lower() or "recoverable_consultant"
+    default_send_eligible = int(existing_row.get("default_send_eligible") or 1)
+    enrichment_lane = str(existing_row.get("enrichment_lane") or "").strip() or "ai_assist"
+    return {
+        "prospect_id": str(existing_row.get("prospect_id") or _prospect_id_for_email(email)).strip(),
+        "firm": _normalize_text(firm),
+        "contact_name": _normalize_text(contact_name),
+        "email": email,
+        "title": _normalize_text(title),
+        "city": str(existing_row.get("city") or ""),
+        "state": _normalize_state(state) or str(existing_row.get("state") or ""),
+        "website": _normalize_manual_website(website) or str(existing_row.get("website") or ""),
+        "source": source,
+        "source_fit_tier": source_fit_tier,
+        "default_send_eligible": default_send_eligible,
+        "email_status": str(existing_row.get("email_status") or ""),
+        "enrichment_lane": enrichment_lane,
+        "score": int(existing_row.get("score") or 0),
+        "status": status,
+        "created_at": str(existing_row.get("created_at") or now_iso),
+        "last_contacted_at": str(existing_row.get("last_contacted_at") or "") or None,
+    }
+
+
+def _write_prospect_row(conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO prospects(
+            prospect_id, firm, contact_name, email, title, city, state, website, source,
+            source_fit_tier, default_send_eligible, email_status, enrichment_lane,
+            score, status, created_at, last_contacted_at
+        ) VALUES (
+            :prospect_id, :firm, :contact_name, :email, :title, :city, :state, :website, :source,
+            :source_fit_tier, :default_send_eligible, :email_status, :enrichment_lane,
+            :score, :status, :created_at, :last_contacted_at
+        )
+        ON CONFLICT(prospect_id) DO UPDATE SET
+            firm = excluded.firm,
+            contact_name = excluded.contact_name,
+            email = excluded.email,
+            title = excluded.title,
+            city = excluded.city,
+            state = excluded.state,
+            website = excluded.website,
+            source = excluded.source,
+            source_fit_tier = excluded.source_fit_tier,
+            default_send_eligible = excluded.default_send_eligible,
+            email_status = excluded.email_status,
+            enrichment_lane = excluded.enrichment_lane,
+            score = excluded.score,
+            status = excluded.status,
+            last_contacted_at = COALESCE(excluded.last_contacted_at, prospects.last_contacted_at)
+        """,
+        payload,
+    )
+
+
+def _upsert_company_cache(
+    *,
+    email_map: dict[str, dict[str, Any]],
+    root_domain_map: dict[str, list[dict[str, Any]]],
+    firm_key_map: dict[str, list[dict[str, Any]]],
+    payload: dict[str, Any],
+) -> None:
+    record = {
+        **dict(payload),
+        "email": _normalize_email(str(payload.get("email") or "")),
+        "website": _normalize_manual_website(str(payload.get("website") or "")),
+        "state": _normalize_state(str(payload.get("state") or "")),
+    }
+    record["root_domain"] = _root_domain(generation._email_domain(str(record.get("email") or "")) or _normalize_domain(str(record.get("website") or "")))
+    record["firm_key"] = _normalize_firm_key(str(record.get("firm") or ""))
+
+    email = str(record.get("email") or "")
+    if email:
+        email_map[email] = record
+
+    for mapping_name, key_name in ((root_domain_map, "root_domain"), (firm_key_map, "firm_key")):
+        key = str(record.get(key_name) or "")
+        if not key:
+            continue
+        existing_rows = list(mapping_name.get(key) or [])
+        replaced = False
+        for idx, existing_row in enumerate(existing_rows):
+            if str(existing_row.get("prospect_id") or "") == str(record.get("prospect_id") or ""):
+                existing_rows[idx] = record
+                replaced = True
+                break
+        if not replaced:
+            existing_rows.append(record)
+        mapping_name[key] = existing_rows
 
 
 def _upsert_audit_rows(conn: sqlite3.Connection, audit_rows: list[dict[str, str | int]]) -> None:
@@ -733,20 +1143,20 @@ def _load_existing_prospect_map(conn: sqlite3.Connection | None) -> dict[str, di
         return {}
     rows = conn.execute(
         """
-        SELECT email, prospect_id, source
+        SELECT prospect_id, firm, contact_name, email, title, city, state, website, source,
+               source_fit_tier, default_send_eligible, email_status, enrichment_lane,
+               score, status, created_at, last_contacted_at
         FROM prospects
         WHERE email IS NOT NULL AND trim(email) <> ''
         """
     ).fetchall()
-    out: dict[str, dict[str, str]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for row in rows:
-        email = _normalize_email(str(row["email"] or ""))
+        record = _prospect_record_from_row(row)
+        email = _normalize_email(str(record.get("email") or ""))
         if not email:
             continue
-        out[email] = {
-            "prospect_id": str(row["prospect_id"] or "").strip(),
-            "source": str(row["source"] or "").strip(),
-        }
+        out[email] = record
     return out
 
 
@@ -1146,6 +1556,15 @@ def _print_totals(*, totals: Counter, per_state: dict[str, Counter], dry_run: bo
     _emit("AI_ASSIST_ACCEPTED_TOTAL", int(totals.get("accepted", 0)))
     _emit("AI_ASSIST_REJECTED_TOTAL", int(totals.get("rejected", 0)))
     _emit("AI_ASSIST_VERIFIED_TOTAL", int(totals.get("verified", 0)))
+    _emit("AI_ASSIST_CREATED_NEW_TOTAL", int(totals.get("created_new_contact", 0)))
+    _emit(
+        "AI_ASSIST_CREATED_SECOND_CONTACT_TOTAL",
+        int(totals.get("created_second_contact_existing_company", 0)),
+    )
+    _emit("AI_ASSIST_UPDATED_CONTACT_TOTAL", int(totals.get("updated_existing_contact", 0)))
+    _emit("AI_ASSIST_UPDATED_COMPANY_TOTAL", int(totals.get("updated_existing_company", 0)))
+    _emit("AI_ASSIST_STAGED_TOTAL", int(totals.get("staged", 0)))
+    _emit("AI_ASSIST_SKIPPED_DUPLICATE_TOTAL", int(totals.get("skipped_duplicate", 0)))
     for state in sorted(per_state.keys()):
         token_state = state or "UNKNOWN"
         _emit(f"AI_ASSIST_CANDIDATES_TOTAL_STATE_{token_state}", int(per_state[state].get("candidates", 0)))
@@ -1195,22 +1614,19 @@ def _import_review_file(
         return 2, "MISSING_INPUT"
 
     source_hash = ""
-    raw_stdin_csv = ""
+    raw_input_text = str(stdin_text or "")
     if is_stdin:
-        try:
-            raw_stdin_csv = _extract_stdin_csv_text(stdin_text)
-        except Exception as exc:
-            print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
+        if not raw_input_text.strip():
+            print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail=missing_stdin", file=sys.stderr)
             return 2, "INVALID_INPUT"
-        source_hash = _sha256_text(raw_stdin_csv)
-        _emit("AI_ASSIST_IMPORT_STDIN_BYTES", len(raw_stdin_csv.encode("utf-8")))
+        source_hash = _sha256_text(raw_input_text)
+        _emit("AI_ASSIST_IMPORT_STDIN_BYTES", len(raw_input_text.encode("utf-8")))
     else:
         source_hash = _sha256_file(tracking_source_path)
     _emit("AI_ASSIST_IMPORT_SOURCE_FILE_HASH", source_hash)
 
     conn: sqlite3.Connection | None = None
     claim_state = "dry_run"
-    seed_rc = 0
     final_status = "OK"
     batch_failure_detail = ""
     try:
@@ -1241,39 +1657,45 @@ def _import_review_file(
                 return 0, "SKIPPED_IN_PROGRESS"
 
         try:
-            rows = _load_csv_rows_from_text(raw_stdin_csv) if is_stdin else _load_csv_rows(tracking_source_path)
+            rows, parse_mode = _load_input_rows_from_text(raw_input_text) if is_stdin else _load_input_rows(tracking_source_path)
         except Exception as exc:
             print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
             return 2, "INVALID_INPUT"
         try:
-            rows, normalized_rows_total, normalized_fields_total = _normalize_review_rows(rows)
+            if parse_mode == "reviewed_csv":
+                rows, normalized_rows_total, normalized_fields_total = _normalize_review_rows(rows)
+            else:
+                normalized_rows_total = len(rows)
+                normalized_fields_total = 0
         except Exception as exc:
             print(f"{ERR_AI_ASSIST_IMPORT_INPUT} detail={exc}", file=sys.stderr)
             return 2, "INVALID_INPUT"
-        seed_index = {} if is_stdin else _load_seed_index(tracking_source_path, batch_id)
+        seed_index = {} if (is_stdin or parse_mode != "reviewed_csv") else _load_seed_index(tracking_source_path, batch_id)
 
         now_iso = crm_store.utc_now_iso()
+        _emit("AI_ASSIST_IMPORT_PARSE_MODE", parse_mode)
         _emit("AI_ASSIST_IMPORT_NORMALIZED_ROWS", normalized_rows_total)
         _emit("AI_ASSIST_IMPORT_NORMALIZED_FIELDS", normalized_fields_total)
         _emit("AI_ASSIST_IMPORT_SEED_INDEX_ROWS", len(seed_index))
 
         if not dry_run and conn is not None:
-            legacy_totals = _legacy_completed_batch_totals(conn, batch_id, rows)
-            if _load_batch_tracking_row(conn, batch_id) is None and legacy_totals is not None:
-                _create_completed_batch_tracking(
-                    conn,
-                    batch_id=batch_id,
-                    source_path=tracking_source_path,
-                    source_hash=source_hash,
-                    candidates_total=int(legacy_totals.get("candidates", 0)),
-                    accepted_total=int(legacy_totals.get("accepted", 0)),
-                    rejected_total=int(legacy_totals.get("rejected", 0)),
-                    verified_total=int(legacy_totals.get("verified", 0)),
-                    now_iso=now_iso,
-                )
-                _emit("AI_ASSIST_IMPORT_BATCH_STATE", "skip_completed")
-                print(f"{PASS_AI_ASSIST_IMPORT} status=SKIPPED_ALREADY_COMPLETED")
-                return 0, "SKIPPED_ALREADY_COMPLETED"
+            if parse_mode == "reviewed_csv":
+                legacy_totals = _legacy_completed_batch_totals(conn, batch_id, rows)
+                if _load_batch_tracking_row(conn, batch_id) is None and legacy_totals is not None:
+                    _create_completed_batch_tracking(
+                        conn,
+                        batch_id=batch_id,
+                        source_path=tracking_source_path,
+                        source_hash=source_hash,
+                        candidates_total=int(legacy_totals.get("candidates", 0)),
+                        accepted_total=int(legacy_totals.get("accepted", 0)),
+                        rejected_total=int(legacy_totals.get("rejected", 0)),
+                        verified_total=int(legacy_totals.get("verified", 0)),
+                        now_iso=now_iso,
+                    )
+                    _emit("AI_ASSIST_IMPORT_BATCH_STATE", "skip_completed")
+                    print(f"{PASS_AI_ASSIST_IMPORT} status=SKIPPED_ALREADY_COMPLETED")
+                    return 0, "SKIPPED_ALREADY_COMPLETED"
             try:
                 claim_state, _existing_row = _begin_batch_tracking(
                     conn,
@@ -1295,42 +1717,34 @@ def _import_review_file(
 
         suppressed_emails = generation._load_suppression_set(data_dir_resolution.effective_path, conn)
         existing_prospects = _load_existing_prospect_map(conn)
-        existing_root_domains = _load_existing_root_domains(conn)
-        existing_firm_keys = _load_existing_firm_keys(conn)
-        batch_candidate_map = _load_batch_candidate_map(conn, batch_id)
-        verified_email_other_batches = _load_verified_email_batches(conn, batch_id)
+        root_domain_map, firm_key_map = _load_existing_company_maps(conn)
         do_not_contact_emails, do_not_contact_domains = _load_do_not_contact_sets(conn)
 
         candidate_rows: list[dict[str, object]] = []
-        seed_rows: list[dict[str, str]] = []
         totals: Counter = Counter()
         per_state: dict[str, Counter] = defaultdict(Counter)
         batch_seen_emails: set[str] = set()
-        allow_recover_existing = bool(
-            (not dry_run) and claim_state in {"resume_failed", "resume_stale_started", "resume_other"}
-        )
         allow_free_domains = _allow_free_domains()
 
         for row in rows:
             state = _normalize_state(str(row.get("state") or ""))
             decision = str(row.get("decision") or "").strip().lower()
-            email = _normalize_email(str(row.get("email") or ""))
-            website = str(row.get("website") or "").strip()
+            firm = _normalize_text(row.get("firm") or "")
+            website = _normalize_manual_website(row.get("website") or "")
+            contact_name = _normalize_text(row.get("contact_name") or "")
+            title = _normalize_text(row.get("title") or "")
+            email = _extract_email_token(str(row.get("email") or "")) or _normalize_email(str(row.get("email") or ""))
             email_domain = generation._email_domain(email)
             website_domain = _normalize_domain(website)
             domain = email_domain or website_domain
             candidate_key = _candidate_key(row, email=email, domain=domain, state=state)
             source_urls = _parse_source_urls(str(row.get("source_urls") or ""))
             confidence = _coerce_confidence(str(row.get("confidence") or ""))
-            firm = str(row.get("firm") or "").strip()
-            contact_name = str(row.get("contact_name") or "").strip()
-            title = str(row.get("title") or "").strip()
-            evidence_snippet = str(row.get("evidence_snippet") or "").strip()
+            evidence_snippet = _normalize_text(str(row.get("evidence_snippet") or "")) or _manual_row_summary(row)
+            invalid_state_value = _normalize_text(str(row.get("_invalid_state") or ""))
             root_domain = _root_domain(domain)
             firm_key = _normalize_firm_key(firm)
             provenance = _seed_provenance_for_row(row=row, seed_index=seed_index)
-            prospect_id = _prospect_id_for_email(email) if email else ""
-            prior_batch_row = batch_candidate_map.get(candidate_key) or {}
             candidate: dict[str, object] = {
                 "decision": decision,
                 "state": state,
@@ -1338,7 +1752,7 @@ def _import_review_file(
                 "website": website,
                 "domain": domain,
                 "candidate_key": candidate_key,
-                "prospect_id": prospect_id,
+                "prospect_id": "",
                 "audit_payload": _base_audit_payload(
                     batch_id=batch_id,
                     candidate_key=candidate_key,
@@ -1358,7 +1772,9 @@ def _import_review_file(
                 ),
                 "final_verification_status": "",
                 "final_rejection_reason": "",
-                "seed_requested": False,
+                "upsert_payload": None,
+                "company_update_payload": None,
+                "company_update_requested": False,
             }
 
             totals["candidates"] += 1
@@ -1376,139 +1792,187 @@ def _import_review_file(
             per_state[state]["accepted"] += 1
 
             rejection_reason = ""
-            if not state:
-                rejection_reason = "missing_state"
-            elif state not in active_states:
+            verification_status = ""
+            if invalid_state_value and not state:
+                verification_status = "rejected_by_verification"
+                rejection_reason = "invalid_state_value"
+            elif state and state not in active_states:
+                verification_status = "rejected_by_verification"
                 rejection_reason = "state_out_of_scope"
+            elif not email:
+                verification_status = "staged_incomplete"
+                rejection_reason = "staged_missing_email"
+                totals["staged"] += 1
             elif not generation._valid_email(email):
+                verification_status = "rejected_by_verification"
                 rejection_reason = "invalid_email"
-            elif not domain:
-                rejection_reason = "missing_domain"
             elif (not allow_free_domains) and email_domain in pools.FREE_EMAIL_DOMAINS:
+                verification_status = "rejected_by_verification"
                 rejection_reason = "free_domain"
             elif email in suppressed_emails:
+                verification_status = "rejected_by_verification"
                 rejection_reason = "suppressed_email"
             elif email in do_not_contact_emails:
+                verification_status = "rejected_by_verification"
                 rejection_reason = "do_not_contact_email"
-            elif domain in do_not_contact_domains:
+            elif domain and domain in do_not_contact_domains:
+                verification_status = "rejected_by_verification"
                 rejection_reason = "do_not_contact_domain"
             elif email in batch_seen_emails:
+                verification_status = "rejected_by_verification"
                 rejection_reason = "duplicate_in_batch"
+                totals["skipped_duplicate"] += 1
+            elif not firm and not domain:
+                verification_status = "staged_incomplete"
+                rejection_reason = "staged_missing_identity"
+                totals["staged"] += 1
 
-            if rejection_reason:
-                candidate["final_verification_status"] = "rejected_by_verification"
+            if verification_status:
+                candidate["final_verification_status"] = verification_status
                 candidate["final_rejection_reason"] = rejection_reason
                 candidate_rows.append(candidate)
                 continue
 
             batch_seen_emails.add(email)
-            existing_row = existing_prospects.get(email) or {}
-            existing_prospect_id = str(existing_row.get("prospect_id") or "").strip()
-            existing_source = str(existing_row.get("source") or "").strip().lower()
-            prior_same_batch_verified = (
-                str(prior_batch_row.get("verification_status") or "").strip() == "verified"
-                and str(prior_batch_row.get("prospect_id") or "").strip() == prospect_id
-            )
-            resume_verified = bool(
-                allow_recover_existing
-                and existing_prospect_id == prospect_id
-                and existing_source.startswith("ai_assist_manual")
-                and email not in verified_email_other_batches
-            )
-
-            if prior_same_batch_verified or resume_verified:
-                candidate["final_verification_status"] = "verified"
-                candidate_rows.append(candidate)
-                continue
-            if email in existing_prospects:
-                candidate["final_verification_status"] = "rejected_by_verification"
-                candidate["final_rejection_reason"] = "duplicate_email_in_crm"
-                candidate_rows.append(candidate)
-                continue
-            if root_domain and root_domain in existing_root_domains:
-                candidate["final_verification_status"] = "rejected_by_verification"
-                candidate["final_rejection_reason"] = "duplicate_root_domain_in_crm"
-                candidate_rows.append(candidate)
-                continue
-            if firm_key and firm_key in existing_firm_keys:
-                candidate["final_verification_status"] = "rejected_by_verification"
-                candidate["final_rejection_reason"] = "duplicate_firm_key_in_crm"
+            incoming_fields = {
+                "firm": firm,
+                "website": website,
+                "state": state,
+                "contact_name": contact_name,
+                "title": title,
+                "email": email,
+            }
+            existing_row = dict(existing_prospects.get(email) or {})
+            if existing_row:
+                merged_existing, company_updated = _merge_existing_prospect(
+                    existing_row,
+                    incoming_fields,
+                    company_match=False,
+                )
+                payload = _build_manual_prospect_payload(
+                    email=email,
+                    firm=str(merged_existing.get("firm") or ""),
+                    website=str(merged_existing.get("website") or ""),
+                    contact_name=str(merged_existing.get("contact_name") or ""),
+                    title=str(merged_existing.get("title") or ""),
+                    state=str(merged_existing.get("state") or ""),
+                    now_iso=now_iso,
+                    existing=merged_existing,
+                )
+                candidate["prospect_id"] = str(payload["prospect_id"] or "")
+                candidate["upsert_payload"] = payload
+                candidate["company_update_requested"] = bool(company_updated)
+                candidate["final_rejection_reason"] = "updated_existing_contact"
                 candidate_rows.append(candidate)
                 continue
 
-            candidate["seed_requested"] = True
-            seed_rows.append(
-                {
-                    "prospect_id": prospect_id,
-                    "firm": firm,
-                    "contact_name": contact_name,
-                    "email": email,
-                    "title": title,
-                    "state": state,
-                    "website": website,
-                }
+            company_candidates: list[dict[str, Any]] = []
+            seen_company_ids: set[str] = set()
+            for pool in (list(root_domain_map.get(root_domain) or []), list(firm_key_map.get(firm_key) or [])):
+                for item in pool:
+                    prospect_id = str(item.get("prospect_id") or "")
+                    if prospect_id and prospect_id not in seen_company_ids:
+                        seen_company_ids.add(prospect_id)
+                        company_candidates.append(dict(item))
+            matched_company = _best_company_match(company_candidates, root_domain=root_domain, firm_key=firm_key)
+            if matched_company:
+                company_template, company_updated = _merge_existing_prospect(
+                    matched_company,
+                    incoming_fields,
+                    company_match=True,
+                )
+                if company_updated:
+                    candidate["company_update_requested"] = True
+                    candidate["company_update_payload"] = _build_manual_prospect_payload(
+                        email=str(matched_company.get("email") or ""),
+                        firm=str(company_template.get("firm") or ""),
+                        website=str(company_template.get("website") or ""),
+                        contact_name=str(matched_company.get("contact_name") or ""),
+                        title=str(matched_company.get("title") or ""),
+                        state=str(company_template.get("state") or ""),
+                        now_iso=now_iso,
+                        existing=company_template,
+                    )
+                payload = _build_manual_prospect_payload(
+                    email=email,
+                    firm=str(company_template.get("firm") or firm),
+                    website=str(company_template.get("website") or website),
+                    contact_name=contact_name,
+                    title=title,
+                    state=state or str(company_template.get("state") or ""),
+                    now_iso=now_iso,
+                )
+                candidate["prospect_id"] = str(payload["prospect_id"] or "")
+                candidate["upsert_payload"] = payload
+                candidate["final_rejection_reason"] = "created_second_contact_existing_company"
+                candidate_rows.append(candidate)
+                continue
+
+            payload = _build_manual_prospect_payload(
+                email=email,
+                firm=firm,
+                website=website,
+                contact_name=contact_name,
+                title=title,
+                state=state,
+                now_iso=now_iso,
             )
+            candidate["prospect_id"] = str(payload["prospect_id"] or "")
+            candidate["upsert_payload"] = payload
+            candidate["final_rejection_reason"] = "created_new_contact"
             candidate_rows.append(candidate)
 
         if dry_run:
             for candidate in candidate_rows:
-                if str(candidate.get("decision") or "") != "accept":
+                payload = dict(candidate.get("upsert_payload") or {})
+                if not payload:
                     continue
-                if str(candidate.get("final_verification_status") or "") == "verified" or bool(
-                    candidate.get("seed_requested")
-                ):
-                    totals["verified"] += 1
-                    per_state[str(candidate.get("state") or "")]["verified"] += 1
-                    candidate["final_verification_status"] = "verified"
-                    candidate["final_rejection_reason"] = ""
+                action = str(candidate.get("final_rejection_reason") or "")
+                totals["verified"] += 1
+                per_state[str(candidate.get("state") or "")]["verified"] += 1
+                candidate["final_verification_status"] = "verified"
+                if action in MANUAL_ALLOWED_ACTION_REASONS:
+                    totals[action] += 1
+                if bool(candidate.get("company_update_requested")):
+                    totals["updated_existing_company"] += 1
             _print_totals(totals=totals, per_state=per_state, dry_run=True, final_status="DRY_RUN")
             return 0, "DRY_RUN"
 
-        if seed_rows:
-            temp_path: Path | None = None
-            try:
-                temp_dir = data_dir_resolution.effective_path / "prospect_discovery"
-                temp_dir.mkdir(parents=True, exist_ok=True)
-                with tempfile.NamedTemporaryFile(
-                    prefix="ai_assist_import_",
-                    suffix=".csv",
-                    dir=str(temp_dir),
-                    delete=False,
-                ) as handle:
-                    temp_path = Path(handle.name)
-                _write_seed_csv(temp_path, seed_rows, created_at=now_iso)
-                seed_rc = crm_admin._seed_from_csv(temp_path, archive_dir=None, no_archive=True)
-            finally:
-                if temp_path is not None and temp_path.exists():
-                    try:
-                        temp_path.unlink()
-                    except Exception:
-                        pass
-
-        existing_prospects = _load_existing_prospect_map(conn)
-        seed_failed_total = 0
         for candidate in candidate_rows:
-            if str(candidate.get("decision") or "") == "reject":
+            payload = dict(candidate.get("upsert_payload") or {})
+            if not payload:
                 continue
-            if str(candidate.get("final_verification_status") or "") in {"review_rejected", "rejected_by_verification"}:
-                continue
-            email = str(candidate.get("email") or "")
-            prospect_id = str(candidate.get("prospect_id") or "")
-            existing_row = existing_prospects.get(email) or {}
-            existing_prospect_id = str(existing_row.get("prospect_id") or "").strip()
-            existing_source = str(existing_row.get("source") or "").strip().lower()
-            if existing_prospect_id == prospect_id and existing_source.startswith("ai_assist_manual"):
-                candidate["final_verification_status"] = "verified"
-                totals["verified"] += 1
-                per_state[str(candidate.get("state") or "")]["verified"] += 1
-                continue
-            if email in existing_prospects:
+            try:
+                company_update_payload = dict(candidate.get("company_update_payload") or {})
+                if company_update_payload:
+                    _write_prospect_row(conn, company_update_payload)
+                    _upsert_company_cache(
+                        email_map=existing_prospects,
+                        root_domain_map=root_domain_map,
+                        firm_key_map=firm_key_map,
+                        payload=company_update_payload,
+                    )
+                _write_prospect_row(conn, payload)
+                _upsert_company_cache(
+                    email_map=existing_prospects,
+                    root_domain_map=root_domain_map,
+                    firm_key_map=firm_key_map,
+                    payload=payload,
+                )
+            except sqlite3.IntegrityError:
                 candidate["final_verification_status"] = "rejected_by_verification"
-                candidate["final_rejection_reason"] = "duplicate_email_in_crm"
+                candidate["final_rejection_reason"] = "duplicate_in_batch"
+                totals["skipped_duplicate"] += 1
                 continue
-            candidate["final_verification_status"] = "seed_failed"
-            candidate["final_rejection_reason"] = "seed_failed"
-            seed_failed_total += 1
+
+            action = str(candidate.get("final_rejection_reason") or "")
+            candidate["final_verification_status"] = "verified"
+            totals["verified"] += 1
+            per_state[str(candidate.get("state") or "")]["verified"] += 1
+            if action in MANUAL_ALLOWED_ACTION_REASONS:
+                totals[action] += 1
+            if bool(candidate.get("company_update_requested")):
+                totals["updated_existing_company"] += 1
 
         audit_rows: list[dict[str, str | int]] = []
         for candidate in candidate_rows:
@@ -1521,15 +1985,12 @@ def _import_review_file(
                 audit_payload["prospect_id"] = ""
             audit_rows.append(audit_payload)
 
-        _upsert_audit_rows(conn, audit_rows)
-        conn.commit()
-
-        if seed_rc != 0:
+        try:
+            _upsert_audit_rows(conn, audit_rows)
+            conn.commit()
+        except Exception as exc:
             final_status = "FAILED"
-            batch_failure_detail = f"seed_rc={seed_rc}"
-        elif seed_failed_total > 0:
-            final_status = "FAILED"
-            batch_failure_detail = f"seed_failed_total={seed_failed_total}"
+            batch_failure_detail = str(exc)
 
         if conn is not None:
             _finish_batch_tracking(
@@ -1546,7 +2007,7 @@ def _import_review_file(
 
         _print_totals(totals=totals, per_state=per_state, dry_run=False, final_status=final_status)
         if final_status != "OK":
-            return (seed_rc or 1), final_status
+            return 1, final_status
         return 0, final_status
     finally:
         if conn is not None:

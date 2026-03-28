@@ -605,7 +605,7 @@ def main() -> int:
 
     local_now = roa._outreach_local_now()
     today_local = local_now["date"]
-    configured_states = roa._parse_states(os.getenv("OUTREACH_STATES", "TX,CA,FL,PA,OH"))
+    configured_states = roa._parse_states(os.getenv("OUTREACH_STATES", roa.us_state.DEFAULT_OUTREACH_STATE_CSV))
     signal_window_days = roa._signal_window_days()
     crm_db = roa._crm_db_path()
     suppression_csv = roa._suppression_csv_path()

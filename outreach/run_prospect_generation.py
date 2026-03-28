@@ -159,7 +159,7 @@ GENERATOR_FILTER_KEYS = (
     "already_sent_or_ineligible",
     "other",
 )
-DEFAULT_STATE_SCOPE_ALL = ("TX", "CA", "FL", "PA", "OH")
+DEFAULT_STATE_SCOPE_ALL = us_state.DEFAULT_OUTREACH_STATES
 VALID_SOURCE_FIT_TIERS = {"core_consultant", "recoverable_consultant", "adjacent_contractor"}
 US_STATE_NAME_TO_ABBR = dict(us_state.US_STATE_NAME_TO_ABBR)
 US_STATE_ABBREVIATIONS = set(us_state.US_STATE_ABBREVIATIONS)

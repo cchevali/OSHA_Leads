@@ -47,6 +47,9 @@ def _parse_stdout_block(text: str) -> tuple[list[str], dict[str, str]]:
 
 
 class TestTrialStatus(unittest.TestCase):
+    def setUp(self) -> None:
+        (Path(__file__).resolve().parent / "out" / "crm.sqlite").unlink(missing_ok=True)
+
     def _seed_trial(
         self,
         db_path: Path,

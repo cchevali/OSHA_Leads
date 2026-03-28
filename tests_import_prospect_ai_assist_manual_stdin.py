@@ -81,7 +81,7 @@ class TestImportProspectAiAssistManualStdin(unittest.TestCase):
             data_dir = Path(d) / "runtime"
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
-            env["OUTREACH_STATES"] = "TX,CA,FL,PA,OH"
+            env["OUTREACH_STATES"] = "TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN"
             rc, out, err = self._run_main(
                 ["--stdin", "--dry-run", "--batch", "2026-03-23_AIASSIST_MANUAL_091500"],
                 stdin_text=csv_text,
@@ -106,7 +106,7 @@ class TestImportProspectAiAssistManualStdin(unittest.TestCase):
             data_dir = Path(d) / "runtime"
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
-            env["OUTREACH_STATES"] = "TX,CA,FL,PA,OH"
+            env["OUTREACH_STATES"] = "TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN"
             rc, out, err = self._run_main(
                 ["--stdin", "--dry-run", "--batch", "2026-03-23_AIASSIST_MANUAL_091501"],
                 stdin_text=csv_text,
@@ -131,7 +131,7 @@ class TestImportProspectAiAssistManualStdin(unittest.TestCase):
             input_path.write_text(csv_text, encoding="utf-8")
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
-            env["OUTREACH_STATES"] = "TX,CA,FL,PA,OH"
+            env["OUTREACH_STATES"] = "TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN"
             rc, out, err = self._run_main(
                 ["--input", str(input_path), "--dry-run", "--batch", "2026-03-23_AIASSIST_MANUAL_091501"],
                 env=env,
@@ -186,12 +186,122 @@ class TestImportProspectAiAssistManualStdin(unittest.TestCase):
         self.assertEqual(str(row[0] or ""), "rejected_by_verification")
         self.assertEqual(str(row[1] or ""), "state_out_of_scope")
 
-    def test_import_rejects_duplicate_root_domain_and_firm_key(self):
+    def test_import_manual_text_accepts_each_added_state(self):
+        blocks = [
+            ("PA", "Penn Safety Group", "pat@penn.example"),
+            ("OH", "Buckeye Safety Group", "bailey@buckeye.example"),
+            ("IL", "Prairie Safety Group", "ivy@prairie.example"),
+            ("NJ", "Garden Safety Group", "jules@garden.example"),
+            ("LA", "Pelican Safety Group", "lane@pelican.example"),
+            ("MI", "Lakes Safety Group", "mika@lakes.example"),
+            ("GA", "Peach Safety Group", "gale@peach.example"),
+            ("AL", "Rocket Safety Group", "aria@rocket.example"),
+            ("WI", "Badger Safety Group", "wren@badger.example"),
+            ("TN", "Volunteer Safety Group", "tess@volunteer.example"),
+        ]
+        stdin_text = "\n\n".join(
+            [
+                "\n".join(
+                    [
+                        f"Company: {firm}",
+                        f"Email: {email.upper()}",
+                        f"Website: www.{email.split('@', 1)[1]}",
+                        f"State: {state.lower()}",
+                        "Notes: owner listed on website",
+                    ]
+                )
+                for state, firm, email in blocks
+            ]
+        )
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "runtime"
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN"
+            rc, out, err = self._run_main(
+                ["--stdin", "--dry-run", "--batch", "2026-03-23_AIASSIST_MANUAL_091504"],
+                stdin_text=stdin_text,
+                env=env,
+            )
+        self.assertEqual(rc, 0, msg=out + err)
+        self.assertIn("AI_ASSIST_IMPORT_PARSE_MODE=manual_text", out)
+        self.assertIn("AI_ASSIST_ACCEPTED_TOTAL=10", out)
+        self.assertIn("AI_ASSIST_VERIFIED_TOTAL=10", out)
+        self.assertIn("AI_ASSIST_CREATED_NEW_TOTAL=10", out)
+        for state, _firm, _email in blocks:
+            self.assertIn(f"AI_ASSIST_ACCEPTED_TOTAL_STATE_{state}=1", out)
+            self.assertIn(f"AI_ASSIST_VERIFIED_TOTAL_STATE_{state}=1", out)
+        self.assertIn("PASS_AI_ASSIST_IMPORT status=DRY_RUN", out)
+
+    def test_import_manual_text_updates_existing_contact_without_duplicate(self):
         stdin_text = "\n".join(
             [
-                "state,decision,firm,website,contact_name,title,email,source_urls,confidence,evidence_snippet",
-                "TX,accept,Known Domain Co,https://known-domain.example,Nora Domain,Owner,nora@known-domain.example,https://known-domain.example/about,91,Owner listed on site",
-                "PA,accept,Shared Firm LLC,https://brand-new-firm.example,Sam Shared,Principal,sam@brand-new-firm.example,https://brand-new-firm.example/about,89,Principal listed on site",
+                "Company: Keystone Safety, LLC",
+                "Contact: Pat Keystone",
+                "Email: PAT@KEYSTONE.EXAMPLE",
+                "Website: keystone.example",
+                "State: pennsylvania",
+                "Title: Owner",
+                "Notes: manually supplied",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "runtime"
+            db_path = data_dir / "crm.sqlite"
+            self._seed_crm_prospect(
+                db_path,
+                firm="Keystone Safety LLC",
+                website="",
+                state="",
+                email="pat@keystone.example",
+            )
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN"
+            rc, out, err = self._run_main(
+                ["--stdin", "--batch", "2026-03-23_AIASSIST_MANUAL_091505"],
+                stdin_text=stdin_text,
+                env=env,
+            )
+            self.assertEqual(rc, 0, msg=out + err)
+            conn = crm_store.connect(db_path)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT prospect_id, firm, contact_name, email, title, state, website
+                    FROM prospects
+                    WHERE email = 'pat@keystone.example'
+                    """
+                ).fetchall()
+                audit_row = conn.execute(
+                    f"""
+                    SELECT verification_status, rejection_reason
+                    FROM {crm_store.AI_ASSIST_CANDIDATE_TABLE}
+                    WHERE batch_id = '2026-03-23_AIASSIST_MANUAL_091505'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(str(rows[0][1] or ""), "Keystone Safety, LLC")
+        self.assertEqual(str(rows[0][2] or ""), "Pat Keystone")
+        self.assertEqual(str(rows[0][3] or ""), "pat@keystone.example")
+        self.assertEqual(str(rows[0][4] or ""), "Owner")
+        self.assertEqual(str(rows[0][5] or ""), "PA")
+        self.assertEqual(str(rows[0][6] or ""), "https://keystone.example")
+        self.assertIn("AI_ASSIST_UPDATED_CONTACT_TOTAL=1", out)
+        self.assertEqual(str(audit_row[0] or ""), "verified")
+        self.assertEqual(str(audit_row[1] or ""), "updated_existing_contact")
+
+    def test_import_manual_text_creates_second_contact_for_existing_company_match(self):
+        stdin_text = "\n".join(
+            [
+                "Company: Known Domain Co, LLC",
+                "Contact: Nora Domain",
+                "Email: nora@known-domain.example",
+                "Website: known-domain.example",
+                "State: texas",
+                "Title: Owner",
             ]
         )
         with tempfile.TemporaryDirectory() as d:
@@ -213,9 +323,9 @@ class TestImportProspectAiAssistManualStdin(unittest.TestCase):
             )
             env = dict(os.environ)
             env["DATA_DIR"] = str(data_dir)
-            env["OUTREACH_STATES"] = "TX,CA,FL,PA,OH"
+            env["OUTREACH_STATES"] = "TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN"
             rc, out, err = self._run_main(
-                ["--stdin", "--batch", "2026-03-23_AIASSIST_MANUAL_091504"],
+                ["--stdin", "--batch", "2026-03-23_AIASSIST_MANUAL_091506"],
                 stdin_text=stdin_text,
                 env=env,
             )
@@ -223,18 +333,79 @@ class TestImportProspectAiAssistManualStdin(unittest.TestCase):
             conn = crm_store.connect(db_path)
             try:
                 rows = conn.execute(
-                    f"""
-                    SELECT email, rejection_reason
-                    FROM {crm_store.AI_ASSIST_CANDIDATE_TABLE}
-                    WHERE batch_id = '2026-03-23_AIASSIST_MANUAL_091504'
+                    """
+                    SELECT email, firm, website, state
+                    FROM prospects
+                    WHERE website = 'https://known-domain.example' OR email LIKE '%known-domain.example'
                     ORDER BY email
+                    """
+                ).fetchall()
+                audit_row = conn.execute(
+                    f"""
+                    SELECT verification_status, rejection_reason
+                    FROM {crm_store.AI_ASSIST_CANDIDATE_TABLE}
+                    WHERE batch_id = '2026-03-23_AIASSIST_MANUAL_091506'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+        self.assertEqual([str(row[0] or "") for row in rows], ["known@known-domain.example", "nora@known-domain.example"])
+        self.assertTrue(all(str(row[2] or "") == "https://known-domain.example" for row in rows))
+        self.assertIn("AI_ASSIST_CREATED_SECOND_CONTACT_TOTAL=1", out)
+        self.assertEqual(str(audit_row[0] or ""), "verified")
+        self.assertEqual(str(audit_row[1] or ""), "created_second_contact_existing_company")
+
+    def test_import_manual_text_stages_missing_email_and_rejects_invalid_state(self):
+        stdin_text = "\n\n".join(
+            [
+                "\n".join(
+                    [
+                        "Company: Lean Safety Group",
+                        "Website: lean-safety.example",
+                        "State: MI",
+                        "Notes: missing email should stage",
+                    ]
+                ),
+                "\n".join(
+                    [
+                        "Company: Invalid State Safety",
+                        "Email: invalid@state.example",
+                        "State: middleground",
+                    ]
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "runtime"
+            db_path = data_dir / "crm.sqlite"
+            env = dict(os.environ)
+            env["DATA_DIR"] = str(data_dir)
+            env["OUTREACH_STATES"] = "TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN"
+            rc, out, err = self._run_main(
+                ["--stdin", "--batch", "2026-03-23_AIASSIST_MANUAL_091507"],
+                stdin_text=stdin_text,
+                env=env,
+            )
+            self.assertEqual(rc, 0, msg=out + err)
+            conn = crm_store.connect(db_path)
+            try:
+                prospects = conn.execute("SELECT email FROM prospects").fetchall()
+                audit_rows = conn.execute(
+                    f"""
+                    SELECT firm, verification_status, rejection_reason
+                    FROM {crm_store.AI_ASSIST_CANDIDATE_TABLE}
+                    WHERE batch_id = '2026-03-23_AIASSIST_MANUAL_091507'
+                    ORDER BY firm
                     """
                 ).fetchall()
             finally:
                 conn.close()
-        rejection_map = {str(row[0] or ""): str(row[1] or "") for row in rows}
-        self.assertEqual(rejection_map["nora@known-domain.example"], "duplicate_root_domain_in_crm")
-        self.assertEqual(rejection_map["sam@brand-new-firm.example"], "duplicate_firm_key_in_crm")
+        self.assertEqual(prospects, [])
+        audit_map = {str(firm or ""): (str(status or ""), str(reason or "")) for firm, status, reason in audit_rows}
+        self.assertEqual(audit_map["Invalid State Safety"], ("rejected_by_verification", "invalid_state_value"))
+        self.assertEqual(audit_map["Lean Safety Group"], ("staged_incomplete", "staged_missing_email"))
+        self.assertIn("AI_ASSIST_STAGED_TOTAL=1", out)
+        self.assertIn("PASS_AI_ASSIST_IMPORT status=OK", out)
 
 
 if __name__ == "__main__":

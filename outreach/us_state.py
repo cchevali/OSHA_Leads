@@ -54,6 +54,22 @@ US_STATE_NAME_TO_ABBR: dict[str, str] = {
     "wyoming": "WY",
 }
 US_STATE_ABBREVIATIONS: set[str] = set(US_STATE_NAME_TO_ABBR.values())
+DEFAULT_OUTREACH_STATES: tuple[str, ...] = (
+    "TX",
+    "CA",
+    "FL",
+    "PA",
+    "OH",
+    "IL",
+    "NJ",
+    "LA",
+    "MI",
+    "GA",
+    "AL",
+    "WI",
+    "TN",
+)
+DEFAULT_OUTREACH_STATE_CSV = ",".join(DEFAULT_OUTREACH_STATES)
 
 
 def normalize_state_token(value: str) -> str:

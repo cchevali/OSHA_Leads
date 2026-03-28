@@ -126,14 +126,14 @@ class TestProspectGeneration(unittest.TestCase):
             self.assertIn("GENERATOR_ENRICH_HTTP_SLEEP_MS=800", out)
             self.assertFalse(out_path.exists(), msg="--print-config must not write output")
 
-    def test_print_config_defaults_autogrow_states_to_tx_ca_fl_pa_oh(self):
+    def test_print_config_defaults_autogrow_states_to_expanded_live_scope(self):
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "data"
             p = self._run(["--print-config", "--for-date", "2026-02-18"], {"DATA_DIR": str(data_dir), "OUTREACH_STATES": None})
             self.assertEqual(p.returncode, 0, msg=p.stderr + "\n" + p.stdout)
             out = p.stdout or ""
-            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL,PA,OH", out)
-            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL,PA,OH", out)
+            self.assertIn("PASS_GENERATOR_PRINT_CONFIG state_scope=TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN", out)
+            self.assertIn("GENERATOR_AUTOGROW_STATES=TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN", out)
 
     def test_bluebook_canonical_contact_resolution_uses_public_site_email_without_enrichment(self):
         from outreach import run_prospect_generation as generator

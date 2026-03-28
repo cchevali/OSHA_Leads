@@ -25,6 +25,7 @@ class TestTrialAuditAndAdmin(unittest.TestCase):
         self._tmp_path = Path(self._tmp.name)
         self._old_data_dir = os.environ.get("DATA_DIR")
         self._old_trial_limit_default = os.environ.get("TRIAL_SENDS_LIMIT_DEFAULT")
+        (Path(__file__).resolve().parent / "out" / "crm.sqlite").unlink(missing_ok=True)
         os.environ["DATA_DIR"] = str(self._tmp_path / "data")
         os.environ["TRIAL_SENDS_LIMIT_DEFAULT"] = "14"
 

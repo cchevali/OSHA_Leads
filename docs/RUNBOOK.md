@@ -479,12 +479,13 @@ Use only:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 `
   -OutreachDailyLimit 10 `
-  -OutreachStates TX,CA,FL,PA,OH `
+  -OutreachStates TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
   -SignalFreshnessMaxDays 30 `
   -AiTriageEnabled 0 `
   -AiTriageOpenAiModel gpt-4.1-mini `
+  -OutreachStateSpreadMode round_robin `
   -OutreachFallbackOnEmptyState 0 `
   -OutreachSkipRoleInboxes 1 `
   -OutreachAllowFreeDomains 0 `
@@ -514,7 +515,7 @@ This script:
 - Ensures `OUTREACH_SUPPRESSION_MAX_AGE_HOURS` is set to `240` when missing (or to your explicit parameter value)
 - Ensures `SIGNAL_FRESHNESS_MAX_DAYS` is set to `30` when missing (or to your explicit parameter value)
 - Ensures triage model defaults `AI_TRIAGE_ENABLED=0` and `AI_TRIAGE_OPENAI_MODEL=gpt-4.1-mini`
-- Ensures `OUTREACH_FALLBACK_ON_EMPTY_STATE` default `0`, `OUTREACH_SKIP_ROLE_INBOXES` default `1`, and `OUTREACH_ALLOW_FREE_DOMAINS` default `0`
+- Ensures `OUTREACH_STATE_SPREAD_MODE` default `round_robin`, `OUTREACH_FALLBACK_ON_EMPTY_STATE` default `0`, `OUTREACH_SKIP_ROLE_INBOXES` default `1`, and `OUTREACH_ALLOW_FREE_DOMAINS` default `0`
 - Ensures prospect enrichment defaults include `PROSPECT_ENRICH_DOMAIN_ENABLED=0`, `PROSPECT_ENRICH_HUNTER_ENABLED=0`, `PROSPECT_ENRICH_MAX_SITES_PER_RUN=25`, and `PROSPECT_ENRICH_HTTP_SLEEP_MS=750`
 - Ensures trial defaults `TRIAL_SENDS_LIMIT_DEFAULT`, `TRIAL_EXPIRED_BEHAVIOR_DEFAULT`, and optional `TRIAL_CONVERSION_URL` are managed in the same no-editor flow
 - Re-encrypts `.env.sops` on save
@@ -593,15 +594,15 @@ Operating rules:
 
 - The prep tool refreshes `${DATA_DIR}\audits\prospect_ai_assist\crm_skip_list_for_ai.csv` and writes `${DATA_DIR}\audits\prospect_ai_assist\manual_prospect_deep_research_YYYYMMDD.txt`.
 - The prompt template is repo-managed. External prompt files are no longer canonical.
-- The prompt locks the active state scope, target-firm count, canonical CSV header, and the explicit `STATE_LIC` diagnostic that `STATE_LIC` remains TX-only while `PA` and `OH` are live through manual Deep Research and multi-state-capable sources.
-- Canonical live scope is `TX,CA,FL,PA,OH`.
+- The prompt locks the active state scope, target-firm count, canonical CSV header, and the explicit `STATE_LIC` diagnostic that `STATE_LIC` remains TX-only while `PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN` are live through manual Deep Research and multi-state-capable sources.
+- Canonical live scope is `TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN`.
 - Attach the current skip-list CSV to Deep Research and paste the generated prompt artifact. Deep Research must return only CSV, not prose, not a markdown table.
 - Canonical Deep Research CSV header is `state,decision,firm,website,contact_name,title,email,source_urls,confidence,evidence_snippet`.
-- `tools\import_prospect_ai_assist_review.py --stdin` accepts plain CSV or a single fenced `csv` block. Any extra commentary fails fast.
+- `tools\import_prospect_ai_assist_review.py --stdin` accepts plain CSV, a single fenced `csv` block, or loose labeled manual blocks. Stray commentary prepended to canonical CSV still fails fast.
 - The clipboard wrapper is the fastest operator path when you want to paste Deep Research output without creating a manual reviewed file yourself.
 - Default stdin/clipboard batches use `YYYY-MM-DD_AIASSIST_MANUAL_HHMMSS`.
 - `tools\import_prospect_ai_assist_review.py --pending` still scans `${DATA_DIR}\imports\prospect_ai_assist` oldest-first before live sends, so file-based reviewed CSVs remain valid for queued/manual backfill workflows.
-- Import verifies domain/email shape, enforces suppression and `do_not_contact`, rejects accepted rows outside active `OUTREACH_STATES`, dedupes within the batch, and blocks CRM duplicates by email, root domain, and normalized firm key before any upsert. Free personal domains remain blocked by default, but you can opt in with `OUTREACH_ALLOW_FREE_DOMAINS=1`.
+- Import verifies domain/email shape, enforces suppression and `do_not_contact`, rejects accepted rows outside active `OUTREACH_STATES`, stages lean/incomplete manual rows when identity is not strong enough, dedupes within the batch, and then upserts conservatively against CRM by email, root domain, and normalized firm key. Free personal domains remain blocked by default, but you can opt in with `OUTREACH_ALLOW_FREE_DOMAINS=1`.
 - This lane does not change outreach templates, cadence, scoring, suppression behavior, or sending rules.
 
 ### CRM Skip List Export (Low-Level Debug Path)
@@ -740,11 +741,13 @@ APOLLO telemetry highlights:
 - `GENERATOR_APOLLO_CREDIT_CAP_HIT`
 
 Optional empty-state planner fallback:
-- `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default) preserves weekday rotation-selected state.
+- `OUTREACH_STATE_SPREAD_MODE=round_robin` (default) spreads daily selection across active states, anchored by the weekday rotation-selected state.
+- Set `OUTREACH_STATE_SPREAD_MODE=single_state` to preserve the legacy one-state-per-day selection behavior.
+- `OUTREACH_FALLBACK_ON_EMPTY_STATE=0` (default) preserves the selected state when `OUTREACH_STATE_SPREAD_MODE=single_state`.
 - Set `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` to auto-switch plan/send to the configured state with the highest sendable estimate when the rotation-selected state is empty (or below floor).
 - `OUTREACH_SKIP_ROLE_INBOXES=1` (default) skips role inbox local-parts (`info`, `contact`, `admin`, `office`, `support`, `sales`, `hello`, `help`, `billing`, `accounts`, `careers`, `jobs`, `hr`).
 - `OUTREACH_ALLOW_FREE_DOMAINS=0` (default) keeps free personal domains out of reviewed AI-assist imports and generator sendability cohorts; set `OUTREACH_ALLOW_FREE_DOMAINS=1` to admit them.
-- Stable state-selection tokens: `OUTREACH_STATE_ROTATION_SELECTED=<STATE>` and `OUTREACH_STATE_EFFECTIVE_SEND=<STATE>`
+- Stable state-selection tokens: `OUTREACH_STATE_ROTATION_SELECTED=<STATE>`, `OUTREACH_STATE_EFFECTIVE_SEND=<STATE|MULTI>`, and `OUTREACH_SELECTED_BY_STATE=<STATE:count,...>`
 - Fallback token: `OUTREACH_FALLBACK_TRIGGERED=1 from=<STATE> to=<STATE> reason=<SENDABLE_BELOW_FLOOR>`
 - No-signal token: `OUTREACH_SKIP_NO_SIGNALS state=<STATE> window_days=<N>`
 - Empty-state no-send token: `OUTREACH_EMPTY_STATE_NO_SEND=1 state=<STATE>`
@@ -799,12 +802,13 @@ Set preferred discovery input via the canonical no-editor env helper:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\set_outreach_env.ps1 `
   -OutreachDailyLimit 10 `
-  -OutreachStates TX,CA,FL,PA,OH `
+  -OutreachStates TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN `
   -OshaSmokeTo cchevali+oshasmoke@gmail.com `
   -OutreachSuppressionMaxAgeHours 240 `
   -SignalFreshnessMaxDays 30 `
   -AiTriageEnabled 0 `
   -AiTriageOpenAiModel gpt-4.1-mini `
+  -OutreachStateSpreadMode round_robin `
   -TrialSendsLimitDefault 14 `
   -TrialExpiredBehaviorDefault notify_once `
   -ProspectDiscoveryInput C:\path\to\prospects.csv
@@ -914,7 +918,7 @@ Tomorrow confirmation (canonical no-send deterministic check):
 When `OUTREACH_PLAN_WILL_SEND=0`, root-cause must be interpreted from `OUTREACH_PLAN_POOL_TOTAL*`, `OUTREACH_PLAN_FILTER_BREAKDOWN`, and `OUTREACH_PLAN_DIAGNOSTICS_PATH` (instead of relying on skip totals alone).
 - Optional zero-send-day guard: set `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` to allow auto-switching to the configured state with the highest sendable estimate; verify activation via `OUTREACH_FALLBACK_TRIGGERED=1 from=<STATE> to=<STATE> reason=<...>`.
 - Recommended default remains `0` unless you explicitly want to prevent zero-send days by allowing state fallback.
-- Track rotation vs effective send and floor readiness in stdout tokens: `OUTREACH_STATE_ROTATION_SELECTED`, `OUTREACH_STATE_EFFECTIVE_SEND`, and `OUTREACH_RAMP_READY`.
+- Track rotation vs effective send, per-state selection spread, and floor readiness in stdout tokens: `OUTREACH_STATE_ROTATION_SELECTED`, `OUTREACH_STATE_EFFECTIVE_SEND`, `OUTREACH_SELECTED_BY_STATE`, and `OUTREACH_RAMP_READY`.
 - Signal/selection guard tokens: `OUTREACH_SKIP_NO_SIGNALS`, `OUTREACH_EMPTY_STATE_NO_SEND`, and `OUTREACH_DUPLICATE_GUARD_DROPPED`.
 
 Dry-run (no sends, writes outbox + manifest artifacts):
@@ -938,6 +942,7 @@ Print resolved paths/state:
 Required outreach env keys (managed by `scripts\set_outreach_env.ps1`):
 
 - `OUTREACH_STATES=TX,CA,FL,PA,OH`
+- `OUTREACH_STATE_SPREAD_MODE=round_robin`
 - `OUTREACH_DAILY_LIMIT=10`
 - `OSHA_SMOKE_TO=cchevali+oshasmoke@gmail.com`
 - `OUTREACH_SUPPRESSION_MAX_AGE_HOURS=240`
@@ -945,7 +950,7 @@ Required outreach env keys (managed by `scripts\set_outreach_env.ps1`):
 - `OUTREACH_SKIP_ROLE_INBOXES=1` (default)
 - `DATA_DIR=out` (or your runtime path)
 
-`run_outreach_auto.py` deterministically picks today's rotation state from `OUTREACH_STATES` by weekday index, may optionally fallback to a different effective send state, and always uses the effective send-state batch id `<YYYY-MM-DD>_<STATE>`.
+`run_outreach_auto.py` deterministically picks today's rotation anchor from `OUTREACH_STATES` by weekday index, spreads selection across active states by default, may optionally preserve legacy single-state behavior via `OUTREACH_STATE_SPREAD_MODE=single_state`, and uses batch id `<YYYY-MM-DD>_MULTI` whenever a run selects multiple states.
 `--for-date YYYY-MM-DD` is allowed with `--print-config`, `--doctor`, `--dry-run`, and `--plan`.
 If `--for-date` is not today and a live send is attempted, the command hard-fails with `ERR_AUTO_FOR_DATE_LIVE_SEND_BLOCKED` and no partial send effects.
 Normal runs select and prioritize prospects directly from `crm.sqlite`, send outreach emails, then record `outreach_events` and status updates.

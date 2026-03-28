@@ -4,6 +4,7 @@ param(
   [string] $OshaSmokeTo = '',
   [Nullable[int]] $OutreachSuppressionMaxAgeHours = $null,
   [Nullable[int]] $OutreachFallbackOnEmptyState = $null,
+  [string] $OutreachStateSpreadMode = '',
   [Nullable[int]] $OutreachSkipRoleInboxes = $null,
   [Nullable[int]] $OutreachAllowFreeDomains = $null,
   [Nullable[int]] $ProspectAutoGrowEnabled = $null,
@@ -498,6 +499,7 @@ try {
     'OshaSmokeTo',
     'OutreachSuppressionMaxAgeHours',
     'OutreachFallbackOnEmptyState',
+    'OutreachStateSpreadMode',
     'OutreachSkipRoleInboxes',
     'OutreachAllowFreeDomains',
     'ProspectAutoGrowEnabled',
@@ -579,6 +581,12 @@ try {
   if ($PSBoundParameters.ContainsKey('OutreachFallbackOnEmptyState')) {
     if (($OutreachFallbackOnEmptyState -ne 0) -and ($OutreachFallbackOnEmptyState -ne 1)) {
       Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachFallbackOnEmptyState'
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('OutreachStateSpreadMode')) {
+    $normOutreachStateSpreadMode = ([string]$OutreachStateSpreadMode).Trim().ToLowerInvariant()
+    if ($normOutreachStateSpreadMode -notin @('round_robin', 'single_state')) {
+      Fail-Token $ERR_SET_OUTREACH_ENV_ARGS 'invalid_OutreachStateSpreadMode'
     }
   }
   if ($PSBoundParameters.ContainsKey('OutreachSkipRoleInboxes')) {
@@ -901,6 +909,8 @@ try {
       Write-Output ('outreach_daily_limit=' + $outreachDailyLimitValue)
       $outreachFallbackOnEmptyStateValue = if (Map-HasValue $printMap 'OUTREACH_FALLBACK_ON_EMPTY_STATE') { ([string]$printMap['OUTREACH_FALLBACK_ON_EMPTY_STATE']).Trim() } else { '0' }
       Write-Output ('outreach_fallback_on_empty_state=' + $outreachFallbackOnEmptyStateValue)
+      $outreachStateSpreadModeValue = if (Map-HasValue $printMap 'OUTREACH_STATE_SPREAD_MODE') { ([string]$printMap['OUTREACH_STATE_SPREAD_MODE']).Trim() } else { 'round_robin' }
+      Write-Output ('outreach_state_spread_mode=' + $outreachStateSpreadModeValue)
       $prospectAutoGrowEnabledValue = if (Map-HasValue $printMap 'PROSPECT_AUTOGROW_ENABLED') { ([string]$printMap['PROSPECT_AUTOGROW_ENABLED']).Trim() } else { '1' }
       Write-Output ('prospect_autogrow_enabled=' + $prospectAutoGrowEnabledValue)
       $prospectAutoGrowSafetyNetEnabledValue = if (Map-HasValue $printMap 'PROSPECT_AUTOGROW_SAFETY_NET_ENABLED') { ([string]$printMap['PROSPECT_AUTOGROW_SAFETY_NET_ENABLED']).Trim() } else { '1' }
@@ -911,7 +921,7 @@ try {
       Write-Output ('prospect_ai_assist_review_raw_target=' + $prospectAiAssistReviewRawTargetValue)
       $prospectAiAssistReviewPacketSizeValue = if (Map-HasValue $printMap 'PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE') { ([string]$printMap['PROSPECT_AI_ASSIST_REVIEW_PACKET_SIZE']).Trim() } else { '10' }
       Write-Output ('prospect_ai_assist_review_packet_size=' + $prospectAiAssistReviewPacketSizeValue)
-      $outreachStatesValue = if (Map-HasValue $printMap 'OUTREACH_STATES') { ([string]$printMap['OUTREACH_STATES']).Trim() } else { 'TX,CA,FL,PA,OH' }
+      $outreachStatesValue = if (Map-HasValue $printMap 'OUTREACH_STATES') { ([string]$printMap['OUTREACH_STATES']).Trim() } else { 'TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN' }
       $prospectAutoGrowStatesValue = if (Map-HasValue $printMap 'PROSPECT_AUTOGROW_STATES') { ([string]$printMap['PROSPECT_AUTOGROW_STATES']).Trim() } else { '(unset)' }
       Write-Output ('outreach_states=' + $outreachStatesValue)
       Write-Output ('prospect_autogrow_states=' + $prospectAutoGrowStatesValue)
@@ -1013,7 +1023,7 @@ try {
     if ($PSBoundParameters.ContainsKey('OutreachStates')) {
       Set-MapValue -Map $map -Key 'OUTREACH_STATES' -Value (Normalize-OutreachStates $OutreachStates) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'OUTREACH_STATES')) {
-      Set-MapValue -Map $map -Key 'OUTREACH_STATES' -Value 'TX,CA,FL,PA,OH' -TouchedList $touched
+      Set-MapValue -Map $map -Key 'OUTREACH_STATES' -Value 'TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('OshaSmokeTo')) {
@@ -1032,6 +1042,12 @@ try {
       Set-MapValue -Map $map -Key 'OUTREACH_FALLBACK_ON_EMPTY_STATE' -Value ([string]$OutreachFallbackOnEmptyState) -TouchedList $touched
     } elseif (-not (Map-HasValue $map 'OUTREACH_FALLBACK_ON_EMPTY_STATE')) {
       Set-MapValue -Map $map -Key 'OUTREACH_FALLBACK_ON_EMPTY_STATE' -Value '0' -TouchedList $touched
+    }
+
+    if ($PSBoundParameters.ContainsKey('OutreachStateSpreadMode')) {
+      Set-MapValue -Map $map -Key 'OUTREACH_STATE_SPREAD_MODE' -Value (([string]$OutreachStateSpreadMode).Trim().ToLowerInvariant()) -TouchedList $touched
+    } elseif (-not (Map-HasValue $map 'OUTREACH_STATE_SPREAD_MODE')) {
+      Set-MapValue -Map $map -Key 'OUTREACH_STATE_SPREAD_MODE' -Value 'round_robin' -TouchedList $touched
     }
 
     if ($PSBoundParameters.ContainsKey('OutreachSkipRoleInboxes')) {

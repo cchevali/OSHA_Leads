@@ -100,7 +100,7 @@ class TestExportCrmAiSkipList(unittest.TestCase):
                 state="TX",
                 city="Fort Worth",
                 status="replied",
-                source="ai_assist_manual",
+                source="manual_user_supplied",
                 created_at="2026-03-11T09:00:00+00:00",
             )
             self._seed_prospect(
@@ -137,7 +137,7 @@ class TestExportCrmAiSkipList(unittest.TestCase):
             self.assertEqual(rows[0]["states"], "TX")
             self.assertEqual(rows[0]["cities"], "Dallas|Fort Worth")
             self.assertEqual(rows[0]["crm_statuses"], "new|replied")
-            self.assertEqual(rows[0]["crm_sources"], "AIHA|ai_assist_manual")
+            self.assertEqual(rows[0]["crm_sources"], "AIHA|manual_user_supplied")
             self.assertEqual(rows[0]["contact_email_samples"], "info@acme-safety.com|owner@contact.acme-safety.com")
             self.assertEqual(rows[0]["crm_record_count"], "2")
             self.assertEqual(rows[0]["first_created_at"], "2026-03-10T08:00:00+00:00")

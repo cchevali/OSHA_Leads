@@ -79,7 +79,7 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - Replenishment remains enabled as the automated background safety net; manual Deep Research is the canonical operator lane for net-new prospects.
    - Replenishment owns generation plus discovery only; it does not generate manual research prep artifacts.
    - Wrapper default env posture is `PROSPECT_AUTOGROW_ENABLED=1`, `PROSPECT_AUTOGROW_SOURCES=AIHA`, `PROSPECT_AUTOGROW_SAFETY_NET_ENABLED=1`, `PROSPECT_AI_ASSIST_REVIEW_ENABLED=1`, and `PROSPECT_AI_ASSIST_REVIEW_RAW_TARGET=30` when these keys are unset.
-   - Canonical live prospect/outreach scope is `TX,CA,FL,PA,OH`.
+   - Canonical live prospect/outreach scope is `TX,CA,FL,PA,OH,IL,NJ,LA,MI,GA,AL,WI,TN`.
    - Auto-growth source support is registry-backed by `outreach/autogrow_source_registry.json`; implemented tokens currently remain AIHA, BLUEBOOK, OHS_BG, APOLLO, BCSP, OSHA_NEWS, and STATE_LIC (`PROSPECT_AUTOGROW_*` keys; `PROSPECT_AUTOGROW_SOURCES` is comma-separated and `PROSPECT_AUTOGROW_STATES` optionally decouples inventory replenishment targets from `OUTREACH_STATES`, though canonical production keeps it unset so `OUTREACH_STATES` remains the single scope of truth).
    - Planned tokens such as `BBB`, `THOMASNET`, and `AGC` are intentionally rejected by env/runtime validation until their source modules exist.
    - APOLLO source uses People Search (`has_email=true` gating) plus Bulk People Enrichment (batches of 10, no waterfall/webhook mode) and is credit-capped per run.
@@ -104,12 +104,13 @@ Operator command procedures remain in `docs/RUNBOOK.md` under that contract.
    - Manual prospect prep lands under `${DATA_DIR}\audits\prospect_ai_assist\` as a refreshed `crm_skip_list_for_ai.csv` plus a dated repo-managed Deep Research prompt artifact.
    - The prompt artifact bakes in the active state scope, target firm count, canonical CSV header, and the explicit TX-only `STATE_LIC` diagnostic.
 4. Controlled discovery augmentation: reviewed prospect CSVs belong under `${DATA_DIR}\imports\prospect_ai_assist\` and are imported oldest-first by `tools/import_prospect_ai_assist_review.py --pending` before live outreach sends; single-file/manual review remains valid via `--input`, and pasted Deep Research CSV is accepted via `--stdin` or the clipboard wrapper.
-   - Stdin imports accept only raw CSV or a single fenced `csv` block with the canonical header `state,decision,firm,website,contact_name,title,email,source_urls,confidence,evidence_snippet` (optional trailing `seed_id` still allowed for legacy packet reviews).
-   - The importer normalizes known markdown/mailto cell corruption, rejects ambiguous malformed rows, rejects accepted rows outside the active `OUTREACH_STATES` scope, and re-checks duplicates against CRM by email, root domain, and normalized firm key before any upsert.
-   - Every row is audited in `crm.sqlite`, and verified accepts still upsert through the existing discovery/CRM contract with `source=ai_assist_manual` and `enrichment_lane=ai_assist`.
+   - Stdin/file imports auto-detect reviewed CSV, a single fenced `csv` block with the canonical header `state,decision,firm,website,contact_name,title,email,source_urls,confidence,evidence_snippet` (optional trailing `seed_id` still allowed for legacy packet reviews), or loose operator-supplied manual text blocks with labeled fields such as company, contact, email, website, state, and notes.
+   - The importer normalizes state/email/domain/company keys, stages incomplete rows, rejects accepted rows outside the active `OUTREACH_STATES` scope, and re-checks duplicates against CRM by email, root domain, and normalized firm key before any upsert.
+   - Every row is audited in `crm.sqlite`, and verified accepts still upsert through the existing CRM contract with `source=manual_user_supplied` and `enrichment_lane=ai_assist`.
 5. Optional bootstrap/debug seed: `outreach/crm_admin.py seed --input <prospects.csv>` loads initial prospects into `crm.sqlite`.
 6. Daily run: `outreach/run_outreach_auto.py`
-   - Resolves weekday rotation-selected state from `OUTREACH_STATES`, emits `OUTREACH_STATE_ROTATION_SELECTED` / `OUTREACH_STATE_EFFECTIVE_SEND`, and uses effective send-state batch id `<YYYY-MM-DD>_<STATE>` (optional fallback override via `OUTREACH_FALLBACK_ON_EMPTY_STATE=1` when the rotation-selected state is depleted/below floor)
+   - Resolves the weekday rotation-selected anchor from `OUTREACH_STATES`, emits `OUTREACH_STATE_ROTATION_SELECTED`, `OUTREACH_STATE_EFFECTIVE_SEND`, and `OUTREACH_SELECTED_BY_STATE`, and by default (`OUTREACH_STATE_SPREAD_MODE=round_robin`) interleaves outreach across active states while preserving `single_state` as an explicit fallback mode.
+   - Uses batch id `<YYYY-MM-DD>_MULTI` when multiple states are selected in the same run; single-state runs keep `<YYYY-MM-DD>_<STATE>`.
    - Emits `OUTREACH_RAMP_READY` readiness token (manual daily-limit ramping remains operator-controlled)
    - Selects/prioritizes prospects from `prospects` table
    - Enforces suppression + one-click unsubscribe compliance gates

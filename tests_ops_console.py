@@ -69,6 +69,7 @@ class _StubRunner:
                 [
                     "outreach_daily_limit=10",
                     "outreach_states=TX,CA",
+                    "outreach_state_spread_mode=round_robin",
                     "outreach_fallback_on_empty_state=0",
                     "prospect_autogrow_enabled=1",
                     "prospect_autogrow_safety_net_enabled=1",
@@ -97,15 +98,20 @@ class _StubRunner:
             target_date = parts[parts.index("--for-date") + 1]
             states = str((env or {}).get("OUTREACH_STATES") or "TX").split(",")
             selected_state = states[0].strip() or "TX"
+            spread_mode = str((env or {}).get("OUTREACH_STATE_SPREAD_MODE") or "round_robin").strip().lower()
+            effective_state = "MULTI" if spread_mode == "round_robin" and len([s for s in states if s.strip()]) > 1 else selected_state
+            batch = f"{target_date}_MULTI" if effective_state == "MULTI" else f"{target_date}_{selected_state}"
+            selected_by_state = "CA:2,TX:2" if effective_state == "MULTI" else f"{selected_state}:4"
             stdout = "\n".join(
                 [
                     f"OUTREACH_PLAN_DATE={target_date}",
-                    f"OUTREACH_PLAN_STATE={selected_state}",
-                    f"OUTREACH_PLAN_BATCH={target_date}_{selected_state}",
+                    f"OUTREACH_PLAN_STATE={effective_state}",
+                    f"OUTREACH_PLAN_BATCH={batch}",
                     "OUTREACH_PLAN_DAILY_LIMIT=10",
                     "OUTREACH_PLAN_WILL_SEND=4",
                     f"OUTREACH_STATE_ROTATION_SELECTED={selected_state}",
-                    f"OUTREACH_STATE_EFFECTIVE_SEND={selected_state}",
+                    f"OUTREACH_STATE_EFFECTIVE_SEND={effective_state}",
+                    f"OUTREACH_SELECTED_BY_STATE={selected_by_state}",
                     f"OUTREACH_STATE_SENDABLE_ESTIMATE state={selected_state} sendable=12",
                 ]
             )
