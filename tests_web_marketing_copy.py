@@ -52,6 +52,7 @@ class TestWebMarketingCopy(unittest.TestCase):
         self.assertIn("Tell us your state or region. State, metro, counties, or OSHA area all work. We confirm fit", pricing_text)
         self.assertNotIn("What most buyers do first", pricing_text)
         self.assertNotIn("See a sample for your state or region first.", pricing_text)
+        self.assertNotIn("Request a sample first if you want to see the lead quality before we activate the pilot.", pricing_text)
         self.assertNotIn("CoverageEstimator", pricing_text)
         self.assertNotIn("current coverage model", pricing_text)
         self.assertNotIn("Coverage Estimator", pricing_text)

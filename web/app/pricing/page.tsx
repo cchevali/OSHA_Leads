@@ -119,11 +119,7 @@ export default function PricingPage() {
                 >
                   {plan.ctaLabel}
                 </a>
-                {plan.name === "Founding Pilot" ? (
-                  <p className="mt-2 text-xs text-inkMuted">
-                    Request a sample first if you want to see the lead quality before we activate the pilot.
-                  </p>
-                ) : (
+                {plan.name === "Founding Pilot" ? null : (
                   <>
                     <p className="mt-2 text-xs text-inkMuted">
                       Best once you already know the state or region and lead quality are a fit.

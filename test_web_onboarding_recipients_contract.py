@@ -30,7 +30,8 @@ class TestWebOnboardingRecipientsContract(unittest.TestCase):
         self.assertIn("No calls are required. We can handle the sample, state or region fit, and next-step planning over email.", faq)
         self.assertIn("No calls required; onboarding is handled via a short form + email confirmation.", onboarding_page)
         self.assertIn("Request a sample", pricing)
-        self.assertIn("Request a sample first if you want to see the lead quality before we activate the pilot.", pricing)
+        self.assertIn("Want to preview lead quality first? Request a sample.", pricing)
+        self.assertNotIn("Request a sample first if you want to see the lead quality before we activate the pilot.", pricing)
 
 
 if __name__ == "__main__":
