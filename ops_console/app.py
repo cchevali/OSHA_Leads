@@ -254,6 +254,22 @@ def _parse_selected_by_state_csv(text: str) -> dict[str, int]:
     return out
 
 
+def _format_selected_by_state(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    parts: list[str] = []
+    for raw_state, raw_count in value.items():
+        state = str(raw_state or "").strip().upper()
+        if not state:
+            continue
+        try:
+            count = max(0, int(raw_count or 0))
+        except Exception:
+            count = 0
+        parts.append(f"{state}:{count}")
+    return ", ".join(parts)
+
+
 def _project_weekday_end_date(start_date_text: str, sends_limit: int) -> str:
     try:
         cursor = date.fromisoformat(start_date_text)
@@ -1593,13 +1609,14 @@ class OpsConsoleApp:
                     "Next 7 Days Outreach",
                     "".join(
                         [
-                            '<table class="grid"><thead><tr><th>Date</th><th>Rotation</th><th>Effective</th><th>Will Send</th><th>Fallback</th></tr></thead><tbody>',
+                            '<table class="grid"><thead><tr><th>Date</th><th>Rotation</th><th>Effective</th><th>Selected Spread</th><th>Will Send</th><th>Fallback</th></tr></thead><tbody>',
                             "".join(
                                 [
                                     "<tr>"
                                     f"<td>{_html(item.get('date'))}</td>"
                                     f"<td>{_html(item.get('rotation_selected_state') or item.get('state') or '')}</td>"
                                     f"<td>{_html(item.get('effective_send_state') or item.get('state') or '')}</td>"
+                                    f"<td>{_html(_format_selected_by_state(item.get('selected_by_state') or {}))}</td>"
                                     f"<td>{_html(item.get('will_send') or '')}</td>"
                                     f"<td>{_html(item.get('fallback_reason') or '')}</td>"
                                     "</tr>"

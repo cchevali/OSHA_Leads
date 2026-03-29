@@ -206,6 +206,8 @@ class TestOpsConsole(unittest.TestCase):
         self.assertIn("MicroFlowOps Ops Console", dashboard)
         self.assertIn("Needs Attention", dashboard)
         self.assertIn("Nothing urgent is queued.", dashboard)
+        self.assertIn("Selected Spread", dashboard)
+        self.assertIn("CA:2, TX:2", dashboard)
         self.assertIn("Inbound Setup", inbox)
         self.assertIn("not configured", inbox)
         self.assertIn("Gmail is optional", inbox)
