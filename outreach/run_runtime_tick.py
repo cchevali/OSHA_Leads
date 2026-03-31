@@ -947,8 +947,14 @@ def _collect_alert_candidates(job_results: list[dict[str, Any]]) -> list[AlertCa
         run_summary_text_path = str(job.get("run_summary_text_path") or "").strip()
         reconciliation_status = str(job.get("reconciliation_status") or "").strip()
         exit_code = int(job.get("exit_code") or 0)
+        actionable_external_wrapper_failure = (
+            reconciliation_status == "external_wrapper_failed"
+            and result == "skipped"
+            and name in CRITICAL_WINDOW_JOBS
+            and reason.startswith("window_closed_")
+        )
 
-        if result == "failed" or reconciliation_status == "external_wrapper_failed":
+        if result == "failed" or actionable_external_wrapper_failure:
             alert_reason = reason if result == "failed" else reconciliation_status
             alert_exit_code = exit_code if int(exit_code) != 0 else 1
             candidates.append(
