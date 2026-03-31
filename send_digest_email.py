@@ -4024,6 +4024,11 @@ def main() -> None:
         help="Emergency/manual override: allow a second live send on the same local day.",
     )
     parser.add_argument(
+        "--allow-outside-send-window-live",
+        action="store_true",
+        help="Emergency/manual override: allow a live send outside the configured local send window.",
+    )
+    parser.add_argument(
         "--debug-area-offices",
         action="store_true",
         help="Print distinct TX area_office values seen in last 30 days and exit",
@@ -4212,8 +4217,27 @@ def main() -> None:
                     f"max_minutes={trial_catchup_max_minutes}"
                 )
 
+        outside_window_override = bool(
+            args.allow_outside_send_window_live
+            and args.send_live
+            and allow_live_send
+            and send_enabled_ok
+            and window_reason == "outside send window"
+        )
+        if outside_window_override:
+            print(
+                "LIVE_WINDOW_OVERRIDE "
+                "gate=outside send window "
+                f"now={now_local.isoformat()} "
+                f"window_start={window_start_text} "
+                f"window_end={window_end_text}"
+            )
+
         live_allowed = bool(
-            args.send_live and allow_live_send and send_enabled_ok and (args.dry_run or window_ok or catchup_allowed)
+            args.send_live
+            and allow_live_send
+            and send_enabled_ok
+            and (args.dry_run or window_ok or catchup_allowed or outside_window_override)
         )
         safe_mode_reason = None
         if not live_allowed:
@@ -4223,7 +4247,7 @@ def main() -> None:
                 safe_mode_reason = "allow_live_send=false"
             elif not send_enabled_ok:
                 safe_mode_reason = "send_enabled=0"
-            elif not (args.dry_run or window_ok or catchup_allowed):
+            elif not (args.dry_run or window_ok or catchup_allowed or outside_window_override):
                 safe_mode_reason = window_reason or "outside send window"
             else:
                 safe_mode_reason = "unknown"
