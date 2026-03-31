@@ -138,6 +138,29 @@ class TestRunTrialDaily(unittest.TestCase):
         self.assertIn("--send-live", joined)
         self.assertIn("--confirm-live-send", joined)
 
+    def test_run_deliver_daily_passes_same_day_live_override_flag(self):
+        seen_cmds: list[list[str]] = []
+
+        def _run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            seen_cmds.append([str(part) for part in cmd])
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(trial_daily.subprocess, "run", side_effect=_run):
+            code, out = trial_daily._run_deliver_daily(
+                r"C:\osha_data\osha.sqlite",
+                Path(r"C:\osha_data\trials\facs_trial\customer.runtime.json"),
+                send_live=True,
+                dry_run=False,
+                confirm_live_send=True,
+                allow_second_live_send_same_day=True,
+            )
+
+        self.assertEqual(code, 0, msg=out)
+        self.assertTrue(seen_cmds)
+        joined = " ".join(seen_cmds[0])
+        self.assertIn("--confirm-live-send", joined)
+        self.assertIn("--allow-second-live-send-same-day", joined)
+
     def test_generate_minimal_customer_config_sets_50_signal_caps(self):
         cfg = trial_daily._generate_minimal_customer_config(self._policy())
         self.assertEqual(cfg["top_k_overall"], 50)

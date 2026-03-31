@@ -2,6 +2,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -120,6 +121,12 @@ class TestRunRuntimeTick(unittest.TestCase):
     def test_support_jobs_are_not_critical_missed_window_candidates(self):
         self.assertNotIn("ops_snapshot_daily", tick.CRITICAL_WINDOW_JOBS)
         self.assertNotIn("outreach_cleanup_daily", tick.CRITICAL_WINDOW_JOBS)
+
+    def test_python_file_cmd_uses_current_interpreter(self):
+        cmd = tick._python_file_cmd(Path(r"C:\dev\OSHA_Leads"), "outreach/run_ops_snapshot.py", ["--dry-run"])
+        self.assertEqual(cmd[0], sys.executable)
+        self.assertTrue(cmd[1].endswith("outreach\\run_ops_snapshot.py"))
+        self.assertEqual(cmd[2:], ["--dry-run"])
 
     def test_doctor_ops_snapshot_job_uses_print_config_then_dry_run(self):
         calls: list[list[str]] = []

@@ -429,7 +429,7 @@ def _resolve_inbound_backend(repo_root: Path) -> str:
 
 
 def _python_file_cmd(repo_root: Path, relative_path: str, args: list[str] | None = None) -> list[str]:
-    cmd: list[str] = ["py", "-3", str((repo_root / relative_path).resolve(strict=False))]
+    cmd: list[str] = [sys.executable, str((repo_root / relative_path).resolve(strict=False))]
     cmd.extend(args or [])
     return cmd
 

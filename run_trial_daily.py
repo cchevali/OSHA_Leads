@@ -398,6 +398,7 @@ def _run_deliver_daily(
     send_live: bool,
     dry_run: bool,
     confirm_live_send: bool = False,
+    allow_second_live_send_same_day: bool = False,
 ) -> tuple[int, str]:
     cmd = [
         sys.executable,
@@ -419,6 +420,8 @@ def _run_deliver_daily(
         cmd.append("--send-live")
         if confirm_live_send:
             cmd.append("--confirm-live-send")
+        if allow_second_live_send_same_day:
+            cmd.append("--allow-second-live-send-same-day")
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -665,6 +668,7 @@ def run_trial_daily(
     doctor: bool = False,
     confirm_live_send: bool = False,
     allow_weekend_send: bool = False,
+    allow_second_live_send_same_day: bool = False,
 ) -> int:
     sk = _validate_subscriber_key(subscriber_key)
     resolved_crm_db = crm_light.resolve_crm_db_path(crm_db)
@@ -692,6 +696,10 @@ def run_trial_daily(
     print(f"trial_effective_local_date={day_ctx['local_date']}")
     print(f"trial_effective_weekday={day_ctx['weekday_name']}")
     print(f"trial_allow_weekend_send={'YES' if allow_weekend_send else 'NO'}")
+    print(
+        "trial_allow_second_live_send_same_day="
+        f"{'YES' if allow_second_live_send_same_day else 'NO'}"
+    )
     runtime_mode = str(os.getenv("MFO_RUNTIME_MODE") or "manual").strip().lower() or "manual"
     runtime_ctx = runtime_context_dict(mode=runtime_mode, intent="send", dry_run=bool(dry_run))
     print(f"runtime_role={runtime_ctx.get('runtime_role', '')}")
@@ -931,6 +939,7 @@ def run_trial_daily(
                 send_live=send_live,
                 dry_run=dry_run,
                 confirm_live_send=confirm_live_send,
+                allow_second_live_send_same_day=allow_second_live_send_same_day,
             )
             status = "ERROR"
             customer_id = ""
@@ -1015,6 +1024,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Emergency/manual override: allow trial send path on Sat/Sun (default blocked).",
     )
     ap.add_argument(
+        "--allow-second-live-send-same-day",
+        action="store_true",
+        help="Emergency/manual override: allow a second same-day live trial send.",
+    )
+    ap.add_argument(
         "--test-send-daily",
         action="store_true",
         help="Laptop-safe: render daily digest to OSHA_SMOKE_TO with --no-state-mutation (records DRY_RUN/TEST_SENT).",
@@ -1041,6 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
             doctor=bool(args.doctor),
             confirm_live_send=bool(args.confirm_live_send),
             allow_weekend_send=bool(args.allow_weekend_send),
+            allow_second_live_send_same_day=bool(args.allow_second_live_send_same_day),
         )
     except RuntimeError as exc:
         msg = str(exc)
