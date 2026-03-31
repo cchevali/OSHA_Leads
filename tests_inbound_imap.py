@@ -1,8 +1,11 @@
 import email
 import email.policy
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
+import inbound_inbox_triage as inbound_triage
 from inbound_inbox_triage import (
     classify_email,
     decode_header_value,
@@ -139,6 +142,34 @@ class TestInboundImapParsing(unittest.TestCase):
         self.assertEqual(result["action"], "suppressed_recipient_hard_bounce")
         self.assertTrue(result["suppression_changed"])
         self.assertEqual(result["bounce_class"], "hard")
+
+    def test_log_metrics_creates_parent_dir_before_append(self):
+        with tempfile.TemporaryDirectory() as d:
+            metrics_path = Path(d) / "missing" / "nested" / "inbound_metrics.csv"
+            with mock.patch.object(inbound_triage, "METRICS_PATH", metrics_path):
+                inbound_triage.log_metrics(processed=1, unsub=0, bounce=0, hot=0, action=0)
+            self.assertTrue(metrics_path.exists())
+
+    def test_log_triage_creates_parent_dir_before_append(self):
+        with tempfile.TemporaryDirectory() as d:
+            triage_path = Path(d) / "missing" / "nested" / "inbox_triage_log.csv"
+            with mock.patch.object(inbound_triage, "TRIAGE_LOG_PATH", triage_path):
+                inbound_triage.log_triage(
+                    msg_id="<abc123>",
+                    from_email="ops@example.com",
+                    subject="Subject",
+                    category="other",
+                    action="logged",
+                )
+            self.assertTrue(triage_path.exists())
+
+    def test_add_to_suppression_creates_parent_dir_before_append(self):
+        with tempfile.TemporaryDirectory() as d:
+            suppression_path = Path(d) / "missing" / "nested" / "suppression.csv"
+            with mock.patch.object(inbound_triage, "SUPPRESSION_PATH", suppression_path):
+                added = inbound_triage.add_to_suppression("person@example.com", "manual_test")
+            self.assertTrue(added)
+            self.assertTrue(suppression_path.exists())
 
 
 if __name__ == "__main__":
