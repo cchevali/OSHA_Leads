@@ -166,6 +166,79 @@ class TestRunTrialDaily(unittest.TestCase):
         self.assertEqual(cfg["top_k_overall"], 50)
         self.assertEqual(cfg["top_k_per_state"], 50)
 
+    def test_allow_second_live_send_same_day_bypasses_trial_wrapper_skip(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            crm_db = tmp / "crm_light.sqlite"
+            leads_db = tmp / "osha.sqlite"
+            data_dir = tmp / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            sqlite3.connect(str(leads_db)).close()
+            trial_daily.crm_light.ensure_database(crm_db)
+            with trial_daily.crm_light.open_conn(crm_db) as conn:
+                trial_daily.crm_light.upsert_subscriber(
+                    conn,
+                    subscriber_key="facs_trial",
+                    email="owner@example.com",
+                    territory_code="TX_TRI",
+                    tz="America/Chicago",
+                    status="trial",
+                )
+                trial_daily.crm_light.upsert_trial_state(
+                    conn,
+                    subscriber_key="facs_trial",
+                    start_date="2026-03-01",
+                    sends_limit=14,
+                )
+
+            customer_runtime = data_dir / "trials" / "facs_trial" / "customer.runtime.json"
+            customer_runtime.parent.mkdir(parents=True, exist_ok=True)
+            customer_runtime.write_text('{"customer_id":"facs_trial"}\n', encoding="utf-8")
+
+            with (
+                mock.patch.dict(trial_daily.os.environ, {"DATA_DIR": str(data_dir)}, clear=False),
+                mock.patch.object(trial_daily, "run_runtime_preflight", return_value=_Preflight(True)),
+                mock.patch.object(trial_daily, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+                mock.patch.object(trial_daily, "validate_live_osha_db_path", return_value=""),
+                mock.patch.object(trial_daily, "_detect_split_ledger_conflict", return_value={"conflict": False}),
+                mock.patch.object(trial_daily, "_resolve_customer_config_path", return_value=customer_runtime),
+                mock.patch.object(trial_daily, "_load_or_build_customer_config", return_value=customer_runtime),
+                mock.patch.object(
+                    trial_daily,
+                    "_trial_local_day_context",
+                    return_value={
+                        "timezone": "America/Chicago",
+                        "local_date": "2026-03-23",
+                        "weekday_idx": 0,
+                        "weekday_name": "mon",
+                        "is_weekend": False,
+                    },
+                ),
+                mock.patch.object(trial_daily.crm_light, "has_trial_delivery_on_local_date", return_value=True),
+                mock.patch.object(trial_daily, "_run_deliver_daily", return_value=(0, "SEND_START mode=LIVE\n")) as deliver_mock,
+            ):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = trial_daily.run_trial_daily(
+                        subscriber_key="facs_trial",
+                        leads_db=str(leads_db),
+                        crm_db=str(crm_db),
+                        customer_arg="",
+                        send_live=True,
+                        dry_run=False,
+                        test_send_daily=False,
+                        print_config=False,
+                        doctor=False,
+                        confirm_live_send=True,
+                        allow_second_live_send_same_day=True,
+                    )
+
+            out = buf.getvalue()
+            self.assertEqual(rc, 0, msg=out)
+            deliver_mock.assert_called_once()
+            self.assertNotIn("TRIAL_EVENT status=SKIP_ALREADY_SENT_LOCAL_DATE", out)
+            self.assertIn("TRIAL_EVENT status=SENT", out)
+
     def test_send_live_success_records_sent_event_with_live_mode(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)

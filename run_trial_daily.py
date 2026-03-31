@@ -886,13 +886,18 @@ def run_trial_daily(
                 return _finalize(0, mirror_after=False)
 
             local_today = str(day_ctx["local_date"])
-            if send_live and not dry_run and crm_light.has_trial_delivery_on_local_date(
-                conn,
-                subscriber_key=policy.subscriber_key,
-                start_date=policy.start_date,
-                tz_name=policy.tz,
-                primary_recipient=policy.email,
-                local_date_text=local_today,
+            if (
+                send_live
+                and not dry_run
+                and not allow_second_live_send_same_day
+                and crm_light.has_trial_delivery_on_local_date(
+                    conn,
+                    subscriber_key=policy.subscriber_key,
+                    start_date=policy.start_date,
+                    tz_name=policy.tz,
+                    primary_recipient=policy.email,
+                    local_date_text=local_today,
+                )
             ):
                 crm_light.append_send_event(
                     conn,
