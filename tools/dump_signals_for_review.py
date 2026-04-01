@@ -283,6 +283,28 @@ def _configured_trial_territory_codes(definitions: dict[str, dict[str, Any]]) ->
     return combined
 
 
+def _all_outreach_review_states(definitions: dict[str, dict[str, Any]]) -> list[str]:
+    states: list[str] = []
+    seen: set[str] = set()
+
+    def _add_state_list(values: list[str]) -> None:
+        for value in values:
+            state = str(value or "").strip().upper()
+            if len(state) != 2 or not state.isalpha() or state in seen:
+                continue
+            seen.add(state)
+            states.append(state)
+
+    _add_state_list(_parse_outreach_states(os.getenv("OUTREACH_STATES", "")))
+
+    for territory_code in _configured_trial_territory_codes(definitions):
+        territory = definitions.get(territory_code, {})
+        territory_states = [str(s).strip().upper() for s in (territory.get("states") or []) if str(s).strip()]
+        _add_state_list(territory_states)
+
+    return states
+
+
 def _group_for_state(state: str) -> dict[str, Any]:
     return {
         "kind": "state",
@@ -682,7 +704,7 @@ def main() -> int:
             }
         )
     elif effective_all_outreach:
-        states = _parse_outreach_states(os.getenv("OUTREACH_STATES", ""))
+        states = _all_outreach_review_states(definitions)
         if not states:
             print("ERR_SIGNAL_REVIEW_OUTREACH_STATES_MISSING", file=sys.stderr)
             return 2

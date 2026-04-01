@@ -398,6 +398,8 @@ def _run_deliver_daily(
     send_live: bool,
     dry_run: bool,
     confirm_live_send: bool = False,
+    allow_second_live_send_same_day: bool = False,
+    allow_outside_send_window_live: bool = False,
 ) -> tuple[int, str]:
     cmd = [
         sys.executable,
@@ -419,6 +421,10 @@ def _run_deliver_daily(
         cmd.append("--send-live")
         if confirm_live_send:
             cmd.append("--confirm-live-send")
+        if allow_second_live_send_same_day:
+            cmd.append("--allow-second-live-send-same-day")
+        if allow_outside_send_window_live:
+            cmd.append("--allow-outside-send-window-live")
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -665,6 +671,8 @@ def run_trial_daily(
     doctor: bool = False,
     confirm_live_send: bool = False,
     allow_weekend_send: bool = False,
+    allow_second_live_send_same_day: bool = False,
+    allow_outside_send_window_live: bool = False,
 ) -> int:
     sk = _validate_subscriber_key(subscriber_key)
     resolved_crm_db = crm_light.resolve_crm_db_path(crm_db)
@@ -692,6 +700,14 @@ def run_trial_daily(
     print(f"trial_effective_local_date={day_ctx['local_date']}")
     print(f"trial_effective_weekday={day_ctx['weekday_name']}")
     print(f"trial_allow_weekend_send={'YES' if allow_weekend_send else 'NO'}")
+    print(
+        "trial_allow_second_live_send_same_day="
+        f"{'YES' if allow_second_live_send_same_day else 'NO'}"
+    )
+    print(
+        "trial_allow_outside_send_window_live="
+        f"{'YES' if allow_outside_send_window_live else 'NO'}"
+    )
     runtime_mode = str(os.getenv("MFO_RUNTIME_MODE") or "manual").strip().lower() or "manual"
     runtime_ctx = runtime_context_dict(mode=runtime_mode, intent="send", dry_run=bool(dry_run))
     print(f"runtime_role={runtime_ctx.get('runtime_role', '')}")
@@ -878,13 +894,18 @@ def run_trial_daily(
                 return _finalize(0, mirror_after=False)
 
             local_today = str(day_ctx["local_date"])
-            if send_live and not dry_run and crm_light.has_trial_delivery_on_local_date(
-                conn,
-                subscriber_key=policy.subscriber_key,
-                start_date=policy.start_date,
-                tz_name=policy.tz,
-                primary_recipient=policy.email,
-                local_date_text=local_today,
+            if (
+                send_live
+                and not dry_run
+                and not allow_second_live_send_same_day
+                and crm_light.has_trial_delivery_on_local_date(
+                    conn,
+                    subscriber_key=policy.subscriber_key,
+                    start_date=policy.start_date,
+                    tz_name=policy.tz,
+                    primary_recipient=policy.email,
+                    local_date_text=local_today,
+                )
             ):
                 crm_light.append_send_event(
                     conn,
@@ -931,6 +952,8 @@ def run_trial_daily(
                 send_live=send_live,
                 dry_run=dry_run,
                 confirm_live_send=confirm_live_send,
+                allow_second_live_send_same_day=allow_second_live_send_same_day,
+                allow_outside_send_window_live=allow_outside_send_window_live,
             )
             status = "ERROR"
             customer_id = ""
@@ -945,18 +968,18 @@ def run_trial_daily(
                 status = "DRY_RUN" if code == 0 else "ERROR"
                 event_mode = "DRY_RUN" if code == 0 else "ERROR"
             else:
-                if code == 0 and send_live:
+                mode = _try_extract_latest_send_start_mode(customer_id=customer_id)
+                if mode is None:
+                    # Fallback to subprocess output when latest.json/send_result is unavailable.
+                    mode = _try_extract_last_send_start_mode_from_log_text(out)
+                if code == 0 and mode == "LIVE":
                     status = "SENT"
                     event_mode = "LIVE"
+                elif code == 0 and mode == "SAFE":
+                    status = "SAFE_MODE"
+                    event_mode = "SAFE"
                 else:
-                    mode = _try_extract_latest_send_start_mode(customer_id=customer_id)
-                    if mode is None:
-                        # Fallback to subprocess output when latest.json/send_result is unavailable.
-                        mode = _try_extract_last_send_start_mode_from_log_text(out)
-                    if code == 0 and mode == "SAFE":
-                        status = "SAFE_MODE"
-                        event_mode = "SAFE"
-                    elif code == 0:
+                    if code == 0:
                         status = "UNKNOWN"
                         event_mode = "UNKNOWN"
                     else:
@@ -1015,6 +1038,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Emergency/manual override: allow trial send path on Sat/Sun (default blocked).",
     )
     ap.add_argument(
+        "--allow-second-live-send-same-day",
+        action="store_true",
+        help="Emergency/manual override: allow a second same-day live trial send.",
+    )
+    ap.add_argument(
+        "--allow-outside-send-window-live",
+        action="store_true",
+        help="Emergency/manual override: allow a live trial send outside the configured local send window.",
+    )
+    ap.add_argument(
         "--test-send-daily",
         action="store_true",
         help="Laptop-safe: render daily digest to OSHA_SMOKE_TO with --no-state-mutation (records DRY_RUN/TEST_SENT).",
@@ -1041,6 +1074,8 @@ def main(argv: list[str] | None = None) -> int:
             doctor=bool(args.doctor),
             confirm_live_send=bool(args.confirm_live_send),
             allow_weekend_send=bool(args.allow_weekend_send),
+            allow_second_live_send_same_day=bool(args.allow_second_live_send_same_day),
+            allow_outside_send_window_live=bool(args.allow_outside_send_window_live),
         )
     except RuntimeError as exc:
         msg = str(exc)

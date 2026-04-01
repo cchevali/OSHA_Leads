@@ -2,6 +2,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -120,6 +121,12 @@ class TestRunRuntimeTick(unittest.TestCase):
     def test_support_jobs_are_not_critical_missed_window_candidates(self):
         self.assertNotIn("ops_snapshot_daily", tick.CRITICAL_WINDOW_JOBS)
         self.assertNotIn("outreach_cleanup_daily", tick.CRITICAL_WINDOW_JOBS)
+
+    def test_python_file_cmd_uses_current_interpreter(self):
+        cmd = tick._python_file_cmd(Path(r"C:\dev\OSHA_Leads"), "outreach/run_ops_snapshot.py", ["--dry-run"])
+        self.assertEqual(cmd[0], sys.executable)
+        self.assertTrue(cmd[1].endswith("outreach\\run_ops_snapshot.py"))
+        self.assertEqual(cmd[2:], ["--dry-run"])
 
     def test_doctor_ops_snapshot_job_uses_print_config_then_dry_run(self):
         calls: list[list[str]] = []
@@ -733,6 +740,67 @@ class TestRunRuntimeTick(unittest.TestCase):
             self.assertIn("reconciliation_status: external_wrapper_failed", sent[0]["body"])
             payload = json.loads((Path(d) / "runtime" / "status" / "jobs" / "outreach_auto.json").read_text(encoding="utf-8"))
             self.assertEqual(payload.get("last_result"), "skipped")
+            self.assertEqual(payload.get("last_reconciliation_status"), "external_wrapper_failed")
+
+    def test_failed_wrapper_evidence_on_already_ran_skip_does_not_alert(self):
+        sent: list[dict[str, str]] = []
+
+        def _send_alert(*, recipient: str, subject: str, body: str, env):  # type: ignore[no-untyped-def]
+            sent.append({"recipient": recipient, "subject": subject, "body": body})
+
+        env = {
+            "OSHA_SMOKE_TO": "ops@example.com",
+            "SMTP_HOST": "smtp.example.com",
+            "SMTP_PORT": "587",
+            "SMTP_USER": "bot@example.com",
+            "SMTP_PASS": "secret",
+        }
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"DATA_DIR": d, **env}, clear=False),
+            mock.patch.object(tick, "run_runtime_preflight", return_value=_Preflight(True)),
+            mock.patch.object(tick, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+            mock.patch.object(tick, "send_plain_text_alert", side_effect=_send_alert),
+        ):
+            data_dir = Path(d)
+            state_path = tick._job_state_path(data_dir, "trial_facs_daily")
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema": tick.RUNTIME_JOB_STATE_SCHEMA,
+                        "job_name": "trial_facs_daily",
+                        "last_slot_key": "2026-03-30",
+                        "last_scheduled_local": "2026-03-30T09:00:00-04:00",
+                        "last_result": "ran",
+                        "last_result_detail": "ran",
+                        "last_attempt_count": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self._write_wrapper_summary(
+                data_dir=data_dir,
+                wrapper_name="OSHA_Trial_FACS_Daily",
+                slot_token="20260330",
+                start_local="2026-03-30T09:00:00-04:00",
+                end_local="2026-03-30T09:03:42-04:00",
+                exit_code=1,
+            )
+            out_buf = io.StringIO()
+            with redirect_stdout(out_buf):
+                rc = tick.main(["--job", "trial_facs_daily", "--now-local", "2026-03-30T22:48", "--mode", "scheduled"])
+            out = out_buf.getvalue()
+            self.assertEqual(rc, 0, msg=out)
+            self.assertIn("RUNTIME_TICK_JOB_RESULT=name=trial_facs_daily result=skipped exit_code=0 reason=already_ran", out)
+            self.assertIn("WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER=job=trial_facs_daily slot=2026-03-30 timing=within_window", out)
+            self.assertIn("RUNTIME_TICK_ALERT_SKIPPED=reason=no_candidates", out)
+            self.assertEqual(sent, [])
+            payload = json.loads((Path(d) / "runtime" / "status" / "jobs" / "trial_facs_daily.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("last_result"), "skipped")
+            self.assertEqual(payload.get("last_reason"), "already_ran")
             self.assertEqual(payload.get("last_reconciliation_status"), "external_wrapper_failed")
 
     def test_legacy_wrapper_names_still_reconcile_for_backward_compatibility(self):

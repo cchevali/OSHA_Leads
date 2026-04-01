@@ -85,11 +85,12 @@ Runtime tick operator alerts:
 - Recipient resolution: `RUNTIME_ALERT_RECIPIENT` -> `OSHA_SMOKE_TO`.
 - Enablement: `RUNTIME_ALERTS_ENABLED` (`1|0`), default on when a recipient is resolvable.
 - Alert categories:
-  - `job_failure` for any failed runtime tick job.
-  - `missed_window` for skipped `window_closed_*` on `ingest_daily`, `ingest_evening`, `prospect_replenish_daily`, `outreach_auto`, `trial_facs_daily`, `trial_jl_safety_daily`, and `trial_roi_safety_daily`.
+- `job_failure` for any failed runtime tick job.
+- `missed_window` for skipped `window_closed_*` on `ingest_daily`, `ingest_evening`, `prospect_replenish_daily`, `outreach_auto`, `trial_facs_daily`, `trial_jl_safety_daily`, and `trial_roi_safety_daily`.
 - Alerts are live-mode only; `--doctor` and `--dry-run` emit candidate/skipped tokens but do not send email.
 - Runtime tick reconciles same-slot wrapper summaries before sending `missed_window`; successful break-glass wrapper evidence within the catchup window suppresses the alert and records a reconciled job state instead of leaving an empty missed-window marker.
 - External wrapper evidence emits `WARN_RUNTIME_TICK_EXTERNAL_SCHEDULER` and records `last_external_scheduler_detected=1` plus `last_reconciliation_status` in `${DATA_DIR}\runtime\status\jobs\<job>.json`.
+- Non-actionable skips such as `already_ran` or `weekday_only` do not send failure email just because an external wrapper left failed evidence; the reconciliation metadata is still recorded for auditability.
 - Runtime tick also owns two weekday console-support freshness jobs that do not emit missed-window alerts:
   - `ops_snapshot_daily` at `09:30` local runs `py -3 outreach\run_ops_snapshot.py`
   - `outreach_cleanup_daily` at `09:45` local runs `py -3 outreach\cleanup_outreach_dry_run_artifacts.py --retention-days 14`

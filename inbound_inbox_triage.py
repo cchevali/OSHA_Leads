@@ -61,6 +61,11 @@ def first_env_value(*keys: str, default: str = "") -> str:
     return str(default or "").strip()
 
 
+def ensure_parent_dir(path: Path) -> None:
+    """Create the parent directory for a file path when a clean runtime checkout removed it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
 def resolve_inbound_backend() -> str:
     """Resolve the inbound backend, preferring explicit config and inferring IMAP from saved mailbox settings."""
     explicit = first_env_value("INBOUND_BACKEND").strip().lower()
@@ -246,6 +251,7 @@ def add_to_suppression(email: str, reason: str, source: str = "inbound_triage",
         return True
     
     # Append to file
+    ensure_parent_dir(SUPPRESSION_PATH)
     write_header = not SUPPRESSION_PATH.exists()
     with open(SUPPRESSION_PATH, "a", newline="", encoding="utf-8") as f:
         fieldnames = ["email", "reason", "source", "timestamp", "evidence_msg_id"]
@@ -1012,6 +1018,7 @@ def log_metrics(processed: int, unsub: int, bounce: int,
     if dry_run:
         return
     
+    ensure_parent_dir(METRICS_PATH)
     write_header = not METRICS_PATH.exists()
     with open(METRICS_PATH, "a", newline="", encoding="utf-8") as f:
         fieldnames = ["timestamp", "processed_count", "unsub_count", 
@@ -1035,6 +1042,7 @@ def log_triage(msg_id: str, from_email: str, subject: str,
     if dry_run:
         return
     
+    ensure_parent_dir(TRIAGE_LOG_PATH)
     write_header = not TRIAGE_LOG_PATH.exists()
     with open(TRIAGE_LOG_PATH, "a", newline="", encoding="utf-8") as f:
         fieldnames = ["timestamp", "message_id", "from_email", "subject", "category", "action"]

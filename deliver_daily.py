@@ -534,6 +534,11 @@ def main():
         action="store_true",
         help="Emergency/manual override: allow a second same-day live digest send.",
     )
+    parser.add_argument(
+        "--allow-outside-send-window-live",
+        action="store_true",
+        help="Emergency/manual override: allow a live digest send outside the configured local send window.",
+    )
     parser.add_argument("--preflight", action="store_true",
                         help="Validate DB + subscriber gating + recipients, then exit 0/1")
     parser.add_argument("--admin-email", default=ADMIN_EMAIL,
@@ -719,6 +724,8 @@ def main():
                 email_cmd.append("--confirm-live-send")
             if args.allow_second_live_send_same_day:
                 email_cmd.append("--allow-second-live-send-same-day")
+            if args.allow_outside_send_window_live:
+                email_cmd.append("--allow-outside-send-window-live")
             
             email_env = os.environ.copy()
             email_env["RUN_LOG_PATH"] = log_path

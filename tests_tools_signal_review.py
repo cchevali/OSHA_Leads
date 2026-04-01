@@ -1007,6 +1007,40 @@ class TestSignalReviewTools(unittest.TestCase):
             text = out.getvalue()
             self.assertIn("AI_REVIEW_DUMP_STATES=TX,CA", text)
 
+    def test_dump_signals_all_outreach_includes_configured_trial_states(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            db_path = tmp / "osha.sqlite"
+            sqlite3.connect(str(db_path)).close()
+
+            definitions = {
+                "FACS_TRIAL_STATES": {"states": ["CA", "OR", "WA"]},
+                "TX_TRI": {"states": ["TX"]},
+            }
+            out = io.StringIO()
+            env = dict(os.environ)
+            env["OUTREACH_STATES"] = "TX,CA,FL"
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(dump_tool, "load_territory_definitions", return_value=definitions),
+                mock.patch.object(dump_tool, "_configured_trial_territory_codes", return_value=["FACS_TRIAL_STATES"]),
+                redirect_stdout(out),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "dump_signals_for_review.py",
+                        "--print-config",
+                        "--db",
+                        str(db_path),
+                    ],
+                ),
+            ):
+                code = dump_tool.main()
+
+            self.assertEqual(code, 0)
+            text = out.getvalue()
+            self.assertIn("AI_REVIEW_DUMP_STATES=TX,CA,FL,OR,WA", text)
+
     def test_dump_signals_direct_run_invalid_data_dir_warns_and_falls_back(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
