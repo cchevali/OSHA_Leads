@@ -8,6 +8,7 @@ import sqlite3
 import smtplib
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -42,6 +43,8 @@ DEFAULT_EXPIRED_BEHAVIOR = "notify_once"
 TRIAL_WEEKDAYS_ONLY = True
 TRIAL_WEEKEND_SKIP_TOKEN = "SKIP_NON_WEEKDAY"
 PASS_TRIAL_DAILY_DOCTOR = "PASS_TRIAL_DAILY_DOCTOR"
+DEFAULT_TRIAL_PIPELINE_LOCK_WAIT_SECONDS = 15 * 60
+DEFAULT_TRIAL_PIPELINE_LOCK_POLL_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,33 @@ class TrialPolicy:
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _coerce_positive_int_env(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = str(os.getenv(name) or "").strip()
+    if not raw:
+        return max(minimum, int(default))
+    try:
+        value = int(raw)
+    except Exception:
+        return max(minimum, int(default))
+    return max(minimum, value)
+
+
+def _trial_pipeline_lock_wait_seconds() -> int:
+    return _coerce_positive_int_env(
+        "TRIAL_DAILY_PIPELINE_LOCK_WAIT_SECONDS",
+        DEFAULT_TRIAL_PIPELINE_LOCK_WAIT_SECONDS,
+        minimum=0,
+    )
+
+
+def _trial_pipeline_lock_poll_seconds() -> int:
+    return _coerce_positive_int_env(
+        "TRIAL_DAILY_PIPELINE_LOCK_POLL_SECONDS",
+        DEFAULT_TRIAL_PIPELINE_LOCK_POLL_SECONDS,
+        minimum=1,
+    )
 
 
 def _normalize_subscriber_key(value: str) -> str:
@@ -438,6 +468,11 @@ def _run_deliver_daily(
 def _try_extract_last_send_start_mode_from_log_text(text: str) -> str | None:
     for line in reversed((text or "").splitlines()):
         s = (line or "").strip()
+        if s.startswith("DELIVER_SEND_START_MODE="):
+            mode = str(s.split("=", 1)[1] or "").strip().upper()
+            if mode in {"LIVE", "SAFE", "UNKNOWN"}:
+                return mode
+            continue
         if "SEND_START mode=" not in s:
             continue
         if "mode=LIVE" in s:
@@ -462,6 +497,9 @@ def _try_extract_latest_send_start_mode(customer_id: str) -> str | None:
         payload = json.loads(send_result.read_text(encoding="utf-8"))
         if str(payload.get("customer_id") or "") != str(customer_id or ""):
             return None
+        send_start_mode = str(payload.get("send_start_mode") or "").strip().upper()
+        if send_start_mode in {"LIVE", "SAFE", "UNKNOWN"}:
+            return send_start_mode
         log_path = Path(str(payload.get("log_path") or "")).expanduser()
         if not log_path.exists():
             return None
@@ -659,6 +697,66 @@ def _mirror_secondary_trial_ledger(subscriber_key: str, primary_db_path: Path) -
     return "SKIP_CANONICAL_ONLY"
 
 
+def _acquire_trial_pipeline_lock(
+    *,
+    repo_root: Path,
+    subscriber_key: str,
+    local_date: str,
+):
+    lock_name = f"trial_daily_pipeline_live_{str(local_date or '').strip()}"
+    wait_seconds = _trial_pipeline_lock_wait_seconds()
+    poll_seconds = _trial_pipeline_lock_poll_seconds()
+    started = time.monotonic()
+    saw_wait = False
+    while True:
+        handle = acquire_runtime_lock(
+            lock_name,
+            repo_root=repo_root,
+            metadata={
+                "subscriber_key": subscriber_key,
+                "local_date": local_date,
+                "task": "trial_daily_pipeline_live",
+            },
+        )
+        if handle.acquired:
+            waited_seconds = int(max(0.0, time.monotonic() - started))
+            if saw_wait or waited_seconds > 0:
+                print(
+                    "TRIAL_PIPELINE_LOCK_ACQUIRED "
+                    f"subscriber_key={subscriber_key} local_date={local_date} "
+                    f"lock_path={handle.path} waited_seconds={waited_seconds} "
+                    f"stale_reclaimed={'YES' if getattr(handle, 'stale_reclaimed', False) else 'NO'}"
+                )
+            return handle
+
+        holder_meta = dict(handle.metadata or {})
+        holder_pid = str(holder_meta.get("pid") or "").strip() or "unknown"
+        holder_host = str(holder_meta.get("hostname") or "").strip().lower() or "unknown"
+        holder_started = str(holder_meta.get("acquired_at_utc") or "").strip() or "unknown"
+        holder_subscriber = str(holder_meta.get("subscriber_key") or "").strip().lower() or "unknown"
+        waited_seconds = int(max(0.0, time.monotonic() - started))
+        if waited_seconds >= max(0, int(wait_seconds)):
+            print(
+                "ERR_TRIAL_PIPELINE_LOCK_TIMEOUT "
+                f"subscriber_key={subscriber_key} local_date={local_date} "
+                f"lock_path={handle.path} waited_seconds={waited_seconds} "
+                f"holder_pid={holder_pid} holder_host={holder_host} "
+                f"holder_started_at={holder_started} holder_subscriber_key={holder_subscriber} guard=LOCK"
+            )
+            return handle
+
+        sleep_seconds = min(max(1, int(poll_seconds)), max(1, int(wait_seconds - waited_seconds)))
+        print(
+            "TRIAL_PIPELINE_LOCK_WAIT "
+            f"subscriber_key={subscriber_key} local_date={local_date} "
+            f"lock_path={handle.path} waited_seconds={waited_seconds} sleep_seconds={sleep_seconds} "
+            f"holder_pid={holder_pid} holder_host={holder_host} "
+            f"holder_started_at={holder_started} holder_subscriber_key={holder_subscriber} guard=LOCK"
+        )
+        saw_wait = True
+        time.sleep(sleep_seconds)
+
+
 def run_trial_daily(
     subscriber_key: str,
     leads_db: str,
@@ -780,6 +878,7 @@ def run_trial_daily(
         return 0
 
     live_send_lock = None
+    pipeline_lock = None
     try:
         if send_live and not dry_run:
             live_send_lock = acquire_runtime_lock(
@@ -802,6 +901,13 @@ def run_trial_daily(
                     f"holder_pid={holder_pid} holder_host={holder_host} holder_started_at={holder_started} guard=LOCK"
                 )
                 return _finalize(0, mirror_after=False)
+            pipeline_lock = _acquire_trial_pipeline_lock(
+                repo_root=Path(__file__).resolve().parent,
+                subscriber_key=policy.subscriber_key,
+                local_date=str(day_ctx["local_date"]),
+            )
+            if not getattr(pipeline_lock, "acquired", False):
+                return _finalize(2, mirror_after=False)
 
         crm_light.ensure_database(resolved_crm_db)
         with crm_light.open_conn(resolved_crm_db) as conn:
@@ -1006,6 +1112,8 @@ def run_trial_daily(
                 print(out.rstrip())
             return _finalize(0 if code == 0 else code, mirror_after=False)
     finally:
+        if pipeline_lock is not None and getattr(pipeline_lock, "acquired", False):
+            pipeline_lock.release()
         if live_send_lock is not None:
             live_send_lock.release()
 
