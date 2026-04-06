@@ -434,6 +434,120 @@ class TestRunTrialDaily(unittest.TestCase):
             self.assertEqual(str(event["variant"]), "daily")
             self.assertIn('"send_mode": "SAFE"', str(event["meta_json"]))
 
+    def test_send_live_waits_for_shared_pipeline_lock_before_deliver(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            crm_db = tmp / "crm_light.sqlite"
+            leads_db = tmp / "osha.sqlite"
+            data_dir = tmp / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            sqlite3.connect(str(leads_db)).close()
+            crm_light_db = trial_daily.crm_light.ensure_database(crm_db)
+            with trial_daily.crm_light.open_conn(crm_light_db) as conn:
+                trial_daily.crm_light.init_schema(conn)
+                trial_daily.crm_light.upsert_subscriber(
+                    conn,
+                    subscriber_key="facs_trial",
+                    email="owner@example.com",
+                    territory_code="TX_TRI",
+                    tz="America/Chicago",
+                    status="trial",
+                )
+                trial_daily.crm_light.upsert_trial_state(
+                    conn,
+                    subscriber_key="facs_trial",
+                    start_date="2026-03-01",
+                    sends_limit=14,
+                )
+
+            customer_runtime = data_dir / "trials" / "facs_trial" / "customer.runtime.json"
+            customer_runtime.parent.mkdir(parents=True, exist_ok=True)
+            customer_runtime.write_text('{"customer_id":"facs_trial"}\n', encoding="utf-8")
+
+            class _LockHandle:
+                def __init__(self, *, acquired: bool, path: str, metadata: dict | None = None):
+                    self.acquired = acquired
+                    self.path = path
+                    self.metadata = dict(metadata or {})
+                    self.stale_reclaimed = False
+
+                def release(self) -> None:
+                    return None
+
+            lock_calls: list[str] = []
+            pipeline_attempts = {"count": 0}
+
+            def _fake_lock(name, *_, **__):  # type: ignore[no-untyped-def]
+                lock_calls.append(str(name))
+                if str(name).startswith("trial_daily_facs_trial_"):
+                    return _LockHandle(
+                        acquired=True,
+                        path=r"C:\locks\trial_daily_facs_trial_2026-03-23.json",
+                    )
+                pipeline_attempts["count"] += 1
+                if pipeline_attempts["count"] == 1:
+                    return _LockHandle(
+                        acquired=False,
+                        path=r"C:\locks\trial_daily_pipeline_live_2026-03-23.json",
+                        metadata={
+                            "pid": 4321,
+                            "hostname": "scheduler-host",
+                            "acquired_at_utc": "2026-03-23T13:00:00+00:00",
+                            "subscriber_key": "roi_safety_trial",
+                        },
+                    )
+                return _LockHandle(
+                    acquired=True,
+                    path=r"C:\locks\trial_daily_pipeline_live_2026-03-23.json",
+                )
+
+            with (
+                mock.patch.dict(trial_daily.os.environ, {"DATA_DIR": str(data_dir)}, clear=False),
+                mock.patch.object(trial_daily, "run_runtime_preflight", return_value=_Preflight(True)),
+                mock.patch.object(trial_daily, "render_runtime_lines", return_value=["PASS_RUNTIME_PREFLIGHT"]),
+                mock.patch.object(trial_daily, "validate_live_osha_db_path", return_value=""),
+                mock.patch.object(trial_daily, "_detect_split_ledger_conflict", return_value={"conflict": False}),
+                mock.patch.object(trial_daily, "_resolve_customer_config_path", return_value=customer_runtime),
+                mock.patch.object(trial_daily, "_load_or_build_customer_config", return_value=customer_runtime),
+                mock.patch.object(
+                    trial_daily,
+                    "_trial_local_day_context",
+                    return_value={
+                        "timezone": "America/Chicago",
+                        "local_date": "2026-03-23",
+                        "weekday_idx": 0,
+                        "weekday_name": "mon",
+                        "is_weekend": False,
+                    },
+                ),
+                mock.patch.object(trial_daily, "acquire_runtime_lock", side_effect=_fake_lock),
+                mock.patch.object(trial_daily.time, "sleep", return_value=None) as sleep_mock,
+                mock.patch.object(trial_daily, "_run_deliver_daily", return_value=(0, "SEND_START mode=LIVE\n")) as deliver_mock,
+            ):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = trial_daily.run_trial_daily(
+                        subscriber_key="facs_trial",
+                        leads_db=str(leads_db),
+                        crm_db=str(crm_db),
+                        customer_arg="",
+                        send_live=True,
+                        dry_run=False,
+                        test_send_daily=False,
+                        print_config=False,
+                        doctor=False,
+                        confirm_live_send=True,
+                    )
+
+            out = buf.getvalue()
+            self.assertEqual(rc, 0, msg=out)
+            self.assertIn("TRIAL_PIPELINE_LOCK_WAIT subscriber_key=facs_trial", out)
+            self.assertIn("TRIAL_PIPELINE_LOCK_ACQUIRED subscriber_key=facs_trial", out)
+            self.assertIn("trial_daily_pipeline_live_2026-03-23", " ".join(lock_calls))
+            self.assertEqual(pipeline_attempts["count"], 2)
+            sleep_mock.assert_called_once()
+            deliver_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
