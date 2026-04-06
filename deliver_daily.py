@@ -76,6 +76,19 @@ def log_schedule_sanity(argv: list[str]) -> None:
         print(f"SCHEDULE_SANITY WARNING suspicious_trailing_quote={suspicious_rendered}")
 
 
+def _extract_send_start_mode_from_text(text: str) -> str:
+    for line in reversed((text or "").splitlines()):
+        s = (line or "").strip()
+        if "SEND_START mode=" not in s:
+            continue
+        if "mode=LIVE" in s:
+            return "LIVE"
+        if "mode=SAFE" in s:
+            return "SAFE"
+        return "UNKNOWN"
+    return ""
+
+
 def get_last_successful_send(log_path: str) -> dict:
     """Get last successful send from email log. Returns dict with details."""
     result = {
@@ -329,7 +342,14 @@ def load_customer_config(config_path: str) -> dict:
         return json.load(f)
 
 
-def run_command(cmd: list, log_file, cwd: str, env: dict | None = None, echo: bool = False) -> int:
+def run_command(
+    cmd: list,
+    log_file,
+    cwd: str,
+    env: dict | None = None,
+    echo: bool = False,
+    capture: dict | None = None,
+) -> int:
     """Run a command and log output. Returns exit code."""
     cmd_str = " ".join(cmd)
     log_file.write(f"\n{'='*60}\n")
@@ -345,6 +365,12 @@ def run_command(cmd: list, log_file, cwd: str, env: dict | None = None, echo: bo
         cwd=cwd,
         env=env,
     )
+
+    if capture is not None:
+        capture.clear()
+        capture["stdout"] = result.stdout or ""
+        capture["stderr"] = result.stderr or ""
+        capture["returncode"] = int(result.returncode)
     
     log_file.write("STDOUT:\n")
     log_file.write(result.stdout or "(no output)\n")
@@ -729,7 +755,23 @@ def main():
             
             email_env = os.environ.copy()
             email_env["RUN_LOG_PATH"] = log_path
-            email_exit = run_command(email_cmd, log_file, repo_root, env=email_env, echo=bool(args.dry_run))
+            email_capture: dict[str, object] = {}
+            email_exit = run_command(
+                email_cmd,
+                log_file,
+                repo_root,
+                env=email_env,
+                echo=bool(args.dry_run),
+                capture=email_capture,
+            )
+            email_output_text = (
+                str(email_capture.get("stdout") or "")
+                + "\n"
+                + str(email_capture.get("stderr") or "")
+            )
+            email_send_start_mode = _extract_send_start_mode_from_text(email_output_text)
+            if email_send_start_mode:
+                print(f"DELIVER_SEND_START_MODE={email_send_start_mode}")
             if email_exit != 0:
                 print(f"[ERROR] Email delivery failed with exit code {email_exit}")
                 exit_code = 1
@@ -826,6 +868,7 @@ def main():
     send_payload = {
         "run_id": run_id,
         "customer_id": customer_id,
+        "subscriber_key": subscriber_key,
         "mode": args.mode,
         "status": status_label,
         "exit_code": exit_code,
@@ -833,6 +876,7 @@ def main():
         "finished_at": run_finished_at,
         "log_path": log_path,
         "email_log_path": email_log_path,
+        "send_start_mode": locals().get("email_send_start_mode", "") or "",
     }
     write_run_artifact(run_dir, "send_result.json", send_payload)
     update_latest_pointer(output_dir, run_id, run_dir, status_label)
