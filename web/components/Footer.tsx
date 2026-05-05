@@ -1,4 +1,7 @@
-﻿import Link from "next/link";
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import site from "@/config/site.json";
 
 const footerLinks = [
@@ -12,6 +15,26 @@ const footerLinks = [
 ];
 
 export default function Footer() {
+  const pathname = usePathname();
+
+  if (pathname.startsWith("/famscorecard")) {
+    return (
+      <footer className="border-t border-cardBorder bg-sand/70">
+        <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
+          <div className="flex flex-col gap-3 text-xs text-inkMuted sm:flex-row sm:items-center sm:justify-between">
+            <p>Private household decision tool. Answers stay in this browser in this version.</p>
+            <div className="flex flex-wrap items-center gap-3">
+              <Link href="/privacy" className="transition hover:text-ink">
+                Privacy
+              </Link>
+              <p>© {new Date().getFullYear()} {site.legalName || site.brandName}</p>
+            </div>
+          </div>
+        </div>
+      </footer>
+    );
+  }
+
   return (
     <footer className="border-t border-cardBorder bg-surface">
       <div className="mx-auto w-full max-w-6xl px-6 py-12">

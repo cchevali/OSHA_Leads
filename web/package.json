@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
+    "test:famscorecard": "node --import tsx --test lib/famscorecard/scoring.test.ts",
     "gate": "node scripts/go_live_gate.mjs"
   },
   "dependencies": {
@@ -26,6 +27,7 @@
     "eslint-config-next": "15.0.0",
     "postcss": "latest",
     "tailwindcss": "^3.4.17",
+    "tsx": "^4.21.0",
     "typescript": "latest"
   }
 }
