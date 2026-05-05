@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import ThemeToggle from "@/components/ThemeToggle";
 import site from "@/config/site.json";
 
@@ -15,6 +16,30 @@ const navItems = [
 
 export default function Nav() {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+
+  if (pathname.startsWith("/famscorecard")) {
+    return (
+      <header className="sticky top-0 z-40 border-b border-cardBorder bg-sand/92 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-4 py-3 sm:px-6 sm:py-4">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-ocean sm:text-xs sm:tracking-[0.26em]">
+              Private household decision tool
+            </p>
+            <Link href="/famscorecard" className="mt-1 block font-display text-base tracking-tight text-ink sm:mt-2 sm:text-lg">
+              Family Fit Scorecard
+            </Link>
+          </div>
+          <div className="flex items-center gap-2 sm:gap-3">
+            <span className="hidden rounded-full border border-cardBorder bg-card px-3 py-2 text-xs font-semibold text-inkMuted sm:inline-flex">
+              Saved locally on this device
+            </span>
+            <ThemeToggle />
+          </div>
+        </div>
+      </header>
+    );
+  }
 
   return (
     <header className="sticky top-0 z-40 border-b border-cardBorder bg-sand/80 backdrop-blur">

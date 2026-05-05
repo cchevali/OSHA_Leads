@@ -10,6 +10,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     "/sample",
     "/faq",
     "/contact",
+    "/famscorecard",
     "/onboarding",
     "/privacy",
     "/terms"

@@ -1,0 +1,45 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" fill="#F6F1E7"/>
+  <rect x="48" y="48" width="1104" height="534" rx="36" fill="#FFFDFC" stroke="#D8D1C4"/>
+  <circle cx="1016" cy="112" r="136" fill="#0F766E" fill-opacity="0.12"/>
+  <circle cx="194" cy="510" r="180" fill="#F59E0B" fill-opacity="0.12"/>
+  <rect x="96" y="96" width="248" height="48" rx="24" fill="#E3F2EF"/>
+  <text x="220" y="127" text-anchor="middle" font-family="Arial, sans-serif" font-size="19" font-weight="700" fill="#0F766E">
+    PRIVATE-FEELING DECISION TOOL
+  </text>
+  <text x="96" y="232" font-family="Arial, sans-serif" font-size="64" font-weight="700" fill="#0F172A">
+    Family Fit
+  </text>
+  <text x="96" y="306" font-family="Arial, sans-serif" font-size="64" font-weight="700" fill="#0F172A">
+    Scorecard
+  </text>
+  <text x="96" y="384" font-family="Arial, sans-serif" font-size="30" fill="#334155">
+    Compare stay put, buy local, and buy plus relocate
+  </text>
+  <text x="96" y="426" font-family="Arial, sans-serif" font-size="30" fill="#334155">
+    with balanced scoring, hard stops, and plain-English results.
+  </text>
+  <rect x="766" y="178" width="304" height="254" rx="28" fill="#FFFFFF" stroke="#D8D1C4"/>
+  <text x="806" y="228" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#0F172A">
+    Outcome
+  </text>
+  <rect x="806" y="254" width="224" height="52" rx="26" fill="#FFF4DB"/>
+  <text x="918" y="287" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#9A6700">
+    Possibly a fit later
+  </text>
+  <text x="806" y="348" font-family="Arial, sans-serif" font-size="20" fill="#334155">
+    Top blockers
+  </text>
+  <text x="806" y="384" font-family="Arial, sans-serif" font-size="18" fill="#334155">
+    Baby-stage disruption
+  </text>
+  <text x="806" y="414" font-family="Arial, sans-serif" font-size="18" fill="#334155">
+    Distance from family support
+  </text>
+  <text x="806" y="444" font-family="Arial, sans-serif" font-size="18" fill="#334155">
+    Insurance continuity risk
+  </text>
+  <text x="96" y="536" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#0F172A">
+    microflowops.com/famscorecard
+  </text>
+</svg>
