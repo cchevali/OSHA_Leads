@@ -1,5 +1,4 @@
 const BIZTRACKER_ORIGIN = "https://microflowops-biztracker.vercel.app";
-const BIZREVIEW_ORIGIN = "https://microflowops-bizreview.vercel.app";
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -15,14 +14,16 @@ const nextConfig = {
         {
           source: "/biztracker/:path*",
           destination: `${BIZTRACKER_ORIGIN}/biztracker/:path*`
-        },
+        }
+      ],
+      afterFiles: [
         {
           source: "/bizreview",
-          destination: `${BIZREVIEW_ORIGIN}/bizreview`
+          destination: "/bizreview/index.html"
         },
         {
           source: "/bizreview/:path*",
-          destination: `${BIZREVIEW_ORIGIN}/bizreview/:path*`
+          destination: "/bizreview/:path*/index.html"
         }
       ]
     };
