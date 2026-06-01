@@ -18,6 +18,10 @@ export default function Nav() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
+  if (pathname === "/") {
+    return null;
+  }
+
   if (pathname.startsWith("/famscorecard")) {
     return (
       <header className="sticky top-0 z-40 border-b border-cardBorder bg-sand/92 backdrop-blur">

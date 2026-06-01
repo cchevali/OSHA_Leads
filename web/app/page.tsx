@@ -4,7 +4,21 @@ export const metadata: Metadata = {
   title: "MicroFlowOps - Under Construction",
   description:
     "MicroFlowOps is currently under construction while the site is being updated.",
-  alternates: { canonical: "/" }
+  alternates: { canonical: "/" },
+  robots: { index: false, follow: false, nocache: true },
+  openGraph: {
+    title: "MicroFlowOps - Under Construction",
+    description:
+      "MicroFlowOps is currently under construction while the site is being updated.",
+    url: "/",
+    siteName: "MicroFlowOps"
+  },
+  twitter: {
+    card: "summary",
+    title: "MicroFlowOps - Under Construction",
+    description:
+      "MicroFlowOps is currently under construction while the site is being updated."
+  }
 };
 
 export default function HomePage() {
@@ -18,8 +32,7 @@ export default function HomePage() {
           Under Construction
         </h1>
         <p className="mx-auto mt-5 max-w-2xl text-lg text-inkMuted">
-          The homepage is being updated. Existing tools and routed app pages remain
-          available while this page is refreshed.
+          The site is temporarily offline while updates are in progress.
         </p>
       </section>
     </main>
