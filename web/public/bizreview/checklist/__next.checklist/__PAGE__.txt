@@ -1,9 +1,6 @@
 1:"$Sreact.fragment"
-2:I[47257,["/bizreview/_next/static/chunks/0dz9-66nanch4.js","/bizreview/_next/static/chunks/05y~_nt5ca8.h.js","/bizreview/_next/static/chunks/0c79p80s4q7.i.js","/bizreview/_next/static/chunks/0n4z.7yu76je-.js"],"ClientPageRoot"]
-3:I[91615,["/bizreview/_next/static/chunks/0dz9-66nanch4.js","/bizreview/_next/static/chunks/05y~_nt5ca8.h.js","/bizreview/_next/static/chunks/0c79p80s4q7.i.js","/bizreview/_next/static/chunks/0n4z.7yu76je-.js","/bizreview/_next/static/chunks/0i0hbvpl6.htv.js","/bizreview/_next/static/chunks/14rx4m3wo_kp1.js"],"default"]
-6:I[97367,["/bizreview/_next/static/chunks/0dz9-66nanch4.js","/bizreview/_next/static/chunks/05y~_nt5ca8.h.js","/bizreview/_next/static/chunks/0c79p80s4q7.i.js","/bizreview/_next/static/chunks/0n4z.7yu76je-.js"],"OutletBoundary"]
-7:"$Sreact.suspense"
-0:{"rsc":["$","$1","c",{"children":[["$","$L2",null,{"Component":"$3","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@4","$@5"]}}],[["$","script","script-0",{"src":"/bizreview/_next/static/chunks/0i0hbvpl6.htv.js","async":true}],["$","script","script-1",{"src":"/bizreview/_next/static/chunks/14rx4m3wo_kp1.js","async":true}]],["$","$L6",null,{"children":["$","$7",null,{"name":"Next.MetadataOutlet","children":"$@8"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"hyXuY7mGmIsFTLXc_j6HZ"}
-4:{}
-5:"$0:rsc:props:children:0:props:serverProvidedParams:params"
-8:null
+2:I[94200,["/bizreview/_next/static/chunks/12w8cf66~_sww.js","/bizreview/_next/static/chunks/0d3shmwh5_nmn.js","/bizreview/_next/static/chunks/0jvz-8y~7mu94.js","/bizreview/_next/static/chunks/17~2md5u_by...js","/bizreview/_next/static/chunks/0yehbtvep~f82.js"],"LegacyRouteRedirect"]
+3:I[97367,["/bizreview/_next/static/chunks/12w8cf66~_sww.js","/bizreview/_next/static/chunks/0d3shmwh5_nmn.js","/bizreview/_next/static/chunks/0jvz-8y~7mu94.js","/bizreview/_next/static/chunks/17~2md5u_by...js"],"OutletBoundary"]
+4:"$Sreact.suspense"
+0:{"rsc":["$","$1","c",{"children":[["$","$L2",null,{"to":"/risk-gates"}],[["$","script","script-0",{"src":"/bizreview/_next/static/chunks/0yehbtvep~f82.js","async":true}]],["$","$L3",null,{"children":["$","$4",null,{"name":"Next.MetadataOutlet","children":"$@5"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"kQC5UZkuKcrhZYqnqD14s"}
+5:null
