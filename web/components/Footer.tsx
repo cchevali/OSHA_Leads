@@ -17,6 +17,10 @@ const footerLinks = [
 export default function Footer() {
   const pathname = usePathname();
 
+  if (pathname === "/") {
+    return null;
+  }
+
   if (pathname.startsWith("/famscorecard")) {
     return (
       <footer className="border-t border-cardBorder bg-sand/70">

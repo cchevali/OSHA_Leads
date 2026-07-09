@@ -4,6 +4,19 @@ const BIZTRACKER_ORIGIN = "https://microflowops-biztracker.vercel.app";
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  async headers() {
+    return [
+      {
+        source: "/bizreview/version.json",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "no-store, max-age=0"
+          }
+        ]
+      }
+    ];
+  },
   async rewrites() {
     return {
       beforeFiles: [
@@ -14,6 +27,16 @@ const nextConfig = {
         {
           source: "/biztracker/:path*",
           destination: `${BIZTRACKER_ORIGIN}/biztracker/:path*`
+        }
+      ],
+      afterFiles: [
+        {
+          source: "/bizreview",
+          destination: "/bizreview/index.html"
+        },
+        {
+          source: "/bizreview/:path*",
+          destination: "/bizreview/:path*/index.html"
         }
       ]
     };
