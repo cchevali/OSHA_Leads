@@ -1,9 +1,9 @@
 1:"$Sreact.fragment"
-2:I[47257,["/bizreview/_next/static/chunks/05~m8nn9xhj.~.js","/bizreview/_next/static/chunks/0d3shmwh5_nmn.js","/bizreview/_next/static/chunks/0jvz-8y~7mu94.js","/bizreview/_next/static/chunks/07gv1t1eg0lxz.js"],"ClientPageRoot"]
-3:I[76185,["/bizreview/_next/static/chunks/05~m8nn9xhj.~.js","/bizreview/_next/static/chunks/0d3shmwh5_nmn.js","/bizreview/_next/static/chunks/0jvz-8y~7mu94.js","/bizreview/_next/static/chunks/07gv1t1eg0lxz.js","/bizreview/_next/static/chunks/0sf8uqrge9wzv.js"],"default"]
-6:I[97367,["/bizreview/_next/static/chunks/05~m8nn9xhj.~.js","/bizreview/_next/static/chunks/0d3shmwh5_nmn.js","/bizreview/_next/static/chunks/0jvz-8y~7mu94.js","/bizreview/_next/static/chunks/07gv1t1eg0lxz.js"],"OutletBoundary"]
+2:I[47257,["/bizreview/_next/static/chunks/12w8cf66~_sww.js","/bizreview/_next/static/chunks/0d3shmwh5_nmn.js","/bizreview/_next/static/chunks/0jvz-8y~7mu94.js","/bizreview/_next/static/chunks/0hdad1hmdb1ql.js"],"ClientPageRoot"]
+3:I[76185,["/bizreview/_next/static/chunks/12w8cf66~_sww.js","/bizreview/_next/static/chunks/0d3shmwh5_nmn.js","/bizreview/_next/static/chunks/0jvz-8y~7mu94.js","/bizreview/_next/static/chunks/0hdad1hmdb1ql.js","/bizreview/_next/static/chunks/0r9gfgvo6o6ko.js"],"default"]
+6:I[97367,["/bizreview/_next/static/chunks/12w8cf66~_sww.js","/bizreview/_next/static/chunks/0d3shmwh5_nmn.js","/bizreview/_next/static/chunks/0jvz-8y~7mu94.js","/bizreview/_next/static/chunks/0hdad1hmdb1ql.js"],"OutletBoundary"]
 7:"$Sreact.suspense"
-0:{"rsc":["$","$1","c",{"children":[["$","$L2",null,{"Component":"$3","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@4","$@5"]}}],[["$","script","script-0",{"src":"/bizreview/_next/static/chunks/0sf8uqrge9wzv.js","async":true}]],["$","$L6",null,{"children":["$","$7",null,{"name":"Next.MetadataOutlet","children":"$@8"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"zuPaMxYPT13o_YWP0ZfzH"}
+0:{"rsc":["$","$1","c",{"children":[["$","$L2",null,{"Component":"$3","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@4","$@5"]}}],[["$","script","script-0",{"src":"/bizreview/_next/static/chunks/0r9gfgvo6o6ko.js","async":true}]],["$","$L6",null,{"children":["$","$7",null,{"name":"Next.MetadataOutlet","children":"$@8"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"hQR7Pb-F8c5mMf5DqGOKV"}
 4:{}
 5:"$0:rsc:props:children:0:props:serverProvidedParams:params"
 8:null
