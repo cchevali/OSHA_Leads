@@ -40,6 +40,16 @@ Verification note:
 6. Validate the OpenGraph card with Vercel’s social preview.
 7. Update `web/config/site.json` if the brand or email address changes.
 
+### BizReview bundle release
+
+After refreshing `web/public/bizreview` from the BizReview static export, deploy it from `C:\dev\OSHA_Leads` with:
+
+```powershell
+npm --prefix web run deploy:bizreview
+```
+
+This deploy command runs the live production parity gate after Vercel reports ready. It must pass before the release is considered complete. The gate fetches `/bizreview`, `/bizreview/`, `/bizreview/details/`, and `/bizreview/version.json`, reports cache headers, and rejects mismatched build identity or a schema other than `11`.
+
 ## Go-Live Gate
 
 Before touching DNS, run the local readiness gate:

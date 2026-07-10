@@ -9,7 +9,9 @@
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
     "test:famscorecard": "node --import tsx --test lib/famscorecard/scoring.test.ts",
-    "gate": "node scripts/go_live_gate.mjs"
+    "gate": "node scripts/go_live_gate.mjs",
+    "verify:bizreview-production": "node scripts/verify-bizreview-production-parity.mjs",
+    "deploy:bizreview": "node scripts/deploy-bizreview-production.mjs"
   },
   "dependencies": {
     "next": "latest",

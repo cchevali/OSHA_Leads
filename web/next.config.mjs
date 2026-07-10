@@ -1,4 +1,6 @@
 const BIZTRACKER_ORIGIN = "https://microflowops-biztracker.vercel.app";
+const BIZREVIEW_DOCUMENT_CACHE_CONTROL = "no-cache, max-age=0, must-revalidate";
+const BIZREVIEW_STATIC_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -6,6 +8,24 @@ const nextConfig = {
   poweredByHeader: false,
   async headers() {
     return [
+      {
+        source: "/bizreview/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: BIZREVIEW_DOCUMENT_CACHE_CONTROL
+          }
+        ]
+      },
+      {
+        source: "/bizreview/_next/static/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: BIZREVIEW_STATIC_ASSET_CACHE_CONTROL
+          }
+        ]
+      },
       {
         source: "/bizreview/version.json",
         headers: [
