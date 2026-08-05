@@ -1,7 +1,7 @@
 /* eslint-disable no-console */
 
 const DEFAULT_ORIGIN = "https://microflowops.com";
-const REQUIRED_SCHEMA_VERSION = 13;
+const REQUIRED_SCHEMA_VERSION = 14;
 const args = new Set(process.argv.slice(2));
 const origin = (process.env.BIZREVIEW_PRODUCTION_ORIGIN || DEFAULT_ORIGIN).replace(/\/$/, "");
 const routes = [
