@@ -1,23 +1,76 @@
 /* eslint-disable no-console */
 
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 const DEFAULT_ORIGIN = "https://microflowops.com";
-const REQUIRED_SCHEMA_VERSION = 14;
 const args = new Set(process.argv.slice(2));
 const origin = (process.env.BIZREVIEW_PRODUCTION_ORIGIN || DEFAULT_ORIGIN).replace(/\/$/, "");
-const routes = [
-  "/bizreview",
-  "/bizreview/",
-  "/bizreview/details/",
-  "/bizreview/version.json",
+const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = join(scriptDirectory, "..", "..");
+const localBuildRoot = join(repositoryRoot, "web", "public", "bizreview");
+const documentRoutes = [
+  { route: "/bizreview", artifact: "index.html" },
+  { route: "/bizreview/", artifact: "index.html" },
+  { route: "/bizreview/details/", artifact: join("details", "index.html") },
 ];
+const manifestRoute = "/bizreview/version.json";
 
-function printConfig() {
+function hash(body) {
+  return createHash("sha256").update(body).digest("hex");
+}
+
+function buildIdentity(version, source) {
+  const identity = {
+    commit: version.commit,
+    buildTime: version.buildTime,
+    schemaVersion: version.schemaVersion,
+    dealStateRevision: version.dealStateRevision,
+  };
+
+  if (
+    !identity.commit ||
+    !identity.buildTime ||
+    !Number.isInteger(identity.schemaVersion) ||
+    !identity.dealStateRevision
+  ) {
+    throw new Error(
+      `ERR_BIZREVIEW_PARITY_MANIFEST source=${source} identity=${JSON.stringify(identity)}`,
+    );
+  }
+
+  return identity;
+}
+
+async function loadExpectedBuild() {
+  const manifestPath = join(localBuildRoot, "version.json");
+  const manifestBody = await readFile(manifestPath);
+  const version = JSON.parse(manifestBody.toString("utf8"));
+  const identity = buildIdentity(version, manifestPath);
+  const documents = await Promise.all(
+    documentRoutes.map(async ({ route, artifact }) => {
+      const path = join(localBuildRoot, artifact);
+      const body = await readFile(path);
+      return { route, artifact, path, body, sha256: hash(body) };
+    }),
+  );
+
+  return { identity, manifestBody, manifestPath, documents };
+}
+
+async function printConfig(expected) {
   console.log(
     JSON.stringify(
       {
         origin,
-        requiredSchemaVersion: REQUIRED_SCHEMA_VERSION,
-        routes,
+        expected: expected.identity,
+        localManifest: expected.manifestPath,
+        routes: [
+          ...expected.documents.map(({ route, path, sha256 }) => ({ route, path, sha256 })),
+          { route: manifestRoute, path: expected.manifestPath, sha256: hash(expected.manifestBody) },
+        ],
       },
       null,
       2,
@@ -33,12 +86,13 @@ function extractHtmlIdentity(html, route) {
   const commit = html.match(/BizReview build\s+([^<\s]+)/)?.[1];
   const buildTime = html.match(/Built\s+([^<\s]+)/)?.[1];
   const schemaVersion = Number(html.match(/Schema v(\d+)/)?.[1]);
+  const dealStateRevision = html.match(/Deal state\s+([^<\s]+)/)?.[1];
 
-  if (!commit || !buildTime || !Number.isInteger(schemaVersion)) {
+  if (!commit || !buildTime || !Number.isInteger(schemaVersion) || !dealStateRevision) {
     throw new Error(`ERR_BIZREVIEW_PARITY_IDENTITY route=${route} missing footer build identity`);
   }
 
-  return { commit, buildTime, schemaVersion };
+  return { commit, buildTime, schemaVersion, dealStateRevision };
 }
 
 function hasRevalidatingDocumentCacheControl(value) {
@@ -67,18 +121,21 @@ async function fetchRoute(route) {
     throw new Error(`ERR_BIZREVIEW_PARITY_HTTP route=${route} status=${response.status}`);
   }
 
-  return { route, response, cache };
+  const body = Buffer.from(await response.arrayBuffer());
+  return { route, body, cache };
 }
 
 async function main() {
+  const expected = await loadExpectedBuild();
+
   if (args.has("--print-config")) {
-    printConfig();
+    await printConfig(expected);
     return;
   }
 
   if (args.has("--dry-run")) {
     console.log("DRY_RUN_BIZREVIEW_PARITY");
-    printConfig();
+    await printConfig(expected);
     return;
   }
 
@@ -87,42 +144,49 @@ async function main() {
     throw new Error(`ERR_BIZREVIEW_PARITY_ARGS unsupported=${unknownArgs.join(",")}`);
   }
 
-  const fetched = [];
-  for (const route of routes) fetched.push(await fetchRoute(route));
+  const [liveDocuments, liveManifest] = await Promise.all([
+    Promise.all(expected.documents.map(({ route }) => fetchRoute(route))),
+    fetchRoute(manifestRoute),
+  ]);
 
-  const manifest = fetched.at(-1);
-  const version = await manifest.response.json();
-  const expected = {
-    commit: version.commit,
-    buildTime: version.buildTime,
-    schemaVersion: version.schemaVersion,
-  };
-
-  if (!expected.commit || !expected.buildTime || expected.schemaVersion !== REQUIRED_SCHEMA_VERSION) {
+  const liveVersion = JSON.parse(liveManifest.body.toString("utf8"));
+  const liveIdentity = buildIdentity(liveVersion, manifestRoute);
+  if (JSON.stringify(liveIdentity) !== JSON.stringify(expected.identity)) {
     throw new Error(
-      `ERR_BIZREVIEW_PARITY_MANIFEST commit=${expected.commit || "missing"} buildTime=${expected.buildTime || "missing"} schema=${expected.schemaVersion}`,
+      `ERR_BIZREVIEW_PARITY_MANIFEST_MISMATCH expected=${JSON.stringify(expected.identity)} actual=${JSON.stringify(liveIdentity)}`,
     );
   }
 
-  for (const document of fetched.slice(0, -1)) {
+  for (const [index, document] of liveDocuments.entries()) {
+    const localDocument = expected.documents[index];
     if (!hasRevalidatingDocumentCacheControl(document.cache.cacheControl)) {
       throw new Error(
         `ERR_BIZREVIEW_PARITY_CACHE route=${document.route} cache-control=${document.cache.cacheControl}`,
       );
     }
-    const identity = extractHtmlIdentity(await document.response.text(), document.route);
-    if (
-      identity.commit !== expected.commit ||
-      identity.buildTime !== expected.buildTime ||
-      identity.schemaVersion !== expected.schemaVersion
-    ) {
+
+    const identity = extractHtmlIdentity(document.body.toString("utf8"), document.route);
+    if (JSON.stringify(identity) !== JSON.stringify(expected.identity)) {
       throw new Error(
-        `ERR_BIZREVIEW_PARITY_MISMATCH route=${document.route} expected=${JSON.stringify(expected)} actual=${JSON.stringify(identity)}`,
+        `ERR_BIZREVIEW_PARITY_IDENTITY_MISMATCH route=${document.route} expected=${JSON.stringify(expected.identity)} actual=${JSON.stringify(identity)}`,
       );
     }
+
+    const liveSha256 = hash(document.body);
+    if (!document.body.equals(localDocument.body)) {
+      throw new Error(
+        `ERR_BIZREVIEW_PARITY_BODY_MISMATCH route=${document.route} local=${localDocument.sha256} live=${liveSha256} artifact=${localDocument.path}`,
+      );
+    }
+
+    console.log(
+      `PARITY_BODY route=${document.route} bytes=${document.body.length} sha256=${liveSha256}`,
+    );
   }
 
-  console.log(`PASS_BIZREVIEW_PRODUCTION_PARITY commit=${expected.commit} build=${expected.buildTime} schema=${expected.schemaVersion}`);
+  console.log(
+    `PASS_BIZREVIEW_PRODUCTION_PARITY commit=${expected.identity.commit} build=${expected.identity.buildTime} schema=${expected.identity.schemaVersion} dealState=${expected.identity.dealStateRevision}`,
+  );
 }
 
 main().catch((error) => {

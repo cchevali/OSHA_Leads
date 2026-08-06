@@ -1,6 +1,7 @@
 {
   "app": "bizreview",
-  "commit": "54c65f69cc14",
-  "buildTime": "2026-08-05T21:07:24.536Z",
-  "schemaVersion": 14
+  "commit": "41e08ba7d3df",
+  "buildTime": "2026-08-06T12:55:44.729Z",
+  "schemaVersion": 15,
+  "dealStateRevision": "2026-08-05-audit-1"
 }
